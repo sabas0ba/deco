@@ -32,6 +32,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "deco-editor"
+version = "0.1.0"
+dependencies = [
+ "deco-config",
+ "deco-core",
+ "deco-keymap",
+ "deco-theme",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "deco-ext"
 version = "0.1.0"
 dependencies = [

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/deco-core", "crates/deco-config", "crates/deco-keymap", "crates/deco-theme", "crates/deco-ext"]
+members = ["crates/deco-core", "crates/deco-config", "crates/deco-keymap", "crates/deco-theme", "crates/deco-ext", "crates/deco-editor"]
 
 [workspace.package]
 version = "0.1.0"
@@ -16,6 +16,7 @@ deco-config = { path = "crates/deco-config", version = "0.1.0" }
 deco-keymap = { path = "crates/deco-keymap", version = "0.1.0" }
 deco-theme = { path = "crates/deco-theme", version = "0.1.0" }
 deco-ext = { path = "crates/deco-ext", version = "0.1.0" }
+deco-editor = { path = "crates/deco-editor", version = "0.1.0" }
 deco-lsp = { path = "crates/deco-lsp", version = "0.1.0" }
 deco-remote = { path = "crates/deco-remote", version = "0.1.0" }
 deco-tui = { path = "crates/deco-tui", version = "0.1.0" }

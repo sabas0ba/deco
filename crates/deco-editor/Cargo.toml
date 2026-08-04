@@ -1,0 +1,17 @@
+[package]
+name = "deco-editor"
+description = "Frontend-agnostic editor session: documents, views, and the command set"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+deco-config.workspace = true
+deco-core.workspace = true
+deco-keymap.workspace = true
+deco-theme.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
