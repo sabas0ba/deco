@@ -32,6 +32,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "deco-ext"
+version = "0.1.0"
+dependencies = [
+ "deco-config",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "deco-keymap"
 version = "0.1.0"
 dependencies = [
