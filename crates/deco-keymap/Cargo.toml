@@ -1,0 +1,16 @@
+[package]
+name = "deco-keymap"
+description = "VS Code-compatible keybindings: key parsing, when-clause evaluation and chord resolution"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+deco-config.workspace = true
+regex = "1"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
