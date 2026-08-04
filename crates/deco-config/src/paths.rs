@@ -107,7 +107,7 @@ impl ConfigPaths {
     /// Derives the standard file layout under `root`.
     ///
     /// VS Code splits these between `Code/User/*.json` and `~/.vscode/extensions`;
-    /// [`vscode`] applies that quirk, while deco keeps everything under one root.
+    /// [`ConfigPaths::vscode`] applies that quirk, while deco keeps everything under one root.
     pub fn under(root: PathBuf) -> Self {
         Self {
             settings: root.join("settings.json"),

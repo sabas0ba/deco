@@ -1,7 +1,7 @@
 //! The window, the GPU device, and the event loop.
 //!
 //! This is the only module that needs a display. Everything it draws comes from
-//! [`crate::layout`], which is testable without one, so a change to how the
+//! [`mod@crate::layout`], which is testable without one, so a change to how the
 //! editor looks is normally a change over there rather than in here.
 
 use std::path::PathBuf;

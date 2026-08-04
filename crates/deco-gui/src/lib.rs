@@ -3,7 +3,7 @@
 //! Split the same way the terminal frontend is:
 //!
 //! - [`keys`] converts window key events into chords.
-//! - [`layout`] turns a session into positioned text and rectangles. It is a
+//! - [`mod@layout`] turns a session into positioned text and rectangles. It is a
 //!   pure function of the session and the window size, so the layout is
 //!   asserted in CI on a machine with no GPU.
 //! - [`app`] owns the winit event loop and the wgpu/glyphon device work, and is

@@ -316,8 +316,17 @@ mod tests {
     use deco_core::{Position, Selection, SelectionSet};
     use std::path::PathBuf;
 
+    /// A session pinned to the Linux keymap.
+    ///
+    /// Not `Session::with_defaults()`: that builds the keymap for the host, and
+    /// a test that presses `ctrl+k` would be pressing an unbound key on macOS,
+    /// where the default is `cmd+k`.
     fn session(text: &str) -> Session {
-        let mut session = Session::with_defaults();
+        let mut session = Session::new(
+            deco_config::Settings::with_defaults(),
+            None,
+            deco_keymap::binding::Platform::Linux,
+        );
         session.open(PathBuf::from("/w/file.rs"), text);
         session
     }

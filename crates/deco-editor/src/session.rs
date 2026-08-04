@@ -72,7 +72,9 @@ impl Session {
             theme,
             document,
             view: View::default(),
-            context: ContextKeys::with_platform_defaults(),
+            // Seeded from the same platform the keymap was built for, so a
+            // `!isMac` binding cannot be chosen and then gated out.
+            context: ContextKeys::for_platform(platform),
             clipboard: Box::new(MemoryClipboard::default()),
             status: None,
             problems,

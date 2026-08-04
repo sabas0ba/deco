@@ -37,12 +37,26 @@ impl ContextKeys {
         Self::default()
     }
 
-    /// A context seeded with the platform keys VS Code always defines.
+    /// A context seeded with the platform keys VS Code always defines, for the
+    /// machine this binary is running on.
     pub fn with_platform_defaults() -> Self {
+        Self::for_platform(crate::binding::Platform::host())
+    }
+
+    /// A context seeded with the platform keys for `platform`.
+    ///
+    /// Taking the platform as an argument rather than reading `cfg!` keeps
+    /// these keys agreeing with the keymap, which is built for a platform too.
+    /// The two diverging would mean a binding whose `when` is `!isMac` never
+    /// firing even though the keymap chose its non-mac spelling — and it is
+    /// what a remote session needs, where the keymap belongs to the remote
+    /// rather than to the machine the frontend runs on.
+    pub fn for_platform(platform: crate::binding::Platform) -> Self {
+        use crate::binding::Platform;
         let mut ctx = Self::new();
-        ctx.set("isLinux", cfg!(target_os = "linux"));
-        ctx.set("isMac", cfg!(target_os = "macos"));
-        ctx.set("isWindows", cfg!(target_os = "windows"));
+        ctx.set("isLinux", platform == Platform::Linux);
+        ctx.set("isMac", platform == Platform::Mac);
+        ctx.set("isWindows", platform == Platform::Windows);
         ctx.set("isWeb", false);
         ctx
     }
@@ -1100,11 +1114,26 @@ mod tests {
 
     #[test]
     fn platform_defaults_set_exactly_one_os_key() {
-        let ctx = ContextKeys::with_platform_defaults();
-        let set: Vec<_> = ["isLinux", "isMac", "isWindows"]
-            .iter()
-            .filter(|k| truthy(ctx.get(k)))
-            .collect();
-        assert_eq!(set.len(), 1, "expected exactly one OS key to be true");
+        for platform in [
+            crate::binding::Platform::Linux,
+            crate::binding::Platform::Mac,
+            crate::binding::Platform::Windows,
+        ] {
+            let ctx = ContextKeys::for_platform(platform);
+            let set: Vec<_> = ["isLinux", "isMac", "isWindows"]
+                .iter()
+                .filter(|k| truthy(ctx.get(k)))
+                .collect();
+            assert_eq!(set.len(), 1, "{platform:?} should set exactly one OS key");
+        }
+    }
+
+    #[test]
+    fn the_platform_keys_follow_the_argument_not_the_host() {
+        // The point of taking a platform: a test, or a remote session, can ask
+        // for a platform that is not the one this binary is running on.
+        let ctx = ContextKeys::for_platform(crate::binding::Platform::Mac);
+        assert_eq!(ctx.get("isMac"), Some(&Value::Bool(true)));
+        assert_eq!(ctx.get("isLinux"), Some(&Value::Bool(false)));
     }
 }
