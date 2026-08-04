@@ -1,1 +1,180 @@
 # deco
+
+A lightweight, VS Code-compatible text editor written in Rust. No Electron.
+
+deco reads your existing `settings.json`, `keybindings.json` and colour themes
+and means the same thing by them that VS Code does. It runs in a terminal or in
+a GPU-accelerated window, and it runs VS Code extensions in a Node process that
+has had its ambient authority taken away.
+
+**Status: early.** The compatibility layers — the parts that decide whether VS
+Code compatibility is achievable at all — are implemented and tested. The editor
+is usable for editing files. Several headline features are not built yet;
+[what is not built](#what-is-not-built-yet) is explicit about which.
+
+```console
+$ cargo run -p deco -- src/main.rs          # terminal
+$ cargo run -p deco --features gui -- src/main.rs --frontend gui
+$ cargo run -p deco -- --print-config       # why isn't my setting applying?
+```
+
+## Why these choices
+
+**Rust, not Electron.** The editor is a native binary with a rope-backed text
+model. The terminal build has eight dependencies.
+
+**VS Code's own identifiers everywhere.** Commands are
+`editor.action.commentLine`, not `deco.comment`. Settings are `editor.tabSize`.
+Context keys are `editorHasSelection`. That is what makes an existing
+configuration mean the same thing here, and it is a constraint on every new
+feature rather than a shim bolted on at the edges.
+
+**Frontend-agnostic core.** Nothing below `deco-tui` / `deco-gui` knows what a
+terminal or a window is. Both frontends drive the same command set, and both
+split rendering into a pure function (testable in CI, no display needed) and a
+thin painter.
+
+## Compatibility
+
+| VS Code feature | deco |
+| --- | --- |
+| `settings.json` (JSONC, `[language]` overrides, scope layering) | Yes |
+| `keybindings.json` (chords, `when` clauses, `-command` removals, per-platform keys) | Yes |
+| Colour themes (`colors`, `tokenColors`, `semanticTokenColors`, `include` chains) | Yes |
+| Command identifiers | Yes, for implemented commands |
+| Theme extensions from the marketplace | Yes — declarative, no host process |
+| Code extensions (`main`) | Protocol and sandbox built; host not yet wired to the editor |
+| Remote SSH / containers / WSL | Not yet |
+| Language servers | Not yet |
+| `.tmTheme` (plist) themes, `-` scope exclusions | No |
+
+Settings are read from deco's own configuration directory, falling back to VS
+Code's (`Code/User/settings.json`) so an existing setup works without being
+copied. Nothing is ever written back to VS Code's directory.
+
+## Extensions, and why they are not like VS Code's
+
+A VS Code extension is arbitrary JavaScript running with your full privileges.
+It can read `~/.ssh/id_ed25519`, open a socket and spawn a shell, and nothing in
+the extension API makes that visible, let alone preventable. Installing one is
+trusting its author and every package in its `node_modules` with everything you
+can reach.
+
+deco keeps the separate Node process — extensions are JavaScript, and there is
+no way around that — but removes its ambient authority. Three independent
+layers:
+
+1. **Node's permission model** (`--permission`, Node 20+) blocks filesystem,
+   child-process and worker access below JavaScript, where an extension cannot
+   argue with it. No `--allow-child-process`, no `--allow-fs-write`.
+2. **The host bootstrap** removes the network globals and refuses to load `fs`,
+   `net`, `http`, `child_process` and friends, so a blocked call produces a
+   clear error naming its brokered replacement rather than a permission trap.
+   Node's permission model does not cover the network; this layer is why that
+   gap is closed.
+3. **The capability broker** checks every request that does get through.
+
+The broker's rules:
+
+- **Deny by default.** A capability the manifest never declared is refused
+  outright and never offered to the user. Consent cannot be manufactured at
+  request time by an extension that did not say up front what it wanted.
+- **Declaration is a ceiling, not a grant.** A declared capability still needs a
+  decision — remembered, prompted for, or refused by policy.
+- **Scopes are checked on resolved paths**, so `workspace` access cannot be
+  walked out of with `..`, and `/project-secrets` does not pass as a child of
+  `/project`.
+
+An extension declares what it wants in a `deco` section that VS Code ignores:
+
+```jsonc
+{
+  "name": "my-extension",
+  "main": "./out/extension.js",
+  "deco": {
+    "capabilities": [
+      { "capability": "readFile", "scope": { "kind": "workspace" } },
+      { "capability": "network", "host": "*.example.com" }
+    ]
+  }
+}
+```
+
+**The honest trade-off:** an extension written for VS Code declares nothing, so
+under deco it starts with no capabilities and will break wherever it reaches for
+the filesystem or the network. deco does not guess a declaration on its behalf —
+the alternative to breaking it is granting it everything silently.
+`extensions.permissions.default` chooses between `prompt` (ask once, remember),
+`deny` (right for shared machines and CI) and `allow` (declaration becomes the
+only check).
+
+Theme and grammar extensions have no `main`, never start a host process, and so
+need no capability at all.
+
+## Layout
+
+```
+crates/
+  deco-core     rope buffer, UTF-16 positions, selections, invertible edits, undo
+  deco-config   JSONC reader; default < user < remote < workspace < folder
+  deco-keymap   key parsing, when-clause engine, chord resolution, default keymap
+  deco-theme    colour themes: TextMate scopes, semantic tokens, include chains
+  deco-editor   the command set and the editor session — no terminal, no window
+  deco-ext      manifests, activation, and the capability model
+  deco-tui      terminal frontend (crossterm)
+  deco-gui      GPU frontend (winit + wgpu + glyphon), behind the `gui` feature
+  deco          the binary
+extension-host/ the sandboxed Node host and the `vscode` API shim
+```
+
+Dependencies run one way: `deco-core` depends on nothing of deco's, and the
+frontends depend on everything.
+
+## What is not built yet
+
+Named plainly, because a list of what works is only useful next to one of what
+does not:
+
+- **Remote development.** No SSH, dev-container or WSL support. The intended
+  shape is a headless `deco --server` on the remote with the frontend local, but
+  none of it is written.
+- **Language servers.** No LSP client, so no completion, diagnostics,
+  go-to-definition or rename. The commands are bound and the `when` clauses that
+  gate them are evaluated; nothing answers them.
+- **Syntax highlighting.** The theme layer resolves a style for any scope stack
+  and is tested doing so — but nothing produces scope stacks yet, because there
+  is no TextMate grammar engine or tree-sitter integration. Text renders in the
+  theme's foreground colour.
+- **The extension host is not connected.** The protocol, the capability broker,
+  the sandbox and the `vscode` shim all exist and are tested against each other;
+  the editor does not yet start a host or dispatch to one.
+- **One document at a time.** No tabs, splits, file tree, search-in-files,
+  command palette or quick open — the keybindings for them resolve to commands
+  that are not implemented yet.
+- **The GPU frontend draws text, a gutter and a caret.** Selection and
+  current-line rectangles are computed and tested but not yet painted; there is
+  no scrollbar, minimap or mouse input.
+
+## Building
+
+Rust 1.82 or newer.
+
+```console
+$ cargo test --workspace --all-features
+$ cargo clippy --workspace --all-targets --all-features -- -D warnings
+$ cd extension-host && node --test test/*.test.js
+```
+
+The GPU frontend is behind a feature flag because wgpu and winit dominate build
+time:
+
+```console
+$ cargo build --release -p deco                  # terminal only
+$ cargo build --release -p deco --features gui   # both frontends
+```
+
+On Linux the GPU build needs `libx11-dev` and `libxkbcommon-dev`.
+
+## Licence
+
+Apache-2.0. See [LICENSE](LICENSE).
