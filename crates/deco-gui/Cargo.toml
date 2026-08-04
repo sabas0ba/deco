@@ -1,0 +1,23 @@
+[package]
+name = "deco-gui"
+description = "GPU-accelerated frontend for the deco editor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+deco-config.workspace = true
+deco-core.workspace = true
+deco-editor.workspace = true
+deco-keymap.workspace = true
+deco-theme.workspace = true
+anyhow.workspace = true
+# glyphon pins the wgpu it was built against; the two share types, so this
+# version must track glyphon's rather than being chosen independently.
+glyphon = "0.12"
+wgpu = "30"
+winit = "0.30"
+pollster = "0.4"

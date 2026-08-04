@@ -1,6 +1,16 @@
 [workspace]
 resolver = "2"
-members = ["crates/deco-core", "crates/deco-config", "crates/deco-keymap", "crates/deco-theme", "crates/deco-ext", "crates/deco-editor"]
+members = [
+    "crates/deco",
+    "crates/deco-core",
+    "crates/deco-config",
+    "crates/deco-editor",
+    "crates/deco-ext",
+    "crates/deco-keymap",
+    "crates/deco-theme",
+    "crates/deco-tui",
+    "crates/deco-gui",
+]
 
 [workspace.package]
 version = "0.1.0"

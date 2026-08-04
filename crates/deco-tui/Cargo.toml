@@ -1,0 +1,22 @@
+[package]
+name = "deco-tui"
+description = "Terminal frontend for the deco editor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+deco-config.workspace = true
+deco-core.workspace = true
+deco-editor.workspace = true
+deco-keymap.workspace = true
+deco-theme.workspace = true
+anyhow.workspace = true
+crossterm.workspace = true
+unicode-width.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
