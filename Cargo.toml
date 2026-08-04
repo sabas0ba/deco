@@ -10,6 +10,7 @@ members = [
     "crates/deco-theme",
     "crates/deco-tui",
     "crates/deco-gui",
+    "crates/deco-remote",
 ]
 
 [workspace.package]

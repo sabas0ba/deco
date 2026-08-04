@@ -44,7 +44,7 @@ thin painter.
 | Command identifiers | Yes, for implemented commands |
 | Theme extensions from the marketplace | Yes — declarative, no host process |
 | Code extensions (`main`) | Protocol and sandbox built; host not yet wired to the editor |
-| Remote SSH / containers / WSL | Not yet |
+| Remote SSH / containers / WSL | Authorities and transports built; server not yet |
 | Language servers | Not yet |
 | `.tmTheme` (plist) themes, `-` scope exclusions | No |
 
@@ -121,6 +121,7 @@ crates/
   deco-theme    colour themes: TextMate scopes, semantic tokens, include chains
   deco-editor   the command set and the editor session — no terminal, no window
   deco-ext      manifests, activation, and the capability model
+  deco-remote   remote authorities, SSH/WSL/container transports, wire framing
   deco-tui      terminal frontend (crossterm)
   deco-gui      GPU frontend (winit + wgpu + glyphon), behind the `gui` feature
   deco          the binary
@@ -135,9 +136,12 @@ frontends depend on everything.
 Named plainly, because a list of what works is only useful next to one of what
 does not:
 
-- **Remote development.** No SSH, dev-container or WSL support. The intended
-  shape is a headless `deco --server` on the remote with the frontend local, but
-  none of it is written.
+- **Remote development is half built.** `deco-remote` parses VS Code's
+  `ssh-remote+host`, `wsl+Distro` and `dev-container+id` authorities and the
+  `vscode-remote://` URIs they appear in, builds the SSH, `wsl.exe` and
+  `docker exec` commands to reach them, and speaks the framed protocol the two
+  ends would use. What does not exist yet is the other end: there is no
+  `deco --server`, no provisioning it onto a remote, and no port forwarding.
 - **Language servers.** No LSP client, so no completion, diagnostics,
   go-to-definition or rename. The commands are bound and the `when` clauses that
   gate them are evaluated; nothing answers them.
