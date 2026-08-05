@@ -1,0 +1,17 @@
+[package]
+name = "xtask"
+description = "Repository tooling: the checks and the release packaging CI runs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+flate2 = "1"
+sha2 = "0.10"
+tar = "0.4"
+zip = { version = "2", default-features = false, features = ["deflate"] }

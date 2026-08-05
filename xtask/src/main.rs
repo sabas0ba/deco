@@ -1,0 +1,261 @@
+//! Repository tooling.
+//!
+//! Everything CI does is a subcommand here, so a contributor can reproduce any
+//! CI step locally with the same command CI runs. The workflows stay short
+//! enough to read, and the logic that decides what a release contains is
+//! ordinary Rust with unit tests rather than inline YAML shell that can only be
+//! exercised by pushing a tag.
+//!
+//! ```console
+//! $ cargo xtask ci                                  # everything the CI checks run
+//! $ cargo xtask dist                                # package for this machine
+//! $ cargo xtask dist --target aarch64-apple-darwin  # …or for another target
+//! ```
+
+mod dist;
+
+use std::path::{Path, PathBuf};
+
+use anyhow::{bail, Context, Result};
+use clap::{Parser, Subcommand};
+
+/// deco's repository tooling.
+#[derive(Debug, Parser)]
+#[command(name = "xtask", about, long_about = None)]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Run the checks CI runs: formatting, lints, docs and tests.
+    Ci {
+        /// Only check formatting and lints.
+        #[arg(long)]
+        lint_only: bool,
+        /// Only run the tests.
+        #[arg(long)]
+        test_only: bool,
+    },
+    /// Build and package a release artifact.
+    Dist {
+        /// Target triple to package for. Defaults to this machine's.
+        #[arg(long)]
+        target: Option<String>,
+        /// Where to write the archive.
+        #[arg(long, default_value = "dist")]
+        out: PathBuf,
+        /// Package an already-built binary instead of building one.
+        #[arg(long)]
+        skip_build: bool,
+    },
+    /// Merge the per-artifact `.sha256` files into one `SHA256SUMS`.
+    Checksums {
+        /// Directory holding the downloaded artifacts.
+        #[arg(long, default_value = "dist")]
+        dir: PathBuf,
+    },
+    /// Run the extension host's own test suite.
+    HostTest,
+}
+
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+    let root = repository_root()?;
+
+    match cli.command {
+        Command::Ci {
+            lint_only,
+            test_only,
+        } => ci(&root, lint_only, test_only),
+        Command::Dist {
+            target,
+            out,
+            skip_build,
+        } => {
+            let out = absolute(&root, &out);
+            std::fs::create_dir_all(&out).with_context(|| format!("creating {}", out.display()))?;
+            let archive = dist::run(&root, target.as_deref(), &out, skip_build)?;
+            println!("{}", archive.display());
+            Ok(())
+        }
+        Command::Checksums { dir } => {
+            let combined = dist::combine_checksums(&absolute(&root, &dir))?;
+            println!("{}", combined.display());
+            Ok(())
+        }
+        Command::HostTest => host_test(&root),
+    }
+}
+
+/// Runs the checks, in the order that fails fastest.
+fn ci(root: &Path, lint_only: bool, test_only: bool) -> Result<()> {
+    if !test_only {
+        run_cargo(root, &["fmt", "--all", "--", "--check"])?;
+        // --all-features so the GPU frontend is linted too; it is behind a
+        // feature flag and would otherwise never be checked.
+        run_cargo(
+            root,
+            &[
+                "clippy",
+                "--workspace",
+                "--all-targets",
+                "--all-features",
+                "--",
+                "-D",
+                "warnings",
+            ],
+        )?;
+        run_with_env(
+            root,
+            "cargo",
+            &["doc", "--workspace", "--no-deps", "--all-features"],
+            &[("RUSTDOCFLAGS", "-D warnings")],
+        )?;
+    }
+    if !lint_only {
+        run_cargo(root, &["test", "--workspace", "--all-features"])?;
+    }
+    Ok(())
+}
+
+/// Runs the Node extension host's tests.
+///
+/// Delegates to `npm test` rather than restating the invocation: the script in
+/// `extension-host/package.json` is the single definition of how those tests
+/// run, and CI calls the same one.
+fn host_test(root: &Path) -> Result<()> {
+    let npm = if cfg!(windows) { "npm.cmd" } else { "npm" };
+    run(&root.join("extension-host"), npm, &["test"], &[])
+}
+
+/// Runs `cargo` with `args` in `root`.
+pub fn run_cargo(root: &Path, args: &[&str]) -> Result<()> {
+    run(root, "cargo", args, &[])
+}
+
+fn run_with_env(root: &Path, program: &str, args: &[&str], env: &[(&str, &str)]) -> Result<()> {
+    run(root, program, args, env)
+}
+
+fn run(dir: &Path, program: &str, args: &[&str], env: &[(&str, &str)]) -> Result<()> {
+    eprintln!("$ {program} {}", args.join(" "));
+    let mut command = std::process::Command::new(program);
+    command.args(args).current_dir(dir);
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    let status = command
+        .status()
+        .with_context(|| format!("could not run `{program}` — is it installed?"))?;
+    if !status.success() {
+        bail!("`{program} {}` failed with {status}", args.join(" "));
+    }
+    Ok(())
+}
+
+/// Resolves `path` against `root` unless it is already absolute.
+fn absolute(root: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    }
+}
+
+/// The repository root, derived from this crate's location rather than the
+/// working directory, so `cargo xtask` works from any subdirectory.
+fn repository_root() -> Result<PathBuf> {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    manifest
+        .parent()
+        .map(Path::to_path_buf)
+        .context("could not determine the repository root")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn the_cli_definition_is_valid() {
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn dist_defaults_to_the_dist_directory_and_this_machine() {
+        let cli = Cli::parse_from(["xtask", "dist"]);
+        match cli.command {
+            Command::Dist {
+                target,
+                out,
+                skip_build,
+            } => {
+                assert_eq!(target, None);
+                assert_eq!(out, PathBuf::from("dist"));
+                assert!(!skip_build);
+            }
+            other => panic!("expected dist, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dist_accepts_a_target() {
+        let cli = Cli::parse_from(["xtask", "dist", "--target", "aarch64-apple-darwin"]);
+        match cli.command {
+            Command::Dist { target, .. } => {
+                assert_eq!(target.as_deref(), Some("aarch64-apple-darwin"))
+            }
+            other => panic!("expected dist, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ci_can_be_narrowed_to_lints_or_tests() {
+        match Cli::parse_from(["xtask", "ci", "--lint-only"]).command {
+            Command::Ci {
+                lint_only,
+                test_only,
+            } => assert!(lint_only && !test_only),
+            other => panic!("expected ci, got {other:?}"),
+        }
+        match Cli::parse_from(["xtask", "ci", "--test-only"]).command {
+            Command::Ci {
+                lint_only,
+                test_only,
+            } => assert!(!lint_only && test_only),
+            other => panic!("expected ci, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_unknown_subcommand_is_rejected() {
+        assert!(Cli::try_parse_from(["xtask", "deploy-to-production"]).is_err());
+    }
+
+    #[test]
+    fn relative_output_paths_resolve_against_the_repository_root() {
+        let root = Path::new("/repo");
+        assert_eq!(
+            absolute(root, Path::new("dist")),
+            PathBuf::from("/repo/dist")
+        );
+        assert_eq!(
+            absolute(root, Path::new("/tmp/out")),
+            PathBuf::from("/tmp/out")
+        );
+    }
+
+    #[test]
+    fn the_repository_root_holds_the_workspace_manifest() {
+        let root = repository_root().unwrap();
+        assert!(
+            root.join("Cargo.toml").exists(),
+            "{} has no Cargo.toml",
+            root.display()
+        );
+        assert!(root.join("crates").is_dir());
+    }
+}

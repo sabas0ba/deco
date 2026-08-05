@@ -11,6 +11,7 @@ members = [
     "crates/deco-tui",
     "crates/deco-gui",
     "crates/deco-remote",
+    "xtask",
 ]
 
 [workspace.package]

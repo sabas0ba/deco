@@ -1,5 +1,15 @@
 name: Release
 
+# The packaging itself lives in `cargo xtask dist`, which is unit-tested and
+# runs identically on a contributor's machine:
+#
+#     cargo xtask dist --target aarch64-apple-darwin
+#
+# so a release can be rehearsed without pushing a tag. This file only decides
+# what runs where.
+#
+# Actions are pinned to commit SHAs; see the note in ci.yml.
+
 on:
   push:
     tags: ['v*']
@@ -10,7 +20,7 @@ on:
         required: true
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -42,13 +52,14 @@ jobs:
           - target: aarch64-pc-windows-msvc
             os: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           key: release-${{ matrix.target }}
 
@@ -65,40 +76,12 @@ jobs:
           target_upper=$(echo "${{ matrix.target }}" | tr 'a-z-' 'A-Z_')
           echo "CARGO_TARGET_${target_upper}_LINKER=${{ matrix.linker }}" >> "$GITHUB_ENV"
 
-      - name: Build
-        run: cargo build --release --target ${{ matrix.target }} -p deco
+      # Builds, stages the binary with the extension host, archives (.tar.gz or
+      # .zip by target) and writes the .sha256 next to it.
+      - name: Build and package
+        run: cargo xtask dist --target ${{ matrix.target }}
 
-      - name: Package (unix)
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          name="deco-${{ matrix.target }}"
-          mkdir -p "dist/$name"
-          cp "target/${{ matrix.target }}/release/deco" "dist/$name/"
-          cp README.md LICENSE "dist/$name/"
-          # Extensions need the host at runtime, so it ships alongside.
-          cp -r extension-host "dist/$name/"
-          rm -rf "dist/$name/extension-host/test"
-          tar -C dist -czf "dist/$name.tar.gz" "$name"
-          # Checksums are generated next to the archive so a download can be
-          # verified without trusting the release page's rendering.
-          (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
-
-      - name: Package (windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $name = "deco-${{ matrix.target }}"
-          New-Item -ItemType Directory -Force -Path "dist/$name" | Out-Null
-          Copy-Item "target/${{ matrix.target }}/release/deco.exe" "dist/$name/"
-          Copy-Item README.md, LICENSE "dist/$name/"
-          Copy-Item -Recurse extension-host "dist/$name/extension-host"
-          Remove-Item -Recurse -Force "dist/$name/extension-host/test"
-          Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
-          $hash = (Get-FileHash "dist/$name.zip" -Algorithm SHA256).Hash.ToLower()
-          "$hash  $name.zip" | Out-File -Encoding ascii "dist/$name.zip.sha256"
-
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: deco-${{ matrix.target }}
           path: |
@@ -111,23 +94,28 @@ jobs:
     name: Publish release
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
         with:
-          path: artifacts
+          toolchain: stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: dist
           merge-multiple: true
 
-      - name: Collect checksums into one file
-        run: |
-          cd artifacts
-          cat *.sha256 > SHA256SUMS
-          rm -f *.sha256
-          ls -la
+      # Merges the per-artifact checksums into one sorted SHA256SUMS and drops
+      # the parts, so the release carries a single verifiable file.
+      - name: Collect checksums
+        run: cargo xtask checksums
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           draft: true
           generate_release_notes: true
-          files: artifacts/*
+          files: dist/*

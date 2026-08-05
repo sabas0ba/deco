@@ -163,11 +163,20 @@ does not:
 
 Rust 1.82 or newer.
 
+Everything CI runs is a `cargo xtask` subcommand, so any CI step can be
+reproduced locally with the command CI itself uses:
+
 ```console
-$ cargo test --workspace --all-features
-$ cargo clippy --workspace --all-targets --all-features -- -D warnings
-$ cd extension-host && node --test test/*.test.js
+$ cargo xtask ci              # fmt, clippy, rustdoc and the tests
+$ cargo xtask ci --lint-only  # …or just the checks
+$ cargo xtask host-test       # the extension host's own tests
+$ cargo xtask dist            # build and package a release for this machine
+$ cargo xtask dist --target aarch64-apple-darwin
 ```
+
+`cargo xtask dist` is the same code the release workflow runs, so a release can
+be rehearsed without pushing a tag. It writes the archive and its `.sha256` to
+`dist/`.
 
 The GPU frontend is behind a feature flag because wgpu and winit dominate build
 time:

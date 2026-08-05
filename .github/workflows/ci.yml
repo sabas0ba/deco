@@ -1,10 +1,21 @@
 name: CI
 
+# Every step here is a `cargo xtask` subcommand or a package script, so any
+# failure can be reproduced locally with the same command — see xtask/src/main.rs.
+#
+# Actions are pinned to commit SHAs rather than tags: a tag is mutable, so
+# `@v4` means "whatever that repository decides to put there", which is write
+# access to this workflow. The trailing comment records which release each SHA
+# was, and .github/dependabot.yml keeps them moving.
+
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -12,8 +23,6 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: -D warnings
-  # Keep CI logs readable and builds reproducible.
   CARGO_INCREMENTAL: 0
 
 jobs:
@@ -21,23 +30,17 @@ jobs:
     name: Format and lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
         with:
+          toolchain: stable
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: Install GUI build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libx11-dev libxkbcommon-dev
-      - run: cargo fmt --all -- --check
-      # --all-features so the GPU frontend is linted too; it is behind a
-      # feature flag and would otherwise never be checked.
-      - run: cargo clippy --workspace --all-targets --all-features
-      - name: Check documentation builds
-        run: cargo doc --workspace --no-deps --all-features
-        env:
-          RUSTDOCFLAGS: -D warnings
+      - run: cargo xtask ci --lint-only
 
   test:
     name: Test (${{ matrix.os }})
@@ -47,9 +50,11 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: Install GUI build dependencies
         if: runner.os == 'Linux'
         run: |
@@ -57,35 +62,38 @@ jobs:
           sudo apt-get install -y libx11-dev libxkbcommon-dev
       # The GUI crate's tests cover key mapping and layout, neither of which
       # needs a display, so --all-features is safe on a headless runner.
-      - run: cargo test --workspace --all-features
+      - run: cargo xtask ci --test-only
 
   msrv:
     name: Minimum supported Rust version
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Read rust-version from the workspace manifest
         id: msrv
         run: |
           version=$(grep -m1 '^rust-version' Cargo.toml | cut -d'"' -f2)
           echo "version=$version" >> "$GITHUB_OUTPUT"
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
         with:
           toolchain: ${{ steps.msrv.outputs.version }}
-      - uses: Swatinem/rust-cache@v2
-      # The terminal editor is what the MSRV promise covers; the GPU stack
-      # tracks wgpu's own, much newer, minimum.
-      - run: cargo check --workspace --exclude deco-gui
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      # The terminal editor is what the MSRV promise covers. deco-gui tracks
+      # wgpu's much newer minimum, and xtask is tooling rather than shipped
+      # code, so neither is bound by it. Invoked directly rather than through
+      # xtask because xtask itself would not build on this toolchain.
+      - run: cargo check --workspace --exclude deco-gui --exclude xtask
 
   extension-host:
     name: Extension host
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '20'
-      - run: node --test test/*.test.js
+      # The same script `cargo xtask host-test` delegates to.
+      - run: npm test
         working-directory: extension-host
 
   cross-build:
@@ -113,11 +121,12 @@ jobs:
           - target: aarch64-pc-windows-msvc
             os: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           key: ${{ matrix.target }}
       - name: Install cross-compilation tools
@@ -131,7 +140,8 @@ jobs:
         run: |
           target_upper=$(echo "${{ matrix.target }}" | tr 'a-z-' 'A-Z_')
           echo "CARGO_TARGET_${target_upper}_LINKER=${{ matrix.linker }}" >> "$GITHUB_ENV"
-      # Only the terminal binary is cross-built. The GPU frontend needs system
-      # graphics libraries for the *target*, which a cross toolchain does not
-      # supply; it is built natively in the release workflow instead.
-      - run: cargo build --release --target ${{ matrix.target }} -p deco
+      # Packaging on every PR, not just on a tag, so a break in the release
+      # path is caught here rather than during a release. Only the terminal
+      # binary is cross-built: a cross toolchain has no target-side graphics
+      # libraries for the GPU frontend.
+      - run: cargo xtask dist --target ${{ matrix.target }}

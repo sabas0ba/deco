@@ -1,0 +1,5 @@
+# `cargo xtask …` runs the repository's own tooling. Everything CI does is a
+# subcommand of it, so any CI step can be reproduced locally with the same
+# command CI runs — see xtask/src/main.rs.
+[alias]
+xtask = "run --quiet --package xtask --"
