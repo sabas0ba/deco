@@ -12,6 +12,7 @@ authors.workspace = true
 deco-config.workspace = true
 deco-core.workspace = true
 deco-keymap.workspace = true
+deco-lsp.workspace = true
 deco-theme.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
