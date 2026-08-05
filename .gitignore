@@ -1,0 +1,15 @@
+/target
+**/*.rs.bk
+Cargo.lock.orig
+
+# Node extension host
+node_modules/
+extension-host/dist/
+extension-host/*.tsbuildinfo
+
+# Local editor state / test scratch
+.deco/
+*.log
+
+# Release staging produced by `cargo xtask dist`
+/dist

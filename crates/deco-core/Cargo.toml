@@ -1,0 +1,20 @@
+[package]
+name = "deco-core"
+description = "Rope-backed text buffer, selections and edit history for the deco editor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+ropey.workspace = true
+serde = { workspace = true, optional = true }
+thiserror.workspace = true
+unicode-segmentation.workspace = true
+unicode-width.workspace = true
+
+[features]
+default = ["serde"]
+serde = ["dep:serde"]

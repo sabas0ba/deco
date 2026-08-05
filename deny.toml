@@ -1,0 +1,102 @@
+# Supply-chain policy, enforced in CI by `cargo xtask deny`.
+#
+# The threat this is aimed at is a dependency — direct or transitive — being
+# replaced with something hostile. Four things reduce that exposure, and each
+# maps to a section below:
+#
+#   advisories  a dependency has a known, published vulnerability
+#   sources     a dependency comes from somewhere other than crates.io
+#   bans        a dependency arrives that nobody chose, or arrives twice
+#   licenses    a dependency's terms changed under us
+#
+# None of this stops a compromised release of a crate we already trust. What
+# limits that is the committed Cargo.lock plus `--locked` in CI: the exact
+# versions are reviewed in a diff rather than resolved afresh on each run.
+
+[graph]
+# Only the platforms deco ships for. Without this, `cargo deny` reasons about
+# every target in existence and reports advisories for code we never build.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "aarch64-pc-windows-msvc",
+]
+all-features = true
+
+[advisories]
+# Fail on anything in the RustSec database, including unmaintained crates —
+# an unmaintained dependency is one nobody will patch when it does break.
+version = 2
+yanked = "deny"
+
+# Every entry needs a reason and an exit condition. An ignore without one is a
+# permanent hole; the point of the list is that it stays short and gets read.
+ignore = [
+    # `ttf-parser` is unmaintained (harfbuzz/ttf-parser#217). Not a
+    # vulnerability — no exploit is published — and no upgrade exists: both
+    # paths to it are inside the optional `gui` feature, and both are upstream
+    # of anything this repository controls.
+    #
+    #   glyphon -> cosmic-text -> fontdb    -> ttf-parser
+    #   winit   -> sctk-adwaita -> ab_glyph -> owned_ttf_parser -> ttf-parser
+    #
+    # The shipped terminal build does not contain it: `cargo tree -p deco -e
+    # normal` without `--features gui` has no ttf-parser node. The advisory
+    # names `skrifa` as the replacement, and cosmic-text already depends on
+    # skrifa for shaping, so the migration is upstream work in progress rather
+    # than something to fork for. Drop this entry when cosmic-text and
+    # sctk-adwaita have both moved off it.
+    { id = "RUSTSEC-2026-0192", reason = "unmaintained, GUI-only, no upgrade available upstream" },
+]
+
+[sources]
+# A dependency that is not on crates.io did not go through the one publishing
+# path this project reviews. Nothing here needs one today, and a new git
+# dependency should be a deliberate, visible decision rather than a silent
+# addition to a Cargo.toml.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+
+[licenses]
+version = 2
+# Permissive licences only, and deliberately only the ones actually in the
+# graph today rather than every licence that would be acceptable. A new
+# dependency under a licence not listed here fails the check, which is the
+# point: it forces the addition to be read rather than absorbed. A copyleft
+# dependency appearing transitively is likewise worth stopping to look at.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.9
+
+[bans]
+# Duplicate major versions are not fatal — the graphics stack legitimately
+# drags in two of several crates — but each one is more code to trust, so they
+# are surfaced rather than ignored.
+multiple-versions = "warn"
+wildcards = "deny"
+
+# Crates that must never appear. Not a substitute for review; a backstop for
+# the specific ways this project could grow an unintended dependency.
+deny = [
+    # deco brokers every network call through the capability model
+    # (crates/deco-ext). An HTTP client linked into the editor would be a way
+    # around that, so one appearing transitively should fail the build.
+    { name = "openssl-sys", reason = "deco makes no direct TLS connections; see deco-ext's capability model" },
+    { name = "openssl", reason = "deco makes no direct TLS connections; see deco-ext's capability model" },
+]
+
+# Crates that are allowed to appear more than once, with the reason.
+skip = []

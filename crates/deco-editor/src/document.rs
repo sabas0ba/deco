@@ -1,0 +1,325 @@
+//! An open document and the view onto it.
+
+use std::path::{Path, PathBuf};
+
+use deco_config::EditorSettings;
+use deco_core::{Buffer, History, LineEnding, Position, SelectionSet};
+
+/// Guesses a language id from a path, using the associations deco knows about
+/// before any extension has contributed its own.
+pub fn language_for_path(path: &Path) -> Option<&'static str> {
+    let name = path.file_name()?.to_str()?;
+    let by_name = match name {
+        "Cargo.toml" | "Cargo.lock" => Some("toml"),
+        "Makefile" | "makefile" | "GNUmakefile" => Some("makefile"),
+        "Dockerfile" => Some("dockerfile"),
+        _ => None,
+    };
+    if by_name.is_some() {
+        return by_name;
+    }
+    let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+    Some(match extension.as_str() {
+        "rs" => "rust",
+        "ts" | "mts" | "cts" => "typescript",
+        "tsx" => "typescriptreact",
+        "js" | "mjs" | "cjs" => "javascript",
+        "jsx" => "javascriptreact",
+        "py" => "python",
+        "go" => "go",
+        "c" | "h" => "c",
+        "cc" | "cpp" | "cxx" | "hpp" => "cpp",
+        "java" => "java",
+        "rb" => "ruby",
+        "sh" | "bash" | "zsh" => "shellscript",
+        "json" => "json",
+        "jsonc" => "jsonc",
+        "toml" => "toml",
+        "yaml" | "yml" => "yaml",
+        "md" | "markdown" => "markdown",
+        "html" | "htm" => "html",
+        "css" => "css",
+        "sql" => "sql",
+        "lua" => "lua",
+        "xml" => "xml",
+        _ => return None,
+    })
+}
+
+/// The token that starts a line comment in `language`, if it has one.
+pub fn line_comment_token(language: Option<&str>) -> Option<&'static str> {
+    Some(match language? {
+        "rust" | "typescript" | "typescriptreact" | "javascript" | "javascriptreact" | "go"
+        | "c" | "cpp" | "java" | "css" | "jsonc" => "//",
+        "python" | "shellscript" | "yaml" | "toml" | "ruby" | "makefile" | "dockerfile" => "#",
+        "lua" | "sql" => "--",
+        _ => return None,
+    })
+}
+
+/// An open document.
+#[derive(Debug)]
+pub struct Document {
+    /// The text.
+    pub buffer: Buffer,
+    /// Undo/redo for this document.
+    pub history: History,
+    /// Where it came from, if it was loaded from disk.
+    pub path: Option<PathBuf>,
+    /// The detected language id.
+    pub language_id: Option<String>,
+    /// Settings resolved for this document's language.
+    pub settings: EditorSettings,
+    /// Whether the buffer differs from what is on disk.
+    pub dirty: bool,
+}
+
+impl Document {
+    /// A new, empty, untitled document.
+    pub fn untitled(settings: EditorSettings) -> Self {
+        Self {
+            buffer: Buffer::new(),
+            history: History::default(),
+            path: None,
+            language_id: None,
+            settings,
+            dirty: false,
+        }
+    }
+
+    /// A document backed by `path` with contents `text`.
+    pub fn from_file(path: PathBuf, text: &str, settings: EditorSettings) -> Self {
+        let language_id = language_for_path(&path).map(str::to_owned);
+        let mut buffer = Buffer::from_text(text);
+        match settings.eol {
+            deco_config::EolSetting::Lf => buffer.set_line_ending(LineEnding::Lf),
+            deco_config::EolSetting::Crlf => buffer.set_line_ending(LineEnding::Crlf),
+            // `auto` keeps whatever the file already used.
+            deco_config::EolSetting::Auto => {}
+        }
+        Self {
+            buffer,
+            history: History::default(),
+            path: Some(path),
+            language_id,
+            settings,
+            dirty: false,
+        }
+    }
+
+    /// The name to show in the tab and status bar.
+    pub fn title(&self) -> String {
+        self.path
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Untitled".to_owned())
+    }
+
+    /// The language id, if one was detected.
+    pub fn language(&self) -> Option<&str> {
+        self.language_id.as_deref()
+    }
+
+    /// The string one indent level inserts in this document.
+    pub fn indent_unit(&self) -> String {
+        self.settings.indent_unit()
+    }
+}
+
+/// The visible window onto a document, plus this view's cursors.
+///
+/// A view is per-pane rather than per-document: the same file split across two
+/// panes has two independent cursors and scroll positions, which is why these
+/// do not live on [`Document`].
+#[derive(Debug, Clone)]
+pub struct View {
+    /// The cursors.
+    pub selections: SelectionSet,
+    /// The first visible line.
+    pub scroll_top: usize,
+    /// The leftmost visible display column.
+    pub scroll_left: usize,
+    /// Height of the text area in lines.
+    pub height: usize,
+    /// Width of the text area in columns.
+    pub width: usize,
+    /// Any chord waiting for its second keypress.
+    pub chord: deco_keymap::ChordState,
+}
+
+impl Default for View {
+    fn default() -> Self {
+        Self {
+            selections: SelectionSet::default(),
+            scroll_top: 0,
+            scroll_left: 0,
+            height: 24,
+            width: 80,
+            chord: deco_keymap::ChordState::new(),
+        }
+    }
+}
+
+impl View {
+    /// Scrolls the minimum amount needed to bring the primary cursor into view,
+    /// honouring `editor.cursorSurroundingLines`.
+    pub fn reveal_cursor(&mut self, buffer: &Buffer, settings: &EditorSettings) {
+        let line = self.selections.primary().active.line as usize;
+        let margin = settings
+            .cursor_surrounding_lines
+            .min(self.height.saturating_sub(1) / 2);
+
+        if line < self.scroll_top + margin {
+            self.scroll_top = line.saturating_sub(margin);
+        }
+        let last_visible = self.scroll_top + self.height.saturating_sub(1);
+        if line + margin > last_visible {
+            self.scroll_top = line + margin + 1 - self.height.max(1);
+        }
+
+        // Never scroll past the end unless the setting explicitly allows it.
+        if !settings.scroll_beyond_last_line {
+            let max_top = buffer.line_count().saturating_sub(self.height.max(1));
+            self.scroll_top = self.scroll_top.min(max_top);
+        }
+    }
+
+    /// The range of lines currently visible.
+    pub fn visible_lines(&self, buffer: &Buffer) -> std::ops::Range<usize> {
+        let end = (self.scroll_top + self.height).min(buffer.line_count());
+        self.scroll_top.min(end)..end
+    }
+
+    /// The primary cursor's position.
+    pub fn cursor(&self) -> Position {
+        self.selections.primary().active
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn settings() -> EditorSettings {
+        EditorSettings::default()
+    }
+
+    #[test]
+    fn detects_languages_from_extensions() {
+        assert_eq!(language_for_path(Path::new("src/main.rs")), Some("rust"));
+        assert_eq!(
+            language_for_path(Path::new("a/b.TSX")),
+            Some("typescriptreact")
+        );
+        assert_eq!(language_for_path(Path::new("x.unknown")), None);
+        assert_eq!(language_for_path(Path::new("noext")), None);
+    }
+
+    #[test]
+    fn detects_languages_from_whole_filenames() {
+        assert_eq!(language_for_path(Path::new("/w/Cargo.toml")), Some("toml"));
+        assert_eq!(
+            language_for_path(Path::new("/w/Makefile")),
+            Some("makefile")
+        );
+        assert_eq!(
+            language_for_path(Path::new("/w/Dockerfile")),
+            Some("dockerfile")
+        );
+    }
+
+    #[test]
+    fn knows_line_comment_tokens() {
+        assert_eq!(line_comment_token(Some("rust")), Some("//"));
+        assert_eq!(line_comment_token(Some("python")), Some("#"));
+        assert_eq!(line_comment_token(Some("lua")), Some("--"));
+        assert_eq!(line_comment_token(Some("html")), None);
+        assert_eq!(line_comment_token(None), None);
+    }
+
+    #[test]
+    fn a_document_from_a_file_picks_up_its_language() {
+        let doc = Document::from_file(PathBuf::from("/w/main.rs"), "fn main() {}", settings());
+        assert_eq!(doc.language(), Some("rust"));
+        assert_eq!(doc.title(), "main.rs");
+        assert!(!doc.dirty);
+    }
+
+    #[test]
+    fn an_untitled_document_is_named_untitled() {
+        assert_eq!(Document::untitled(settings()).title(), "Untitled");
+    }
+
+    #[test]
+    fn files_eol_auto_keeps_the_documents_own_line_ending() {
+        let doc = Document::from_file(PathBuf::from("/w/a.txt"), "a\r\nb\r\n", settings());
+        assert_eq!(doc.buffer.line_ending(), LineEnding::Crlf);
+        assert_eq!(doc.buffer.to_disk_string(), "a\r\nb\r\n");
+    }
+
+    #[test]
+    fn revealing_the_cursor_scrolls_the_minimum_needed() {
+        let buffer = Buffer::from_text(&"x\n".repeat(100));
+        let mut view = View {
+            height: 10,
+            ..Default::default()
+        };
+
+        view.selections = SelectionSet::caret(Position::new(50, 0));
+        view.reveal_cursor(&buffer, &settings());
+        assert_eq!(
+            view.scroll_top, 41,
+            "should scroll just enough to show line 50"
+        );
+
+        // Already visible: nothing moves.
+        let before = view.scroll_top;
+        view.selections = SelectionSet::caret(Position::new(45, 0));
+        view.reveal_cursor(&buffer, &settings());
+        assert_eq!(view.scroll_top, before);
+    }
+
+    #[test]
+    fn revealing_the_cursor_scrolls_back_up() {
+        let buffer = Buffer::from_text(&"x\n".repeat(100));
+        let mut view = View {
+            height: 10,
+            scroll_top: 50,
+            ..Default::default()
+        };
+        view.selections = SelectionSet::caret(Position::new(20, 0));
+        view.reveal_cursor(&buffer, &settings());
+        assert_eq!(view.scroll_top, 20);
+    }
+
+    #[test]
+    fn cursor_surrounding_lines_keeps_a_margin() {
+        let buffer = Buffer::from_text(&"x\n".repeat(100));
+        let mut settings = settings();
+        settings.cursor_surrounding_lines = 3;
+        let mut view = View {
+            height: 10,
+            scroll_top: 50,
+            ..Default::default()
+        };
+
+        view.selections = SelectionSet::caret(Position::new(50, 0));
+        view.reveal_cursor(&buffer, &settings);
+        assert_eq!(
+            view.scroll_top, 47,
+            "three lines of context above the cursor"
+        );
+    }
+
+    #[test]
+    fn visible_lines_never_run_past_the_buffer() {
+        let buffer = Buffer::from_text("a\nb\nc");
+        let view = View {
+            height: 50,
+            scroll_top: 0,
+            ..Default::default()
+        };
+        assert_eq!(view.visible_lines(&buffer), 0..3);
+    }
+}

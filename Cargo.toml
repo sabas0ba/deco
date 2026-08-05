@@ -1,0 +1,64 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/deco",
+    "crates/deco-core",
+    "crates/deco-config",
+    "crates/deco-editor",
+    "crates/deco-ext",
+    "crates/deco-keymap",
+    "crates/deco-theme",
+    "crates/deco-tui",
+    "crates/deco-gui",
+    "crates/deco-remote",
+    "xtask",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+license = "Apache-2.0"
+repository = "https://github.com/sabas0ba/deco"
+authors = ["deco contributors"]
+
+[workspace.dependencies]
+deco-core = { path = "crates/deco-core", version = "0.1.0" }
+deco-config = { path = "crates/deco-config", version = "0.1.0" }
+deco-keymap = { path = "crates/deco-keymap", version = "0.1.0" }
+deco-theme = { path = "crates/deco-theme", version = "0.1.0" }
+deco-ext = { path = "crates/deco-ext", version = "0.1.0" }
+deco-editor = { path = "crates/deco-editor", version = "0.1.0" }
+deco-lsp = { path = "crates/deco-lsp", version = "0.1.0" }
+deco-remote = { path = "crates/deco-remote", version = "0.1.0" }
+deco-tui = { path = "crates/deco-tui", version = "0.1.0" }
+deco-gui = { path = "crates/deco-gui", version = "0.1.0" }
+
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ropey = "1.6"
+unicode-segmentation = "1"
+unicode-width = "0.2"
+
+# Build tooling only, never linked into a shipped binary. The editor's own
+# command line is parsed by hand in crates/deco/src/cli.rs precisely so that
+# clap's subtree stays out of what users run; xtask is a different trade,
+# because it has subcommands and is only ever run by us.
+clap = { version = "4", features = ["derive"] }
+crossterm = "0.29"
+log = "0.4"
+env_logger = "0.11"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+
+# Keep incremental debug builds snappy; the editor is unusable at opt-level 0
+# for rope-heavy work, so dependencies are always optimised.
+[profile.dev.package."*"]
+opt-level = 2

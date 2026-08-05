@@ -1,0 +1,29 @@
+[package]
+name = "deco"
+description = "A lightweight, VS Code-compatible editor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+default-run = "deco"
+
+[[bin]]
+name = "deco"
+path = "src/main.rs"
+
+[dependencies]
+deco-config.workspace = true
+deco-editor.workspace = true
+deco-keymap.workspace = true
+deco-theme.workspace = true
+deco-tui.workspace = true
+deco-gui = { workspace = true, optional = true }
+anyhow.workspace = true
+
+[features]
+# The GPU frontend pulls in wgpu and winit, which dominate build time. It is
+# opt-in so that `cargo build` for the terminal editor stays fast.
+default = []
+gui = ["dep:deco-gui"]

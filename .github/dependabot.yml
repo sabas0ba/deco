@@ -1,0 +1,34 @@
+version: 2
+
+# Actions are pinned to commit SHAs, which is only safe if something keeps them
+# moving — otherwise a pin quietly becomes an unpatched dependency. Dependabot
+# rewrites both the SHA and the trailing version comment.
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: deps
+    groups:
+      # One PR for the GPU stack: wgpu, winit and glyphon have to move
+      # together, since glyphon and wgpu share types.
+      graphics:
+        patterns:
+          - wgpu
+          - winit
+          - glyphon
+
+  - package-ecosystem: npm
+    directory: /extension-host
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: deps

@@ -1,0 +1,15 @@
+{
+  "name": "@deco/extension-host",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Sandboxed Node host that runs VS Code extensions for the deco editor",
+  "license": "Apache-2.0",
+  "type": "commonjs",
+  "main": "src/bootstrap.js",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}
