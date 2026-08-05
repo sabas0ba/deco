@@ -562,7 +562,6 @@ name = "deco"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "clap",
  "deco-config",
  "deco-editor",
  "deco-gui",

@@ -21,7 +21,9 @@ $ cargo run -p deco -- --print-config       # why isn't my setting applying?
 ## Why these choices
 
 **Rust, not Electron.** The editor is a native binary with a rope-backed text
-model. The terminal build has eight dependencies.
+model. The terminal build pulls in 44 third-party crates in total, and the
+extension host pulls in no npm packages at all — see
+[Dependencies](#dependencies).
 
 **VS Code's own identifiers everywhere.** Commands are
 `editor.action.commentLine`, not `deco.comment`. Settings are `editor.tabSize`.
@@ -187,6 +189,49 @@ $ cargo build --release -p deco --features gui   # both frontends
 ```
 
 On Linux the GPU build needs `libx11-dev` and `libxkbcommon-dev`.
+
+## Dependencies
+
+An editor is a program you give your source code to, and every dependency is
+another party you are trusting to reach it. The graph is therefore kept small
+on purpose, and the size is checked rather than assumed:
+
+| Build | Third-party crates |
+| --- | --- |
+| `deco` (terminal only, what releases ship) | 44 |
+| `deco --features gui` | 155 |
+| `xtask` (build tooling, never shipped) | 49 |
+| extension host (Node) | **0** |
+
+Everything in the terminal build is a crate with a long publishing history and
+more than one maintainer's worth of use behind it: `ropey` for the text rope,
+`crossterm` for the terminal, `serde`/`serde_json`, `thiserror`/`anyhow`,
+`regex` (rust-lang), and the `unicode-*` crates from the unicode-rs project.
+There are no git dependencies and no vendored forks — every entry in
+`Cargo.lock` resolves to crates.io, and `cargo deny` fails the build if that
+stops being true.
+
+The rules that keep it that way:
+
+- **`Cargo.lock` is committed and CI passes `--locked`.** Versions change in a
+  reviewable diff instead of being re-resolved on every run, so a freshly
+  published malicious version cannot enter through a build that nobody read.
+- **`cargo deny` runs in CI** (`cargo xtask deny`) over RustSec advisories,
+  crate sources, licences and a banned list. [`deny.toml`](deny.toml) says what
+  each check is defending against, and every advisory exemption carries a
+  reason and the condition for removing it.
+- **GitHub Actions are pinned to commit SHAs**, because a tag is mutable and
+  `@v4` otherwise means write access to this repository's CI.
+- **The editor parses its own command line** ([`cli.rs`](crates/deco/src/cli.rs))
+  rather than taking a derive-based argument parser, which removes fourteen
+  crates — including a procedural macro, i.e. code that runs on the build
+  machine — in exchange for about a hundred lines.
+- **The extension host has no npm dependencies at all**, and a test fails if
+  one appears. It is the one process that deliberately loads untrusted code, so
+  nothing unreviewed belongs on the trusted side of that boundary.
+
+The GPU frontend is the outlier: `wgpu`, `winit` and `glyphon` bring 111 crates between them, which is why it is behind a feature flag and not in
+the shipped binary.
 
 ## Licence
 

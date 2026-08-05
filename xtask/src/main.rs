@@ -58,6 +58,8 @@ enum Command {
     },
     /// Run the extension host's own test suite.
     HostTest,
+    /// Check the dependency graph against the supply-chain policy in deny.toml.
+    Deny,
 }
 
 fn main() -> Result<()> {
@@ -86,7 +88,18 @@ fn main() -> Result<()> {
             Ok(())
         }
         Command::HostTest => host_test(&root),
+        Command::Deny => deny(&root),
     }
+}
+
+/// Runs `cargo deny` against deny.toml.
+///
+/// Separate from `ci` because it needs a tool that is not part of a default
+/// Rust installation, and because a newly published advisory can turn it red
+/// without anything in this repository changing.
+fn deny(root: &Path) -> Result<()> {
+    run(root, "cargo", &["deny", "--all-features", "check"], &[])
+        .context("`cargo deny` failed — install it with `cargo install cargo-deny --locked`")
 }
 
 /// Runs the checks, in the order that fails fastest.
@@ -99,6 +112,7 @@ fn ci(root: &Path, lint_only: bool, test_only: bool) -> Result<()> {
             root,
             &[
                 "clippy",
+                "--locked",
                 "--workspace",
                 "--all-targets",
                 "--all-features",
@@ -110,12 +124,18 @@ fn ci(root: &Path, lint_only: bool, test_only: bool) -> Result<()> {
         run_with_env(
             root,
             "cargo",
-            &["doc", "--workspace", "--no-deps", "--all-features"],
+            &[
+                "doc",
+                "--locked",
+                "--workspace",
+                "--no-deps",
+                "--all-features",
+            ],
             &[("RUSTDOCFLAGS", "-D warnings")],
         )?;
     }
     if !lint_only {
-        run_cargo(root, &["test", "--workspace", "--all-features"])?;
+        run_cargo(root, &["test", "--locked", "--workspace", "--all-features"])?;
     }
     Ok(())
 }

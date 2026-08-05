@@ -134,7 +134,7 @@ pub fn run(root: &Path, target: Option<&str>, out_dir: &Path, skip_build: bool) 
     };
 
     if !skip_build {
-        let mut args = vec!["build", "--release", "--package", "deco"];
+        let mut args = vec!["build", "--locked", "--release", "--package", "deco"];
         if let Some(target) = target {
             args.push("--target");
             args.push(target);

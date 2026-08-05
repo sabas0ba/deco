@@ -17,7 +17,7 @@
  * extension first would hand it an unguarded `require`.
  */
 
-const path = require('path');
+const path = require('node:path');
 const { install } = require('./sandbox');
 const { RpcConnection, PROTOCOL_VERSION } = require('./rpc');
 const { createApi } = require('./vscode');
@@ -47,7 +47,7 @@ function main() {
   // Capture the loader before the sandbox replaces it, then register `vscode`
   // so that extension `require('vscode')` resolves to the shim rather than
   // failing to resolve at all.
-  const Module = require('module');
+  const Module = require('node:module');
   const sandbox = install({ moduleRequire: require, globals: globalThis });
   const guardedLoad = Module._load;
   Module._load = function decoResolveVscode(specifier, parent, isMain) {

@@ -21,7 +21,6 @@ deco-theme.workspace = true
 deco-tui.workspace = true
 deco-gui = { workspace = true, optional = true }
 anyhow.workspace = true
-clap.workspace = true
 
 [features]
 # The GPU frontend pulls in wgpu and winit, which dominate build time. It is

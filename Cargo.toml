@@ -41,8 +41,13 @@ serde_json = "1"
 ropey = "1.6"
 unicode-segmentation = "1"
 unicode-width = "0.2"
-crossterm = "0.29"
+
+# Build tooling only, never linked into a shipped binary. The editor's own
+# command line is parsed by hand in crates/deco/src/cli.rs precisely so that
+# clap's subtree stays out of what users run; xtask is a different trade,
+# because it has subcommands and is only ever run by us.
 clap = { version = "4", features = ["derive"] }
+crossterm = "0.29"
 log = "0.4"
 env_logger = "0.11"
 

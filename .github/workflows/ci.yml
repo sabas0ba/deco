@@ -82,7 +82,7 @@ jobs:
       # wgpu's much newer minimum, and xtask is tooling rather than shipped
       # code, so neither is bound by it. Invoked directly rather than through
       # xtask because xtask itself would not build on this toolchain.
-      - run: cargo check --workspace --exclude deco-gui --exclude xtask
+      - run: cargo check --locked --workspace --exclude deco-gui --exclude xtask
 
   extension-host:
     name: Extension host
@@ -95,6 +95,21 @@ jobs:
       # The same script `cargo xtask host-test` delegates to.
       - run: npm test
         working-directory: extension-host
+
+  supply-chain:
+    name: Supply chain
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked --version ^0.18
+      # RustSec advisories, non-crates.io sources, banned crates and licences.
+      # See deny.toml for what each check is defending against.
+      - run: cargo xtask deny
 
   cross-build:
     name: Cross build ${{ matrix.target }}

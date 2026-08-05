@@ -1,48 +1,37 @@
 //! The deco editor.
 
+mod cli;
 mod config;
 
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use clap::{Parser, ValueEnum};
+
+use crate::cli::{Frontend, Outcome};
 use deco_config::paths::{Env, Layout};
 use deco_editor::Session;
 use deco_keymap::binding::Platform;
 
-/// Which frontend to run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-enum Frontend {
-    /// The terminal UI.
-    Tui,
-    /// The GPU-accelerated window.
-    Gui,
-}
-
-/// A lightweight, VS Code-compatible editor.
-#[derive(Debug, Parser)]
-#[command(name = "deco", version, about, long_about = None)]
-struct Cli {
-    /// File to open.
-    file: Option<PathBuf>,
-
-    /// Which frontend to use. Defaults to the terminal UI.
-    #[arg(long, value_enum, default_value_t = Frontend::Tui)]
-    frontend: Frontend,
-
-    /// Print the resolved configuration and exit.
-    #[arg(long)]
-    print_config: bool,
-
-    /// Ignore the user's settings.json and keybindings.json.
-    ///
-    /// The escape hatch for a configuration that stops the editor working.
-    #[arg(long)]
-    clean: bool,
-}
-
 fn main() -> Result<()> {
-    let cli = Cli::parse();
+    // Skipping the program name: `cli::parse` takes arguments only, so tests
+    // can call it with the exact list a user would type.
+    let cli = match cli::parse(std::env::args().skip(1)) {
+        Ok(Outcome::Run(cli)) => *cli,
+        Ok(Outcome::Help) => {
+            print!("{}", cli::HELP);
+            return Ok(());
+        }
+        Ok(Outcome::Version) => {
+            println!("deco {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        Err(error) => {
+            // Exit 2 rather than 1: a usage error is not the editor failing,
+            // and shell scripts distinguish the two.
+            eprintln!("deco: {error}\n\nTry `deco --help`.");
+            std::process::exit(2);
+        }
+    };
 
     let env = Env::from_process();
     let workspace = cli.file.as_deref().and_then(config::workspace_root_for);
@@ -124,54 +113,5 @@ fn print_config(session: &Session) {
     println!("keybindings         {} bindings", session.keymap.len());
     for problem in &session.problems {
         println!("problem             {problem}");
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use clap::CommandFactory;
-
-    #[test]
-    fn the_cli_definition_is_valid() {
-        Cli::command().debug_assert();
-    }
-
-    #[test]
-    fn a_bare_invocation_opens_the_terminal_frontend() {
-        let cli = Cli::parse_from(["deco"]);
-        assert_eq!(cli.frontend, Frontend::Tui);
-        assert!(cli.file.is_none());
-        assert!(!cli.clean);
-    }
-
-    #[test]
-    fn a_file_argument_is_parsed() {
-        let cli = Cli::parse_from(["deco", "src/main.rs"]);
-        assert_eq!(cli.file, Some(PathBuf::from("src/main.rs")));
-    }
-
-    #[test]
-    fn the_frontend_can_be_chosen() {
-        assert_eq!(
-            Cli::parse_from(["deco", "--frontend", "gui"]).frontend,
-            Frontend::Gui
-        );
-        assert_eq!(
-            Cli::parse_from(["deco", "--frontend", "tui"]).frontend,
-            Frontend::Tui
-        );
-    }
-
-    #[test]
-    fn an_unknown_frontend_is_rejected() {
-        assert!(Cli::try_parse_from(["deco", "--frontend", "holograph"]).is_err());
-    }
-
-    #[test]
-    fn clean_and_print_config_are_flags() {
-        let cli = Cli::parse_from(["deco", "--clean", "--print-config"]);
-        assert!(cli.clean);
-        assert!(cli.print_config);
     }
 }
