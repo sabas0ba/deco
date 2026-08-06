@@ -237,7 +237,11 @@ pub struct ServerProcess {
     stdin: Option<ChildStdin>,
     incoming: Receiver<ReaderEvent>,
     stderr: Arc<Mutex<ErrorLog>>,
-    threads: Vec<JoinHandle<()>>,
+    stdout_thread: Option<JoinHandle<()>>,
+    /// Held separately from the stdout pump so it can be waited on alone: a
+    /// finished stderr thread is the only reliable signal that everything the
+    /// server said has been collected. See [`Self::stderr_after_exit`].
+    stderr_thread: Option<JoinHandle<()>>,
 }
 
 impl ServerProcess {
@@ -313,7 +317,8 @@ impl ServerProcess {
             stdin: Some(stdin),
             incoming,
             stderr: log,
-            threads: vec![stdout_thread, stderr_thread],
+            stdout_thread: Some(stdout_thread),
+            stderr_thread: Some(stderr_thread),
         })
     }
 
@@ -357,12 +362,59 @@ impl ServerProcess {
         self.incoming.recv_timeout(timeout).ok()
     }
 
-    /// The last lines the server wrote to stderr.
+    /// The last lines the server wrote to stderr, as collected so far.
+    ///
+    /// "So far" is the important part: the pump runs on its own thread, so a
+    /// caller that has just learned the server is gone may well be reading this
+    /// before the reason arrived. Use [`Self::stderr_after_exit`] when the
+    /// output is being read *because* the server died.
     pub fn stderr_tail(&self) -> ErrorLog {
         match self.stderr.lock() {
             Ok(log) => log.clone(),
             Err(poisoned) => poisoned.into_inner().clone(),
         }
+    }
+
+    /// Everything the server wrote to stderr, once there is no more coming.
+    ///
+    /// Two waits, in order, because they answer different questions:
+    ///
+    /// 1. **Has the process exited?** Until it has, more output may still be
+    ///    produced, so there is nothing to conclude from an empty log.
+    /// 2. **Has the pump finished?** This is the part a naive implementation
+    ///    gets wrong. "Is there output yet" is a guess that wins or loses
+    ///    depending on machine speed — it passed on a developer laptop and
+    ///    failed on a CI runner. The thread returning is a *fact*: the pump ends
+    ///    when its read hits end of stream, which happens when the last handle
+    ///    to the write end of the pipe closes.
+    ///
+    /// Both are bounded, because neither event is guaranteed: a server may not
+    /// be exiting at all, and one that has exited may have left a grandchild
+    /// holding the pipe open — `rust-analyzer` running `cargo` is exactly that
+    /// shape. On a timeout this returns what has been collected, which is no
+    /// worse than not having waited.
+    pub fn stderr_after_exit(&mut self, grace: Duration) -> ErrorLog {
+        let deadline = Instant::now() + grace;
+
+        while self.child.try_wait().ok().flatten().is_none() {
+            if Instant::now() >= deadline {
+                return self.stderr_tail();
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+
+        // `is_finished` rather than `join`, so a grandchild holding the pipe
+        // open cannot turn this into an unbounded wait.
+        if let Some(thread) = &self.stderr_thread {
+            while !thread.is_finished() {
+                if Instant::now() >= deadline {
+                    return self.stderr_tail();
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        }
+
+        self.stderr_tail()
     }
 
     /// Whether the process has exited, and with what status.
@@ -413,7 +465,10 @@ impl ServerProcess {
     /// reaping the child guarantees. Joining after that is what stops threads
     /// accumulating across a session that restarts a server repeatedly.
     fn join_threads(&mut self) {
-        for thread in std::mem::take(&mut self.threads) {
+        for thread in [self.stdout_thread.take(), self.stderr_thread.take()]
+            .into_iter()
+            .flatten()
+        {
             let _ = thread.join();
         }
     }

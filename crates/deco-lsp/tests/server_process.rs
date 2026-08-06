@@ -145,6 +145,46 @@ fn a_server_that_dies_at_startup_reports_its_stderr() {
 }
 
 #[test]
+fn a_server_that_dies_after_reading_the_request_still_reports_its_stderr() {
+    // The sibling of the test above, and the one that actually caught a bug.
+    // There are two ways a server can fail at startup, and they take different
+    // code paths:
+    //
+    //   * it dies before reading — the editor's write fails with a broken pipe;
+    //   * it dies after reading — the write succeeds and the only signal is
+    //     stdout closing.
+    //
+    // Only the first was covered, and it is the one that happens to occur on a
+    // developer machine, so the second path reported "the server wrote nothing
+    // to stderr" until CI disagreed. stdout closing and stderr being collected
+    // are separate threads, and the reason has to survive that race either way.
+    let Err(error) = start("die-after-reading") else {
+        panic!("a server that never answers cannot complete a handshake");
+    };
+    let text = error.to_string();
+    assert!(
+        text.contains("then gave up"),
+        "the stderr tail must reach the error: {text}"
+    );
+}
+
+#[test]
+fn a_slow_explanation_is_still_waited_for() {
+    // The adverse-timing version: this server writes its reason 120ms after the
+    // editor has already learned that stdout closed. Any implementation that
+    // samples "is there output yet" reports nothing here; waiting for the pump
+    // thread to finish reports the reason.
+    let Err(error) = start("die-slowly") else {
+        panic!("a server that never answers cannot complete a handshake");
+    };
+    let text = error.to_string();
+    assert!(
+        text.contains("took a moment"),
+        "the reason arrived late and was dropped: {text}"
+    );
+}
+
+#[test]
 fn a_server_that_never_answers_hits_the_startup_timeout() {
     // Without this, a broken server hangs the editor at launch.
     let started = std::time::Instant::now();

@@ -46,6 +46,22 @@ fn serve(role: &str) -> i32 {
 
         match method.as_str() {
             "initialize" => {
+                if role == "die-slowly" {
+                    // Reads, stalls, *then* explains itself. Without waiting
+                    // for the stderr pump to finish, the editor reports this
+                    // server as having said nothing.
+                    std::thread::sleep(Duration::from_millis(120));
+                    eprintln!("fake server: took a moment, then gave up");
+                    return 6;
+                }
+                if role == "die-after-reading" {
+                    // Reads the frame, then leaves without answering. This is
+                    // the case where the editor's write *succeeds* and the only
+                    // signal is stdout closing — so the reason has to survive
+                    // the race between that and the stderr pump.
+                    eprintln!("fake server: read the request, then gave up");
+                    return 5;
+                }
                 if role == "garbage-on-initialize" {
                     // Not a frame at all. Exercises the protocol-error path
                     // across a real pipe.

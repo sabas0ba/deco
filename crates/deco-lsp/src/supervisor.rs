@@ -11,20 +11,29 @@
 //!
 //! and not think about ids, versions, framing or lifecycle ordering.
 //!
-//! # It never blocks the editor
+//! # It does not block the editor
 //!
-//! [`Supervisor::poll`] drains whatever has arrived and returns. Starting a
-//! server is the one exception — the protocol forbids sending anything before
-//! the `initialize` reply — and even that is bounded by
-//! [`Supervisor::start`]'s timeout, because a server that never answers must
-//! not be able to hang the editor at launch.
+//! [`Supervisor::poll`] drains whatever has arrived and returns. Two bounded
+//! exceptions, both deliberate:
+//!
+//! - **Starting a server.** The protocol forbids sending anything before the
+//!   `initialize` reply, so this genuinely has to wait — bounded by
+//!   [`Supervisor::start`]'s timeout, because a server that never answers must
+//!   not be able to hang the editor at launch.
+//! - **The frame on which a server dies**, for up to 100ms, waiting for its
+//!   stderr. See [`ServerProcess::stderr_after_exit`].
 //!
 //! # A server that misbehaves costs itself
 //!
 //! Every failure path here degrades to "this server is not running" and leaves
 //! the editor working: a crash during startup, a protocol error mid-session, a
-//! server that exits on its own. The stderr tail is attached to the report,
-//! since it is usually the only explanation available.
+//! server that exits on its own.
+//!
+//! Each of those reports the server's stderr tail, because it is usually the
+//! only explanation there is — and getting that right needs more care than it
+//! looks like, since stdout and stderr are pumped by separate threads and the
+//! news that a server is gone can beat the reason it gave.
+//! [`ServerProcess::stderr_after_exit`] is where that race is resolved.
 
 use std::path::Path;
 use std::time::Duration;
@@ -127,22 +136,33 @@ pub enum SupervisorError {
     },
 }
 
-/// Waits briefly for a dying server's last words, then renders them.
+/// Waits for a dying server's last words, then renders them.
 ///
-/// The stderr pump runs on its own thread, so at the moment a write fails the
-/// explanation may not have been collected yet. Waiting for the process to exit
-/// is the reliable signal that there is nothing more coming — and it is bounded,
-/// because a server that is broken in some other way must not stall startup.
+/// stdout and stderr are pumped by separate threads, so the news that a server
+/// is gone can beat the reason it gave. Losing that race produces the least
+/// useful error there is — "the server exited during startup; the server wrote
+/// nothing to stderr" — for a server that said precisely why.
+///
+/// [`ServerProcess::stderr_after_exit`] resolves it by waiting for the pump
+/// thread to finish rather than for output to appear, which is a fact rather
+/// than a guess.
 fn drain_stderr(process: &mut ServerProcess, grace: Duration) -> String {
-    let deadline = std::time::Instant::now() + grace;
-    while std::time::Instant::now() < deadline {
-        if process.exited().is_some() && !process.stderr_tail().is_empty() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    process.stderr_tail().summary()
+    process.stderr_after_exit(grace).summary()
 }
+
+/// How long to wait for stderr while a server is failing to start.
+///
+/// Startup is already a blocking operation, so spending a fraction of a second
+/// to turn an unexplained failure into an explained one is clearly worth it.
+const STARTUP_STDERR_GRACE: Duration = Duration::from_millis(500);
+
+/// How long to wait for stderr when a running server dies.
+///
+/// Much shorter: this happens inside [`Supervisor::poll`], which the event loop
+/// calls between keystrokes. It is the one place `poll` can block, and it does
+/// so only on the single frame where a server disappears — the alternative is
+/// telling the user their language server stopped and being unable to say why.
+const RUNNING_STDERR_GRACE: Duration = Duration::from_millis(100);
 
 /// One language server and everything the editor knows about its state.
 #[derive(Debug)]
@@ -219,17 +239,25 @@ impl Supervisor {
         while self.client.state() != State::Ready {
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             if remaining.is_zero() {
+                // No grace here: the server is still alive and simply has not
+                // answered, so whatever it has written is already collected.
+                let stderr = self.stderr_summary(Duration::ZERO);
                 return Err(SupervisorError::StartupTimeout {
                     id: self.id.clone(),
                     timeout,
-                    stderr: self.stderr_summary(),
+                    stderr,
                 });
             }
 
-            let Some(process) = self.process.as_ref() else {
-                return Err(self.startup_failed("the server stopped"));
+            // Scoped so the borrow of `self.process` ends before the body,
+            // which needs `&mut self` to drain stderr on a failure.
+            let event = {
+                let Some(process) = self.process.as_ref() else {
+                    return Err(self.startup_failed("the server stopped"));
+                };
+                process.recv_timeout(remaining)
             };
-            let Some(event) = process.recv_timeout(remaining) else {
+            let Some(event) = event else {
                 continue;
             };
 
@@ -252,16 +280,22 @@ impl Supervisor {
         Ok(())
     }
 
-    fn startup_failed(&self, reason: &str) -> SupervisorError {
+    /// Builds a startup failure, waiting for the server's stderr first.
+    ///
+    /// `&mut self` rather than `&self` precisely so it can drain: the reason is
+    /// almost always in stderr, and reporting before the pump has caught up
+    /// throws it away.
+    fn startup_failed(&mut self, reason: &str) -> SupervisorError {
+        let stderr = self.stderr_summary(STARTUP_STDERR_GRACE);
         SupervisorError::StartupFailed {
             id: self.id.clone(),
-            reason: format!("{reason}\n{}", self.stderr_summary()),
+            reason: format!("{reason}\n{stderr}"),
         }
     }
 
-    fn stderr_summary(&self) -> String {
-        match &self.process {
-            Some(process) => process.stderr_tail().summary(),
+    fn stderr_summary(&mut self, grace: Duration) -> String {
+        match self.process.as_mut() {
+            Some(process) => drain_stderr(process, grace),
             None => "the server is gone".to_owned(),
         }
     }
@@ -450,14 +484,13 @@ impl Supervisor {
 
     /// Marks the server gone and produces the update saying so.
     fn stop_with(&mut self, reason: String) -> Update {
-        let detail = match &self.process {
+        // Drained, for the same reason as at startup: stdout closing and stderr
+        // being collected are separate threads racing, and losing that race
+        // means telling the user their server stopped without saying why.
+        let detail = match self.process.as_mut() {
             Some(process) => {
-                let tail = process.stderr_tail();
-                if tail.is_empty() {
-                    reason.clone()
-                } else {
-                    format!("{reason}\n{}", tail.summary())
-                }
+                let tail = drain_stderr(process, RUNNING_STDERR_GRACE);
+                format!("{reason}\n{tail}")
             }
             None => reason.clone(),
         };
