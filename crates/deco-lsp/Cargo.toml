@@ -8,6 +8,7 @@ repository.workspace = true
 description = "Language Server Protocol client for the deco editor"
 
 [dependencies]
+deco-config.workspace = true
 deco-core = { workspace = true, features = ["serde"] }
 serde.workspace = true
 serde_json.workspace = true

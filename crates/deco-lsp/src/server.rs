@@ -265,12 +265,23 @@ impl ServerRegistry {
         }
     }
 
-    /// The servers that handle a language, in definition order.
+    /// The servers that handle a language, most preferred first.
+    ///
+    /// Anything the user configured comes before a built-in, because a built-in
+    /// is a guess and a configuration is an instruction — someone who defines
+    /// their own Rust server means it to be used instead of the bundled
+    /// `rust-analyzer` entry, not alongside it.
+    ///
+    /// Within each group the order is the order of definition, which is settings
+    /// order: user before workspace. That matters because a workspace-defined
+    /// server needs confirmation before it runs, and if it came first a cloned
+    /// repository could push the user's own working server out of the way
+    /// simply by defining a competing one.
     pub fn for_language(&self, language_id: &str) -> Vec<&ServerConfig> {
-        self.servers
-            .iter()
-            .filter(|server| server.handles(language_id))
-            .collect()
+        let matching = self.servers.iter().filter(|s| s.handles(language_id));
+        let (configured, built_in): (Vec<_>, Vec<_>) =
+            matching.partition(|s| s.trust != Trust::BuiltIn);
+        configured.into_iter().chain(built_in).collect()
     }
 
     /// A server by id.

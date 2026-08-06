@@ -47,7 +47,7 @@ thin painter.
 | Theme extensions from the marketplace | Yes — declarative, no host process |
 | Code extensions (`main`) | Protocol and sandbox built; host not yet wired to the editor |
 | Remote SSH / containers / WSL | Authorities and transports built; server not yet |
-| Language servers (LSP) | Client built; not yet attached to a running server |
+| Language servers (LSP) | Yes — diagnostics; hover/completion not wired yet |
 | `.tmTheme` (plist) themes, `-` scope exclusions | No |
 
 Settings are read from deco's own configuration directory, falling back to VS
@@ -120,7 +120,8 @@ crates/
   deco-core     rope buffer, UTF-16 positions, selections, invertible edits, undo
   deco-config   JSONC reader; default < user < remote < workspace < folder
   deco-keymap   key parsing, when-clause engine, chord resolution, default keymap
-  deco-lsp      LSP client: framing, lifecycle, capabilities, sync, diagnostics
+  deco-lsp      LSP client: framing, lifecycle, capabilities, sync, diagnostics,
+                and the supervisor that runs a server and pumps its stdio
   deco-theme    colour themes: TextMate scopes, semantic tokens, include chains
   deco-editor   the command set and the editor session — no terminal, no window
   deco-ext      manifests, activation, and the capability model
@@ -145,14 +146,13 @@ does not:
   `docker exec` commands to reach them, and speaks the framed protocol the two
   ends would use. What does not exist yet is the other end: there is no
   `deco --server`, no provisioning it onto a remote, and no port forwarding.
-- **Language servers are not started yet.** `deco-lsp` implements the client:
-  `Content-Length` framing, JSON-RPC 2.0, the `initialize`/`shutdown`/`exit`
-  lifecycle, capability and position-encoding negotiation, document
-  synchronisation with version tracking, cancellation, and the diagnostic store.
-  Diagnostics reach the editor — the status bar tallies them and `F8` walks
-  them — but nothing spawns a server process or pumps its stdio yet, so in
-  practice the list is always empty. Completion, hover, go-to-definition and
-  rename have bindings and `when` clauses but no code path to a server.
+- **Language servers run, but only diagnostics are used.** A server is started
+  for the open document's language, kept in sync, and its diagnostics appear:
+  the status bar tallies them and `F8` / `shift+F8` walk them. Completion,
+  hover, go-to-definition and rename have bindings, `when` clauses and a client
+  that can raise the requests — but nothing renders the answers, so those keys
+  do nothing yet. Changes are sent as full-document syncs; the incremental path
+  exists in `deco-lsp` but the editor does not yet track applied ranges.
 - **Syntax highlighting.** The theme layer resolves a style for any scope stack
   and is tested doing so — but nothing produces scope stacks yet, because there
   is no TextMate grammar engine or tree-sitter integration. Text renders in the
@@ -195,6 +195,42 @@ $ cargo build --release -p deco --features gui   # both frontends
 ```
 
 On Linux the GPU build needs `libx11-dev` and `libxkbcommon-dev`.
+
+## Language servers
+
+A server is configured under `deco.lsp.servers`, keyed by an id you choose:
+
+```jsonc
+{
+  "deco.lsp.enabled": true,
+  "deco.lsp.servers": {
+    "rust-analyzer": {
+      "languages": ["rust"],
+      "command": "rust-analyzer",
+      "args": [],
+      "env": { "RA_LOG": "info" },
+      "initializationOptions": { "cargo": { "features": "all" } }
+    }
+  }
+}
+```
+
+`rust-analyzer`, `typescript-language-server`, `gopls` and `pyright` are defined
+out of the box, and assume only that the program is on `PATH` — deco cannot
+install a language server, so a missing one is reported as plainly as possible
+rather than dressed up.
+
+**A server defined by a workspace is not started.** `command` is a program run
+with your privileges, and `.vscode/settings.json` arrives with a cloned
+repository — so cloning must not be enough to execute something. A definition
+from workspace or folder scope is refused, by name, in the status bar; move it
+into your own `settings.json` if you want it. This holds even when the workspace
+shadows an id you already trust: overriding `rust-analyzer` does not inherit the
+built-in entry's trust, and it does not push your own definition aside either.
+
+`command` and `args` are an argument vector. No shell is involved at any point,
+so a `command` containing `;` or `$(…)` is a program name with punctuation in it
+and nothing more.
 
 ## Dependencies
 
