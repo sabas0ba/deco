@@ -96,6 +96,26 @@ jobs:
       - run: npm test
         working-directory: extension-host
 
+  commits:
+    name: Commit messages
+    # Only on a pull request: there is nothing to compare a push to main
+    # against, and the convention was adopted partway through the history.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The whole history, so the merge base with the base branch exists.
+          # A shallow clone has no commit to diff against.
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      # The commits this pull request adds, which is exactly what it is asking
+      # to merge — not the whole history.
+      - run: cargo xtask commitlint --range "origin/${{ github.base_ref }}..HEAD"
+
   supply-chain:
     name: Supply chain
     runs-on: ubuntu-latest

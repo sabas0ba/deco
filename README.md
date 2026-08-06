@@ -196,6 +196,30 @@ $ cargo xtask dist --target aarch64-apple-darwin
 be rehearsed without pushing a tag. It writes the archive and its `.sha256` to
 `dist/`.
 
+## Commit messages
+
+[Conventional Commits](https://www.conventionalcommits.org/), checked in CI:
+
+```console
+$ cargo xtask commitlint                          # the commits this branch adds
+$ cargo xtask commitlint --range main..HEAD
+```
+
+```
+feat(lsp): complete identifiers from the language server
+fix(tui): stop a long completion label overflowing the row
+ci: check commit messages against conventional commits
+```
+
+Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`,
+`chore`, `revert`. A scope is optional and is usually a crate without its `deco-`
+prefix. `!` before the colon marks a breaking change.
+
+The checker is about eighty lines in `xtask/src/commitlint.rs` rather than a
+Node package, for the reason in [Dependencies](#dependencies). It only reads the
+commits a branch adds: the convention was adopted partway through, and rewriting
+merged commits to satisfy it would change history other people have pulled.
+
 The GPU frontend is behind a feature flag because wgpu and winit dominate build
 time:
 
