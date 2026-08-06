@@ -7,6 +7,7 @@ members = [
     "crates/deco-editor",
     "crates/deco-ext",
     "crates/deco-keymap",
+    "crates/deco-lsp",
     "crates/deco-theme",
     "crates/deco-tui",
     "crates/deco-gui",

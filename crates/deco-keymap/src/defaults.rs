@@ -113,6 +113,8 @@ pub const DEFAULT_KEYBINDINGS_JSONC: &str = r#"[
     { "key": "f12",          "command": "editor.action.revealDefinition", "when": "editorHasDefinitionProvider && editorTextFocus" },
     { "key": "shift+f12",    "command": "editor.action.goToReferences",   "when": "editorHasReferenceProvider && editorTextFocus" },
     { "key": "f2",           "command": "editor.action.rename",           "when": "editorHasRenameProvider && editorTextFocus && !editorReadonly" },
+    { "key": "f8",           "command": "editor.action.marker.next",     "when": "editorFocus" },
+    { "key": "shift+f8",     "command": "editor.action.marker.prev",     "when": "editorFocus" },
     { "key": "ctrl+.",       "mac": "cmd+.",       "command": "editor.action.quickFix", "when": "editorHasCodeActionsProvider && editorTextFocus && !editorReadonly" },
     { "key": "ctrl+space",   "mac": "ctrl+space",  "command": "editor.action.triggerSuggest", "when": "editorTextFocus && !editorReadonly" },
     { "key": "escape",       "command": "hideSuggestWidget", "when": "suggestWidgetVisible && textInputFocus" },

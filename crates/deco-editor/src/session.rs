@@ -14,6 +14,15 @@ use serde_json::json;
 use crate::commands::{self, Clipboard, Context, MemoryClipboard, Outcome};
 use crate::document::{Document, View};
 
+/// Which way [`Session::goto_marker`] walks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Direction {
+    /// Towards the end of the file.
+    Next,
+    /// Towards the start.
+    Prev,
+}
+
 /// Everything one editor window needs.
 pub struct Session {
     /// Resolved configuration, layered.
@@ -32,6 +41,12 @@ pub struct Session {
     pub clipboard: Box<dyn Clipboard>,
     /// A transient message for the status bar.
     pub status: Option<String>,
+    /// Diagnostics for the open document, newest publication wins.
+    ///
+    /// Owned by the session rather than by the LSP client so that the frontends
+    /// have one place to read from no matter where a diagnostic came from — a
+    /// language server today, an extension or a linter later.
+    pub diagnostics: Vec<deco_lsp::Diagnostic>,
     /// Problems found while loading the user's configuration, kept so the
     /// frontend can show them rather than failing to start.
     pub problems: Vec<String>,
@@ -77,6 +92,7 @@ impl Session {
             context: ContextKeys::for_platform(platform),
             clipboard: Box::new(MemoryClipboard::default()),
             status: None,
+            diagnostics: Vec::new(),
             problems,
         };
         session.refresh_context();
@@ -98,7 +114,49 @@ impl Session {
             width: self.view.width,
             ..Default::default()
         };
+        // The previous document's diagnostics point at line numbers in a file
+        // that is no longer on screen. Carrying them over would decorate the
+        // new one with the old one's errors.
+        self.diagnostics.clear();
         self.refresh_context();
+    }
+
+    /// Replaces the diagnostics for the open document.
+    ///
+    /// Replace rather than append, matching the protocol: a server publishes
+    /// the complete set for a document each time, and an empty set is how it
+    /// says the problems are fixed.
+    pub fn set_diagnostics(&mut self, diagnostics: Vec<deco_lsp::Diagnostic>) {
+        self.diagnostics = diagnostics;
+        self.refresh_context();
+    }
+
+    /// The diagnostics under a position, worst first.
+    pub fn diagnostics_at(
+        &self,
+        position: deco_core::position::Position,
+    ) -> Vec<&deco_lsp::Diagnostic> {
+        let mut hits: Vec<&deco_lsp::Diagnostic> = self
+            .diagnostics
+            .iter()
+            .filter(|d| d.contains(position))
+            .collect();
+        hits.sort_by_key(|d| d.severity);
+        hits
+    }
+
+    /// How many diagnostics of each severity the open document has.
+    pub fn diagnostic_counts(&self) -> deco_lsp::diagnostics::Counts {
+        let mut counts = deco_lsp::diagnostics::Counts::default();
+        for diagnostic in &self.diagnostics {
+            match diagnostic.severity {
+                deco_lsp::Severity::Error => counts.errors += 1,
+                deco_lsp::Severity::Warning => counts.warnings += 1,
+                deco_lsp::Severity::Information => counts.information += 1,
+                deco_lsp::Severity::Hint => counts.hints += 1,
+            }
+        }
+        counts
     }
 
     /// Installs a workspace settings layer, then re-resolves everything that
@@ -129,6 +187,11 @@ impl Session {
         self.context
             .set("editorHasMultipleSelections", selections.is_multi());
         self.context.set("dirty", self.document.dirty);
+        // VS Code's own key, so a `when` clause copied from an existing
+        // keybindings.json means the same thing here. `gotoNextError` is bound
+        // to it by default.
+        self.context
+            .set("editorHasDiagnostics", !self.diagnostics.is_empty());
         match self.document.language() {
             Some(language) => self.context.set("editorLangId", language),
             None => self.context.remove("editorLangId"),
@@ -175,18 +238,84 @@ impl Session {
 
     /// Runs a command by identifier.
     pub fn run(&mut self, command: &str, args: Option<&serde_json::Value>, now_ms: u64) -> Outcome {
-        let mut ctx = Context {
-            document: &mut self.document,
-            view: &mut self.view,
-            clipboard: self.clipboard.as_mut(),
-            now_ms,
+        // Diagnostic navigation is handled here rather than in `commands`
+        // because it needs the diagnostic list, which belongs to the session —
+        // a command sees only the document, the view and the clipboard.
+        let outcome = match command {
+            "editor.action.marker.next" | "editor.action.marker.nextInFiles" => {
+                self.goto_marker(Direction::Next)
+            }
+            "editor.action.marker.prev" | "editor.action.marker.prevInFiles" => {
+                self.goto_marker(Direction::Prev)
+            }
+            _ => {
+                let mut ctx = Context {
+                    document: &mut self.document,
+                    view: &mut self.view,
+                    clipboard: self.clipboard.as_mut(),
+                    now_ms,
+                };
+                commands::execute(&mut ctx, command, args)
+            }
         };
-        let outcome = commands::execute(&mut ctx, command, args);
+        // Shared deliberately: a command handled above must report to the
+        // status bar the same way every other one does, or F8 lands on an error
+        // and says nothing about it.
         if let Outcome::Message(message) = &outcome {
             self.status = Some(message.clone());
         }
         self.refresh_context();
         outcome
+    }
+
+    /// Moves the cursor to the next or previous diagnostic.
+    ///
+    /// Wraps around, as VS Code's does: reaching the last error and pressing F8
+    /// again returns to the first rather than doing nothing, which is what
+    /// makes it usable for walking a file repeatedly.
+    fn goto_marker(&mut self, direction: Direction) -> Outcome {
+        if self.diagnostics.is_empty() {
+            return Outcome::Message("no problems in this file".into());
+        }
+
+        // Sorted rather than taken in publication order: servers emit in
+        // whatever order analysis finished, and "next" has to mean next in the
+        // file or the cursor jumps around unpredictably.
+        let mut starts: Vec<deco_core::position::Position> =
+            self.diagnostics.iter().map(|d| d.range.start).collect();
+        starts.sort();
+        starts.dedup();
+
+        let cursor = self.view.selections.primary().active;
+        let target = match direction {
+            Direction::Next => starts
+                .iter()
+                .find(|start| **start > cursor)
+                .copied()
+                .unwrap_or(starts[0]),
+            Direction::Prev => starts
+                .iter()
+                .rev()
+                .find(|start| **start < cursor)
+                .copied()
+                .unwrap_or(starts[starts.len() - 1]),
+        };
+
+        // Clamped because a diagnostic can outlive the text it describes: the
+        // user may have deleted the offending lines before the server caught
+        // up, and an unclamped position would panic or scroll past the end.
+        let target = self.document.buffer.clamp_position(target);
+        self.view.selections = deco_core::selection::SelectionSet::single(
+            deco_core::selection::Selection::caret(target),
+        );
+        self.view
+            .reveal_cursor(&self.document.buffer, &self.document.settings);
+
+        let message = match self.diagnostics_at(target).first() {
+            Some(diagnostic) => diagnostic.label(),
+            None => format!("line {}", target.line + 1),
+        };
+        Outcome::Message(message)
     }
 
     /// Text to write to disk for the open document.
@@ -385,5 +514,176 @@ mod tests {
         s.view.selections = deco_core::SelectionSet::caret(Position::new(90, 0));
         s.resize(80, 20);
         assert!(s.view.visible_lines(&s.document.buffer).contains(&90));
+    }
+
+    /// A diagnostic spanning one line, from `character` 0 to 4.
+    fn diagnostic(line: u32, severity: deco_lsp::Severity, message: &str) -> deco_lsp::Diagnostic {
+        deco_lsp::Diagnostic {
+            range: deco_core::position::Range::new(Position::new(line, 0), Position::new(line, 4)),
+            severity,
+            code: None,
+            source: None,
+            message: message.into(),
+        }
+    }
+
+    fn with_diagnostics(lines: &[u32]) -> Session {
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), &"line\n".repeat(20));
+        s.set_diagnostics(
+            lines
+                .iter()
+                .map(|line| diagnostic(*line, deco_lsp::Severity::Error, "boom"))
+                .collect(),
+        );
+        s
+    }
+
+    fn cursor_line(s: &Session) -> u32 {
+        s.view.selections.primary().active.line
+    }
+
+    #[test]
+    fn diagnostics_set_the_context_key_vscode_uses() {
+        // So a `when` clause copied from an existing keybindings.json means the
+        // same thing here.
+        let mut s = with_diagnostics(&[]);
+        assert_eq!(s.context.get("editorHasDiagnostics"), Some(&json!(false)));
+        s.set_diagnostics(vec![diagnostic(1, deco_lsp::Severity::Error, "x")]);
+        assert_eq!(s.context.get("editorHasDiagnostics"), Some(&json!(true)));
+    }
+
+    #[test]
+    fn publishing_replaces_rather_than_appends() {
+        // The protocol is replace-per-document; appending would double every
+        // error each time the file is analysed.
+        let mut s = with_diagnostics(&[1, 2, 3]);
+        s.set_diagnostics(vec![diagnostic(9, deco_lsp::Severity::Error, "only")]);
+        assert_eq!(s.diagnostics.len(), 1);
+    }
+
+    #[test]
+    fn opening_another_file_drops_the_previous_ones_diagnostics() {
+        // They point at line numbers in a file that is no longer on screen.
+        let mut s = with_diagnostics(&[1, 2]);
+        s.open(PathBuf::from("/w/b.rs"), "fn other() {}");
+        assert!(s.diagnostics.is_empty());
+        assert_eq!(s.context.get("editorHasDiagnostics"), Some(&json!(false)));
+    }
+
+    #[test]
+    fn f8_walks_forward_through_the_problems() {
+        let mut s = with_diagnostics(&[2, 5, 9]);
+        for expected in [2, 5, 9] {
+            s.run("editor.action.marker.next", None, 0);
+            assert_eq!(cursor_line(&s), expected);
+        }
+    }
+
+    #[test]
+    fn f8_wraps_around_at_the_end() {
+        // Reaching the last error and pressing again returns to the first;
+        // doing nothing would make it useless for a second pass.
+        let mut s = with_diagnostics(&[2, 5]);
+        s.view.selections = deco_core::SelectionSet::caret(Position::new(19, 0));
+        s.run("editor.action.marker.next", None, 0);
+        assert_eq!(cursor_line(&s), 2);
+    }
+
+    #[test]
+    fn shift_f8_walks_backwards_and_wraps() {
+        let mut s = with_diagnostics(&[2, 5, 9]);
+        s.view.selections = deco_core::SelectionSet::caret(Position::new(9, 0));
+        s.run("editor.action.marker.prev", None, 0);
+        assert_eq!(cursor_line(&s), 5);
+        s.run("editor.action.marker.prev", None, 0);
+        assert_eq!(cursor_line(&s), 2);
+        s.run("editor.action.marker.prev", None, 0);
+        assert_eq!(cursor_line(&s), 9, "wraps to the last");
+    }
+
+    #[test]
+    fn navigation_visits_problems_in_file_order_not_publication_order() {
+        // Servers emit in whatever order analysis finished.
+        let mut s = with_diagnostics(&[]);
+        s.set_diagnostics(vec![
+            diagnostic(9, deco_lsp::Severity::Error, "third"),
+            diagnostic(2, deco_lsp::Severity::Error, "first"),
+            diagnostic(5, deco_lsp::Severity::Error, "second"),
+        ]);
+        s.run("editor.action.marker.next", None, 0);
+        assert_eq!(cursor_line(&s), 2);
+    }
+
+    #[test]
+    fn navigation_reports_the_diagnostic_it_landed_on() {
+        let mut s = with_diagnostics(&[]);
+        s.set_diagnostics(vec![deco_lsp::Diagnostic {
+            source: Some("rustc".into()),
+            code: Some("E0308".into()),
+            ..diagnostic(3, deco_lsp::Severity::Error, "mismatched types")
+        }]);
+        s.run("editor.action.marker.next", None, 0);
+        assert_eq!(s.status.as_deref(), Some("rustc[E0308]: mismatched types"));
+    }
+
+    #[test]
+    fn navigation_says_so_when_there_is_nothing_to_visit() {
+        let mut s = with_diagnostics(&[]);
+        let before = cursor_line(&s);
+        s.run("editor.action.marker.next", None, 0);
+        assert_eq!(cursor_line(&s), before, "the cursor must not move");
+        assert_eq!(s.status.as_deref(), Some("no problems in this file"));
+    }
+
+    #[test]
+    fn a_diagnostic_past_the_end_of_the_file_is_clamped() {
+        // A server can be a moment behind: the user deletes the offending lines
+        // before it recomputes, and its ranges outlive the text.
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "one\ntwo\n");
+        s.set_diagnostics(vec![diagnostic(900, deco_lsp::Severity::Error, "stale")]);
+        s.run("editor.action.marker.next", None, 0);
+        assert!(
+            cursor_line(&s) <= 2,
+            "the cursor landed outside the document: {}",
+            cursor_line(&s)
+        );
+    }
+
+    #[test]
+    fn the_diagnostics_under_the_cursor_come_back_worst_first() {
+        let mut s = with_diagnostics(&[]);
+        s.set_diagnostics(vec![
+            diagnostic(3, deco_lsp::Severity::Hint, "hint"),
+            diagnostic(3, deco_lsp::Severity::Error, "error"),
+            diagnostic(8, deco_lsp::Severity::Error, "elsewhere"),
+        ]);
+        let hits = s.diagnostics_at(Position::new(3, 1));
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].message, "error");
+    }
+
+    #[test]
+    fn counts_tally_by_severity() {
+        let mut s = with_diagnostics(&[]);
+        s.set_diagnostics(vec![
+            diagnostic(1, deco_lsp::Severity::Error, "a"),
+            diagnostic(2, deco_lsp::Severity::Error, "b"),
+            diagnostic(3, deco_lsp::Severity::Warning, "c"),
+            diagnostic(4, deco_lsp::Severity::Hint, "d"),
+        ]);
+        let counts = s.diagnostic_counts();
+        assert_eq!(counts.errors, 2);
+        assert_eq!(counts.warnings, 1);
+        assert_eq!(counts.hints, 1);
+        assert_eq!(counts.total(), 4);
+    }
+
+    #[test]
+    fn f8_is_bound_by_default() {
+        let mut s = with_diagnostics(&[4]);
+        press(&mut s, "f8");
+        assert_eq!(cursor_line(&s), 4);
     }
 }

@@ -269,6 +269,21 @@ fn line_spans(
 }
 
 /// The status bar.
+/// The error and warning tallies, or nothing at all when the file is clean.
+///
+/// `×`/`⚠` rather than VS Code's icon font, and omitted entirely at zero: a
+/// permanent `0 errors` is noise, and the absence of the marker is the signal.
+fn problem_summary(session: &Session) -> String {
+    let counts = session.diagnostic_counts();
+    if counts.is_empty() {
+        return String::new();
+    }
+    // Information and hints are folded into neither tally. They are not
+    // problems the user has to act on, and a status bar has room for the two
+    // that are.
+    format!("×{} ⚠{}  ", counts.errors, counts.warnings)
+}
+
 fn status_bar(session: &Session, width: usize, palette: &Palette) -> Row {
     let cursor = session.view.cursor();
     let dirty = if session.document.dirty { "*" } else { "" };
@@ -282,7 +297,8 @@ fn status_bar(session: &Session, width: usize, palette: &Palette) -> Row {
         },
     };
     let right = format!(
-        " {}  Ln {}, Col {} ",
+        " {}{}  Ln {}, Col {} ",
+        problem_summary(session),
         language,
         cursor.line + 1,
         cursor.character + 1
@@ -528,5 +544,93 @@ mod tests {
         let gutter = gutter_width(&session);
         let frame = render(&session, gutter + 5, 3);
         assert_eq!(columns(&frame.rows[0].plain()), gutter + 5);
+    }
+
+    /// The status bar's text, joined across spans.
+    fn status_text(session: &Session) -> String {
+        let frame = render(session, 80, 10);
+        frame
+            .rows
+            .last()
+            .unwrap()
+            .spans
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect()
+    }
+
+    fn problem(line: u32, severity: deco_lsp::Severity) -> deco_lsp::Diagnostic {
+        deco_lsp::Diagnostic {
+            range: deco_core::position::Range::new(
+                deco_core::Position::new(line, 0),
+                deco_core::Position::new(line, 3),
+            ),
+            severity,
+            code: None,
+            source: None,
+            message: "boom".into(),
+        }
+    }
+
+    #[test]
+    fn a_clean_file_shows_no_problem_counters() {
+        // A permanent `0 errors` is noise; the absence of the marker is the
+        // signal.
+        let session = session("fn main() {}\n");
+        let text = status_text(&session);
+        assert!(
+            !text.contains('\u{d7}'),
+            "unexpected error marker: {text:?}"
+        );
+        assert!(
+            !text.contains('\u{26a0}'),
+            "unexpected warning marker: {text:?}"
+        );
+    }
+
+    #[test]
+    fn the_status_bar_tallies_errors_and_warnings() {
+        let mut session = session("fn main() {}\n");
+        session.set_diagnostics(vec![
+            problem(0, deco_lsp::Severity::Error),
+            problem(0, deco_lsp::Severity::Error),
+            problem(0, deco_lsp::Severity::Warning),
+        ]);
+        let text = status_text(&session);
+        assert!(text.contains("\u{d7}2"), "expected two errors in {text:?}");
+        assert!(
+            text.contains("\u{26a0}1"),
+            "expected one warning in {text:?}"
+        );
+    }
+
+    #[test]
+    fn hints_do_not_appear_in_the_tally() {
+        // They are not problems the user has to act on, and the bar has room
+        // for the two that are.
+        let mut session = session("fn main() {}\n");
+        session.set_diagnostics(vec![problem(0, deco_lsp::Severity::Hint)]);
+        let text = status_text(&session);
+        assert!(text.contains("\u{d7}0 \u{26a0}0"), "{text:?}");
+    }
+
+    #[test]
+    fn the_status_bar_still_fills_the_width_with_problems_shown() {
+        // The counters lengthen the right-hand side; the row must still be
+        // exactly as wide as the terminal or the previous frame shows through.
+        let mut session = session("fn main() {}\n");
+        session.set_diagnostics(vec![problem(0, deco_lsp::Severity::Error)]);
+        for width in [20, 40, 80] {
+            let frame = render(&session, width, 10);
+            let row: String = frame
+                .rows
+                .last()
+                .unwrap()
+                .spans
+                .iter()
+                .map(|s| s.text.as_str())
+                .collect();
+            assert_eq!(row.chars().count(), width, "width {width}: {row:?}");
+        }
     }
 }
