@@ -92,7 +92,7 @@ pub fn gutter_width(session: &Session) -> usize {
 
 /// Renders `session` into a `width` x `height` frame.
 pub fn render(session: &Session, width: usize, height: usize) -> Frame {
-    render_with_hover(session, width, height, None)
+    render_with_overlays(session, width, height, None, None)
 }
 
 /// Renders, optionally overlaying a hover box near the cursor.
@@ -106,9 +106,29 @@ pub fn render_with_hover(
     height: usize,
     hover: Option<&deco_lsp::Hover>,
 ) -> Frame {
+    render_with_overlays(session, width, height, hover, None)
+}
+
+/// Renders with both overlays.
+///
+/// Only one is ever drawn: a completion list and a hover box would occupy the
+/// same space beside the cursor, and the list is the one the user is interacting
+/// with. `Suggest` therefore wins.
+pub fn render_with_overlays(
+    session: &Session,
+    width: usize,
+    height: usize,
+    hover: Option<&deco_lsp::Hover>,
+    suggest: Option<&crate::suggest::Suggest>,
+) -> Frame {
     let mut frame = render_text(session, width, height);
-    if let Some(hover) = hover {
-        overlay_hover(&mut frame, session, width, height, hover);
+    match suggest {
+        Some(suggest) => overlay_suggest(&mut frame, session, width, height, suggest),
+        None => {
+            if let Some(hover) = hover {
+                overlay_hover(&mut frame, session, width, height, hover);
+            }
+        }
     }
     frame
 }
@@ -522,6 +542,116 @@ fn trimmed(mut lines: Vec<String>, max_lines: usize) -> Vec<String> {
         lines.pop();
     }
     lines
+}
+
+/// Draws the completion list over the text, anchored to the cursor.
+///
+/// Shares the placement rule with the hover box — below the cursor, above when
+/// it will not fit, never over the status bar — so the two feel like the same
+/// widget in different clothes. The selected row is inverted rather than marked
+/// with a character, because a marker column costs width the labels need.
+fn overlay_suggest(
+    frame: &mut Frame,
+    session: &Session,
+    width: usize,
+    height: usize,
+    suggest: &crate::suggest::Suggest,
+) {
+    let palette = Palette::from(session);
+    let text_height = height.saturating_sub(1);
+    let rows = suggest.rows();
+    if rows.is_empty() || text_height < 2 || width < 10 {
+        return;
+    }
+
+    // One column of padding either side. No border: the list is taller than a
+    // hover box and a frame around it would cost two more rows of the file.
+    let inner = width.saturating_sub(2).max(1);
+    let entries: Vec<String> = rows
+        .iter()
+        .map(|(marker, label, detail)| -> String {
+            let head = format!("{marker} {label}");
+            match detail {
+                Some(detail) => {
+                    // The detail is trimmed first, so a long signature loses its
+                    // tail rather than pushing the label off the row: the label
+                    // is what is being chosen between.
+                    let room = inner.saturating_sub(columns(&head) + 2);
+                    if room >= 4 {
+                        format!("{head}  {}", truncate_to(detail, room))
+                    } else {
+                        head
+                    }
+                }
+                None => head,
+            }
+        })
+        // Trimming the detail is not enough on its own: a label longer than the
+        // terminal still overflows, and an unbounded row breaks every row after
+        // it because the padding is computed from a saturating subtraction.
+        .map(|entry| truncate_to(&entry, inner))
+        .collect();
+
+    let box_width = entries
+        .iter()
+        .map(|entry| columns(entry))
+        .max()
+        .unwrap_or(0)
+        + 2;
+    let box_height = entries.len();
+
+    let cursor_row = frame
+        .cursor
+        .map(|(_, y)| y as usize)
+        .unwrap_or(text_height / 2);
+    let top = if cursor_row + 1 + box_height <= text_height {
+        cursor_row + 1
+    } else {
+        cursor_row.saturating_sub(box_height)
+    };
+
+    for (index, row) in (top..(top + box_height).min(text_height)).enumerate() {
+        let entry = &entries[index];
+        let pad = box_width.saturating_sub(columns(entry) + 2);
+        let text = format!(" {entry}{} ", " ".repeat(pad));
+        // Inverted for the selection, which reads as "this one" without a
+        // character of its own.
+        let (fg, bg) = if index == suggest.selected_row() {
+            (palette.status_bg, palette.status_fg)
+        } else {
+            (palette.status_fg, palette.status_bg)
+        };
+        frame.rows[row] = Row {
+            spans: vec![
+                Span { text, fg, bg },
+                Span {
+                    text: " ".repeat(width.saturating_sub(box_width)),
+                    fg: palette.bg,
+                    bg: palette.bg,
+                },
+            ],
+        };
+    }
+}
+
+/// A string's width in terminal columns.
+fn columns(text: &str) -> usize {
+    text.chars().map(|c| c.width().unwrap_or(1)).sum()
+}
+
+/// Cuts `text` to at most `width` columns, on a character boundary.
+fn truncate_to(text: &str, width: usize) -> String {
+    let mut out = String::new();
+    let mut used = 0;
+    for c in text.chars() {
+        let w = c.width().unwrap_or(1);
+        if used + w > width {
+            break;
+        }
+        out.push(c);
+        used += w;
+    }
+    out
 }
 
 #[cfg(test)]
@@ -980,5 +1110,155 @@ mod tests {
     fn wrapping_drops_a_leading_blank_line_and_any_trailing_ones() {
         // A gap above the top border, or below the last line, is just a hole.
         assert_eq!(wrap("\n\nx\n\n\n", 10, 10), vec!["x"]);
+    }
+
+    fn completion(labels: &[&str]) -> crate::suggest::Suggest {
+        let items = labels
+            .iter()
+            .map(|label| deco_lsp::requests::CompletionItem {
+                label: (*label).to_owned(),
+                kind: deco_lsp::requests::CompletionKind::Function,
+                detail: None,
+                insert: (*label).to_owned(),
+                replace: None,
+                filter: (*label).to_owned(),
+                sort: None,
+                preselect: false,
+                was_snippet: false,
+            })
+            .collect();
+        crate::suggest::Suggest::new(items, deco_core::Position::ZERO, false)
+    }
+
+    #[test]
+    fn a_completion_list_is_drawn_below_the_cursor() {
+        let session = session("fn main() {}\n");
+        let frame =
+            render_with_overlays(&session, 40, 10, None, Some(&completion(&["push", "pop"])));
+        let rows: Vec<String> = frame.rows.iter().map(Row::plain).collect();
+        assert!(rows[1].contains("pop"), "{:?}", rows[1]);
+        assert!(rows[2].contains("push"), "{:?}", rows[2]);
+    }
+
+    #[test]
+    fn the_completion_list_wins_over_a_hover() {
+        // Both want the space beside the cursor, and the list is what the user
+        // is interacting with.
+        let session = session("fn main() {}\n");
+        let frame = render_with_overlays(
+            &session,
+            40,
+            10,
+            Some(&hover("documentation")),
+            Some(&completion(&["push"])),
+        );
+        let all: String = frame.rows.iter().map(Row::plain).collect();
+        assert!(all.contains("push"));
+        assert!(!all.contains("documentation"), "the hover was also drawn");
+    }
+
+    #[test]
+    fn the_selected_row_is_inverted_rather_than_marked() {
+        // A marker column would cost width the labels need.
+        let session = session("fn main() {}\n");
+        let mut suggest = completion(&["a", "b"]);
+        suggest.next();
+        let frame = render_with_overlays(&session, 40, 10, None, Some(&suggest));
+
+        let selected = &frame.rows[2].spans[0];
+        let unselected = &frame.rows[1].spans[0];
+        assert_eq!(
+            selected.fg, unselected.bg,
+            "the selected row swaps foreground and background"
+        );
+        assert_eq!(selected.bg, unselected.fg);
+    }
+
+    #[test]
+    fn a_completion_list_never_exceeds_the_terminal_width() {
+        for width in [14, 30, 80] {
+            let session = session("fn main() {}\n");
+            let frame = render_with_overlays(
+                &session,
+                width,
+                12,
+                None,
+                Some(&completion(&["a_very_long_completion_label_indeed"])),
+            );
+            for (index, row) in frame.rows.iter().enumerate() {
+                assert_eq!(columns(&row.plain()), width, "row {index} at width {width}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_long_detail_is_trimmed_before_the_label() {
+        // The label is what is being chosen between, so it keeps its room.
+        let session = session("fn main() {}\n");
+        let mut suggest = completion(&["push"]);
+        // Rebuild with a detail long enough to need cutting.
+        suggest = {
+            let mut items: Vec<_> = suggest
+                .visible()
+                .into_iter()
+                .map(|shown| shown.item.clone())
+                .collect();
+            items[0].detail = Some("fn(&mut self, value: T) -> Result<(), OverflowError>".into());
+            crate::suggest::Suggest::new(items, deco_core::Position::ZERO, false)
+        };
+
+        let frame = render_with_overlays(&session, 30, 10, None, Some(&suggest));
+        let row = frame.rows[1].plain();
+        assert!(row.contains("push"), "the label survived: {row:?}");
+        assert_eq!(columns(&row), 30);
+    }
+
+    #[test]
+    fn a_completion_list_goes_above_the_cursor_when_it_would_not_fit_below() {
+        let mut session = session(&"line\n".repeat(20));
+        session.resize(40, 9);
+        session.view.selections = deco_core::SelectionSet::caret(deco_core::Position::new(8, 0));
+        session
+            .view
+            .reveal_cursor(&session.document.buffer, &session.document.settings);
+
+        let frame = render_with_overlays(
+            &session,
+            40,
+            10,
+            None,
+            Some(&completion(&["a", "b", "c", "d", "e", "f"])),
+        );
+        let cursor_row = frame.cursor.expect("on screen").1 as usize;
+        let first = frame
+            .rows
+            .iter()
+            .position(|row| row.plain().contains(" f a"))
+            .expect("a row was drawn");
+        assert!(
+            first < cursor_row,
+            "list at {first}, cursor at {cursor_row}"
+        );
+    }
+
+    #[test]
+    fn an_empty_completion_list_draws_nothing() {
+        let session = session("fn main() {}\n");
+        let plain_before: Vec<String> = render(&session, 40, 10)
+            .rows
+            .iter()
+            .map(Row::plain)
+            .collect();
+        let frame = render_with_overlays(&session, 40, 10, None, Some(&completion(&[])));
+        let plain_after: Vec<String> = frame.rows.iter().map(Row::plain).collect();
+        assert_eq!(plain_before, plain_after);
+    }
+
+    #[test]
+    fn a_terminal_too_narrow_for_the_list_draws_none() {
+        let session = session("fn main() {}\n");
+        let frame = render_with_overlays(&session, 8, 10, None, Some(&completion(&["push"])));
+        let all: String = frame.rows.iter().map(Row::plain).collect();
+        assert!(!all.contains("push"));
     }
 }

@@ -110,6 +110,16 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
                 // Elapsed milliseconds is the monotonic clock the editor uses
                 // for undo grouping.
                 let now_ms = started.elapsed().as_millis() as u64;
+                // Remembered before the chord runs: a printable key both inserts
+                // itself and narrows an open list, and afterwards there is no way
+                // to tell which key it was.
+                let typed = printable(&chord);
+                let was_backspace = chord.key
+                    == deco_keymap::keys::Key::Named(deco_keymap::keys::NamedKey::Backspace)
+                    && !chord.modifiers.ctrl
+                    && !chord.modifiers.alt
+                    && !chord.modifiers.meta;
+
                 match session.handle_chord(chord, now_ms) {
                     Outcome::Quit => break,
                     Outcome::Save => {
@@ -123,11 +133,47 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
                         "editor.action.showHover" => lsp.request_hover(session),
                         "editor.action.revealDefinition" => lsp.request_definition(session),
                         "closeHoverWidget" => lsp.dismiss_hover(),
+                        "editor.action.triggerSuggest" => lsp.request_completion(
+                            session,
+                            deco_lsp::requests::CompletionTrigger::Invoked,
+                        ),
+                        "hideSuggestWidget" => lsp.dismiss_suggest(),
+                        "selectNextSuggestion" => {
+                            lsp.select_next();
+                        }
+                        "selectPrevSuggestion" => {
+                            lsp.select_previous();
+                        }
+                        "acceptSelectedSuggestion" => {
+                            lsp.accept(session, now_ms);
+                        }
                         other => {
                             session.status = Some(format!("{other} is not implemented yet"));
                         }
                     },
                     _ => {}
+                }
+
+                // A printable key both typed itself and narrowed the list; a
+                // backspace both deleted and widened it. Both after the command,
+                // so the list and the document agree about what has been typed.
+                if let Some(c) = typed {
+                    if !lsp.typed(session, c) {
+                        // No list was open, so this may be a trigger character —
+                        // `.` or `::` — that should open one.
+                        if lsp
+                            .completion_triggers()
+                            .iter()
+                            .any(|trigger| trigger.ends_with(c))
+                        {
+                            lsp.request_completion(
+                                session,
+                                deco_lsp::requests::CompletionTrigger::Character(c.to_string()),
+                            );
+                        }
+                    }
+                } else if was_backspace {
+                    lsp.backspaced(session);
                 }
                 // After the command, not before: the server has to be told
                 // about the text as it now is.
@@ -149,6 +195,27 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
     // moment to stop does so while the editor still looks alive.
     lsp.detach();
     Ok(())
+}
+
+/// The character a chord types, if it types one.
+///
+/// Mirrors the rule in `Session::handle_chord`: an unmodified printable key
+/// inserts itself, and anything with Ctrl, Alt or Meta was reaching for a
+/// command. Duplicated deliberately rather than exposed from the core — the core
+/// decides what a key *does*, and this only needs to know what was typed so the
+/// completion list can be narrowed by the same character.
+fn printable(chord: &deco_keymap::keys::Chord) -> Option<char> {
+    use deco_keymap::keys::Key;
+    match chord.key {
+        Key::Char(c) if !chord.modifiers.ctrl && !chord.modifiers.alt && !chord.modifiers.meta => {
+            if chord.modifiers.shift {
+                c.to_uppercase().next()
+            } else {
+                Some(c)
+            }
+        }
+        _ => None,
+    }
 }
 
 /// How long to wait on the terminal before checking the language server.

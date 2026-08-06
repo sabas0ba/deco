@@ -13,6 +13,7 @@ pub mod app;
 pub mod keys;
 pub mod lsp;
 pub mod render;
+pub mod suggest;
 
 pub use app::run;
 pub use render::{render, Frame, Row, Span};

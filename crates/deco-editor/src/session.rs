@@ -14,6 +14,11 @@ use serde_json::json;
 use crate::commands::{self, Clipboard, Context, MemoryClipboard, Outcome};
 use crate::document::{Document, View};
 
+/// The length of `text` in UTF-16 code units, which is how positions count.
+fn utf16_len(text: &str) -> u32 {
+    text.encode_utf16().count() as u32
+}
+
 /// Which way [`Session::goto_marker`] walks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Direction {
@@ -254,6 +259,11 @@ impl Session {
             "editor.action.showHover"
             | "editor.action.revealDefinition"
             | "editor.action.goToReferences"
+            | "editor.action.triggerSuggest"
+            | "acceptSelectedSuggestion"
+            | "selectNextSuggestion"
+            | "selectPrevSuggestion"
+            | "hideSuggestWidget"
             | "closeHoverWidget" => Outcome::Frontend(command.to_owned()),
             _ => {
                 let mut ctx = Context {
@@ -323,6 +333,64 @@ impl Session {
             None => format!("line {}", target.line + 1),
         };
         Outcome::Message(message)
+    }
+
+    /// Replaces a range with `text`, leaving the cursor after it.
+    ///
+    /// The seam a frontend needs to apply an edit it computed itself — accepting
+    /// a completion, applying a formatting result — rather than through a
+    /// command. It goes through the same transaction and history machinery as
+    /// every other edit, so the result is one undo step and the document's dirty
+    /// flag is correct.
+    ///
+    /// `Discrete` rather than typed: accepting a completion is one decision, and
+    /// coalescing it with the characters typed just before would make a single
+    /// undo throw away the word as well as the completion.
+    pub fn replace_range(
+        &mut self,
+        range: deco_core::position::Range,
+        text: &str,
+        now_ms: u64,
+    ) -> deco_core::position::Position {
+        use deco_core::{Change, EditKind, Selection, SelectionSet, Transaction};
+
+        let before = self.view.selections.clone();
+        // Clamped because the range may have been computed against text the user
+        // has since changed — a completion answered while they kept typing.
+        let range = deco_core::position::Range::new(
+            self.document.buffer.clamp_position(range.start),
+            self.document.buffer.clamp_position(range.end),
+        );
+
+        let transaction = Transaction::single(Change::replace(range, text.to_owned()));
+        let inverse = self.document.buffer.apply(&transaction);
+
+        // Where the inserted text ends, which is where a caret belongs after an
+        // insertion — computed from the text rather than by re-searching the
+        // buffer, so it is right even when the text contains newlines.
+        let end = match text.rfind('\n') {
+            Some(last_break) => {
+                let lines_added = text.matches('\n').count() as u32;
+                let tail = &text[last_break + 1..];
+                deco_core::position::Position::new(range.start.line + lines_added, utf16_len(tail))
+            }
+            None => deco_core::position::Position::new(
+                range.start.line,
+                range.start.character + utf16_len(text),
+            ),
+        };
+        let end = self.document.buffer.clamp_position(end);
+
+        let after = SelectionSet::single(Selection::caret(end));
+        self.view.selections = after.clone();
+        self.document
+            .history
+            .record(inverse, EditKind::Discrete, before, after, now_ms);
+        self.document.dirty = true;
+        self.view
+            .reveal_cursor(&self.document.buffer, &self.document.settings);
+        self.refresh_context();
+        end
     }
 
     /// Text to write to disk for the open document.
@@ -692,5 +760,91 @@ mod tests {
         let mut s = with_diagnostics(&[4]);
         press(&mut s, "f8");
         assert_eq!(cursor_line(&s), 4);
+    }
+
+    #[test]
+    fn replacing_a_range_leaves_the_cursor_after_the_text() {
+        // Where a caret belongs after accepting a completion.
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "let x = Has;\n");
+        let end = s.replace_range(
+            deco_core::position::Range::new(Position::new(0, 8), Position::new(0, 11)),
+            "HashMap",
+            0,
+        );
+        assert_eq!(
+            s.document.buffer.line_content(0).unwrap(),
+            "let x = HashMap;"
+        );
+        assert_eq!(end, Position::new(0, 15));
+        assert_eq!(s.view.selections.primary().active, end);
+        assert!(s.document.dirty);
+    }
+
+    #[test]
+    fn replacing_a_range_is_one_undo_step() {
+        // Accepting a completion is one decision; coalescing it with the word
+        // typed before would make a single undo throw both away.
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "Has\n");
+        s.replace_range(
+            deco_core::position::Range::new(Position::new(0, 0), Position::new(0, 3)),
+            "HashMap",
+            0,
+        );
+        s.run("undo", None, 0);
+        assert_eq!(s.document.buffer.line_content(0).unwrap(), "Has");
+    }
+
+    #[test]
+    fn replacing_with_multiline_text_puts_the_cursor_on_the_last_line() {
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "x\n");
+        let end = s.replace_range(
+            deco_core::position::Range::new(Position::new(0, 0), Position::new(0, 1)),
+            "if a {\n    b\n}",
+            0,
+        );
+        assert_eq!(end, Position::new(2, 1));
+        assert_eq!(s.view.selections.primary().active, end);
+    }
+
+    #[test]
+    fn the_cursor_lands_correctly_after_text_outside_the_bmp() {
+        // Positions count UTF-16 units, so an emoji advances the column by two.
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "\n");
+        let end = s.replace_range(
+            deco_core::position::Range::new(Position::ZERO, Position::ZERO),
+            "ab🎉",
+            0,
+        );
+        assert_eq!(end.character, 4, "two units for the emoji");
+    }
+
+    #[test]
+    fn a_range_past_the_end_of_the_document_is_clamped() {
+        // The range may have been computed against text the user has since
+        // changed — a completion answered while they kept typing.
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "ab\n");
+        s.replace_range(
+            deco_core::position::Range::new(Position::new(0, 1), Position::new(99, 99)),
+            "Z",
+            0,
+        );
+        assert_eq!(s.document.buffer.line_content(0).unwrap(), "aZ");
+    }
+
+    #[test]
+    fn an_empty_range_inserts_without_deleting() {
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "ac\n");
+        s.replace_range(
+            deco_core::position::Range::empty(Position::new(0, 1)),
+            "b",
+            0,
+        );
+        assert_eq!(s.document.buffer.line_content(0).unwrap(), "abc");
     }
 }

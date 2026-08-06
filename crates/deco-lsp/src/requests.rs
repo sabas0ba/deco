@@ -208,6 +208,326 @@ fn read_position(value: &serde_json::Value) -> Position {
     Position::new(read("line"), read("character"))
 }
 
+/// Why a completion list was asked for.
+///
+/// The server is told, because it changes what it offers: typing `.` should
+/// suggest members, while `ctrl+space` on an empty line should suggest
+/// everything in scope.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompletionTrigger {
+    /// The user asked, e.g. with `ctrl+space`.
+    Invoked,
+    /// A character the server nominated was typed.
+    Character(String),
+}
+
+impl CompletionTrigger {
+    fn to_json(&self) -> serde_json::Value {
+        match self {
+            // 1 and 2 are the protocol's `CompletionTriggerKind`. There is a 3
+            // — "for incomplete completions" — which deco does not use, because
+            // it re-requests from scratch rather than refining a partial list.
+            Self::Invoked => serde_json::json!({ "triggerKind": 1 }),
+            Self::Character(c) => serde_json::json!({
+                "triggerKind": 2,
+                "triggerCharacter": c,
+            }),
+        }
+    }
+}
+
+/// Parameters for `textDocument/completion`.
+pub fn completion_params(
+    uri: &Uri,
+    position: Position,
+    trigger: &CompletionTrigger,
+) -> serde_json::Value {
+    let mut params = text_document_position(uri, position);
+    params["context"] = trigger.to_json();
+    params
+}
+
+/// What kind of thing a completion item is, for the icon-shaped hint.
+///
+/// Only the distinctions worth drawing in a terminal are kept: the protocol has
+/// 25 kinds and a single-character marker cannot honour them all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CompletionKind {
+    /// A local, parameter, field or constant.
+    Value,
+    /// A function, method or constructor.
+    Function,
+    /// A type, class, struct, enum or interface.
+    Type,
+    /// A module, namespace or file.
+    Module,
+    /// A keyword or operator.
+    Keyword,
+    /// A snippet or text fragment.
+    Snippet,
+    /// Anything else.
+    #[default]
+    Other,
+}
+
+impl CompletionKind {
+    /// Reads the protocol's numeric `CompletionItemKind`.
+    fn from_number(value: Option<i64>) -> Self {
+        match value {
+            // The numbers are the protocol's `CompletionItemKind`; the names
+            // beside them are what each one is called there.
+            Some(2..=4) => Self::Function, // Method, Function, Constructor
+            Some(5 | 6 | 10 | 20..=22) => Self::Value, // Field, Variable, Property, EnumMember, Constant, Struct
+            Some(7 | 8 | 13 | 25) => Self::Type,       // Class, Interface, Enum, TypeParameter
+            Some(9 | 11) => Self::Module,              // Module, Unit
+            Some(14 | 24) => Self::Keyword,            // Keyword, Operator
+            Some(15) => Self::Snippet,
+            _ => Self::Other,
+        }
+    }
+
+    /// A one-character marker for a list with no room for words.
+    pub fn marker(self) -> char {
+        match self {
+            Self::Value => 'v',
+            Self::Function => 'f',
+            Self::Type => 't',
+            Self::Module => 'm',
+            Self::Keyword => 'k',
+            Self::Snippet => 's',
+            Self::Other => '·',
+        }
+    }
+}
+
+/// One suggestion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletionItem {
+    /// What to show in the list.
+    pub label: String,
+    /// What kind of thing it is.
+    pub kind: CompletionKind,
+    /// A short signature or type, shown beside the label.
+    pub detail: Option<String>,
+    /// What to insert, already resolved from `textEdit` or `insertText`.
+    pub insert: String,
+    /// The range `insert` replaces, when the server specified one.
+    ///
+    /// Authoritative when present: the server knows better than the editor
+    /// where a completion begins. `rust-analyzer` completing `HashMap` after
+    /// `Hash` replaces the typed prefix, and guessing that range from the
+    /// document is how a completion ends up as `HashHashMap`.
+    pub replace: Option<Range>,
+    /// What to match the user's typing against, if it differs from the label.
+    pub filter: String,
+    /// The server's preferred ordering key, if it gave one.
+    pub sort: Option<String>,
+    /// Whether the server wants this selected when the list opens.
+    pub preselect: bool,
+    /// Whether `insert` is snippet syntax the editor cannot expand.
+    ///
+    /// deco advertises `snippetSupport: false`, so a well-behaved server sends
+    /// plain text — but several send snippets regardless. Inserting
+    /// `foo(${1:arg})` literally is worse than inserting nothing, so the
+    /// placeholders are stripped and this records that it happened.
+    pub was_snippet: bool,
+}
+
+impl CompletionItem {
+    /// Reads one item.
+    ///
+    /// `None` only when there is no label, since an unlabelled item cannot be
+    /// shown or chosen.
+    pub fn from_json(value: &serde_json::Value) -> Option<Self> {
+        let label = value.get("label")?.as_str()?.trim().to_owned();
+        if label.is_empty() {
+            return None;
+        }
+
+        // `textEdit` wins over `insertText`, which wins over the label. That is
+        // the protocol's own precedence, and getting it backwards inserts the
+        // display text — which for a function is often `foo(…)` with an ellipsis.
+        let text_edit = value.get("textEdit").filter(|v| v.is_object());
+        let (edit_text, replace) = match text_edit {
+            Some(edit) => {
+                // `InsertReplaceEdit` has `insert` and `replace` instead of
+                // `range`. Preferring `replace` matches what a user expects
+                // when completing over an existing word.
+                let range = edit
+                    .get("replace")
+                    .or_else(|| edit.get("insert"))
+                    .or_else(|| edit.get("range"))
+                    .and_then(read_range);
+                (
+                    edit.get("newText")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_owned),
+                    range,
+                )
+            }
+            None => (None, None),
+        };
+
+        let raw_insert = edit_text
+            .or_else(|| {
+                value
+                    .get("insertText")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned)
+            })
+            .unwrap_or_else(|| label.clone());
+
+        // 2 is `Snippet` in the protocol's `InsertTextFormat`.
+        let declared_snippet = value
+            .get("insertTextFormat")
+            .and_then(|v| v.as_i64())
+            .is_some_and(|format| format == 2);
+        let (insert, stripped) = strip_snippet(&raw_insert);
+
+        Some(Self {
+            kind: CompletionKind::from_number(value.get("kind").and_then(|v| v.as_i64())),
+            detail: value
+                .get("detail")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|d| !d.is_empty())
+                .map(str::to_owned),
+            insert,
+            replace,
+            filter: value
+                .get("filterText")
+                .and_then(|v| v.as_str())
+                .filter(|f| !f.is_empty())
+                .unwrap_or(&label)
+                .to_owned(),
+            sort: value
+                .get("sortText")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned),
+            preselect: value
+                .get("preselect")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            was_snippet: declared_snippet || stripped,
+            label,
+        })
+    }
+
+    /// Reads a `textDocument/completion` result into a list.
+    ///
+    /// Accepts a `CompletionList` (`{ isIncomplete, items }`), a bare array of
+    /// items, and `null`. Returns the items and whether the list was marked
+    /// incomplete — which deco reports but does not act on, since it re-requests
+    /// from scratch rather than refining.
+    pub fn list_from_json(value: &serde_json::Value) -> (Vec<Self>, bool) {
+        let (items, incomplete) = match value {
+            serde_json::Value::Array(items) => (items.as_slice(), false),
+            serde_json::Value::Object(map) => (
+                map.get("items")
+                    .and_then(|v| v.as_array())
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]),
+                map.get("isIncomplete")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+            ),
+            _ => (&[][..], false),
+        };
+        (
+            items.iter().filter_map(Self::from_json).collect(),
+            incomplete,
+        )
+    }
+
+    /// The key to sort by: the server's `sortText` if it gave one, else the label.
+    ///
+    /// Servers use `sortText` to put what you probably want first — a prefix
+    /// match ahead of a fuzzy one — and ignoring it makes a good server's
+    /// ordering look arbitrary.
+    pub fn sort_key(&self) -> &str {
+        self.sort.as_deref().unwrap_or(&self.label)
+    }
+}
+
+/// Removes snippet placeholders, returning the text and whether any were found.
+///
+/// `${1:name}` becomes `name`, `${1}` and `$1` and `$0` vanish, `\$` becomes a
+/// literal `$`. Not an expansion — deco has no tab stops — but it produces text
+/// a person would have typed, which is the best available answer when a server
+/// ignores `snippetSupport: false`.
+fn strip_snippet(text: &str) -> (String, bool) {
+    if !text.contains('$') {
+        return (text.to_owned(), false);
+    }
+
+    let mut out = String::with_capacity(text.len());
+    let mut found = false;
+    let mut chars = text.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            // An escaped `$` is a literal one and not a placeholder.
+            if let Some(&next) = chars.peek() {
+                if next == '$' || next == '}' || next == '\\' {
+                    out.push(next);
+                    chars.next();
+                    continue;
+                }
+            }
+            out.push(c);
+            continue;
+        }
+        if c != '$' {
+            out.push(c);
+            continue;
+        }
+
+        match chars.peek() {
+            // `${…}` — a placeholder, possibly with a default to keep.
+            Some('{') => {
+                found = true;
+                chars.next();
+                let mut body = String::new();
+                let mut depth = 1usize;
+                for inner in chars.by_ref() {
+                    match inner {
+                        '{' => {
+                            depth += 1;
+                            body.push(inner);
+                        }
+                        '}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                            body.push(inner);
+                        }
+                        _ => body.push(inner),
+                    }
+                }
+                // `${1:default}` keeps the default; `${1}` and choice syntax
+                // `${1|a,b|}` keep nothing, since picking one would be a guess.
+                if let Some((_, default)) = body.split_once(':') {
+                    if !default.contains('|') {
+                        out.push_str(default);
+                    }
+                }
+            }
+            // `$1`, `$0` — a bare tab stop with nothing to keep.
+            Some(d) if d.is_ascii_digit() => {
+                found = true;
+                while chars.peek().is_some_and(|c| c.is_ascii_digit()) {
+                    chars.next();
+                }
+            }
+            // A `$` that is not a placeholder at all, e.g. a shell variable.
+            _ => out.push('$'),
+        }
+    }
+
+    (out, found)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -439,5 +759,262 @@ mod tests {
         }));
         assert_eq!(locations.len(), 1);
         assert!(!locations[0].uri.is_file());
+    }
+
+    #[test]
+    fn completion_params_carry_the_trigger() {
+        // The server changes what it offers: typing `.` should suggest members,
+        // ctrl+space on a blank line should suggest everything in scope.
+        let invoked = completion_params(&uri(), Position::new(1, 2), &CompletionTrigger::Invoked);
+        assert_eq!(invoked["context"], json!({"triggerKind": 1}));
+
+        let typed = completion_params(
+            &uri(),
+            Position::new(1, 2),
+            &CompletionTrigger::Character(".".into()),
+        );
+        assert_eq!(
+            typed["context"],
+            json!({"triggerKind": 2, "triggerCharacter": "."})
+        );
+    }
+
+    #[test]
+    fn a_completion_list_is_read_from_the_object_form() {
+        let (items, incomplete) = CompletionItem::list_from_json(&json!({
+            "isIncomplete": true,
+            "items": [{"label": "push"}, {"label": "pop"}],
+        }));
+        assert_eq!(items.len(), 2);
+        assert!(incomplete);
+    }
+
+    #[test]
+    fn a_completion_list_is_read_from_a_bare_array() {
+        let (items, incomplete) = CompletionItem::list_from_json(&json!([{"label": "push"}]));
+        assert_eq!(items.len(), 1);
+        assert!(!incomplete);
+    }
+
+    #[test]
+    fn a_null_completion_is_an_empty_list() {
+        let (items, incomplete) = CompletionItem::list_from_json(&json!(null));
+        assert!(items.is_empty());
+        assert!(!incomplete);
+    }
+
+    #[test]
+    fn an_unlabelled_item_is_dropped_and_its_siblings_survive() {
+        // It could be neither shown nor chosen.
+        let (items, _) = CompletionItem::list_from_json(&json!([
+            {"detail": "no label"},
+            {"label": "   "},
+            {"label": "good"},
+        ]));
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].label, "good");
+    }
+
+    #[test]
+    fn text_edit_beats_insert_text_which_beats_the_label() {
+        // The protocol's own precedence. Backwards, it inserts the display text
+        // — which for a function is often `foo(…)`, ellipsis included.
+        let from_label = CompletionItem::from_json(&json!({"label": "foo"})).unwrap();
+        assert_eq!(from_label.insert, "foo");
+
+        let from_insert =
+            CompletionItem::from_json(&json!({"label": "foo(…)", "insertText": "foo"})).unwrap();
+        assert_eq!(from_insert.insert, "foo");
+
+        let from_edit = CompletionItem::from_json(&json!({
+            "label": "foo(…)",
+            "insertText": "ignored",
+            "textEdit": {
+                "range": {"start": {"line": 1, "character": 0},
+                          "end": {"line": 1, "character": 3}},
+                "newText": "foo",
+            },
+        }))
+        .unwrap();
+        assert_eq!(from_edit.insert, "foo");
+        assert_eq!(
+            from_edit.replace,
+            Some(Range::new(Position::new(1, 0), Position::new(1, 3)))
+        );
+    }
+
+    #[test]
+    fn an_insert_replace_edit_prefers_the_replace_range() {
+        // Completing over an existing word should replace it, which is what a
+        // user expects and what `replace` is for.
+        let item = CompletionItem::from_json(&json!({
+            "label": "HashMap",
+            "textEdit": {
+                "insert": {"start": {"line": 0, "character": 4},
+                           "end": {"line": 0, "character": 4}},
+                "replace": {"start": {"line": 0, "character": 0},
+                            "end": {"line": 0, "character": 4}},
+                "newText": "HashMap",
+            },
+        }))
+        .unwrap();
+        assert_eq!(
+            item.replace,
+            Some(Range::new(Position::new(0, 0), Position::new(0, 4))),
+            "guessing the range instead is how a completion becomes HashHashMap"
+        );
+    }
+
+    #[test]
+    fn snippet_placeholders_are_stripped_rather_than_inserted_literally() {
+        // deco advertises snippetSupport: false and several servers send them
+        // anyway. `foo(${1:arg})` inserted literally is worse than nothing.
+        let item = CompletionItem::from_json(&json!({
+            "label": "foo",
+            "insertText": "foo(${1:arg}, ${2:other})$0",
+            "insertTextFormat": 2,
+        }))
+        .unwrap();
+        assert_eq!(item.insert, "foo(arg, other)");
+        assert!(item.was_snippet);
+    }
+
+    #[test]
+    fn a_bare_tab_stop_leaves_nothing_behind() {
+        let item =
+            CompletionItem::from_json(&json!({"label": "if", "insertText": "if $1 {\n\t$0\n}"}))
+                .unwrap();
+        assert_eq!(item.insert, "if  {\n\t\n}");
+        assert!(item.was_snippet);
+    }
+
+    #[test]
+    fn a_choice_placeholder_keeps_nothing_rather_than_guessing() {
+        // `${1|a,b,c|}` offers alternatives; picking one for the user would be
+        // an invention.
+        let item = CompletionItem::from_json(&json!({
+            "label": "vis",
+            "insertText": "${1|pub,pub(crate)|} fn",
+        }))
+        .unwrap();
+        assert_eq!(item.insert, " fn");
+    }
+
+    #[test]
+    fn an_escaped_dollar_stays_literal() {
+        let item = CompletionItem::from_json(&json!({
+            "label": "shell",
+            "insertText": "echo \\$HOME",
+        }))
+        .unwrap();
+        assert_eq!(item.insert, "echo $HOME");
+    }
+
+    #[test]
+    fn a_dollar_that_is_not_a_placeholder_survives() {
+        // A shell variable in a plain-text completion is not snippet syntax.
+        let item = CompletionItem::from_json(&json!({
+            "label": "env",
+            "insertText": "$PATH and $ alone",
+        }))
+        .unwrap();
+        assert_eq!(item.insert, "$PATH and $ alone");
+        assert!(!item.was_snippet, "nothing was actually a placeholder");
+    }
+
+    #[test]
+    fn nested_braces_inside_a_placeholder_are_balanced() {
+        let item = CompletionItem::from_json(&json!({
+            "label": "closure",
+            "insertText": "map(|x| ${1:{ x }})",
+        }))
+        .unwrap();
+        assert_eq!(item.insert, "map(|x| { x })");
+    }
+
+    #[test]
+    fn text_without_a_dollar_is_returned_untouched() {
+        let item =
+            CompletionItem::from_json(&json!({"label": "plain", "insertText": "plain_text"}))
+                .unwrap();
+        assert_eq!(item.insert, "plain_text");
+        assert!(!item.was_snippet);
+    }
+
+    #[test]
+    fn a_snippet_declared_by_format_alone_is_still_flagged() {
+        // No placeholders to strip, but the editor should still know it was one:
+        // the server may send tab stops in a sibling item.
+        let item = CompletionItem::from_json(&json!({
+            "label": "foo",
+            "insertText": "foo",
+            "insertTextFormat": 2,
+        }))
+        .unwrap();
+        assert!(item.was_snippet);
+        assert_eq!(item.insert, "foo");
+    }
+
+    #[test]
+    fn filter_text_is_used_for_matching_when_it_differs_from_the_label() {
+        // rust-analyzer labels an item `foo(…)` and filters on `foo`; matching
+        // the label would fail the moment the user typed `f`.
+        let item =
+            CompletionItem::from_json(&json!({"label": "foo(…)", "filterText": "foo"})).unwrap();
+        assert_eq!(item.filter, "foo");
+
+        let without = CompletionItem::from_json(&json!({"label": "bar"})).unwrap();
+        assert_eq!(without.filter, "bar", "the label is the fallback");
+    }
+
+    #[test]
+    fn sort_text_orders_ahead_of_the_label() {
+        // Servers use it to put the likely answer first; ignoring it makes a
+        // good server's ordering look arbitrary.
+        let with =
+            CompletionItem::from_json(&json!({"label": "zebra", "sortText": "0000"})).unwrap();
+        assert_eq!(with.sort_key(), "0000");
+
+        let without = CompletionItem::from_json(&json!({"label": "apple"})).unwrap();
+        assert_eq!(without.sort_key(), "apple");
+    }
+
+    #[test]
+    fn every_completion_kind_maps_to_a_distinct_marker() {
+        for (number, expected) in [
+            (2, CompletionKind::Function),
+            (3, CompletionKind::Function),
+            (6, CompletionKind::Value),
+            (7, CompletionKind::Type),
+            (9, CompletionKind::Module),
+            (14, CompletionKind::Keyword),
+            (15, CompletionKind::Snippet),
+            (99, CompletionKind::Other),
+        ] {
+            let item = CompletionItem::from_json(&json!({"label": "x", "kind": number})).unwrap();
+            assert_eq!(item.kind, expected, "kind {number}");
+            assert!(!item.kind.marker().is_whitespace());
+        }
+        assert_eq!(
+            CompletionItem::from_json(&json!({"label": "x"}))
+                .unwrap()
+                .kind,
+            CompletionKind::Other,
+            "an absent kind is not a guess"
+        );
+    }
+
+    #[test]
+    fn an_empty_detail_is_dropped_rather_than_shown_as_a_gap() {
+        for detail in [json!(""), json!("   ")] {
+            let item = CompletionItem::from_json(&json!({"label": "x", "detail": detail})).unwrap();
+            assert_eq!(item.detail, None);
+        }
+    }
+
+    #[test]
+    fn preselect_is_carried_through() {
+        let item = CompletionItem::from_json(&json!({"label": "x", "preselect": true})).unwrap();
+        assert!(item.preselect);
     }
 }
