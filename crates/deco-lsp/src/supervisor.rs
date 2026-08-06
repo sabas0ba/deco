@@ -392,6 +392,14 @@ impl Supervisor {
         Ok(())
     }
 
+    /// The next thing the reader thread has for us, if any. Never blocks.
+    ///
+    /// `None` covers both "nothing yet" and "no process", which are the same
+    /// thing to a caller draining a queue.
+    fn next_event(&self) -> Option<ReaderEvent> {
+        self.process.as_ref()?.try_recv()
+    }
+
     /// Drains whatever has arrived from the server. Never blocks.
     ///
     /// A write failure while answering the server is reported as an update
@@ -400,14 +408,10 @@ impl Supervisor {
     pub fn poll(&mut self) -> Vec<Update> {
         let mut updates = Vec::new();
 
-        loop {
-            let Some(process) = self.process.as_ref() else {
-                break;
-            };
-            let Some(event) = process.try_recv() else {
-                break;
-            };
-
+        // The borrow of `self.process` has to end before each iteration's body,
+        // which calls `&mut self` methods — hence a helper rather than reaching
+        // into the field inside the loop head.
+        while let Some(event) = self.next_event() {
             match event {
                 ReaderEvent::Message(message) => match self.dispatch(message) {
                     Ok(outgoing) => {
