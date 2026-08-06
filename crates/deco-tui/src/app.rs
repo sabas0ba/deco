@@ -84,7 +84,8 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
     let mut dirty = true;
     loop {
         if dirty {
-            let frame = render::render(session, width as usize, height as usize);
+            let frame =
+                render::render_with_hover(session, width as usize, height as usize, lsp.hover());
             paint(&mut out, &frame)?;
             dirty = false;
         }
@@ -115,11 +116,24 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
                         save(session, path.as_ref())?;
                         lsp.saved(session);
                     }
+                    // Commands the core cannot implement because they need a
+                    // language server. Named rather than guessed at, so a
+                    // mistyped binding still reports as unknown.
+                    Outcome::Frontend(command) => match command.as_str() {
+                        "editor.action.showHover" => lsp.request_hover(session),
+                        "editor.action.revealDefinition" => lsp.request_definition(session),
+                        "closeHoverWidget" => lsp.dismiss_hover(),
+                        other => {
+                            session.status = Some(format!("{other} is not implemented yet"));
+                        }
+                    },
                     _ => {}
                 }
                 // After the command, not before: the server has to be told
                 // about the text as it now is.
                 lsp.changed(session);
+                // A hover describing where the cursor was is worse than none.
+                dirty |= lsp.cursor_moved(session);
             }
             Event::Resize(new_width, new_height) => {
                 width = new_width;

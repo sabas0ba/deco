@@ -45,8 +45,18 @@ impl Clipboard for MemoryClipboard {
 pub enum Outcome {
     /// The command ran; redraw.
     Handled,
-    /// No command with that identifier exists.
+    /// No command with that identifier exists here.
+    ///
+    /// Not necessarily an error: a frontend owns commands the core cannot
+    /// implement, because they need something the core has no concept of — a
+    /// language server, a window, a file dialog. The identifier is carried so it
+    /// can be offered to whoever does own it.
     NotFound,
+    /// The command exists but belongs to the frontend, which is given its name.
+    ///
+    /// Distinct from [`Outcome::NotFound`] so that a typo in a keybinding still
+    /// reports as unknown rather than being silently handed onward and dropped.
+    Frontend(String),
     /// The document should be written to disk.
     Save,
     /// The editor should exit.

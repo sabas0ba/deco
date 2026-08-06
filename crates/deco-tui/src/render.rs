@@ -92,6 +92,28 @@ pub fn gutter_width(session: &Session) -> usize {
 
 /// Renders `session` into a `width` x `height` frame.
 pub fn render(session: &Session, width: usize, height: usize) -> Frame {
+    render_with_hover(session, width, height, None)
+}
+
+/// Renders, optionally overlaying a hover box near the cursor.
+///
+/// A separate entry point rather than a field on `Session`, because a hover is
+/// the frontend's business: it belongs to a screen with a cursor on it, and the
+/// core has neither.
+pub fn render_with_hover(
+    session: &Session,
+    width: usize,
+    height: usize,
+    hover: Option<&deco_lsp::Hover>,
+) -> Frame {
+    let mut frame = render_text(session, width, height);
+    if let Some(hover) = hover {
+        overlay_hover(&mut frame, session, width, height, hover);
+    }
+    frame
+}
+
+fn render_text(session: &Session, width: usize, height: usize) -> Frame {
     let palette = Palette::from(session);
     let gutter = gutter_width(session);
     // The last row is the status bar, so the text area is one shorter.
@@ -324,6 +346,182 @@ fn status_bar(session: &Session, width: usize, palette: &Palette) -> Row {
             bg: palette.status_bg,
         }],
     }
+}
+
+/// Draws a hover box over the text, anchored to the cursor.
+///
+/// Below the cursor when there is room, above it otherwise — a box that would
+/// hang off the bottom of the terminal is worse than one that covers the line
+/// above. The status bar is never covered: it is where the editor reports
+/// everything else, including why a hover might be wrong.
+fn overlay_hover(
+    frame: &mut Frame,
+    session: &Session,
+    width: usize,
+    height: usize,
+    hover: &deco_lsp::Hover,
+) {
+    let palette = Palette::from(session);
+    let text_height = height.saturating_sub(1);
+    if text_height < 3 || width < 8 {
+        // Not enough screen to draw a box that says anything. The status bar
+        // still carries the first line, so nothing is lost silently.
+        return;
+    }
+
+    // Two columns of border plus one of padding on each side.
+    let inner_width = width.saturating_sub(4).max(1);
+    let lines = wrap(&hover.contents, inner_width, MAX_HOVER_LINES);
+    if lines.is_empty() {
+        return;
+    }
+
+    let box_height = lines.len() + 2;
+    let box_width = lines
+        .iter()
+        .map(|line| line.chars().map(|c| c.width().unwrap_or(1)).sum::<usize>())
+        .max()
+        .unwrap_or(0)
+        .min(inner_width)
+        + 4;
+
+    // The cursor's row within the text area, which is what the box is anchored
+    // to rather than the buffer line.
+    let cursor_row = frame
+        .cursor
+        .map(|(_, y)| y as usize)
+        .unwrap_or(text_height / 2);
+
+    let top = if cursor_row + 1 + box_height <= text_height {
+        // Below the cursor, the usual case.
+        cursor_row + 1
+    } else {
+        // Above it, and saturating at zero: a box taller than the space above
+        // the cursor fits nowhere relative to it, so it goes at the top, where
+        // at least it does not cover the line being edited when the cursor is
+        // low on the screen.
+        cursor_row.saturating_sub(box_height)
+    };
+
+    for (index, row) in (top..(top + box_height).min(text_height)).enumerate() {
+        let content = match index {
+            0 => border_line(box_width, '\u{250c}', '\u{2510}'),
+            i if i == box_height - 1 => border_line(box_width, '\u{2514}', '\u{2518}'),
+            i => {
+                let text = lines.get(i - 1).map(String::as_str).unwrap_or("");
+                let used: usize = text.chars().map(|c| c.width().unwrap_or(1)).sum();
+                let pad = box_width.saturating_sub(used + 4);
+                format!("\u{2502} {text}{} \u{2502}", " ".repeat(pad))
+            }
+        };
+        frame.rows[row] = Row {
+            spans: vec![
+                Span {
+                    text: content,
+                    fg: palette.status_fg,
+                    bg: palette.status_bg,
+                },
+                // The rest of the row keeps the editor background, so the box
+                // reads as floating rather than as a full-width banner.
+                Span {
+                    text: " ".repeat(width.saturating_sub(box_width)),
+                    fg: palette.bg,
+                    bg: palette.bg,
+                },
+            ],
+        };
+    }
+}
+
+/// The most lines a hover box will show.
+///
+/// A long doc comment would otherwise cover the whole file. Ten is enough for a
+/// signature and the first paragraph, which is what a hover is for.
+const MAX_HOVER_LINES: usize = 10;
+
+fn border_line(box_width: usize, left: char, right: char) -> String {
+    let mut line = String::with_capacity(box_width);
+    line.push(left);
+    for _ in 0..box_width.saturating_sub(2) {
+        line.push('\u{2500}');
+    }
+    line.push(right);
+    line
+}
+
+/// Breaks text to `width` columns, at whitespace where possible.
+///
+/// Column-aware rather than character-aware: a CJK identifier in a signature
+/// would otherwise push the box's right border past the terminal edge.
+fn wrap(text: &str, width: usize, max_lines: usize) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+
+    for paragraph in text.lines() {
+        if out.len() >= max_lines {
+            break;
+        }
+        if paragraph.trim().is_empty() {
+            // Blank lines separate a signature from its documentation, so they
+            // are worth keeping — but not at the very top of the box.
+            if !out.is_empty() {
+                out.push(String::new());
+            }
+            continue;
+        }
+
+        let mut line = String::new();
+        let mut columns = 0usize;
+        for word in paragraph.split_whitespace() {
+            let word_width: usize = word.chars().map(|c| c.width().unwrap_or(1)).sum();
+            let needed = if line.is_empty() {
+                word_width
+            } else {
+                word_width + 1
+            };
+            if columns + needed > width && !line.is_empty() {
+                out.push(std::mem::take(&mut line));
+                columns = 0;
+                if out.len() >= max_lines {
+                    return trimmed(out, max_lines);
+                }
+            }
+            if !line.is_empty() {
+                line.push(' ');
+                columns += 1;
+            }
+            // A single word longer than the box is cut rather than allowed to
+            // overflow; the alternative is a broken border.
+            if word_width > width {
+                let mut used = 0;
+                for c in word.chars() {
+                    let w = c.width().unwrap_or(1);
+                    if used + w > width {
+                        break;
+                    }
+                    line.push(c);
+                    used += w;
+                }
+                columns += used;
+            } else {
+                line.push_str(word);
+                columns += word_width;
+            }
+        }
+        if !line.is_empty() {
+            out.push(line);
+        }
+    }
+
+    trimmed(out, max_lines)
+}
+
+fn trimmed(mut lines: Vec<String>, max_lines: usize) -> Vec<String> {
+    lines.truncate(max_lines);
+    // A trailing blank line inside a box is just a gap above the border.
+    while lines.last().is_some_and(String::is_empty) {
+        lines.pop();
+    }
+    lines
 }
 
 #[cfg(test)]
@@ -632,5 +830,155 @@ mod tests {
                 .collect();
             assert_eq!(row.chars().count(), width, "width {width}: {row:?}");
         }
+    }
+
+    fn hover(contents: &str) -> deco_lsp::Hover {
+        deco_lsp::Hover {
+            contents: contents.to_owned(),
+            range: None,
+        }
+    }
+
+    /// Every row's text, for asserting on the overlay's placement.
+    fn rows_of(frame: &Frame) -> Vec<String> {
+        frame.rows.iter().map(Row::plain).collect()
+    }
+
+    #[test]
+    fn a_hover_box_is_drawn_below_the_cursor_when_there_is_room() {
+        let session = session("fn main() {}\n");
+        let frame = render_with_hover(&session, 40, 10, Some(&hover("the entry point")));
+        let rows = rows_of(&frame);
+
+        // The cursor is on row 0, so the box starts on row 1.
+        assert!(rows[1].starts_with('\u{250c}'), "{:?}", rows[1]);
+        assert!(rows[2].contains("the entry point"), "{:?}", rows[2]);
+        assert!(rows[3].starts_with('\u{2514}'), "{:?}", rows[3]);
+    }
+
+    #[test]
+    fn a_hover_box_goes_above_the_cursor_when_it_would_not_fit_below() {
+        // A box hanging off the bottom of the terminal is worse than one
+        // covering the line above.
+        let mut session = session(&"line\n".repeat(20));
+        session.resize(40, 9);
+        session.view.selections = deco_core::SelectionSet::caret(deco_core::Position::new(8, 0));
+        session
+            .view
+            .reveal_cursor(&session.document.buffer, &session.document.settings);
+
+        let frame = render_with_hover(&session, 40, 10, Some(&hover("above")));
+        let rows = rows_of(&frame);
+        let cursor_row = frame.cursor.expect("the cursor is on screen").1 as usize;
+
+        let top = rows
+            .iter()
+            .position(|row| row.starts_with('\u{250c}'))
+            .expect("a box was drawn");
+        assert!(top < cursor_row, "box at {top}, cursor at {cursor_row}");
+    }
+
+    #[test]
+    fn the_status_bar_is_never_covered_by_a_hover() {
+        // It is where the editor reports everything else, including why a hover
+        // might be wrong.
+        let session = session("fn main() {}\n");
+        let frame = render_with_hover(&session, 40, 6, Some(&hover(&"x\n".repeat(20))));
+        let last = frame.rows.last().unwrap().plain();
+        assert!(
+            last.contains("Ln 1"),
+            "the status bar was overwritten: {last:?}"
+        );
+    }
+
+    #[test]
+    fn a_hover_box_never_exceeds_the_terminal_width() {
+        for width in [12, 20, 40, 80] {
+            let session = session("fn main() {}\n");
+            let frame = render_with_hover(
+                &session,
+                width,
+                10,
+                Some(&hover(
+                    "a very long single line of documentation that will not fit",
+                )),
+            );
+            for (index, row) in frame.rows.iter().enumerate() {
+                let columns: usize = row.plain().chars().map(|c| c.width().unwrap_or(1)).sum();
+                assert_eq!(columns, width, "row {index} at width {width}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_wide_character_does_not_push_the_border_off_the_edge() {
+        // Wrapping by character count rather than by column would break the
+        // right border on any CJK identifier.
+        let session = session("fn main() {}\n");
+        let frame = render_with_hover(
+            &session,
+            24,
+            10,
+            Some(&hover("日本語の説明がここに入ります")),
+        );
+        for row in &frame.rows {
+            let columns: usize = row.plain().chars().map(|c| c.width().unwrap_or(1)).sum();
+            assert_eq!(columns, 24, "{:?}", row.plain());
+        }
+    }
+
+    #[test]
+    fn a_long_hover_is_truncated_rather_than_covering_the_file() {
+        let session = session(&"line\n".repeat(40));
+        let frame = render_with_hover(&session, 40, 30, Some(&hover(&"detail\n".repeat(50))));
+        let box_rows = rows_of(&frame)
+            .iter()
+            .filter(|row| row.starts_with('\u{2502}'))
+            .count();
+        assert!(box_rows <= MAX_HOVER_LINES, "{box_rows} content rows");
+    }
+
+    #[test]
+    fn a_terminal_too_small_for_a_box_draws_none_rather_than_a_broken_one() {
+        let session = session("fn main() {}\n");
+        for (width, height) in [(40, 2), (6, 10)] {
+            let frame = render_with_hover(&session, width, height, Some(&hover("x")));
+            let plain = rows_of(&frame).join("");
+            assert!(
+                !plain.contains('\u{250c}'),
+                "a box was drawn at {width}x{height}: {plain:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rendering_without_a_hover_is_unchanged() {
+        // `render` is the same function with no overlay, so every existing
+        // assertion about layout still holds.
+        let session = session("fn main() {}\n");
+        assert_eq!(
+            render(&session, 40, 10),
+            render_with_hover(&session, 40, 10, None)
+        );
+    }
+
+    #[test]
+    fn wrapping_breaks_at_whitespace_and_keeps_paragraph_breaks() {
+        let lines = wrap("alpha beta gamma\n\nsecond para", 11, 10);
+        assert_eq!(lines, vec!["alpha beta", "gamma", "", "second para"]);
+    }
+
+    #[test]
+    fn a_word_longer_than_the_box_is_cut_rather_than_overflowing() {
+        // The alternative is a broken border.
+        let lines = wrap("supercalifragilistic", 8, 10);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].chars().count(), 8);
+    }
+
+    #[test]
+    fn wrapping_drops_a_leading_blank_line_and_any_trailing_ones() {
+        // A gap above the top border, or below the last line, is just a hole.
+        assert_eq!(wrap("\n\nx\n\n\n", 10, 10), vec!["x"]);
     }
 }

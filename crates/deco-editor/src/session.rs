@@ -248,6 +248,13 @@ impl Session {
             "editor.action.marker.prev" | "editor.action.marker.prevInFiles" => {
                 self.goto_marker(Direction::Prev)
             }
+            // Commands that need something the core has no concept of. Named
+            // here rather than left to fall through as `NotFound`, so a typo in
+            // a keybinding is still reported as unknown.
+            "editor.action.showHover"
+            | "editor.action.revealDefinition"
+            | "editor.action.goToReferences"
+            | "closeHoverWidget" => Outcome::Frontend(command.to_owned()),
             _ => {
                 let mut ctx = Context {
                     document: &mut self.document,
