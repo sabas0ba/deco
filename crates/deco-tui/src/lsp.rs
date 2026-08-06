@@ -25,11 +25,12 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use deco_core::position::Position;
 use deco_editor::Session;
 use deco_lsp::process::Consent;
 use deco_lsp::supervisor::{Supervisor, Update};
 use deco_lsp::uri::PathStyle;
-use deco_lsp::{ServerRegistry, Trust};
+use deco_lsp::{Hover, RequestId, ServerRegistry, Trust};
 
 /// How long to wait for the handshake before giving up on a server.
 ///
@@ -49,6 +50,47 @@ pub struct Lsp {
     open: Option<PathBuf>,
     root: Option<PathBuf>,
     style: PathStyle,
+    /// The hover currently on screen, and the position it describes.
+    ///
+    /// Kept with its position so it can be dismissed the moment the cursor
+    /// leaves the range the server answered about — a hover box describing a
+    /// different token than the one under the caret is actively misleading.
+    hover: Option<ShownHover>,
+    /// The hover request in flight, if any. At most one: a second would race
+    /// the first and whichever answered last would win, which is not
+    /// necessarily the one the user is waiting for.
+    hover_request: Option<RequestId>,
+    /// The go-to-definition request in flight.
+    definition_request: Option<RequestId>,
+}
+
+/// A hover being displayed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShownHover {
+    /// What the server said.
+    pub hover: Hover,
+    /// Where the cursor was when it was asked for.
+    pub asked_at: Position,
+}
+
+impl ShownHover {
+    /// Whether this hover still describes what is under the cursor.
+    ///
+    /// The server's own range when it gave one, since that is authoritative
+    /// about which token it answered for. Failing that, the exact position it
+    /// was asked about: guessing a wider area would keep a stale box on screen.
+    pub fn applies_at(&self, position: Position) -> bool {
+        match self.hover.range {
+            Some(range) => {
+                // Inclusive of the end, unlike a diagnostic: a hover range
+                // covers an identifier, and the caret sitting just after the
+                // last character is still on that identifier as far as the user
+                // is concerned.
+                position >= range.start && position <= range.end
+            }
+            None => position == self.asked_at,
+        }
+    }
 }
 
 impl Lsp {
@@ -72,7 +114,128 @@ impl Lsp {
             open: None,
             root,
             style: PathStyle::host(),
+            hover: None,
+            hover_request: None,
+            definition_request: None,
         }
+    }
+
+    /// The hover to draw, if one applies to where the cursor is now.
+    pub fn hover(&self) -> Option<&Hover> {
+        self.hover.as_ref().map(|shown| &shown.hover)
+    }
+
+    /// Republishes every context key derived from the server's state.
+    ///
+    /// One function called from every path that changes that state, rather than
+    /// each site remembering which keys it invalidated. A stale `when` key is a
+    /// keybinding that silently does the wrong thing — F12 dead while a server
+    /// offers definitions, or escape swallowed with no hover on screen — and
+    /// that is the hardest kind of bug to notice.
+    fn sync_context(&self, session: &mut Session) {
+        let capabilities = self.supervisor.as_ref().map(Supervisor::capabilities);
+        let has =
+            |f: fn(&deco_lsp::ServerCapabilities) -> bool| capabilities.map(f).unwrap_or(false);
+
+        // VS Code's own names, so a `when` clause copied out of somebody's
+        // keybindings.json gates on the same thing here.
+        session
+            .context
+            .set("editorHasHoverProvider", has(|c| c.hover));
+        session
+            .context
+            .set("editorHasDefinitionProvider", has(|c| c.definition));
+        session
+            .context
+            .set("editorHasReferenceProvider", has(|c| c.references));
+        session
+            .context
+            .set("editorHasRenameProvider", has(|c| c.rename.is_some()));
+        session
+            .context
+            .set("editorHasDocumentFormattingProvider", has(|c| c.formatting));
+        // Deliberately false: nothing applies a code action yet, and advertising
+        // the provider would bind ctrl+. to a command that does nothing.
+        session.context.set("editorHasCodeActionsProvider", false);
+
+        // Gates escape.
+        session
+            .context
+            .set("editorHoverVisible", self.hover.is_some());
+    }
+
+    /// Requests a hover for the cursor's position.
+    ///
+    /// Any hover already on screen is dismissed first: it described the previous
+    /// position, and leaving it up while a new one is fetched shows the user an
+    /// answer to a question they are no longer asking.
+    pub fn request_hover(&mut self, session: &mut Session) {
+        self.dismiss_hover();
+        self.sync_context(session);
+        let (Some(path), Some(supervisor)) =
+            (session.document.path.clone(), self.supervisor.as_mut())
+        else {
+            return;
+        };
+        let position = session.view.selections.primary().active;
+        match supervisor.hover(&path, position) {
+            Ok(Some(id)) => self.hover_request = Some(id),
+            Ok(None) => {
+                session.status = Some("this server does not offer hover".to_owned());
+            }
+            Err(error) => self.report(session, error.to_string()),
+        }
+    }
+
+    /// Requests the definition of whatever is under the cursor.
+    pub fn request_definition(&mut self, session: &mut Session) {
+        let (Some(path), Some(supervisor)) =
+            (session.document.path.clone(), self.supervisor.as_mut())
+        else {
+            return;
+        };
+        let position = session.view.selections.primary().active;
+        match supervisor.definition(&path, position) {
+            Ok(Some(id)) => {
+                self.definition_request = Some(id);
+                // Said before the answer arrives, because a server that has to
+                // index first can take seconds and silence looks like a
+                // keybinding that does nothing.
+                session.status = Some("Looking for the definition…".to_owned());
+            }
+            Ok(None) => {
+                session.status = Some("this server does not offer go-to-definition".to_owned());
+            }
+            Err(error) => self.report(session, error.to_string()),
+        }
+    }
+
+    /// Drops the hover on screen, and cancels the request behind it.
+    pub fn dismiss_hover(&mut self) {
+        self.hover = None;
+        if let (Some(id), Some(supervisor)) = (self.hover_request.take(), self.supervisor.as_mut())
+        {
+            // Advisory, and the answer is dropped when it arrives — but a hover
+            // the user has moved past is work the server can stop doing.
+            let _ = supervisor.cancel(&id);
+        }
+    }
+
+    /// Dismisses the hover if the cursor has moved off what it describes.
+    ///
+    /// Returns whether anything changed, so the caller can skip a repaint.
+    pub fn cursor_moved(&mut self, session: &mut Session) -> bool {
+        let position = session.view.selections.primary().active;
+        if self
+            .hover
+            .as_ref()
+            .is_some_and(|shown| !shown.applies_at(position))
+        {
+            self.hover = None;
+            self.sync_context(session);
+            return true;
+        }
+        false
     }
 
     /// Whether a server is running and ready.
@@ -140,6 +303,7 @@ impl Lsp {
                     self.supervisor = Some(supervisor);
                     self.language = Some(language.clone());
                     self.sync_open(session, &path, &language);
+                    self.sync_context(session);
                     return;
                 }
                 Err(error) => {
@@ -266,12 +430,131 @@ impl Lsp {
                     self.supervisor = None;
                     self.language = None;
                     self.open = None;
+                    self.hover = None;
+                    self.hover_request = None;
+                    self.definition_request = None;
+                    // The features that were on offer went with the server.
+                    self.sync_context(session);
                     return true;
+                }
+                Update::Hover { id, hover } => {
+                    // Only the answer to the request still outstanding. An
+                    // earlier one arriving late describes a position the user
+                    // has left.
+                    if self.hover_request.as_ref() != Some(&id) {
+                        continue;
+                    }
+                    self.hover_request = None;
+                    match hover {
+                        Some(hover) => {
+                            self.hover = Some(ShownHover {
+                                hover,
+                                asked_at: session.view.selections.primary().active,
+                            });
+                        }
+                        // The server answered, and the answer is "nothing".
+                        // Saying so beats a keypress that appears to do nothing.
+                        None => session.status = Some("no information here".to_owned()),
+                    }
+                    self.sync_context(session);
+                    changed = true;
+                }
+                Update::Locations {
+                    id,
+                    method,
+                    locations,
+                } => {
+                    if self.definition_request.as_ref() != Some(&id) {
+                        continue;
+                    }
+                    self.definition_request = None;
+                    changed |= self.go_to(session, &method, &locations);
+                }
+                Update::RequestFailed { method, reason, .. } => {
+                    // The short name: `textDocument/hover` in a status bar is
+                    // mostly punctuation.
+                    let short = method.rsplit('/').next().unwrap_or(&method);
+                    session.status = Some(format!("{short}: {reason}"));
+                    session.problems.push(format!("{method}: {reason}"));
+                    changed = true;
                 }
                 Update::Ready { .. } | Update::Noted { .. } => {}
             }
         }
         changed
+    }
+
+    /// Moves the cursor to the first of `locations`, opening the file if needed.
+    ///
+    /// Returns whether the screen changed.
+    fn go_to(
+        &mut self,
+        session: &mut Session,
+        method: &str,
+        locations: &[deco_lsp::Location],
+    ) -> bool {
+        let Some(target) = locations.first() else {
+            // A successful answer meaning the server found nothing. Reporting it
+            // is the difference between "no definition" and "the editor is
+            // broken".
+            session.status = Some("no definition found".to_owned());
+            return true;
+        };
+
+        if locations.len() > 1 {
+            // deco shows one document, so the rest cannot be listed yet. Saying
+            // how many there were is better than silently picking one.
+            session.status = Some(format!("{} results; showing the first", locations.len()));
+        }
+
+        let Ok(path) = target.uri.to_path(self.style) else {
+            // `jdt:`, `untitled:` and friends. The editor cannot open one, and
+            // pretending otherwise would create an empty buffer named after a
+            // URI.
+            session.status = Some(format!("cannot open {}", target.uri));
+            return true;
+        };
+
+        let same_file = session.document.path.as_deref() == Some(path.as_path());
+        if !same_file {
+            // Unsaved work in the current document would be lost, and deco has
+            // no second buffer to put it in.
+            if session.document.dirty {
+                session.status = Some(format!(
+                    "{} has unsaved changes; save before jumping to {}",
+                    session.document.title(),
+                    path.display()
+                ));
+                return true;
+            }
+            match std::fs::read_to_string(&path) {
+                Ok(text) => {
+                    session.open(path.clone(), &text);
+                    // The new document needs its own server, and the old one
+                    // needs telling that the previous file is closed.
+                    self.attach(session);
+                }
+                Err(error) => {
+                    session.status = Some(format!("could not open {}: {error}", path.display()));
+                    return true;
+                }
+            }
+        }
+
+        let clamped = session.document.buffer.clamp_position(target.range.start);
+        session.view.selections = deco_core::SelectionSet::caret(clamped);
+        session
+            .view
+            .reveal_cursor(&session.document.buffer, &session.document.settings);
+        session.refresh_context();
+        self.hover = None;
+        self.sync_context(session);
+
+        if locations.len() == 1 {
+            let short = method.rsplit('/').next().unwrap_or(method);
+            session.status = Some(format!("{short}: line {}", clamped.line + 1));
+        }
+        true
     }
 
     /// Stops the server, if one is running.
@@ -281,6 +564,9 @@ impl Lsp {
         }
         self.language = None;
         self.open = None;
+        self.hover = None;
+        self.hover_request = None;
+        self.definition_request = None;
     }
 
     fn report(&mut self, session: &mut Session, message: String) {
@@ -313,6 +599,7 @@ impl std::fmt::Debug for Lsp {
 mod tests {
     use super::*;
     use deco_config::{Scope, Settings};
+    use serde_json::json;
 
     /// A session pinned to Linux, so the keymap and context keys agree
     /// regardless of which platform the test runs on.
@@ -521,5 +808,162 @@ mod tests {
         // installed since. What matters is that it does not panic or leak.
         lsp.attach(&mut s);
         assert!(!lsp.is_ready());
+    }
+
+    fn hover_of(contents: &str, range: Option<deco_core::position::Range>) -> Hover {
+        Hover {
+            contents: contents.to_owned(),
+            range,
+        }
+    }
+
+    #[test]
+    fn a_hover_survives_the_cursor_staying_inside_the_range_it_describes() {
+        let mut s = session(Settings::with_defaults());
+        let mut lsp = Lsp::new(&mut s, None);
+        lsp.hover = Some(ShownHover {
+            hover: hover_of(
+                "fn main()",
+                Some(deco_core::position::Range::new(
+                    Position::new(0, 2),
+                    Position::new(0, 6),
+                )),
+            ),
+            asked_at: Position::new(0, 3),
+        });
+
+        s.view.selections = deco_core::SelectionSet::caret(Position::new(0, 5));
+        assert!(!lsp.cursor_moved(&mut s), "still inside the range");
+        assert!(lsp.hover().is_some());
+    }
+
+    #[test]
+    fn a_hover_is_dismissed_when_the_cursor_leaves_its_range() {
+        // A box describing a different token than the one under the caret is
+        // actively misleading, which is worse than no box.
+        let mut s = session(Settings::with_defaults());
+        let mut lsp = Lsp::new(&mut s, None);
+        lsp.hover = Some(ShownHover {
+            hover: hover_of(
+                "fn main()",
+                Some(deco_core::position::Range::new(
+                    Position::new(0, 2),
+                    Position::new(0, 6),
+                )),
+            ),
+            asked_at: Position::new(0, 3),
+        });
+
+        s.view.selections = deco_core::SelectionSet::caret(Position::new(0, 9));
+        assert!(lsp.cursor_moved(&mut s), "outside the range");
+        assert!(lsp.hover().is_none());
+        assert_eq!(s.context.get("editorHoverVisible"), Some(&json!(false)));
+    }
+
+    #[test]
+    fn the_end_of_a_hover_range_still_counts_as_inside() {
+        // Unlike a diagnostic: the caret sitting just after an identifier's last
+        // character is still on that identifier as far as the user is concerned.
+        let shown = ShownHover {
+            hover: hover_of(
+                "x",
+                Some(deco_core::position::Range::new(
+                    Position::new(1, 4),
+                    Position::new(1, 8),
+                )),
+            ),
+            asked_at: Position::new(1, 5),
+        };
+        assert!(shown.applies_at(Position::new(1, 8)));
+        assert!(!shown.applies_at(Position::new(1, 9)));
+    }
+
+    #[test]
+    fn a_hover_without_a_range_applies_only_where_it_was_asked() {
+        // Guessing a wider area would keep a stale box on screen.
+        let shown = ShownHover {
+            hover: hover_of("x", None),
+            asked_at: Position::new(2, 4),
+        };
+        assert!(shown.applies_at(Position::new(2, 4)));
+        assert!(!shown.applies_at(Position::new(2, 5)));
+    }
+
+    #[test]
+    fn context_keys_are_false_with_no_server() {
+        // F12 must look dead when nothing offers definitions — that is correct,
+        // not a bug, and the keys are what make it so.
+        let mut s = session(Settings::with_defaults());
+        let lsp = Lsp::new(&mut s, None);
+        lsp.sync_context(&mut s);
+
+        for key in [
+            "editorHasHoverProvider",
+            "editorHasDefinitionProvider",
+            "editorHasReferenceProvider",
+            "editorHasRenameProvider",
+            "editorHasCodeActionsProvider",
+            "editorHoverVisible",
+        ] {
+            assert_eq!(s.context.get(key), Some(&json!(false)), "{key}");
+        }
+    }
+
+    #[test]
+    fn code_actions_are_never_advertised_while_none_can_be_applied() {
+        // Advertising the provider would bind ctrl+. to a command that does
+        // nothing, which reads as a broken editor rather than a missing feature.
+        let mut s = session(Settings::with_defaults());
+        let lsp = Lsp::new(&mut s, None);
+        lsp.sync_context(&mut s);
+        assert_eq!(
+            s.context.get("editorHasCodeActionsProvider"),
+            Some(&json!(false))
+        );
+    }
+
+    #[test]
+    fn requesting_a_hover_without_a_server_does_nothing_visible() {
+        let mut s = session(Settings::with_defaults());
+        let mut lsp = Lsp::new(&mut s, None);
+        lsp.request_hover(&mut s);
+        lsp.request_definition(&mut s);
+        assert!(lsp.hover().is_none());
+        assert_eq!(s.status, None);
+    }
+
+    #[test]
+    fn dismissing_a_hover_clears_the_context_key() {
+        let mut s = session(Settings::with_defaults());
+        let mut lsp = Lsp::new(&mut s, None);
+        lsp.hover = Some(ShownHover {
+            hover: hover_of("x", None),
+            asked_at: Position::ZERO,
+        });
+        lsp.sync_context(&mut s);
+        assert_eq!(s.context.get("editorHoverVisible"), Some(&json!(true)));
+
+        lsp.dismiss_hover();
+        lsp.sync_context(&mut s);
+        assert_eq!(s.context.get("editorHoverVisible"), Some(&json!(false)));
+    }
+
+    #[test]
+    fn detaching_forgets_the_hover_and_the_requests_in_flight() {
+        // Their answers can never arrive now, and a box left on screen would
+        // describe a document the server no longer has.
+        let mut s = session(Settings::with_defaults());
+        let mut lsp = Lsp::new(&mut s, None);
+        lsp.hover = Some(ShownHover {
+            hover: hover_of("x", None),
+            asked_at: Position::ZERO,
+        });
+        lsp.hover_request = Some(deco_lsp::RequestId::Number(1));
+        lsp.definition_request = Some(deco_lsp::RequestId::Number(2));
+
+        lsp.detach();
+        assert!(lsp.hover().is_none());
+        assert!(lsp.hover_request.is_none());
+        assert!(lsp.definition_request.is_none());
     }
 }

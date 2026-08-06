@@ -22,6 +22,8 @@
 //!   cloned repository must not be run unasked.
 //! - [`mod@sync`] — keeping the server's copy of a document identical to the
 //!   editor's.
+//! - [`mod@requests`] — building the language-feature requests and reading the
+//!   several shapes each answer can arrive in.
 //! - [`mod@process`] — spawning that server and moving bytes to and from it.
 //!   The one module here that owns a process and threads.
 //! - [`mod@supervisor`] — all of the above driven end to end, which is the
@@ -46,6 +48,7 @@ pub mod client;
 pub mod diagnostics;
 pub mod jsonrpc;
 pub mod process;
+pub mod requests;
 pub mod server;
 pub mod settings;
 pub mod supervisor;
@@ -57,6 +60,7 @@ pub use client::{Client, ClientEvent, LspError, Outgoing};
 pub use diagnostics::{Diagnostic, DiagnosticStore, Severity};
 pub use jsonrpc::{Message, Notification, Request, RequestId, Response};
 pub use process::{Consent, ServerProcess, SpawnError};
+pub use requests::{Hover, Location};
 pub use server::{ServerConfig, ServerRegistry, Trust};
 pub use settings::{ENABLED_KEY, SERVERS_KEY};
 pub use supervisor::{Supervisor, SupervisorError, Update};

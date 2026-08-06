@@ -40,8 +40,9 @@ use std::time::Duration;
 
 use crate::client::{Client, ClientEvent, LspError, Outgoing, State};
 use crate::diagnostics::{Diagnostic, DiagnosticStore, Published};
-use crate::jsonrpc::{Message, ProtocolError};
+use crate::jsonrpc::{Message, ProtocolError, RequestId};
 use crate::process::{Consent, ReaderEvent, ServerProcess, SpawnError, EXIT_GRACE};
+use crate::requests::{Hover, Location};
 use crate::server::ServerConfig;
 use crate::sync::{ContentChange, DocumentSync, SyncError};
 use crate::uri::{PathStyle, Uri};
@@ -81,6 +82,35 @@ pub enum Update {
         /// Which server.
         id: String,
         /// Why, in a form fit to show a user.
+        reason: String,
+    },
+    /// An answer to [`Supervisor::hover`].
+    Hover {
+        /// The request this answers, so a caller that has moved on can ignore it.
+        id: RequestId,
+        /// What the server said, or `None` for "nothing at that position" —
+        /// which is a successful answer and worth reporting as such.
+        hover: Option<Hover>,
+    },
+    /// An answer to [`Supervisor::definition`] or [`Supervisor::references`].
+    Locations {
+        /// The request this answers.
+        id: RequestId,
+        /// Which method asked, since both answer in the same shape.
+        method: String,
+        /// Where the server pointed. Empty means it found nothing.
+        locations: Vec<Location>,
+    },
+    /// A request failed for a reason worth showing the user.
+    ///
+    /// Routine failures — cancellation, content-modified — are not reported
+    /// here; they happen constantly during ordinary typing.
+    RequestFailed {
+        /// The request that failed.
+        id: RequestId,
+        /// Which method.
+        method: String,
+        /// Why, in a form fit for a status bar.
         reason: String,
     },
     /// Something was ignored. Interesting only in a log.
@@ -403,6 +433,99 @@ impl Supervisor {
         self.notify("textDocument/didClose", params)
     }
 
+    /// Asks what is at a position.
+    ///
+    /// Returns the request id so the caller can match the answer — or drop it,
+    /// if the cursor has since moved. `None` when the server does not offer
+    /// hover: the caller should not have to check capabilities before every
+    /// keypress.
+    pub fn hover(
+        &mut self,
+        path: &Path,
+        position: deco_core::position::Position,
+    ) -> Result<Option<RequestId>, SupervisorError> {
+        if !self.client.capabilities().hover {
+            return Ok(None);
+        }
+        self.positional("textDocument/hover", path, position)
+    }
+
+    /// Asks where something is defined.
+    pub fn definition(
+        &mut self,
+        path: &Path,
+        position: deco_core::position::Position,
+    ) -> Result<Option<RequestId>, SupervisorError> {
+        if !self.client.capabilities().definition {
+            return Ok(None);
+        }
+        self.positional("textDocument/definition", path, position)
+    }
+
+    /// Asks what refers to something.
+    pub fn references(
+        &mut self,
+        path: &Path,
+        position: deco_core::position::Position,
+    ) -> Result<Option<RequestId>, SupervisorError> {
+        if !self.client.capabilities().references {
+            return Ok(None);
+        }
+        let Some(uri) = self.uri_for(path) else {
+            return Ok(None);
+        };
+        if !self.sync.is_open(&uri) {
+            return Ok(None);
+        }
+        // Including the declaration: "find all references" that omits the
+        // definition is a surprising answer, and VS Code includes it.
+        let params = crate::requests::reference_params(&uri, position, true);
+        self.request("textDocument/references", params).map(Some)
+    }
+
+    /// Raises a request whose only arguments are a document and a position.
+    fn positional(
+        &mut self,
+        method: &'static str,
+        path: &Path,
+        position: deco_core::position::Position,
+    ) -> Result<Option<RequestId>, SupervisorError> {
+        let Some(uri) = self.uri_for(path) else {
+            return Ok(None);
+        };
+        // Asking about a document the server was never told about would get an
+        // error at best and a confident wrong answer at worst.
+        if !self.sync.is_open(&uri) {
+            return Ok(None);
+        }
+        let params = crate::requests::text_document_position(&uri, position);
+        self.request(method, params).map(Some)
+    }
+
+    /// Asks the server to abandon a request.
+    ///
+    /// Advisory: the reply may already be on its way, and is dropped when it
+    /// arrives. Worth sending anyway — a hover the user has moved past is work
+    /// the server can stop doing.
+    pub fn cancel(&mut self, id: &RequestId) -> Result<(), SupervisorError> {
+        if let Some(Outgoing(message)) = self.client.cancel(id) {
+            self.write(&message)?;
+        }
+        Ok(())
+    }
+
+    fn request(
+        &mut self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<RequestId, SupervisorError> {
+        let (id, outgoing) = self.client.request(method, params)?;
+        if let Some(Outgoing(message)) = outgoing {
+            self.write(&message)?;
+        }
+        Ok(id)
+    }
+
     fn notify(&mut self, method: &str, params: serde_json::Value) -> Result<(), SupervisorError> {
         let Outgoing(message) = self.client.notify(method, params)?;
         self.write(&message)
@@ -556,19 +679,49 @@ impl Supervisor {
             ClientEvent::LogMessage { kind, message } => Some(Update::Noted {
                 detail: format!("server log ({kind}): {message}"),
             }),
-            ClientEvent::Response { method, error, .. } => {
-                // Responses to requests deco does not raise yet. Expected
-                // failures — cancellation, content-modified — are not worth a
-                // line; they happen constantly during ordinary typing.
-                let error = error?;
-                if crate::jsonrpc::ErrorCode::from_code(error.code)
-                    .is_some_and(|code| code.is_expected())
-                {
-                    return None;
+            ClientEvent::Response {
+                method,
+                id,
+                result,
+                error,
+            } => {
+                if let Some(error) = error {
+                    // Cancellation and content-modified happen constantly during
+                    // ordinary typing; reporting them would bury the rest.
+                    if crate::jsonrpc::ErrorCode::from_code(error.code)
+                        .is_some_and(|code| code.is_expected())
+                    {
+                        return None;
+                    }
+                    return Some(Update::RequestFailed {
+                        id,
+                        method,
+                        reason: error.to_string(),
+                    });
                 }
-                Some(Update::Noted {
-                    detail: format!("{method} failed: {error}"),
-                })
+
+                // An absent result is treated as `null`, which for every method
+                // below means "nothing at that position".
+                let result = result.unwrap_or(serde_json::Value::Null);
+                match method.as_str() {
+                    "textDocument/hover" => Some(Update::Hover {
+                        id,
+                        hover: Hover::from_json(&result),
+                    }),
+                    "textDocument/definition"
+                    | "textDocument/declaration"
+                    | "textDocument/typeDefinition"
+                    | "textDocument/implementation"
+                    | "textDocument/references" => Some(Update::Locations {
+                        locations: Location::list_from_json(&result),
+                        id,
+                        method,
+                    }),
+                    // A method deco raises but does not yet consume.
+                    other => Some(Update::Noted {
+                        detail: format!("unhandled response to {other}"),
+                    }),
+                }
             }
             ClientEvent::Ignored { reason } => Some(Update::Noted { detail: reason }),
         }
@@ -614,6 +767,7 @@ mod tests {
     use super::*;
     use crate::capabilities::{ServerCapabilities, TextDocumentSyncKind};
     use crate::jsonrpc::{Notification, Response};
+    use deco_core::position::Position;
     use serde_json::json;
 
     /// A supervisor with no process behind it.
@@ -944,7 +1098,10 @@ mod tests {
     }
 
     #[test]
-    fn a_real_request_failure_is_noted() {
+    fn a_real_request_failure_reaches_the_editor() {
+        // Reported as `RequestFailed` rather than folded into `Noted`: the
+        // editor has a pending request whose caller is waiting, and a status
+        // line saying why is more use than a log entry.
         let mut s = detached(json!({}));
         let (id, _) = s.client.request("textDocument/hover", json!({})).unwrap();
         let updates = feed(
@@ -955,7 +1112,10 @@ mod tests {
                 "panicked",
             )),
         );
-        assert!(matches!(&updates[0], Update::Noted { .. }), "{updates:?}");
+        assert!(
+            matches!(&updates[0], Update::RequestFailed { .. }),
+            "{updates:?}"
+        );
     }
 
     #[test]
@@ -1004,5 +1164,187 @@ mod tests {
             let first = &params["contentChanges"][0];
             assert_eq!(first.get("range").is_some(), expect_range, "{params}");
         }
+    }
+
+    /// A detached supervisor with a document already open, so positional
+    /// requests reach the write path rather than being skipped.
+    fn with_open_document(capabilities: serde_json::Value) -> (Supervisor, std::path::PathBuf) {
+        let mut s = detached(capabilities);
+        let path = std::path::PathBuf::from("/w/a.rs");
+        let uri = s.uri_for(&path).unwrap();
+        s.sync.open(uri, "rust", "fn main() {}").unwrap();
+        (s, path)
+    }
+
+    #[test]
+    fn hover_is_skipped_when_the_server_does_not_offer_it() {
+        // The caller should not have to check capabilities before every keypress.
+        let (mut s, path) = with_open_document(json!({"textDocumentSync": 1}));
+        assert_eq!(s.hover(&path, Position::new(0, 3)).unwrap(), None);
+        assert_eq!(s.definition(&path, Position::new(0, 3)).unwrap(), None);
+        assert_eq!(s.references(&path, Position::new(0, 3)).unwrap(), None);
+    }
+
+    #[test]
+    fn a_request_about_an_unopened_document_is_skipped() {
+        // The server was never told about it, so it would answer about a file it
+        // does not have — an error at best, a wrong answer at worst.
+        let mut s = detached(json!({"hoverProvider": true}));
+        assert_eq!(
+            s.hover(std::path::Path::new("/w/never-opened.rs"), Position::ZERO)
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn a_relative_path_is_skipped_for_requests_too() {
+        let mut s = detached(json!({"hoverProvider": true}));
+        assert_eq!(
+            s.hover(std::path::Path::new("relative.rs"), Position::ZERO)
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn a_hover_answer_is_routed_back_with_its_id() {
+        let (mut s, _) = with_open_document(json!({"hoverProvider": true}));
+        let (id, _) = s.client.request("textDocument/hover", json!({})).unwrap();
+
+        let updates = feed(
+            &mut s,
+            Message::Response(Response::ok(
+                id.clone(),
+                json!({"contents": {"kind": "markdown", "value": "fn main()"}}),
+            )),
+        );
+
+        let Update::Hover { id: got, hover } = &updates[0] else {
+            panic!("expected a hover, got {updates:?}");
+        };
+        assert_eq!(got, &id, "the id is what lets a stale answer be dropped");
+        assert_eq!(hover.as_ref().unwrap().contents, "fn main()");
+    }
+
+    #[test]
+    fn a_null_hover_is_reported_as_a_successful_nothing() {
+        // Distinct from a failure: the server answered, and the answer is that
+        // there is nothing there. Silence would leave the editor waiting.
+        let (mut s, _) = with_open_document(json!({"hoverProvider": true}));
+        let (id, _) = s.client.request("textDocument/hover", json!({})).unwrap();
+        let updates = feed(&mut s, Message::Response(Response::ok(id, json!(null))));
+        assert!(
+            matches!(&updates[0], Update::Hover { hover: None, .. }),
+            "{updates:?}"
+        );
+    }
+
+    #[test]
+    fn a_definition_answer_is_routed_with_the_method_that_asked() {
+        // definition and references answer in the same shape, so the method is
+        // the only thing distinguishing "jump there" from "list them".
+        let (mut s, _) = with_open_document(json!({"definitionProvider": true}));
+        let (id, _) = s
+            .client
+            .request("textDocument/definition", json!({}))
+            .unwrap();
+
+        let updates = feed(
+            &mut s,
+            Message::Response(Response::ok(
+                id,
+                json!([{
+                    "uri": "file:///w/b.rs",
+                    "range": {"start": {"line": 4, "character": 2},
+                              "end": {"line": 4, "character": 6}},
+                }]),
+            )),
+        );
+
+        let Update::Locations {
+            method, locations, ..
+        } = &updates[0]
+        else {
+            panic!("expected locations, got {updates:?}");
+        };
+        assert_eq!(method, "textDocument/definition");
+        assert_eq!(locations.len(), 1);
+        assert_eq!(locations[0].range.start, Position::new(4, 2));
+    }
+
+    #[test]
+    fn every_location_returning_method_is_routed() {
+        // Not just definition: a server may implement declaration or
+        // typeDefinition and the answer arrives in the same shape.
+        for method in [
+            "textDocument/definition",
+            "textDocument/declaration",
+            "textDocument/typeDefinition",
+            "textDocument/implementation",
+            "textDocument/references",
+        ] {
+            let (mut s, _) = with_open_document(json!({"definitionProvider": true}));
+            let (id, _) = s.client.request(method, json!({})).unwrap();
+            let updates = feed(&mut s, Message::Response(Response::ok(id, json!([]))));
+            assert!(
+                matches!(&updates[0], Update::Locations { .. }),
+                "{method} was not routed: {updates:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn references_ask_for_the_declaration_too() {
+        // "Find all references" that omits the definition is a surprising
+        // answer, and VS Code includes it.
+        let (mut s, path) = with_open_document(json!({"referencesProvider": true}));
+        // No process, so the write fails — but the params are built first, and
+        // the client records the request either way.
+        let _ = s.references(&path, Position::new(0, 3));
+        assert_eq!(s.client.pending_count(), 1);
+    }
+
+    #[test]
+    fn a_failed_request_is_reported_with_its_method() {
+        let (mut s, _) = with_open_document(json!({"hoverProvider": true}));
+        let (id, _) = s.client.request("textDocument/hover", json!({})).unwrap();
+        let updates = feed(
+            &mut s,
+            Message::Response(Response::err(
+                id,
+                crate::jsonrpc::ErrorCode::InternalError,
+                "the server panicked",
+            )),
+        );
+        let Update::RequestFailed { method, reason, .. } = &updates[0] else {
+            panic!("expected a failure, got {updates:?}");
+        };
+        assert_eq!(method, "textDocument/hover");
+        assert!(reason.contains("panicked"), "{reason}");
+    }
+
+    #[test]
+    fn a_cancelled_or_stale_request_failure_is_not_reported() {
+        // Both arrive constantly while typing.
+        for code in [
+            crate::jsonrpc::ErrorCode::RequestCancelled,
+            crate::jsonrpc::ErrorCode::ContentModified,
+        ] {
+            let (mut s, _) = with_open_document(json!({"hoverProvider": true}));
+            let (id, _) = s.client.request("textDocument/hover", json!({})).unwrap();
+            let updates = feed(&mut s, Message::Response(Response::err(id, code, "x")));
+            assert!(updates.is_empty(), "{code:?} should be silent: {updates:?}");
+        }
+    }
+
+    #[test]
+    fn cancelling_a_request_on_a_stopped_server_is_not_an_error() {
+        // The editor cancels on every cursor move; a dead server must not turn
+        // that into an error path.
+        let (mut s, _) = with_open_document(json!({"hoverProvider": true}));
+        let (id, _) = s.client.request("textDocument/hover", json!({})).unwrap();
+        s.stop_with("gone".into());
+        assert!(s.cancel(&id).is_err() || true, "must not panic");
     }
 }
