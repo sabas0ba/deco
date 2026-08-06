@@ -17,8 +17,15 @@
 //!   coordinate meaningful.
 //! - [`mod@server`] — which server to run for a language, as an argument
 //!   vector rather than a shell string.
+//! - [`mod@settings`] — reading those definitions out of layered settings while
+//!   keeping track of which layer each came from, because a definition from a
+//!   cloned repository must not be run unasked.
 //! - [`mod@sync`] — keeping the server's copy of a document identical to the
 //!   editor's.
+//! - [`mod@process`] — spawning that server and moving bytes to and from it.
+//!   The one module here that owns a process and threads.
+//! - [`mod@supervisor`] — all of the above driven end to end, which is the
+//!   layer a frontend actually uses.
 //! - [`mod@diagnostics`] — the errors a server pushes, and deciding which of
 //!   them still apply.
 //! - [`mod@client`] — the session lifecycle, request routing and cancellation.
@@ -38,7 +45,10 @@ pub mod capabilities;
 pub mod client;
 pub mod diagnostics;
 pub mod jsonrpc;
+pub mod process;
 pub mod server;
+pub mod settings;
+pub mod supervisor;
 pub mod sync;
 pub mod uri;
 
@@ -46,6 +56,9 @@ pub use capabilities::{PositionEncoding, ServerCapabilities, TextDocumentSyncKin
 pub use client::{Client, ClientEvent, LspError, Outgoing};
 pub use diagnostics::{Diagnostic, DiagnosticStore, Severity};
 pub use jsonrpc::{Message, Notification, Request, RequestId, Response};
-pub use server::{ServerConfig, ServerRegistry};
+pub use process::{Consent, ServerProcess, SpawnError};
+pub use server::{ServerConfig, ServerRegistry, Trust};
+pub use settings::{ENABLED_KEY, SERVERS_KEY};
+pub use supervisor::{Supervisor, SupervisorError, Update};
 pub use sync::{ContentChange, DocumentSync};
 pub use uri::{PathStyle, Uri};

@@ -644,6 +644,7 @@ dependencies = [
 name = "deco-lsp"
 version = "0.1.0"
 dependencies = [
+ "deco-config",
  "deco-core",
  "serde",
  "serde_json",

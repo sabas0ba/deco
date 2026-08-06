@@ -1,8 +1,8 @@
 //! The terminal event loop.
 
 use std::io::{self, Write};
-use std::path::PathBuf;
-use std::time::Instant;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
 use crossterm::event::{self, Event};
@@ -12,6 +12,7 @@ use deco_editor::{Outcome, Session};
 use deco_theme::Rgba;
 
 use crate::keys::chord_from_event;
+use crate::lsp::Lsp;
 use crate::render::{self, Frame};
 
 /// Restores the terminal when it goes out of scope.
@@ -77,33 +78,86 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
     let (mut width, mut height) = terminal::size().unwrap_or((80, 24));
     session.resize(width as usize, height.saturating_sub(1) as usize);
 
+    let mut lsp = Lsp::new(session, workspace_root(path.as_deref()));
+    lsp.attach(session);
+
+    let mut dirty = true;
     loop {
-        let frame = render::render(session, width as usize, height as usize);
-        paint(&mut out, &frame)?;
+        if dirty {
+            let frame = render::render(session, width as usize, height as usize);
+            paint(&mut out, &frame)?;
+            dirty = false;
+        }
+
+        // Waiting with a timeout rather than blocking on `event::read`, so a
+        // language server's diagnostics arrive while the user is idle instead of
+        // on their next keystroke. The interval is a compromise: short enough
+        // that results feel immediate, long enough that an idle editor is not
+        // spinning.
+        if !event::poll(LSP_POLL_INTERVAL)? {
+            dirty |= lsp.poll(session);
+            continue;
+        }
+        dirty |= lsp.poll(session);
 
         match event::read()? {
             Event::Key(key) => {
                 let Some(chord) = chord_from_event(key) else {
                     continue;
                 };
+                dirty = true;
                 // Elapsed milliseconds is the monotonic clock the editor uses
                 // for undo grouping.
                 let now_ms = started.elapsed().as_millis() as u64;
                 match session.handle_chord(chord, now_ms) {
                     Outcome::Quit => break,
-                    Outcome::Save => save(session, path.as_ref())?,
+                    Outcome::Save => {
+                        save(session, path.as_ref())?;
+                        lsp.saved(session);
+                    }
                     _ => {}
                 }
+                // After the command, not before: the server has to be told
+                // about the text as it now is.
+                lsp.changed(session);
             }
             Event::Resize(new_width, new_height) => {
                 width = new_width;
                 height = new_height;
                 session.resize(width as usize, height.saturating_sub(1) as usize);
+                dirty = true;
             }
             _ => {}
         }
     }
+
+    // Before the terminal guard restores the screen, so a server that takes a
+    // moment to stop does so while the editor still looks alive.
+    lsp.detach();
     Ok(())
+}
+
+/// How long to wait on the terminal before checking the language server.
+///
+/// A language server has nothing to do with the keyboard, so the loop cannot
+/// simply block on input. 50ms is below the threshold at which a diagnostic
+/// feels delayed, and 20 wakeups a second on an idle editor is not measurable.
+const LSP_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// The directory to hand a language server as its workspace root.
+///
+/// The file's own directory, which is the honest answer while deco has no
+/// concept of an open folder: a server given a root it cannot make sense of
+/// indexes the wrong tree, and one given none falls back to single-file mode,
+/// which is worse than a directory that is merely narrow.
+fn workspace_root(path: Option<&Path>) -> Option<PathBuf> {
+    let path = path?;
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().ok()?.join(path)
+    };
+    absolute.parent().map(Path::to_path_buf)
 }
 
 /// Writes the open document to disk.

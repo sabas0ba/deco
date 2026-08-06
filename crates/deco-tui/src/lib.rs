@@ -11,6 +11,7 @@
 
 pub mod app;
 pub mod keys;
+pub mod lsp;
 pub mod render;
 
 pub use app::run;
