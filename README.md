@@ -47,7 +47,7 @@ thin painter.
 | Theme extensions from the marketplace | Yes — declarative, no host process |
 | Code extensions (`main`) | Protocol and sandbox built; host not yet wired to the editor |
 | Remote SSH / containers / WSL | Authorities and transports built; server not yet |
-| Language servers (LSP) | Diagnostics, hover, go-to-definition; completion not yet |
+| Language servers (LSP) | Diagnostics, hover, go-to-definition, completion |
 | `.tmTheme` (plist) themes, `-` scope exclusions | No |
 
 Settings are read from deco's own configuration directory, falling back to VS
@@ -146,13 +146,18 @@ does not:
   `docker exec` commands to reach them, and speaks the framed protocol the two
   ends would use. What does not exist yet is the other end: there is no
   `deco --server`, no provisioning it onto a remote, and no port forwarding.
-- **Completion, rename and code actions are not wired.** Diagnostics, hover
-  (`ctrl+k ctrl+i`) and go-to-definition (`F12`) work. The client can raise
-  `textDocument/references`, `rename` and `completion` — the requests are built
-  and the answers parsed — but nothing renders a list or applies an edit, so
-  those keys report that the feature is not implemented rather than pretending.
-  Changes are sent as full-document syncs; the incremental path exists in
-  `deco-lsp` but the editor does not yet track applied ranges.
+- **Rename and code actions are not wired.** Diagnostics, hover
+  (`ctrl+k ctrl+i`), go-to-definition (`F12`) and completion (`ctrl+space`, plus
+  the server's trigger characters) work. The client can raise
+  `textDocument/references` and `rename`, and parses the answers, but nothing
+  renders a reference list or applies a multi-file edit, so those keys say the
+  feature is not implemented rather than pretending. Changes are sent as
+  full-document syncs; the incremental path exists in `deco-lsp` but the editor
+  does not yet track applied ranges.
+- **Snippets are inserted without their placeholders.** deco advertises
+  `snippetSupport: false` and several servers send them anyway, so `foo(${1:arg})`
+  becomes `foo(arg)` and the status bar says so. There are no tab stops to jump
+  between yet.
 - **Go-to-definition across files needs a saved buffer.** deco holds one
   document, so jumping elsewhere replaces it. With unsaved changes it refuses
   and says so rather than losing them, and when a server returns several results
@@ -190,6 +195,35 @@ $ cargo xtask dist --target aarch64-apple-darwin
 `cargo xtask dist` is the same code the release workflow runs, so a release can
 be rehearsed without pushing a tag. It writes the archive and its `.sha256` to
 `dist/`.
+
+## Commit messages
+
+[Conventional Commits](https://www.conventionalcommits.org/), checked in CI:
+
+```console
+$ cargo xtask commitlint                          # the commits this branch adds
+$ cargo xtask commitlint --range main..HEAD
+```
+
+```
+feat(lsp): complete identifiers from the language server
+fix(tui): stop a long completion label overflowing the row
+ci: check commit messages against conventional commits
+```
+
+Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`,
+`chore`, `revert`. A scope is optional and is usually a crate without its `deco-`
+prefix. `!` before the colon marks a breaking change.
+
+The checker is about eighty lines in `xtask/src/commitlint.rs` rather than a
+Node package, for the reason in [Dependencies](#dependencies). In CI it is a step
+in the existing lint job rather than a job of its own: a separate job would
+re-run checkout, the toolchain and the cache — three more third-party actions
+executing, for a check that reads strings.
+
+It only reads the commits a branch adds. The convention was adopted partway
+through, and rewriting merged commits to satisfy it would change history other
+people have already pulled.
 
 The GPU frontend is behind a feature flag because wgpu and winit dominate build
 time:
@@ -238,10 +272,16 @@ so a `command` containing `;` or `$(…)` is a program name with punctuation in 
 and nothing more.
 
 What is wired up today: diagnostics (tallied in the status bar, walked with
-`F8` / `shift+F8`), hover (`ctrl+k ctrl+i`, dismissed with `escape`), and
-go-to-definition (`F12`). The keys are gated on VS Code's own context keys —
-`editorHasDefinitionProvider` and friends — set from what the server actually
-offers, so a binding is live exactly when the feature is.
+`F8` / `shift+F8`), hover (`ctrl+k ctrl+i`, dismissed with `escape`),
+go-to-definition (`F12`), and completion — `ctrl+space` to ask, or automatically
+on a character the server nominates. In the list, `up`/`down` move, `tab` or
+`enter` accepts, `escape` closes, and typing narrows it locally rather than
+asking the server again.
+
+The keys are gated on VS Code's own context keys — `editorHasDefinitionProvider`,
+`suggestWidgetVisible` and friends — set from what the server actually offers, so
+a binding is live exactly when the feature is, and `enter` keeps its ordinary
+meaning whenever no list is open.
 
 ## Dependencies
 

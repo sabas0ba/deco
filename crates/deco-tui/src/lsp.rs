@@ -28,9 +28,12 @@ use std::time::Duration;
 use deco_core::position::Position;
 use deco_editor::Session;
 use deco_lsp::process::Consent;
+use deco_lsp::requests::CompletionTrigger;
 use deco_lsp::supervisor::{Supervisor, Update};
 use deco_lsp::uri::PathStyle;
 use deco_lsp::{Hover, RequestId, ServerRegistry, Trust};
+
+use crate::suggest::Suggest;
 
 /// How long to wait for the handshake before giving up on a server.
 ///
@@ -62,6 +65,10 @@ pub struct Lsp {
     hover_request: Option<RequestId>,
     /// The go-to-definition request in flight.
     definition_request: Option<RequestId>,
+    /// The completion list on screen, if one is open.
+    suggest: Option<Suggest>,
+    /// The completion request in flight.
+    completion_request: Option<RequestId>,
 }
 
 /// A hover being displayed.
@@ -93,6 +100,61 @@ impl ShownHover {
     }
 }
 
+/// Where the word under the cursor begins.
+///
+/// The anchor a completion list filters from. A server is asked at the cursor
+/// and answers about the whole word, so the editor has to agree with it about
+/// where that word started — otherwise the list filters against the wrong text,
+/// which looks like the server returning nonsense.
+///
+/// "Word" here is the identifier rule every language deco knows shares:
+/// alphanumeric plus `_`. Deliberately not the server's idea of a word, because
+/// the protocol gives no way to ask.
+fn word_start(session: &Session) -> Position {
+    let cursor = session.view.selections.primary().active;
+    let Some(line) = session
+        .document
+        .buffer
+        .line_content(cursor.line as usize)
+        .map(|s| s.to_string())
+    else {
+        return cursor;
+    };
+
+    // Counted in UTF-16 units, since that is what a position is.
+    let mut start = cursor.character;
+    let units: Vec<u16> = line.encode_utf16().collect();
+    while start > 0 {
+        let index = (start - 1) as usize;
+        let Some(&unit) = units.get(index) else { break };
+        // Surrogates are part of a character outside the Basic Multilingual
+        // Plane — an emoji, say — which is never an identifier character, so the
+        // word ends here.
+        let Some(c) = char::from_u32(unit as u32) else {
+            break;
+        };
+        if !(c.is_alphanumeric() || c == '_') {
+            break;
+        }
+        start -= 1;
+    }
+    Position::new(cursor.line, start)
+}
+
+/// The characters between two columns of a line, as typed.
+///
+/// Used to replay into a completion filter what the user typed while waiting for
+/// the server's answer.
+fn typed_between(line: &str, from: u32, to: u32) -> Vec<char> {
+    let units: Vec<u16> = line.encode_utf16().collect();
+    let from = from as usize;
+    let to = (to as usize).min(units.len());
+    if from >= to {
+        return Vec::new();
+    }
+    String::from_utf16_lossy(&units[from..to]).chars().collect()
+}
+
 impl Lsp {
     /// Reads the configuration and prepares to attach servers.
     ///
@@ -117,7 +179,144 @@ impl Lsp {
             hover: None,
             hover_request: None,
             definition_request: None,
+            suggest: None,
+            completion_request: None,
         }
+    }
+
+    /// The completion list to draw, if one is open.
+    pub fn suggest(&self) -> Option<&Suggest> {
+        self.suggest.as_ref()
+    }
+
+    /// Asks for completions at the cursor.
+    ///
+    /// `trigger` records whether the user asked or a trigger character was
+    /// typed; the server changes what it offers accordingly.
+    pub fn request_completion(&mut self, session: &mut Session, trigger: CompletionTrigger) {
+        self.dismiss_suggest();
+        let (Some(path), Some(supervisor)) =
+            (session.document.path.clone(), self.supervisor.as_mut())
+        else {
+            return;
+        };
+        let position = session.view.selections.primary().active;
+        match supervisor.completion(&path, position, trigger) {
+            Ok(Some(id)) => self.completion_request = Some(id),
+            Ok(None) => {
+                // Only worth saying when the user asked. A trigger character
+                // that finds no provider should type itself and stay quiet.
+                session.status = Some("this server does not offer completion".to_owned());
+            }
+            Err(error) => self.report(session, error.to_string()),
+        }
+        self.sync_context(session);
+    }
+
+    /// The characters that should open a list without being asked.
+    pub fn completion_triggers(&self) -> &[String] {
+        self.supervisor
+            .as_ref()
+            .map(Supervisor::completion_triggers)
+            .unwrap_or(&[])
+    }
+
+    /// Closes the list and cancels the request behind it.
+    pub fn dismiss_suggest(&mut self) {
+        self.suggest = None;
+        if let (Some(id), Some(supervisor)) =
+            (self.completion_request.take(), self.supervisor.as_mut())
+        {
+            let _ = supervisor.cancel(&id);
+        }
+    }
+
+    /// Moves the selection in an open list. Returns whether anything changed.
+    pub fn select_next(&mut self) -> bool {
+        match self.suggest.as_mut() {
+            Some(suggest) => {
+                suggest.next();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Moves the selection up in an open list.
+    pub fn select_previous(&mut self) -> bool {
+        match self.suggest.as_mut() {
+            Some(suggest) => {
+                suggest.previous();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Narrows an open list as the user types, closing it when nothing matches.
+    ///
+    /// Called after the character has been inserted into the document, so the
+    /// list and the text agree about what has been typed.
+    pub fn typed(&mut self, session: &mut Session, c: char) -> bool {
+        let Some(suggest) = self.suggest.as_mut() else {
+            return false;
+        };
+        if !suggest.push(c) {
+            self.dismiss_suggest();
+            self.sync_context(session);
+        }
+        true
+    }
+
+    /// Widens an open list on backspace, closing it if the word is gone.
+    pub fn backspaced(&mut self, session: &mut Session) -> bool {
+        let Some(suggest) = self.suggest.as_mut() else {
+            return false;
+        };
+        if !suggest.pop() || suggest.is_empty() {
+            self.dismiss_suggest();
+            self.sync_context(session);
+        }
+        true
+    }
+
+    /// Inserts the selected item, replacing what the list was matching.
+    ///
+    /// Returns whether anything was accepted, so the caller can fall through to
+    /// the key's ordinary meaning — `enter` with no list open has to insert a
+    /// newline.
+    pub fn accept(&mut self, session: &mut Session, now_ms: u64) -> bool {
+        let Some(suggest) = self.suggest.as_ref() else {
+            return false;
+        };
+        let Some(item) = suggest.selected_item().cloned() else {
+            self.dismiss_suggest();
+            self.sync_context(session);
+            return false;
+        };
+
+        // The server's own range when it gave one: it knows where the completion
+        // begins, and guessing from the document is how `Hash` + `HashMap`
+        // becomes `HashHashMap`. Failing that, the span from where the list
+        // opened to the cursor, which is exactly what was matched against.
+        let cursor = session.view.selections.primary().active;
+        let range = item.replace.unwrap_or(deco_core::position::Range::ordered(
+            suggest.anchor(),
+            cursor,
+        ));
+
+        self.dismiss_suggest();
+        if item.was_snippet {
+            // Said plainly rather than silently inserting the reduced text: the
+            // user asked for a snippet and got a best effort.
+            session.status = Some(format!(
+                "{}: inserted without placeholders (no snippet support yet)",
+                item.label
+            ));
+        }
+        session.replace_range(range, &item.insert, now_ms);
+        self.sync_context(session);
+        true
     }
 
     /// The hover to draw, if one applies to where the cursor is now.
@@ -162,6 +361,12 @@ impl Lsp {
         session
             .context
             .set("editorHoverVisible", self.hover.is_some());
+        // VS Code's key, and already referenced by the default keymap: `enter`
+        // and `tab` are bound with `!suggestWidgetVisible` so they keep their
+        // ordinary meaning while no list is open.
+        session
+            .context
+            .set("suggestWidgetVisible", self.suggest.is_some());
     }
 
     /// Requests a hover for the cursor's position.
@@ -433,6 +638,8 @@ impl Lsp {
                     self.hover = None;
                     self.hover_request = None;
                     self.definition_request = None;
+                    self.suggest = None;
+                    self.completion_request = None;
                     // The features that were on offer went with the server.
                     self.sync_context(session);
                     return true;
@@ -469,6 +676,50 @@ impl Lsp {
                     }
                     self.definition_request = None;
                     changed |= self.go_to(session, &method, &locations);
+                }
+                Update::Completion {
+                    id,
+                    items,
+                    incomplete,
+                } => {
+                    // Only the outstanding request: an earlier list arriving late
+                    // describes a position the user has typed past.
+                    if self.completion_request.as_ref() != Some(&id) {
+                        continue;
+                    }
+                    self.completion_request = None;
+                    if items.is_empty() {
+                        session.status = Some("no completions here".to_owned());
+                    } else {
+                        let anchor = word_start(session);
+                        let mut suggest = Suggest::new(items, anchor, incomplete);
+                        // The characters between the word's start and the cursor
+                        // were typed before the answer came back, so they are
+                        // replayed into the filter. Without this the list shows
+                        // everything the server offered at the word's start,
+                        // ignoring what the user has since narrowed it to.
+                        let cursor = session.view.selections.primary().active;
+                        if anchor.line == cursor.line && cursor.character > anchor.character {
+                            let line = session
+                                .document
+                                .buffer
+                                .line_content(cursor.line as usize)
+                                .map(|s| s.to_string())
+                                .unwrap_or_default();
+                            for c in typed_between(&line, anchor.character, cursor.character) {
+                                if !suggest.push(c) {
+                                    break;
+                                }
+                            }
+                        }
+                        if suggest.is_empty() {
+                            session.status = Some("no completions here".to_owned());
+                        } else {
+                            self.suggest = Some(suggest);
+                        }
+                    }
+                    self.sync_context(session);
+                    changed = true;
                 }
                 Update::RequestFailed { method, reason, .. } => {
                     // The short name: `textDocument/hover` in a status bar is
@@ -567,6 +818,8 @@ impl Lsp {
         self.hover = None;
         self.hover_request = None;
         self.definition_request = None;
+        self.suggest = None;
+        self.completion_request = None;
     }
 
     fn report(&mut self, session: &mut Session, message: String) {

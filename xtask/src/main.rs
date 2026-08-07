@@ -12,6 +12,7 @@
 //! $ cargo xtask dist --target aarch64-apple-darwin  # …or for another target
 //! ```
 
+mod commitlint;
 mod dist;
 
 use std::path::{Path, PathBuf};
@@ -60,6 +61,15 @@ enum Command {
     HostTest,
     /// Check the dependency graph against the supply-chain policy in deny.toml.
     Deny,
+    /// Check commit messages against Conventional Commits.
+    Commitlint {
+        /// Revision range to check, e.g. `origin/main..HEAD`.
+        ///
+        /// Defaults to the commits this branch adds to `origin/main`, which is
+        /// what a pull request is asking to merge.
+        #[arg(long)]
+        range: Option<String>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -89,7 +99,72 @@ fn main() -> Result<()> {
         }
         Command::HostTest => host_test(&root),
         Command::Deny => deny(&root),
+        Command::Commitlint { range } => commit_lint(&root, range.as_deref()),
     }
+}
+
+/// Checks every commit in `range` against Conventional Commits.
+///
+/// Only the commits a branch adds, not the whole history: the convention was
+/// adopted partway through, and rewriting merged commits to satisfy it would
+/// change history other people have already pulled.
+fn commit_lint(root: &Path, range: Option<&str>) -> Result<()> {
+    let range = range.unwrap_or("origin/main..HEAD").to_owned();
+
+    // NUL-separated, because a commit message contains blank lines and
+    // everything else a line-based split would trip over.
+    let output = std::process::Command::new("git")
+        .current_dir(root)
+        .args(["log", "--no-merges", "--format=%B%x00", &range])
+        .output()
+        .context("running `git log` — is this a git checkout?")?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "`git log {range}` failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    let messages: Vec<&str> = text
+        .split('\0')
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+        .collect();
+
+    if messages.is_empty() {
+        println!("no commits in {range} to check");
+        return Ok(());
+    }
+
+    let mut failed = 0usize;
+    for message in &messages {
+        let subject = message.lines().next().unwrap_or_default();
+        let problems = commitlint::check(message);
+        if problems.is_empty() {
+            println!("ok   {subject}");
+            continue;
+        }
+        failed += 1;
+        println!("FAIL {subject}");
+        for problem in problems {
+            println!(
+                "     [{}] {}",
+                problem.rule,
+                problem.detail.replace('\n', "\n     ")
+            );
+        }
+    }
+
+    if failed > 0 {
+        anyhow::bail!(
+            "{failed} of {} commit messages are not Conventional Commits.              Rewrite them with `git rebase -i` or `git commit --amend`.",
+            messages.len()
+        );
+    }
+    println!("{} commit messages are well formed", messages.len());
+    Ok(())
 }
 
 /// Runs `cargo deny` against deny.toml.

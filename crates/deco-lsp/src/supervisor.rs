@@ -42,7 +42,7 @@ use crate::client::{Client, ClientEvent, LspError, Outgoing, State};
 use crate::diagnostics::{Diagnostic, DiagnosticStore, Published};
 use crate::jsonrpc::{Message, ProtocolError, RequestId};
 use crate::process::{Consent, ReaderEvent, ServerProcess, SpawnError, EXIT_GRACE};
-use crate::requests::{Hover, Location};
+use crate::requests::{CompletionItem, CompletionTrigger, Hover, Location};
 use crate::server::ServerConfig;
 use crate::sync::{ContentChange, DocumentSync, SyncError};
 use crate::uri::{PathStyle, Uri};
@@ -100,6 +100,16 @@ pub enum Update {
         method: String,
         /// Where the server pointed. Empty means it found nothing.
         locations: Vec<Location>,
+    },
+    /// An answer to [`Supervisor::completion`].
+    Completion {
+        /// The request this answers.
+        id: RequestId,
+        /// The suggestions, in the order the server sent them.
+        items: Vec<CompletionItem>,
+        /// Whether the server marked the list incomplete. Reported but not acted
+        /// on: deco re-requests from scratch rather than refining a partial list.
+        incomplete: bool,
     },
     /// A request failed for a reason worth showing the user.
     ///
@@ -450,6 +460,42 @@ impl Supervisor {
         self.positional("textDocument/hover", path, position)
     }
 
+    /// Asks for completions at a position.
+    ///
+    /// `None` when the server offers no completion, so the caller need not check
+    /// capabilities on every keystroke.
+    pub fn completion(
+        &mut self,
+        path: &Path,
+        position: deco_core::position::Position,
+        trigger: CompletionTrigger,
+    ) -> Result<Option<RequestId>, SupervisorError> {
+        if self.client.capabilities().completion.is_none() {
+            return Ok(None);
+        }
+        let Some(uri) = self.uri_for(path) else {
+            return Ok(None);
+        };
+        if !self.sync.is_open(&uri) {
+            return Ok(None);
+        }
+        let params = crate::requests::completion_params(&uri, position, &trigger);
+        self.request("textDocument/completion", params).map(Some)
+    }
+
+    /// The characters that should open a completion list without being asked.
+    ///
+    /// Empty when no server is running, which is what makes a caller able to
+    /// check this on every keystroke without a branch of its own.
+    pub fn completion_triggers(&self) -> &[String] {
+        self.client
+            .capabilities()
+            .completion
+            .as_ref()
+            .map(|options| options.trigger_characters.as_slice())
+            .unwrap_or(&[])
+    }
+
     /// Asks where something is defined.
     pub fn definition(
         &mut self,
@@ -708,6 +754,14 @@ impl Supervisor {
                         id,
                         hover: Hover::from_json(&result),
                     }),
+                    "textDocument/completion" => {
+                        let (items, incomplete) = CompletionItem::list_from_json(&result);
+                        Some(Update::Completion {
+                            id,
+                            items,
+                            incomplete,
+                        })
+                    }
                     "textDocument/definition"
                     | "textDocument/declaration"
                     | "textDocument/typeDefinition"

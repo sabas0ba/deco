@@ -120,6 +120,9 @@ pub const DEFAULT_KEYBINDINGS_JSONC: &str = r#"[
     { "key": "ctrl+space",   "mac": "ctrl+space",  "command": "editor.action.triggerSuggest", "when": "editorTextFocus && !editorReadonly" },
     { "key": "escape",       "command": "closeHoverWidget", "when": "editorHoverVisible && textInputFocus" },
     { "key": "escape",       "command": "hideSuggestWidget", "when": "suggestWidgetVisible && textInputFocus" },
+    { "key": "down",         "command": "selectNextSuggestion",     "when": "suggestWidgetVisible && textInputFocus" },
+    { "key": "up",           "command": "selectPrevSuggestion",     "when": "suggestWidgetVisible && textInputFocus" },
+    { "key": "tab",          "command": "acceptSelectedSuggestion", "when": "suggestWidgetVisible && textInputFocus" },
     { "key": "enter",        "command": "acceptSelectedSuggestion", "when": "suggestWidgetVisible && textInputFocus" },
 
     // ---- Editors and tabs -----------------------------------------------
