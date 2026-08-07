@@ -19,6 +19,19 @@ fn utf16_len(text: &str) -> u32 {
     text.encode_utf16().count() as u32
 }
 
+/// Why a batch of server-computed edits could not be applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum EditError {
+    /// Two of the edits covered the same text.
+    ///
+    /// The protocol forbids this, so a server sending it is broken. Refused
+    /// rather than guessed at: picking which to honour would corrupt the file
+    /// silently, and a file the user can still fix by hand is worth more than
+    /// one that was quietly mangled.
+    #[error("the server sent overlapping edits, which have no well-defined result")]
+    Overlapping,
+}
+
 /// Which way [`Session::goto_marker`] walks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Direction {
@@ -260,6 +273,8 @@ impl Session {
             | "editor.action.revealDefinition"
             | "editor.action.goToReferences"
             | "editor.action.triggerSuggest"
+            | "editor.action.formatDocument"
+            | "editor.action.formatSelection"
             | "acceptSelectedSuggestion"
             | "selectNextSuggestion"
             | "selectPrevSuggestion"
@@ -391,6 +406,85 @@ impl Session {
             .reveal_cursor(&self.document.buffer, &self.document.settings);
         self.refresh_context();
         end
+    }
+
+    /// Applies a batch of server-computed replacements as one undo step.
+    ///
+    /// Every range refers to the document as the server saw it, and the protocol
+    /// says nothing about the order they arrive in — so applying them front to
+    /// back would corrupt the file, because the first edit shifts every position
+    /// after it. [`deco_core::Transaction`] sorts them and applies back to front,
+    /// which is why they are handed over as one batch rather than looped over.
+    ///
+    /// Returns how many edits were applied, or an error naming the reason when
+    /// none could be.
+    ///
+    /// The cursor is kept where it was, clamped into the new text. A formatting
+    /// run that moved the caret to the end of the file would be correct by the
+    /// letter of the edits and useless in practice.
+    pub fn apply_edits(
+        &mut self,
+        edits: &[deco_lsp::TextEdit],
+        now_ms: u64,
+    ) -> Result<usize, EditError> {
+        use deco_core::{Change, EditKind, Transaction};
+
+        // A server routinely answers an already-formatted document with a no-op
+        // edit. Applying one would mark the file dirty and add an undo step for
+        // nothing.
+        let changes: Vec<Change> = edits
+            .iter()
+            .filter(|edit| !edit.is_noop())
+            .map(|edit| {
+                Change::replace(
+                    deco_core::position::Range::new(
+                        self.document.buffer.clamp_position(edit.range.start),
+                        self.document.buffer.clamp_position(edit.range.end),
+                    ),
+                    edit.new_text.clone(),
+                )
+            })
+            .collect();
+
+        if changes.is_empty() {
+            return Ok(0);
+        }
+
+        let applied = changes.len();
+        // Overlapping edits have no well-defined result. The specification
+        // forbids them, so a server sending them is broken — and guessing which
+        // to honour would corrupt the file silently, which is worse than
+        // refusing and saying so.
+        let transaction = Transaction::new(changes).map_err(|_| EditError::Overlapping)?;
+
+        let before = self.view.selections.clone();
+        let inverse = self.document.buffer.apply(&transaction);
+
+        let cursor = self.document.buffer.clamp_position(before.primary().active);
+        let after = deco_core::SelectionSet::caret(cursor);
+        self.view.selections = after.clone();
+        self.document
+            .history
+            .record(inverse, EditKind::Discrete, before, after, now_ms);
+        self.document.dirty = true;
+        self.view
+            .reveal_cursor(&self.document.buffer, &self.document.settings);
+        self.refresh_context();
+        Ok(applied)
+    }
+
+    /// The formatting options a language server should be told about.
+    ///
+    /// The user's own, resolved for the open document's language — so a server
+    /// formats to the project's indentation rather than to its own defaults.
+    pub fn formatting_options(&self) -> deco_lsp::FormattingOptions {
+        let settings = &self.document.settings;
+        deco_lsp::FormattingOptions {
+            tab_size: settings.tab_size.clamp(1, u32::MAX as usize) as u32,
+            insert_spaces: settings.insert_spaces,
+            trim_trailing_whitespace: settings.trim_trailing_whitespace,
+            insert_final_newline: settings.insert_final_newline,
+        }
     }
 
     /// Text to write to disk for the open document.
@@ -846,5 +940,174 @@ mod tests {
             0,
         );
         assert_eq!(s.document.buffer.line_content(0).unwrap(), "abc");
+    }
+
+    fn edit(line: u32, from: u32, to: u32, text: &str) -> deco_lsp::TextEdit {
+        deco_lsp::TextEdit {
+            range: deco_core::position::Range::new(
+                Position::new(line, from),
+                Position::new(line, to),
+            ),
+            new_text: text.to_owned(),
+        }
+    }
+
+    #[test]
+    fn edits_are_applied_back_to_front_whatever_order_they_arrive_in() {
+        // The trap this exists for: every range refers to the document the
+        // server saw, and applying them front to back shifts every position
+        // after the first edit. Given deliberately out of order.
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "aaaa bbbb cccc\n");
+        let applied = s
+            .apply_edits(
+                &[
+                    edit(0, 10, 14, "THREE"),
+                    edit(0, 0, 4, "ONE"),
+                    edit(0, 5, 9, "TWO"),
+                ],
+                0,
+            )
+            .unwrap();
+
+        assert_eq!(applied, 3);
+        assert_eq!(s.document.buffer.line_content(0).unwrap(), "ONE TWO THREE");
+    }
+
+    #[test]
+    fn a_whole_batch_is_one_undo_step() {
+        // A formatting run is one decision; undoing it a line at a time would be
+        // unusable on a file the server reflowed.
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "aaaa bbbb\n");
+        s.apply_edits(&[edit(0, 0, 4, "x"), edit(0, 5, 9, "y")], 0)
+            .unwrap();
+        assert_eq!(s.document.buffer.line_content(0).unwrap(), "x y");
+
+        s.run("undo", None, 0);
+        assert_eq!(s.document.buffer.line_content(0).unwrap(), "aaaa bbbb");
+    }
+
+    #[test]
+    fn edits_spanning_lines_are_applied_correctly() {
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "one\ntwo\nthree\nfour\n");
+        s.apply_edits(
+            &[
+                deco_lsp::TextEdit {
+                    range: deco_core::position::Range::new(
+                        Position::new(2, 0),
+                        Position::new(3, 4),
+                    ),
+                    new_text: "THREE-FOUR".into(),
+                },
+                edit(0, 0, 3, "ONE"),
+            ],
+            0,
+        )
+        .unwrap();
+        assert_eq!(s.document.buffer.line_content(0).unwrap(), "ONE");
+        assert_eq!(s.document.buffer.line_content(2).unwrap(), "THREE-FOUR");
+    }
+
+    #[test]
+    fn an_already_formatted_document_is_left_alone() {
+        // Servers answer with a no-op edit for this. Applying one would mark the
+        // file dirty and add an undo step for nothing.
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "fine\n");
+        let applied = s.apply_edits(&[edit(0, 2, 2, "")], 0).unwrap();
+        assert_eq!(applied, 0);
+        assert!(!s.document.dirty, "nothing changed, so nothing is dirty");
+    }
+
+    #[test]
+    fn an_empty_edit_list_changes_nothing() {
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "fine\n");
+        assert_eq!(s.apply_edits(&[], 0).unwrap(), 0);
+        assert!(!s.document.dirty);
+    }
+
+    #[test]
+    fn overlapping_edits_are_refused_and_the_file_is_untouched() {
+        // The protocol forbids them, so a server sending them is broken. Picking
+        // one to honour would corrupt the file silently, and a file the user can
+        // still fix by hand is worth more than one quietly mangled.
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "aaaa bbbb\n");
+        assert_eq!(
+            s.apply_edits(&[edit(0, 0, 6, "x"), edit(0, 4, 9, "y")], 0),
+            Err(EditError::Overlapping)
+        );
+        assert_eq!(s.document.buffer.line_content(0).unwrap(), "aaaa bbbb");
+        assert!(!s.document.dirty);
+    }
+
+    #[test]
+    fn the_cursor_stays_where_it_was_rather_than_following_the_edits() {
+        // A formatting run that moved the caret to the end of the file would be
+        // correct by the letter of the edits and useless in practice.
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "one\ntwo\nthree\n");
+        s.view.selections = deco_core::SelectionSet::caret(Position::new(1, 2));
+        s.apply_edits(&[edit(0, 0, 3, "ONE")], 0).unwrap();
+        assert_eq!(s.view.selections.primary().active, Position::new(1, 2));
+    }
+
+    #[test]
+    fn a_cursor_past_the_end_of_the_reformatted_text_is_clamped() {
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "a long line here\n");
+        s.view.selections = deco_core::SelectionSet::caret(Position::new(0, 15));
+        s.apply_edits(&[edit(0, 0, 16, "short")], 0).unwrap();
+        let cursor = s.view.selections.primary().active;
+        assert!(cursor.character <= 5, "cursor at {cursor:?}");
+    }
+
+    #[test]
+    fn an_edit_range_past_the_end_of_the_document_is_clamped() {
+        // The server may have answered about text the user has since deleted.
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "ab\n");
+        s.apply_edits(&[edit(0, 1, 99, "Z")], 0).unwrap();
+        assert_eq!(s.document.buffer.line_content(0).unwrap(), "aZ");
+    }
+
+    #[test]
+    fn formatting_options_come_from_the_users_own_settings() {
+        // A server told nothing indents to its defaults, and against a project
+        // that disagrees the result is a diff touching every line.
+        let mut settings = Settings::with_defaults();
+        settings
+            .load_layer(
+                Scope::User,
+                r#"{"editor.tabSize": 2, "editor.insertSpaces": false,
+                    "files.insertFinalNewline": true}"#,
+            )
+            .unwrap();
+        let mut s = Session::new(settings, None, Platform::Linux);
+        s.open(PathBuf::from("/w/a.rs"), "x\n");
+
+        let options = s.formatting_options();
+        assert_eq!(options.tab_size, 2);
+        assert!(!options.insert_spaces);
+        assert!(options.insert_final_newline);
+    }
+
+    #[test]
+    fn format_commands_are_routed_to_the_frontend() {
+        // The core has no server to ask, and naming them keeps a mistyped
+        // binding reporting as unknown.
+        let mut s = session();
+        assert_eq!(
+            s.run("editor.action.formatDocument", None, 0),
+            Outcome::Frontend("editor.action.formatDocument".into())
+        );
+        assert_eq!(
+            s.run("editor.action.formatSelection", None, 0),
+            Outcome::Frontend("editor.action.formatSelection".into())
+        );
+        assert_eq!(s.run("editor.action.nonsense", None, 0), Outcome::NotFound);
     }
 }

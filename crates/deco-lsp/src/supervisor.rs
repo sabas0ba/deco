@@ -42,7 +42,9 @@ use crate::client::{Client, ClientEvent, LspError, Outgoing, State};
 use crate::diagnostics::{Diagnostic, DiagnosticStore, Published};
 use crate::jsonrpc::{Message, ProtocolError, RequestId};
 use crate::process::{Consent, ReaderEvent, ServerProcess, SpawnError, EXIT_GRACE};
-use crate::requests::{CompletionItem, CompletionTrigger, Hover, Location};
+use crate::requests::{
+    CompletionItem, CompletionTrigger, FormattingOptions, Hover, Location, TextEdit,
+};
 use crate::server::ServerConfig;
 use crate::sync::{ContentChange, DocumentSync, SyncError};
 use crate::uri::{PathStyle, Uri};
@@ -110,6 +112,17 @@ pub enum Update {
         /// Whether the server marked the list incomplete. Reported but not acted
         /// on: deco re-requests from scratch rather than refining a partial list.
         incomplete: bool,
+    },
+    /// An answer to [`Supervisor::formatting`] or [`Supervisor::range_formatting`].
+    Edits {
+        /// The request this answers.
+        id: RequestId,
+        /// Which method asked.
+        method: String,
+        /// The replacements to make, in the order the server sent them. They
+        /// refer to the document as the server saw it and must not be applied
+        /// front to back; see [`TextEdit::list_from_json`].
+        edits: Vec<TextEdit>,
     },
     /// A request failed for a reason worth showing the user.
     ///
@@ -496,6 +509,55 @@ impl Supervisor {
             .unwrap_or(&[])
     }
 
+    /// Asks the server to format the whole document.
+    ///
+    /// `options` is the user's own indentation settings, which is the point of
+    /// sending them: a server told nothing formats to its defaults, and against
+    /// a project that disagrees the result is a diff touching every line.
+    pub fn formatting(
+        &mut self,
+        path: &Path,
+        options: FormattingOptions,
+    ) -> Result<Option<RequestId>, SupervisorError> {
+        if !self.client.capabilities().formatting {
+            return Ok(None);
+        }
+        let Some(uri) = self.uri_for(path) else {
+            return Ok(None);
+        };
+        if !self.sync.is_open(&uri) {
+            return Ok(None);
+        }
+        let params = crate::requests::formatting_params(&uri, options);
+        self.request("textDocument/formatting", params).map(Some)
+    }
+
+    /// Asks the server to format one range.
+    ///
+    /// Uses the same `formatting` capability: a server that offers whole-document
+    /// formatting usually offers this too, and the specification gives them
+    /// separate flags that servers set inconsistently. A server that does not
+    /// support it answers with an error, which is reported like any other.
+    pub fn range_formatting(
+        &mut self,
+        path: &Path,
+        range: deco_core::position::Range,
+        options: FormattingOptions,
+    ) -> Result<Option<RequestId>, SupervisorError> {
+        if !self.client.capabilities().formatting {
+            return Ok(None);
+        }
+        let Some(uri) = self.uri_for(path) else {
+            return Ok(None);
+        };
+        if !self.sync.is_open(&uri) {
+            return Ok(None);
+        }
+        let params = crate::requests::range_formatting_params(&uri, range, options);
+        self.request("textDocument/rangeFormatting", params)
+            .map(Some)
+    }
+
     /// Asks where something is defined.
     pub fn definition(
         &mut self,
@@ -760,6 +822,13 @@ impl Supervisor {
                             id,
                             items,
                             incomplete,
+                        })
+                    }
+                    "textDocument/formatting" | "textDocument/rangeFormatting" => {
+                        Some(Update::Edits {
+                            edits: TextEdit::list_from_json(&result),
+                            id,
+                            method,
                         })
                     }
                     "textDocument/definition"

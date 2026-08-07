@@ -69,6 +69,8 @@ pub struct Lsp {
     suggest: Option<Suggest>,
     /// The completion request in flight.
     completion_request: Option<RequestId>,
+    /// The formatting request in flight.
+    format_request: Option<RequestId>,
 }
 
 /// A hover being displayed.
@@ -181,6 +183,7 @@ impl Lsp {
             definition_request: None,
             suggest: None,
             completion_request: None,
+            format_request: None,
         }
     }
 
@@ -387,6 +390,42 @@ impl Lsp {
             Ok(Some(id)) => self.hover_request = Some(id),
             Ok(None) => {
                 session.status = Some("this server does not offer hover".to_owned());
+            }
+            Err(error) => self.report(session, error.to_string()),
+        }
+    }
+
+    /// Asks the server to format the document, or the selection if there is one.
+    ///
+    /// The selection decides which method is used, rather than a separate
+    /// keybinding choosing wrongly: `ctrl+shift+i` with text selected almost
+    /// always means "format this", and reformatting the whole file instead is a
+    /// diff nobody asked for.
+    pub fn request_formatting(&mut self, session: &mut Session, selection_only: bool) {
+        let (Some(path), Some(supervisor)) =
+            (session.document.path.clone(), self.supervisor.as_mut())
+        else {
+            return;
+        };
+        let options = session.formatting_options();
+        let selection = session.view.selections.primary();
+        let range = deco_core::position::Range::ordered(selection.anchor, selection.active);
+
+        let raised = if selection_only && !range.is_empty() {
+            supervisor.range_formatting(&path, range, options)
+        } else {
+            supervisor.formatting(&path, options)
+        };
+
+        match raised {
+            Ok(Some(id)) => {
+                self.format_request = Some(id);
+                // Said up front: formatting a large file can take a moment, and
+                // silence looks like a key that does nothing.
+                session.status = Some("Formatting…".to_owned());
+            }
+            Ok(None) => {
+                session.status = Some("this server does not offer formatting".to_owned());
             }
             Err(error) => self.report(session, error.to_string()),
         }
@@ -640,6 +679,7 @@ impl Lsp {
                     self.definition_request = None;
                     self.suggest = None;
                     self.completion_request = None;
+                    self.format_request = None;
                     // The features that were on offer went with the server.
                     self.sync_context(session);
                     return true;
@@ -719,6 +759,32 @@ impl Lsp {
                         }
                     }
                     self.sync_context(session);
+                    changed = true;
+                }
+                Update::Edits { id, method, edits } => {
+                    if self.format_request.as_ref() != Some(&id) {
+                        continue;
+                    }
+                    self.format_request = None;
+                    let short = method.rsplit('/').next().unwrap_or(&method).to_owned();
+                    match session.apply_edits(&edits, 0) {
+                        Ok(0) => {
+                            session.status = Some("already formatted".to_owned());
+                        }
+                        Ok(count) => {
+                            session.status = Some(format!(
+                                "{short}: applied {count} edit{}",
+                                if count == 1 { "" } else { "s" }
+                            ));
+                        }
+                        // A broken server, and the file is untouched. Worth
+                        // saying loudly: the user pressed a key and nothing
+                        // happened, and the reason is not their fault.
+                        Err(error) => {
+                            session.status = Some(format!("{short}: {error}"));
+                            session.problems.push(format!("{method}: {error}"));
+                        }
+                    }
                     changed = true;
                 }
                 Update::RequestFailed { method, reason, .. } => {
@@ -820,6 +886,7 @@ impl Lsp {
         self.definition_request = None;
         self.suggest = None;
         self.completion_request = None;
+        self.format_request = None;
     }
 
     fn report(&mut self, session: &mut Session, message: String) {
@@ -1218,5 +1285,38 @@ mod tests {
         assert!(lsp.hover().is_none());
         assert!(lsp.hover_request.is_none());
         assert!(lsp.definition_request.is_none());
+    }
+
+    #[test]
+    fn formatting_without_a_server_does_nothing_visible() {
+        let mut s = session(Settings::with_defaults());
+        let mut lsp = Lsp::new(&mut s, None);
+        lsp.request_formatting(&mut s, false);
+        lsp.request_formatting(&mut s, true);
+        assert_eq!(s.status, None);
+    }
+
+    #[test]
+    fn detaching_forgets_a_formatting_request() {
+        // Its answer can never arrive now, and applying a stale one would
+        // reformat against a document the server no longer has.
+        let mut s = session(Settings::with_defaults());
+        let mut lsp = Lsp::new(&mut s, None);
+        lsp.format_request = Some(deco_lsp::RequestId::Number(1));
+        lsp.detach();
+        assert!(lsp.format_request.is_none());
+    }
+
+    #[test]
+    fn the_formatting_context_key_is_false_with_no_server() {
+        // ctrl+shift+i is gated on it, so the key is dead until a server offers
+        // formatting — which is correct, not a bug.
+        let mut s = session(Settings::with_defaults());
+        let lsp = Lsp::new(&mut s, None);
+        lsp.sync_context(&mut s);
+        assert_eq!(
+            s.context.get("editorHasDocumentFormattingProvider"),
+            Some(&json!(false))
+        );
     }
 }
