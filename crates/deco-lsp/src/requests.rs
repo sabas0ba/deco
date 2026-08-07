@@ -528,6 +528,113 @@ fn strip_snippet(text: &str) -> (String, bool) {
     (out, found)
 }
 
+/// How the user wants text laid out, as `textDocument/formatting` asks for it.
+///
+/// The server formats to *these*, not to its own defaults — which is the whole
+/// reason to send them. A server told nothing will use four-space indentation
+/// against a project that uses two, and the result is a diff touching every
+/// line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FormattingOptions {
+    /// `editor.tabSize`.
+    pub tab_size: u32,
+    /// `editor.insertSpaces`.
+    pub insert_spaces: bool,
+    /// `files.trimTrailingWhitespace`.
+    pub trim_trailing_whitespace: bool,
+    /// `files.insertFinalNewline`.
+    pub insert_final_newline: bool,
+}
+
+impl FormattingOptions {
+    fn to_json(self) -> serde_json::Value {
+        serde_json::json!({
+            // The two required members. The rest are optional and a server may
+            // ignore them, which is fine — sending them costs nothing and a
+            // server that honours them saves the user a fight with their linter.
+            "tabSize": self.tab_size,
+            "insertSpaces": self.insert_spaces,
+            "trimTrailingWhitespace": self.trim_trailing_whitespace,
+            "insertFinalNewline": self.insert_final_newline,
+        })
+    }
+}
+
+/// Parameters for `textDocument/formatting`.
+pub fn formatting_params(uri: &Uri, options: FormattingOptions) -> serde_json::Value {
+    serde_json::json!({
+        "textDocument": { "uri": uri },
+        "options": options.to_json(),
+    })
+}
+
+/// Parameters for `textDocument/rangeFormatting`, which formats a selection.
+pub fn range_formatting_params(
+    uri: &Uri,
+    range: Range,
+    options: FormattingOptions,
+) -> serde_json::Value {
+    let mut params = formatting_params(uri, options);
+    params["range"] = serde_json::json!({
+        "start": { "line": range.start.line, "character": range.start.character },
+        "end": { "line": range.end.line, "character": range.end.character },
+    });
+    params
+}
+
+/// One replacement the server wants made.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextEdit {
+    /// What to replace, in the coordinates of the document as the server saw it.
+    pub range: Range,
+    /// What to replace it with.
+    pub new_text: String,
+}
+
+impl TextEdit {
+    /// Reads a `TextEdit[]` result.
+    ///
+    /// `null` and an empty array both mean the document is already formatted,
+    /// which is a successful answer.
+    ///
+    /// # Ordering
+    ///
+    /// Every range refers to the document *as the server saw it*, and the
+    /// specification says edits must not overlap but says nothing about the
+    /// order they arrive in. Applying them front to back therefore corrupts the
+    /// document: the first edit shifts every position after it. deco hands the
+    /// whole set to [`deco_core::Transaction`], which sorts them and applies
+    /// back to front — so this function preserves the server's order and leaves
+    /// the question to the one place that already answers it correctly.
+    pub fn list_from_json(value: &serde_json::Value) -> Vec<Self> {
+        let Some(items) = value.as_array() else {
+            return Vec::new();
+        };
+        items.iter().filter_map(Self::one).collect()
+    }
+
+    fn one(value: &serde_json::Value) -> Option<Self> {
+        Some(Self {
+            range: read_range(value.get("range")?)?,
+            // An absent `newText` is a deletion. Distinct from a missing range,
+            // which cannot be placed and so cannot be applied.
+            new_text: value
+                .get("newText")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_owned(),
+        })
+    }
+
+    /// Whether this edit changes nothing.
+    ///
+    /// Servers routinely return a no-op edit for an already-formatted document;
+    /// applying one would mark the file dirty and add an undo step for nothing.
+    pub fn is_noop(&self) -> bool {
+        self.range.is_empty() && self.new_text.is_empty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1016,5 +1123,107 @@ mod tests {
     fn preselect_is_carried_through() {
         let item = CompletionItem::from_json(&json!({"label": "x", "preselect": true})).unwrap();
         assert!(item.preselect);
+    }
+
+    #[test]
+    fn formatting_params_carry_the_users_own_settings() {
+        // A server told nothing indents with four spaces against a two-space
+        // project, and the result is a diff touching every line.
+        let options = FormattingOptions {
+            tab_size: 2,
+            insert_spaces: true,
+            trim_trailing_whitespace: true,
+            insert_final_newline: false,
+        };
+        let params = formatting_params(&uri(), options);
+        assert_eq!(params["options"]["tabSize"], json!(2));
+        assert_eq!(params["options"]["insertSpaces"], json!(true));
+        assert_eq!(params["options"]["trimTrailingWhitespace"], json!(true));
+        assert_eq!(params["options"]["insertFinalNewline"], json!(false));
+        assert_eq!(params["textDocument"]["uri"], json!("file:///w/a.rs"));
+    }
+
+    #[test]
+    fn range_formatting_adds_the_range_to_the_same_params() {
+        let params = range_formatting_params(
+            &uri(),
+            Range::new(Position::new(2, 0), Position::new(5, 4)),
+            FormattingOptions {
+                tab_size: 4,
+                insert_spaces: true,
+                trim_trailing_whitespace: false,
+                insert_final_newline: true,
+            },
+        );
+        assert_eq!(
+            params["range"],
+            json!({"start": {"line": 2, "character": 0}, "end": {"line": 5, "character": 4}})
+        );
+        assert_eq!(params["options"]["tabSize"], json!(4));
+    }
+
+    #[test]
+    fn text_edits_are_read_in_the_order_the_server_sent_them() {
+        // Preserved rather than sorted here: `Transaction` already sorts and
+        // applies back to front, and doing it in two places invites the two from
+        // disagreeing.
+        let edits = TextEdit::list_from_json(&json!([
+            {"range": {"start": {"line": 5, "character": 0},
+                       "end": {"line": 5, "character": 4}}, "newText": "  "},
+            {"range": {"start": {"line": 1, "character": 0},
+                       "end": {"line": 1, "character": 4}}, "newText": ""},
+        ]));
+        assert_eq!(edits.len(), 2);
+        assert_eq!(edits[0].range.start.line, 5);
+        assert_eq!(edits[1].range.start.line, 1);
+    }
+
+    #[test]
+    fn a_null_or_empty_formatting_result_is_no_edits() {
+        // Both mean the document is already formatted, which is a success.
+        assert!(TextEdit::list_from_json(&json!(null)).is_empty());
+        assert!(TextEdit::list_from_json(&json!([])).is_empty());
+    }
+
+    #[test]
+    fn an_absent_new_text_is_a_deletion() {
+        let edits = TextEdit::list_from_json(&json!([{
+            "range": {"start": {"line": 0, "character": 0},
+                      "end": {"line": 0, "character": 4}}
+        }]));
+        assert_eq!(edits[0].new_text, "");
+        assert!(!edits[0].is_noop(), "it deletes four characters");
+    }
+
+    #[test]
+    fn an_edit_without_a_range_is_skipped_and_its_siblings_survive() {
+        // It cannot be placed, so it cannot be applied — but dropping the whole
+        // set would lose a formatting run to one malformed entry.
+        let edits = TextEdit::list_from_json(&json!([
+            {"newText": "nowhere"},
+            {"range": {"start": {"line": 1, "character": 0},
+                       "end": {"line": 1, "character": 1}}, "newText": "x"},
+        ]));
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].new_text, "x");
+    }
+
+    #[test]
+    fn a_no_op_edit_is_recognisable() {
+        // Servers return these for an already-formatted document; applying one
+        // marks the file dirty and adds an undo step for nothing.
+        let edits = TextEdit::list_from_json(&json!([{
+            "range": {"start": {"line": 3, "character": 2},
+                      "end": {"line": 3, "character": 2}},
+            "newText": "",
+        }]));
+        assert!(edits[0].is_noop());
+    }
+
+    #[test]
+    fn a_non_array_formatting_result_is_no_edits_rather_than_a_panic() {
+        for value in [json!({}), json!("nonsense"), json!(7)] {
+            assert!(TextEdit::list_from_json(&value).is_empty(), "{value}");
+        }
     }
 }

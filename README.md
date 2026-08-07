@@ -47,7 +47,7 @@ thin painter.
 | Theme extensions from the marketplace | Yes — declarative, no host process |
 | Code extensions (`main`) | Protocol and sandbox built; host not yet wired to the editor |
 | Remote SSH / containers / WSL | Authorities and transports built; server not yet |
-| Language servers (LSP) | Diagnostics, hover, go-to-definition, completion |
+| Language servers (LSP) | Diagnostics, hover, go-to-definition, completion, formatting |
 | `.tmTheme` (plist) themes, `-` scope exclusions | No |
 
 Settings are read from deco's own configuration directory, falling back to VS
@@ -146,12 +146,13 @@ does not:
   `docker exec` commands to reach them, and speaks the framed protocol the two
   ends would use. What does not exist yet is the other end: there is no
   `deco --server`, no provisioning it onto a remote, and no port forwarding.
-- **Rename and code actions are not wired.** Diagnostics, hover
-  (`ctrl+k ctrl+i`), go-to-definition (`F12`) and completion (`ctrl+space`, plus
-  the server's trigger characters) work. The client can raise
+- **Rename, references and code actions are not wired.** Diagnostics, hover
+  (`ctrl+k ctrl+i`), go-to-definition (`F12`), completion (`ctrl+space`) and
+  formatting (`ctrl+shift+i`) work. The client can raise
   `textDocument/references` and `rename`, and parses the answers, but nothing
-  renders a reference list or applies a multi-file edit, so those keys say the
-  feature is not implemented rather than pretending. Changes are sent as
+  renders a reference list, and applying a rename means editing files that are
+  not open — which deco cannot do while it holds one document. Those keys say
+  the feature is not implemented rather than pretending. Changes are sent as
   full-document syncs; the incremental path exists in `deco-lsp` but the editor
   does not yet track applied ranges.
 - **Snippets are inserted without their placeholders.** deco advertises
@@ -273,10 +274,19 @@ and nothing more.
 
 What is wired up today: diagnostics (tallied in the status bar, walked with
 `F8` / `shift+F8`), hover (`ctrl+k ctrl+i`, dismissed with `escape`),
-go-to-definition (`F12`), and completion — `ctrl+space` to ask, or automatically
-on a character the server nominates. In the list, `up`/`down` move, `tab` or
-`enter` accepts, `escape` closes, and typing narrows it locally rather than
-asking the server again.
+go-to-definition (`F12`), completion — `ctrl+space` to ask, or automatically on a
+character the server nominates — and formatting (`ctrl+shift+i` for the document,
+`ctrl+k ctrl+f` for a selection).
+
+In the completion list, `up`/`down` move, `tab` or `enter` accepts, `escape`
+closes, and typing narrows it locally rather than asking the server again.
+
+Formatting sends your own `editor.tabSize`, `editor.insertSpaces`,
+`files.trimTrailingWhitespace` and `files.insertFinalNewline`, so a server
+formats to the project's conventions rather than to its own defaults. The whole
+batch of edits is one undo step, and a server that sends overlapping edits — which
+the protocol forbids — is refused rather than guessed at: a file you can still
+fix by hand is worth more than one quietly mangled.
 
 The keys are gated on VS Code's own context keys — `editorHasDefinitionProvider`,
 `suggestWidgetVisible` and friends — set from what the server actually offers, so

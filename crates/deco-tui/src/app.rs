@@ -137,6 +137,8 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
                             session,
                             deco_lsp::requests::CompletionTrigger::Invoked,
                         ),
+                        "editor.action.formatDocument" => lsp.request_formatting(session, false),
+                        "editor.action.formatSelection" => lsp.request_formatting(session, true),
                         "hideSuggestWidget" => lsp.dismiss_suggest(),
                         "selectNextSuggestion" => {
                             lsp.select_next();

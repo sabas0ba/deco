@@ -84,7 +84,8 @@ pub const DEFAULT_KEYBINDINGS_JSONC: &str = r#"[
     { "key": "ctrl+shift+a", "mac": "cmd+shift+a", "command": "editor.action.blockComment",     "when": "editorTextFocus && !editorReadonly" },
     { "key": "ctrl+k ctrl+c", "mac": "cmd+k cmd+c", "command": "editor.action.addCommentLine",    "when": "editorTextFocus && !editorReadonly" },
     { "key": "ctrl+k ctrl+u", "mac": "cmd+k cmd+u", "command": "editor.action.removeCommentLine", "when": "editorTextFocus && !editorReadonly" },
-    { "key": "ctrl+shift+i", "mac": "cmd+shift+i", "command": "editor.action.formatDocument",   "when": "editorTextFocus && !editorReadonly" },
+    { "key": "ctrl+shift+i", "mac": "cmd+shift+i", "command": "editor.action.formatDocument",  "when": "editorHasDocumentFormattingProvider && editorTextFocus && !editorReadonly" },
+    { "key": "ctrl+k ctrl+f", "mac": "cmd+k cmd+f", "command": "editor.action.formatSelection", "when": "editorHasDocumentFormattingProvider && editorHasSelection && editorTextFocus && !editorReadonly" },
 
     // ---- Files ----------------------------------------------------------
     { "key": "ctrl+n",       "mac": "cmd+n",       "command": "workbench.action.files.newUntitledFile" },
