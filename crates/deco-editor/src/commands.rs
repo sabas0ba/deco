@@ -157,6 +157,9 @@ pub fn execute(ctx: &mut Context<'_>, command: &str, args: Option<&Value>) -> Ou
             ctx.view.selections.map(|s| s.collapsed());
             Outcome::Handled
         }
+        "editor.action.addSelectionToNextFindMatch" => add_next_match(ctx),
+        "editor.action.selectHighlights" => select_all_matches(ctx),
+        "editor.action.moveSelectionToNextFindMatch" => move_to_next_match(ctx),
         "editor.action.insertCursorBelow" => {
             add_cursor(ctx, 1);
             Outcome::Handled
@@ -840,6 +843,148 @@ fn delete_selection_or_line(ctx: &mut Context<'_>) {
     }
 }
 
+/// The text `ctrl+d` and `ctrl+shift+l` search for, and the selection it came from.
+///
+/// With a selection, that text. With a bare caret, the word under it — and the
+/// caret is replaced by a selection of that word, which is `ctrl+d`'s first press
+/// and the reason it feels like two different commands.
+fn search_term(ctx: &mut Context<'_>) -> Option<(String, Selection)> {
+    let primary = *ctx.view.selections.primary();
+
+    if !primary.is_empty() {
+        let text = ctx.document.buffer.text_in_range(primary.range());
+        // A selection spanning a line break is a legitimate search term, but an
+        // empty one is not — and `text_in_range` on a collapsed range gives "".
+        return (!text.is_empty()).then_some((text, primary));
+    }
+
+    let word = deco_core::search::word_at(&ctx.document.buffer, primary.active)?;
+    let text = ctx.document.buffer.text_in_range(word);
+    let selection = Selection::new(word.start, word.end);
+    // Only the primary cursor is expanded. The others are left alone: they were
+    // placed deliberately, and throwing them away to answer a question about the
+    // word under one of them would lose more than it gains.
+    let index = ctx.view.selections.primary_index();
+    let mut selections = ctx.view.selections.as_slice().to_vec();
+    selections[index] = selection;
+    ctx.view.selections = SelectionSet::from_vec(selections, index);
+    Some((text, selection))
+}
+
+/// `ctrl+d`: selects the word under the caret, then adds each next occurrence.
+///
+/// Two behaviours behind one key, which is what VS Code does and what makes it
+/// worth using: the first press turns a caret into a selection, and every press
+/// after that adds a cursor at the following match.
+fn add_next_match(ctx: &mut Context<'_>) -> Outcome {
+    // Read before `search_term`, which turns a bare caret into a selection of the
+    // word under it and so destroys the evidence of which press this was.
+    let was_caret = ctx.view.selections.primary().is_empty();
+    let Some((needle, primary)) = search_term(ctx) else {
+        return Outcome::Handled;
+    };
+    // The first press only selects the word. Adding a cursor in the same breath
+    // would skip an occurrence, and the user has not yet seen what they selected.
+    if was_caret {
+        return Outcome::Handled;
+    }
+
+    let matches = deco_core::search::find_all(
+        &ctx.document.buffer,
+        &needle,
+        deco_core::search::SearchOptions::EXACT,
+    );
+    let taken: Vec<Range> = ctx.view.selections.iter().map(Selection::range).collect();
+
+    // Every occurrence from the one after the primary selection onwards, then
+    // round to the top of the file — skipping anything a cursor already sits on,
+    // so holding ctrl+d walks the file rather than stalling on the occurrence
+    // after the last one added.
+    let start_at = matches
+        .iter()
+        .position(|range| range.start >= primary.end())
+        .unwrap_or(0);
+    let after = matches[start_at..]
+        .iter()
+        .chain(matches[..start_at].iter())
+        .find(|range| !taken.contains(range));
+
+    let Some(&next) = after else {
+        // Every occurrence already has a cursor. Saying so beats a key that
+        // silently does nothing.
+        return Outcome::Message(format!(
+            "all {} occurrences of {needle:?} are selected",
+            matches.len()
+        ));
+    };
+
+    ctx.view
+        .selections
+        .add(Selection::new(next.start, next.end));
+    ctx.view
+        .reveal_cursor(&ctx.document.buffer, &ctx.document.settings);
+    Outcome::Handled
+}
+
+/// `ctrl+shift+l`: puts a cursor on every occurrence.
+fn select_all_matches(ctx: &mut Context<'_>) -> Outcome {
+    let Some((needle, _)) = search_term(ctx) else {
+        return Outcome::Handled;
+    };
+    let matches = deco_core::search::find_all(
+        &ctx.document.buffer,
+        &needle,
+        deco_core::search::SearchOptions::EXACT,
+    );
+    if matches.is_empty() {
+        return Outcome::Handled;
+    }
+
+    let selections: Vec<Selection> = matches
+        .iter()
+        .map(|range| Selection::new(range.start, range.end))
+        .collect();
+    // The last one is primary, so the view scrolls to the end of the file and the
+    // user can see how far the change reaches.
+    let primary = selections.len() - 1;
+    ctx.view.selections = SelectionSet::from_vec(selections, primary);
+    ctx.view
+        .reveal_cursor(&ctx.document.buffer, &ctx.document.settings);
+    Outcome::Message(format!("{} occurrences selected", matches.len()))
+}
+
+/// `ctrl+k ctrl+d`: moves the last cursor to the next occurrence instead of adding one.
+///
+/// The escape hatch for `ctrl+d` pressed once too often: it skips the occurrence
+/// you did not want rather than making you start over.
+fn move_to_next_match(ctx: &mut Context<'_>) -> Outcome {
+    let was_caret = ctx.view.selections.primary().is_empty();
+    let Some((needle, primary)) = search_term(ctx) else {
+        return Outcome::Handled;
+    };
+    // Like `ctrl+d`, the first press only selects the word — there is nothing to
+    // move yet.
+    if was_caret {
+        return Outcome::Handled;
+    }
+    let Some(next) = deco_core::search::find_next(
+        &ctx.document.buffer,
+        &needle,
+        primary.end(),
+        deco_core::search::SearchOptions::EXACT,
+    ) else {
+        return Outcome::Handled;
+    };
+
+    let mut selections: Vec<Selection> = ctx.view.selections.as_slice().to_vec();
+    let index = ctx.view.selections.primary_index();
+    selections[index] = Selection::new(next.start, next.end);
+    ctx.view.selections = SelectionSet::from_vec(selections, index);
+    ctx.view
+        .reveal_cursor(&ctx.document.buffer, &ctx.document.settings);
+    Outcome::Handled
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1437,5 +1582,164 @@ mod tests {
         assert_eq!(h.text(), "a😀b");
         h.run("deleteLeft");
         assert_eq!(h.text(), "ab", "backspace should remove the whole emoji");
+    }
+
+    /// Every selection as `(line, start_character)..(line, end_character)`,
+    /// in document order.
+    fn spans(h: &Harness) -> Vec<((u32, u32), (u32, u32))> {
+        h.view
+            .selections
+            .iter()
+            .map(|s| {
+                (
+                    (s.start().line, s.start().character),
+                    (s.end().line, s.end().character),
+                )
+            })
+            .collect()
+    }
+
+    const THREE_FOOS: &str = "foo bar\nfoo baz\nqux foo\n";
+
+    #[test]
+    fn the_first_add_next_match_only_selects_the_word_under_the_caret() {
+        let mut h = Harness::new(THREE_FOOS).at(0, 1);
+        h.run("editor.action.addSelectionToNextFindMatch");
+        assert_eq!(spans(&h), vec![((0, 0), (0, 3))]);
+    }
+
+    #[test]
+    fn add_next_match_adds_a_cursor_at_each_following_occurrence() {
+        let mut h = Harness::new(THREE_FOOS).at(0, 1);
+        h.run("editor.action.addSelectionToNextFindMatch");
+        h.run("editor.action.addSelectionToNextFindMatch");
+        assert_eq!(spans(&h), vec![((0, 0), (0, 3)), ((1, 0), (1, 3))]);
+        h.run("editor.action.addSelectionToNextFindMatch");
+        assert_eq!(
+            spans(&h),
+            vec![((0, 0), (0, 3)), ((1, 0), (1, 3)), ((2, 4), (2, 7))]
+        );
+    }
+
+    #[test]
+    fn add_next_match_wraps_from_the_last_occurrence_to_the_first() {
+        // Starting on the *last* occurrence: the only match after it is at the
+        // top of the file.
+        let mut h = Harness::new(THREE_FOOS).selecting((2, 4), (2, 7));
+        h.run("editor.action.addSelectionToNextFindMatch");
+        assert_eq!(spans(&h), vec![((0, 0), (0, 3)), ((2, 4), (2, 7))]);
+    }
+
+    #[test]
+    fn add_next_match_says_so_once_every_occurrence_is_selected() {
+        let mut h = Harness::new(THREE_FOOS).at(0, 1);
+        for _ in 0..4 {
+            h.run("editor.action.addSelectionToNextFindMatch");
+        }
+        assert_eq!(h.view.selections.len(), 3);
+        let outcome = h.run("editor.action.addSelectionToNextFindMatch");
+        assert_eq!(
+            outcome,
+            Outcome::Message("all 3 occurrences of \"foo\" are selected".to_owned())
+        );
+        assert_eq!(h.view.selections.len(), 3, "no cursor should have moved");
+    }
+
+    #[test]
+    fn add_next_match_searches_for_the_selected_text_not_the_word() {
+        // A partial selection is a search term in its own right, so `oo` matches
+        // inside every `foo` — which a word-based search would miss.
+        let mut h = Harness::new(THREE_FOOS).selecting((0, 1), (0, 3));
+        h.run("editor.action.addSelectionToNextFindMatch");
+        assert_eq!(spans(&h), vec![((0, 1), (0, 3)), ((1, 1), (1, 3))]);
+    }
+
+    #[test]
+    fn add_next_match_matches_case_exactly() {
+        let mut h = Harness::new("foo\nFOO\nfoo\n").at(0, 0);
+        h.run("editor.action.addSelectionToNextFindMatch");
+        h.run("editor.action.addSelectionToNextFindMatch");
+        assert_eq!(
+            spans(&h),
+            vec![((0, 0), (0, 3)), ((2, 0), (2, 3))],
+            "FOO is a different string"
+        );
+    }
+
+    #[test]
+    fn add_next_match_on_a_caret_in_whitespace_does_nothing() {
+        let mut h = Harness::new("foo   bar").at(0, 4);
+        h.run("editor.action.addSelectionToNextFindMatch");
+        assert_eq!(spans(&h), vec![((0, 4), (0, 4))]);
+    }
+
+    #[test]
+    fn add_next_match_leaves_the_other_cursors_alone_when_expanding_a_caret() {
+        let mut h = Harness::new(THREE_FOOS);
+        h.view.selections = SelectionSet::from_vec(
+            vec![
+                Selection::caret(Position::new(0, 1)),
+                Selection::new(Position::new(1, 4), Position::new(1, 7)),
+            ],
+            0,
+        );
+        h.run("editor.action.addSelectionToNextFindMatch");
+        assert_eq!(spans(&h), vec![((0, 0), (0, 3)), ((1, 4), (1, 7))]);
+    }
+
+    #[test]
+    fn select_all_matches_puts_a_cursor_on_every_occurrence() {
+        let mut h = Harness::new(THREE_FOOS).at(0, 1);
+        let outcome = h.run("editor.action.selectHighlights");
+        assert_eq!(
+            spans(&h),
+            vec![((0, 0), (0, 3)), ((1, 0), (1, 3)), ((2, 4), (2, 7))]
+        );
+        assert_eq!(
+            outcome,
+            Outcome::Message("3 occurrences selected".to_owned())
+        );
+    }
+
+    #[test]
+    fn select_all_matches_makes_the_last_occurrence_primary() {
+        let mut h = Harness::new(THREE_FOOS).at(0, 1);
+        h.run("editor.action.selectHighlights");
+        assert_eq!(h.view.selections.primary_index(), 2);
+        assert_eq!(h.cursor(), Position::new(2, 7));
+    }
+
+    #[test]
+    fn select_all_matches_then_typing_replaces_every_occurrence() {
+        let mut h = Harness::new(THREE_FOOS).at(0, 1);
+        h.run("editor.action.selectHighlights");
+        h.type_text("quux");
+        assert_eq!(h.text(), "quux bar\nquux baz\nqux quux\n");
+    }
+
+    #[test]
+    fn move_to_next_match_moves_the_cursor_instead_of_adding_one() {
+        let mut h = Harness::new(THREE_FOOS).at(0, 1);
+        h.run("editor.action.addSelectionToNextFindMatch");
+        h.run("editor.action.moveSelectionToNextFindMatch");
+        assert_eq!(spans(&h), vec![((1, 0), (1, 3))]);
+    }
+
+    #[test]
+    fn move_to_next_match_moves_only_the_primary_cursor() {
+        let mut h = Harness::new(THREE_FOOS).at(0, 1);
+        h.run("editor.action.addSelectionToNextFindMatch");
+        h.run("editor.action.addSelectionToNextFindMatch");
+        // The second occurrence is primary; it skips ahead to the third and the
+        // first stays put.
+        h.run("editor.action.moveSelectionToNextFindMatch");
+        assert_eq!(spans(&h), vec![((0, 0), (0, 3)), ((2, 4), (2, 7))]);
+    }
+
+    #[test]
+    fn the_first_move_to_next_match_only_selects_the_word() {
+        let mut h = Harness::new(THREE_FOOS).at(2, 5);
+        h.run("editor.action.moveSelectionToNextFindMatch");
+        assert_eq!(spans(&h), vec![((2, 4), (2, 7))]);
     }
 }

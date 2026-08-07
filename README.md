@@ -48,6 +48,7 @@ thin painter.
 | Code extensions (`main`) | Protocol and sandbox built; host not yet wired to the editor |
 | Remote SSH / containers / WSL | Authorities and transports built; server not yet |
 | Language servers (LSP) | Diagnostics, hover, go-to-definition, completion, formatting |
+| Find | Multi-cursor find (`ctrl+d`, `ctrl+shift+l`, `ctrl+k ctrl+d`); no find bar yet |
 | `.tmTheme` (plist) themes, `-` scope exclusions | No |
 
 Settings are read from deco's own configuration directory, falling back to VS
@@ -117,7 +118,8 @@ need no capability at all.
 
 ```
 crates/
-  deco-core     rope buffer, UTF-16 positions, selections, invertible edits, undo
+  deco-core     rope buffer, UTF-16 positions, selections, invertible edits, undo,
+                literal search
   deco-config   JSONC reader; default < user < remote < workspace < folder
   deco-keymap   key parsing, when-clause engine, chord resolution, default keymap
   deco-lsp      LSP client: framing, lifecycle, capabilities, sync, diagnostics,
@@ -171,6 +173,12 @@ does not:
 - **The extension host is not connected.** The protocol, the capability broker,
   the sandbox and the `vscode` shim all exist and are tested against each other;
   the editor does not yet start a host or dispatch to one.
+- **There is no find bar.** Search is implemented in `deco-core` and reachable
+  through the multi-cursor keys — `ctrl+d` adds a cursor at the next occurrence
+  of the selection, `ctrl+shift+l` at every occurrence, `ctrl+k ctrl+d` moves the
+  last one instead of adding — but `ctrl+f` needs a query field, a match count
+  and highlighting that deco has nowhere to put yet. Regular-expression search is
+  not implemented at all.
 - **One document at a time.** No tabs, splits, file tree, search-in-files,
   command palette or quick open — the keybindings for them resolve to commands
   that are not implemented yet.
