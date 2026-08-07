@@ -31,6 +31,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The whole history, so the merge base with the base branch exists for
+          # the commit-message check below. A shallow clone has nothing to diff
+          # against.
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
         with:
           toolchain: stable
@@ -41,6 +46,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libx11-dev libxkbcommon-dev
       - run: cargo xtask ci --lint-only
+      # Deliberately a step in this job rather than a job of its own. A separate
+      # job would re-run checkout, the toolchain and the cache — three more
+      # third-party actions executing, for a check that reads strings — and
+      # would rebuild xtask, which this job has already built.
+      #
+      # Only on a pull request: there is nothing to compare a push to main
+      # against, and the convention was adopted partway through this history, so
+      # the earlier commits would fail a check they were never held to.
+      - name: Commit messages
+        if: github.event_name == 'pull_request'
+        run: cargo xtask commitlint --range "origin/${{ github.base_ref }}..HEAD"
 
   test:
     name: Test (${{ matrix.os }})
@@ -95,26 +111,6 @@ jobs:
       # The same script `cargo xtask host-test` delegates to.
       - run: npm test
         working-directory: extension-host
-
-  commits:
-    name: Commit messages
-    # Only on a pull request: there is nothing to compare a push to main
-    # against, and the convention was adopted partway through the history.
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          # The whole history, so the merge base with the base branch exists.
-          # A shallow clone has no commit to diff against.
-          fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-      # The commits this pull request adds, which is exactly what it is asking
-      # to merge — not the whole history.
-      - run: cargo xtask commitlint --range "origin/${{ github.base_ref }}..HEAD"
 
   supply-chain:
     name: Supply chain

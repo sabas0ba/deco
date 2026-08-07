@@ -216,9 +216,14 @@ Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`
 prefix. `!` before the colon marks a breaking change.
 
 The checker is about eighty lines in `xtask/src/commitlint.rs` rather than a
-Node package, for the reason in [Dependencies](#dependencies). It only reads the
-commits a branch adds: the convention was adopted partway through, and rewriting
-merged commits to satisfy it would change history other people have pulled.
+Node package, for the reason in [Dependencies](#dependencies). In CI it is a step
+in the existing lint job rather than a job of its own: a separate job would
+re-run checkout, the toolchain and the cache — three more third-party actions
+executing, for a check that reads strings.
+
+It only reads the commits a branch adds. The convention was adopted partway
+through, and rewriting merged commits to satisfy it would change history other
+people have already pulled.
 
 The GPU frontend is behind a feature flag because wgpu and winit dominate build
 time:
