@@ -51,6 +51,7 @@ pub const DEFAULT_KEYBINDINGS_JSONC: &str = r#"[
     { "key": "ctrl+alt+up",   "mac": "cmd+alt+up",   "command": "editor.action.insertCursorAbove", "when": "editorTextFocus" },
     { "key": "ctrl+d",        "mac": "cmd+d",        "command": "editor.action.addSelectionToNextFindMatch", "when": "editorFocus" },
     { "key": "ctrl+shift+l",  "mac": "cmd+shift+l",  "command": "editor.action.selectHighlights",  "when": "editorFocus" },
+    { "key": "ctrl+k ctrl+d", "mac": "cmd+k cmd+d",  "command": "editor.action.moveSelectionToNextFindMatch", "when": "editorFocus" },
 
     // ---- Text editing ---------------------------------------------------
     { "key": "ctrl+z",       "mac": "cmd+z",       "command": "undo", "when": "textInputFocus && !editorReadonly" },
