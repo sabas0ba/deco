@@ -210,11 +210,16 @@ impl Session {
         // So with the find bar open, `tab` and `ctrl+space` stop resolving while
         // `left` and `backspace` keep doing so — and `Find::consume` claims them.
         let find_focus = self.find.visible();
+        let on_replace = find_focus && self.find.field() == crate::find::Field::Replace;
         self.context.set("editorTextFocus", !find_focus);
         self.context.set("editorFocus", true);
         self.context.set("textInputFocus", true);
         self.context.set("findWidgetVisible", find_focus);
-        self.context.set("findInputFocussed", find_focus);
+        // Exactly one of the two inputs holds the keyboard, which is what lets
+        // `enter` mean "next match" in one and "replace" in the other.
+        self.context
+            .set("findInputFocussed", find_focus && !on_replace);
+        self.context.set("replaceInputFocussed", on_replace);
         self.context.set("editorReadonly", false);
         self.context.set(
             "editorHasSelection",
@@ -304,7 +309,7 @@ impl Session {
             }
             // The find bar, for the same reason: it needs the whole document and
             // its own state, neither of which a command in `commands` can see.
-            "actions.find" => self.open_find(),
+            "actions.find" => self.open_find(false),
             "closeFindWidget" => {
                 self.find.close();
                 Outcome::Handled
@@ -325,9 +330,13 @@ impl Session {
             "toggleFindRegex" => {
                 Outcome::Message("regular-expression search is not implemented yet".to_owned())
             }
-            "editor.action.startFindReplaceAction" => {
-                Outcome::Message("replace is not implemented yet".to_owned())
+            "editor.action.startFindReplaceAction" => self.open_find(true),
+            "deco.find.toggleField" => {
+                self.find.toggle_field();
+                Outcome::Handled
             }
+            "editor.action.replaceOne" => self.replace_one(now_ms),
+            "editor.action.replaceAll" => self.replace_all(now_ms),
             // Commands that need something the core has no concept of. Named
             // here rather than left to fall through as `NotFound`, so a typo in
             // a keybinding is still reported as unknown.
@@ -367,14 +376,19 @@ impl Session {
     /// `editor.find.seedSearchStringFromSelection` is on by default in VS Code,
     /// and the reason is that selecting a word and pressing `ctrl+f` is how the
     /// find bar is usually reached.
-    fn open_find(&mut self) -> Outcome {
+    fn open_find(&mut self, replacing: bool) -> Outcome {
         let primary = *self.view.selections.primary();
         let seed =
             (!primary.is_empty()).then(|| self.document.buffer.text_in_range(primary.range()));
         // The start of the selection, not the cursor: seeding from a selection
         // must leave that same occurrence as the current match rather than
         // skipping to the next one.
-        self.find.open(seed, primary.start());
+        let origin = primary.start();
+        if replacing {
+            self.find.open_replace(seed, origin);
+        } else {
+            self.find.open(seed, origin);
+        }
         self.find_query_changed()
     }
 
@@ -434,6 +448,87 @@ impl Session {
             )),
             _ => Outcome::Handled,
         }
+    }
+
+    /// `ctrl+h`'s `enter`: replaces the current match and moves to the next.
+    ///
+    /// A press that is not sitting on a match steps onto one instead of changing
+    /// anything, which is VS Code's behaviour and the safe reading of an
+    /// ambiguous keypress: replacing text the user cannot see would be worse than
+    /// making them press the key twice.
+    fn replace_one(&mut self, now_ms: u64) -> Outcome {
+        if self.find.query().is_empty() {
+            return Outcome::Message("nothing to replace".to_owned());
+        }
+        self.find.refresh(&self.document.buffer);
+        if self.find.matches().is_empty() {
+            return Outcome::Message(format!("no results for `{}`", self.find.query()));
+        }
+
+        let primary = *self.view.selections.primary();
+        let current = deco_core::position::Range::new(primary.start(), primary.end());
+        if self.find.ordinal(current).is_none() {
+            return self.step_find(Direction::Next);
+        }
+
+        let replacement = self.find.replace().to_owned();
+        let after = self.replace_range(current, &replacement, now_ms);
+        // The document moved under the match list, so it has to be rebuilt before
+        // anything is looked up in it.
+        self.find.refresh(&self.document.buffer);
+        if let Some(range) = self.find.first_at_or_after(after) {
+            self.select_match(range);
+        }
+        Outcome::Handled
+    }
+
+    /// `ctrl+alt+enter`: replaces every match, in one undo step.
+    ///
+    /// One step because that is what the user asked for — one action — and
+    /// because undoing a hundred replacements one at a time is not a recovery.
+    fn replace_all(&mut self, now_ms: u64) -> Outcome {
+        if self.find.query().is_empty() {
+            return Outcome::Message("nothing to replace".to_owned());
+        }
+        self.find.refresh(&self.document.buffer);
+        if self.find.matches().is_empty() {
+            return Outcome::Message(format!("no results for `{}`", self.find.query()));
+        }
+
+        let replacement = self.find.replace().to_owned();
+        // A match that already reads as the replacement is left out: replacing
+        // `foo` with `foo` should not dirty the file or add an undo step. It is
+        // reachable — a case-insensitive search for `foo` finds `FOO` too.
+        let edits: Vec<deco_lsp::TextEdit> = self
+            .find
+            .matches()
+            .iter()
+            .filter(|range| self.document.buffer.text_in_range(**range) != replacement)
+            .map(|range| deco_lsp::TextEdit {
+                range: *range,
+                new_text: replacement.clone(),
+            })
+            .collect();
+        if edits.is_empty() {
+            return Outcome::Message(format!("every match already reads `{replacement}`"));
+        }
+
+        // `TextEdit` is a range and a string, and `apply_edits` already turns a
+        // batch of them into one transaction with one undo step. A second,
+        // identical path would be a second place for that to be wrong.
+        let count = match self.apply_edits(&edits, now_ms) {
+            Ok(count) => count,
+            Err(error) => return Outcome::Message(error.to_string()),
+        };
+        self.find.refresh(&self.document.buffer);
+        Outcome::Message(format!(
+            "replaced {count} {}",
+            if count == 1 {
+                "occurrence"
+            } else {
+                "occurrences"
+            }
+        ))
     }
 
     /// The text `F3` should search for when the query is still empty, and where
@@ -1530,11 +1625,6 @@ mod tests {
             press(&mut s, "alt+r"),
             Outcome::Message("regular-expression search is not implemented yet".to_owned())
         );
-        press(&mut s, "escape");
-        assert_eq!(
-            press(&mut s, "ctrl+h"),
-            Outcome::Message("replace is not implemented yet".to_owned())
-        );
     }
 
     #[test]
@@ -1558,6 +1648,273 @@ mod tests {
         press(&mut s, "escape");
         assert_eq!(s.context.get("findWidgetVisible"), Some(&json!(false)));
         assert_eq!(s.context.get("editorTextFocus"), Some(&json!(true)));
+    }
+
+    // ---- Replace --------------------------------------------------------
+
+    /// Presses every key in `keys`, in order.
+    fn press_all(s: &mut Session, keys: &[&str]) {
+        for key in keys {
+            press(s, key);
+        }
+    }
+
+    #[test]
+    fn ctrl_h_opens_the_bar_with_the_replacement_focused() {
+        let mut s = searchable("foo\n");
+        press(&mut s, "ctrl+h");
+        assert!(s.find.visible());
+        assert!(s.find.replacing());
+        assert_eq!(s.find.field(), crate::find::Field::Replace);
+        assert_eq!(s.context.get("replaceInputFocussed"), Some(&json!(true)));
+        assert_eq!(s.context.get("findInputFocussed"), Some(&json!(false)));
+    }
+
+    #[test]
+    fn ctrl_h_seeds_the_query_from_the_selection_like_ctrl_f_does() {
+        let mut s = searchable("hello world\n");
+        s.view.selections = deco_core::selection::SelectionSet::single(
+            deco_core::selection::Selection::new(Position::new(0, 6), Position::new(0, 11)),
+        );
+        press(&mut s, "ctrl+h");
+        assert_eq!(s.find.query(), "world");
+    }
+
+    #[test]
+    fn typing_with_the_replacement_focused_goes_into_the_replacement() {
+        let mut s = searchable("foo\n");
+        press(&mut s, "ctrl+h");
+        press_all(&mut s, &["b", "a", "r"]);
+        assert_eq!(s.find.replace(), "bar");
+        assert_eq!(s.find.query(), "", "the query is untouched");
+        assert_eq!(s.document.buffer.text(), "foo\n");
+    }
+
+    #[test]
+    fn tab_moves_between_the_two_inputs() {
+        let mut s = searchable("foo\n");
+        press(&mut s, "ctrl+f");
+        press_all(&mut s, &["f", "o", "o"]);
+        press(&mut s, "tab");
+        assert_eq!(s.find.field(), crate::find::Field::Replace);
+        press_all(&mut s, &["b", "a", "r"]);
+        press(&mut s, "shift+tab");
+        assert_eq!(s.find.field(), crate::find::Field::Query);
+        // Each input kept its own text and its own caret.
+        assert_eq!(s.find.query(), "foo");
+        assert_eq!(s.find.replace(), "bar");
+        // And typing now lands back in the query.
+        press(&mut s, "x");
+        assert_eq!(s.find.query(), "foox");
+        assert_eq!(s.find.replace(), "bar");
+    }
+
+    #[test]
+    fn tab_opens_the_replacement_row_from_a_plain_find_bar() {
+        let mut s = searchable("foo\n");
+        press(&mut s, "ctrl+f");
+        assert!(!s.find.replacing());
+        press(&mut s, "tab");
+        assert!(s.find.replacing());
+    }
+
+    #[test]
+    fn enter_replaces_the_current_match_and_moves_on() {
+        let mut s = searchable("foo foo\n");
+        press(&mut s, "ctrl+h");
+        press_all(&mut s, &["b", "a", "r"]);
+        press(&mut s, "shift+tab");
+        press_all(&mut s, &["f", "o", "o"]);
+        press(&mut s, "tab");
+        // The first match is current.
+        assert_eq!(selected(&s), ((0, 0), (0, 3)));
+        press(&mut s, "enter");
+        assert_eq!(s.document.buffer.text(), "bar foo\n");
+        // And the next match — which has moved — is now current.
+        assert_eq!(selected(&s), ((0, 4), (0, 7)));
+        press(&mut s, "enter");
+        assert_eq!(s.document.buffer.text(), "bar bar\n");
+    }
+
+    #[test]
+    fn a_replacement_is_one_undo_step() {
+        let mut s = searchable("foo foo\n");
+        press(&mut s, "ctrl+h");
+        press_all(&mut s, &["b", "a", "r"]);
+        press(&mut s, "shift+tab");
+        press_all(&mut s, &["f", "o", "o"]);
+        press(&mut s, "tab");
+        press(&mut s, "enter");
+        assert_eq!(s.document.buffer.text(), "bar foo\n");
+        s.run("undo", None, 0);
+        assert_eq!(s.document.buffer.text(), "foo foo\n");
+    }
+
+    #[test]
+    fn replacing_from_somewhere_that_is_not_a_match_steps_onto_one_first() {
+        let mut s = searchable("xx\nfoo\n");
+        s.find.set_query("foo".to_owned());
+        // The cursor is on line 0, which is not a match.
+        s.run("editor.action.replaceOne", None, 0);
+        assert_eq!(
+            s.document.buffer.text(),
+            "xx\nfoo\n",
+            "nothing should have been replaced yet"
+        );
+        assert_eq!(selected(&s), ((1, 0), (1, 3)));
+        // The second press, now that the user can see what is about to change.
+        s.run("editor.action.replaceOne", None, 0);
+        assert_eq!(s.document.buffer.text(), "xx\n\n");
+    }
+
+    #[test]
+    fn an_empty_replacement_deletes_the_match() {
+        let mut s = searchable("foo bar\n");
+        s.find.set_query("foo ".to_owned());
+        s.run("editor.action.replaceOne", None, 0);
+        s.run("editor.action.replaceOne", None, 0);
+        assert_eq!(s.document.buffer.text(), "bar\n");
+    }
+
+    #[test]
+    fn replace_all_changes_every_match_in_one_step() {
+        let mut s = searchable("foo\nbar\nfoo\n");
+        press(&mut s, "ctrl+h");
+        press_all(&mut s, &["b", "a", "z"]);
+        press(&mut s, "shift+tab");
+        press_all(&mut s, &["f", "o", "o"]);
+        let outcome = s.run("editor.action.replaceAll", None, 0);
+        assert_eq!(s.document.buffer.text(), "baz\nbar\nbaz\n");
+        assert_eq!(
+            outcome,
+            Outcome::Message("replaced 2 occurrences".to_owned())
+        );
+        s.run("undo", None, 0);
+        assert_eq!(
+            s.document.buffer.text(),
+            "foo\nbar\nfoo\n",
+            "one undo should put all of it back"
+        );
+    }
+
+    #[test]
+    fn replace_all_counts_a_single_occurrence_in_the_singular() {
+        let mut s = searchable("foo\n");
+        s.find.set_query("foo".to_owned());
+        assert_eq!(
+            s.run("editor.action.replaceAll", None, 0),
+            Outcome::Message("replaced 1 occurrence".to_owned())
+        );
+    }
+
+    #[test]
+    fn replace_all_handles_a_replacement_longer_than_what_it_replaces() {
+        // The interesting case for back-to-front application: every edit after
+        // the first would be misplaced if they were applied in document order
+        // against shifting positions.
+        let mut s = searchable("a a a\n");
+        s.find.set_query("a".to_owned());
+        press(&mut s, "ctrl+h");
+        press_all(&mut s, &["l", "o", "n", "g"]);
+        s.run("editor.action.replaceAll", None, 0);
+        assert_eq!(s.document.buffer.text(), "long long long\n");
+    }
+
+    #[test]
+    fn replace_all_spanning_lines_lands_correctly() {
+        let mut s = searchable("one\ntwo\none\n");
+        s.find.set_query("one".to_owned());
+        press(&mut s, "ctrl+h");
+        press_all(&mut s, &["x"]);
+        s.run("editor.action.replaceAll", None, 0);
+        assert_eq!(s.document.buffer.text(), "x\ntwo\nx\n");
+    }
+
+    #[test]
+    fn replacing_with_nothing_to_replace_says_so() {
+        let mut s = searchable("foo\n");
+        for command in ["editor.action.replaceOne", "editor.action.replaceAll"] {
+            assert_eq!(
+                s.run(command, None, 0),
+                Outcome::Message("nothing to replace".to_owned()),
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn replacing_a_query_that_matches_nothing_says_so() {
+        let mut s = searchable("foo\n");
+        s.find.set_query("zzz".to_owned());
+        assert_eq!(
+            s.run("editor.action.replaceAll", None, 0),
+            Outcome::Message("no results for `zzz`".to_owned())
+        );
+        assert!(!s.document.dirty);
+    }
+
+    #[test]
+    fn replacing_text_with_itself_changes_nothing_and_says_why() {
+        let mut s = searchable("foo\n");
+        s.find.set_query("foo".to_owned());
+        press(&mut s, "ctrl+h");
+        press_all(&mut s, &["f", "o", "o"]);
+        assert_eq!(
+            s.run("editor.action.replaceAll", None, 0),
+            Outcome::Message("every match already reads `foo`".to_owned())
+        );
+        assert!(!s.document.dirty, "no undo step for a no-op");
+    }
+
+    #[test]
+    fn a_case_insensitive_replace_all_rewrites_the_differing_cases_only() {
+        let mut s = searchable("foo FOO\n");
+        s.find.set_query("foo".to_owned());
+        press(&mut s, "ctrl+h");
+        press_all(&mut s, &["f", "o", "o"]);
+        // `foo` already reads as the replacement; `FOO` does not.
+        assert_eq!(
+            s.run("editor.action.replaceAll", None, 0),
+            Outcome::Message("replaced 1 occurrence".to_owned())
+        );
+        assert_eq!(s.document.buffer.text(), "foo foo\n");
+    }
+
+    #[test]
+    fn ctrl_alt_enter_replaces_everything_from_either_input() {
+        let mut s = searchable("foo foo\n");
+        press(&mut s, "ctrl+h");
+        press_all(&mut s, &["b", "a", "r"]);
+        press(&mut s, "shift+tab");
+        press_all(&mut s, &["f", "o", "o"]);
+        // Still on the query, and the key works from here too.
+        assert_eq!(s.find.field(), crate::find::Field::Query);
+        press(&mut s, "ctrl+alt+enter");
+        assert_eq!(s.document.buffer.text(), "bar bar\n");
+    }
+
+    #[test]
+    fn escape_closes_the_replacement_row_too() {
+        let mut s = searchable("foo\n");
+        press(&mut s, "ctrl+h");
+        press(&mut s, "escape");
+        assert!(!s.find.visible());
+        assert!(!s.find.replacing());
+        assert_eq!(s.context.get("replaceInputFocussed"), Some(&json!(false)));
+    }
+
+    #[test]
+    fn ctrl_f_after_ctrl_h_puts_the_keyboard_back_on_the_query() {
+        let mut s = searchable("foo\n");
+        press(&mut s, "ctrl+h");
+        press_all(&mut s, &["b", "a", "r"]);
+        press(&mut s, "ctrl+f");
+        assert_eq!(s.find.field(), crate::find::Field::Query);
+        assert_eq!(
+            s.find.replace(),
+            "bar",
+            "the replacement is not thrown away"
+        );
     }
 
     #[test]

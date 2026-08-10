@@ -48,7 +48,7 @@ thin painter.
 | Code extensions (`main`) | Protocol and sandbox built; host not yet wired to the editor |
 | Remote SSH / containers / WSL | Authorities and transports built; server not yet |
 | Language servers (LSP) | Diagnostics, hover, go-to-definition, completion, formatting |
-| Find (`ctrl+f`, `F3`, `ctrl+d`, `ctrl+shift+l`) | Literal search only — no regex, no replace, no find-in-files |
+| Find and replace (`ctrl+f`, `ctrl+h`, `F3`, `ctrl+d`, `ctrl+shift+l`) | Literal search only — no regex, no find-in-files |
 | `.tmTheme` (plist) themes, `-` scope exclusions | No |
 
 Settings are read from deco's own configuration directory, falling back to VS
@@ -173,12 +173,14 @@ does not:
 - **The extension host is not connected.** The protocol, the capability broker,
   the sandbox and the `vscode` shim all exist and are tested against each other;
   the editor does not yet start a host or dispatch to one.
-- **Search finds but does not replace.** `ctrl+f` opens a find bar with a query,
-  a match count and highlighting; `F3`, `enter` and `alt+c` / `alt+w` work as they
-  do in VS Code, and the multi-cursor keys (`ctrl+d`, `ctrl+shift+l`,
-  `ctrl+k ctrl+d`) search the same way. What is missing is `ctrl+h` (replace),
-  regular expressions — `deco-core::search` is deliberately literal — and
-  find-in-files, which needs more than one document. All three say so when pressed
+- **Search is literal, and only within the open file.** `ctrl+f` and `ctrl+h`
+  open a find bar with a query, a replacement, a match count and highlighting;
+  `F3`, `enter`, `ctrl+alt+enter` and `alt+c` / `alt+w` work as they do in VS
+  Code, and the multi-cursor keys (`ctrl+d`, `ctrl+shift+l`, `ctrl+k ctrl+d`)
+  search the same way. What is missing is regular expressions —
+  `deco-core::search` is deliberately literal, and a regex mode needs its own
+  escaping rules and its own error reporting for an invalid pattern — and
+  find-in-files, which needs more than one document. Both say so when pressed
   rather than reporting an unknown command.
 - **One document at a time.** No tabs, splits, file tree, search-in-files,
   command palette or quick open — the keybindings for them resolve to commands

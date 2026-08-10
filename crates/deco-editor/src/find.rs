@@ -39,13 +39,28 @@ use serde_json::Value;
 
 use crate::commands::Clipboard;
 
+/// Which of the bar's inputs has the keyboard.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Field {
+    /// The search term.
+    #[default]
+    Query,
+    /// The replacement.
+    Replace,
+}
+
 /// The find widget's state.
 #[derive(Debug, Default, Clone)]
 pub struct Find {
     visible: bool,
-    query: String,
-    /// Caret offset within `query`, counted in characters.
-    caret: usize,
+    /// Whether the replace input is shown as well.
+    ///
+    /// Separate from `visible` because `ctrl+f` and `ctrl+h` open the same
+    /// widget: one row or two, and the row costs the file a line of text.
+    replacing: bool,
+    field: Field,
+    query: Input,
+    replace: Input,
     /// Case-insensitive and matching anywhere until the user says otherwise,
     /// which is what VS Code's find widget defaults to — and the opposite of
     /// `ctrl+d`, where the user selected exactly the text they meant.
@@ -71,14 +86,46 @@ impl Find {
         self.visible
     }
 
-    /// The query as typed.
-    pub fn query(&self) -> &str {
-        &self.query
+    /// Whether the replace input is shown.
+    pub fn replacing(&self) -> bool {
+        self.replacing
     }
 
-    /// Caret offset within the query, in characters.
+    /// Which input has the keyboard.
+    pub fn field(&self) -> Field {
+        self.field
+    }
+
+    /// The query as typed.
+    pub fn query(&self) -> &str {
+        &self.query.text
+    }
+
+    /// The replacement as typed.
+    pub fn replace(&self) -> &str {
+        &self.replace.text
+    }
+
+    /// Caret offset within whichever input has the keyboard, in characters.
     pub fn caret(&self) -> usize {
-        self.caret
+        match self.field {
+            Field::Query => self.query.caret,
+            Field::Replace => self.replace.caret,
+        }
+    }
+
+    /// Moves the keyboard to the other input, showing the replacement if it was
+    /// hidden.
+    ///
+    /// `tab` and `shift+tab` both land here: with two inputs there is only one
+    /// other place to be, and a `shift+tab` that did nothing on the first field
+    /// would just feel broken.
+    pub fn toggle_field(&mut self) {
+        self.replacing = true;
+        self.field = match self.field {
+            Field::Query => Field::Replace,
+            Field::Replace => Field::Query,
+        };
     }
 
     /// How the query is matched.
@@ -104,12 +151,28 @@ impl Find {
     pub fn open(&mut self, seed: Option<String>, origin: Position) {
         self.visible = true;
         self.origin = origin;
+        // `ctrl+f` after `ctrl+h` puts the keyboard back on the query, but the
+        // replacement stays typed and its row stays open: hiding text the user
+        // entered would be worse than a row they can close with Escape.
+        self.field = Field::Query;
         if let Some(seed) = seed {
             if !seed.is_empty() {
-                self.query = seed;
+                self.query.set(seed);
             }
         }
-        self.caret = self.query.chars().count();
+        self.query.caret = self.query.len();
+    }
+
+    /// Opens the bar with the replacement shown and focused.
+    ///
+    /// `ctrl+h`. The query is seeded exactly as `ctrl+f` seeds it, so selecting a
+    /// word and pressing `ctrl+h` is one step rather than two.
+    pub fn open_replace(&mut self, seed: Option<String>, origin: Position) {
+        self.open(seed, origin);
+        self.replacing = true;
+        // The query is either seeded or already typed, so the replacement is what
+        // the user has come here to write.
+        self.field = Field::Replace;
     }
 
     /// Closes the bar, keeping the query so that `F3` still has something to
@@ -120,13 +183,14 @@ impl Find {
     /// than none.
     pub fn close(&mut self) {
         self.visible = false;
+        self.replacing = false;
+        self.field = Field::Query;
         self.matches.clear();
     }
 
     /// Replaces the query, putting the caret at the end.
     pub fn set_query(&mut self, query: String) {
-        self.query = query;
-        self.caret = self.query.chars().count();
+        self.query.set(query);
     }
 
     /// Recomputes the match list.
@@ -135,7 +199,7 @@ impl Find {
     /// document was edited. Nothing here caches across calls, because a cache
     /// keyed on nothing is a stale highlight waiting to happen.
     pub fn refresh(&mut self, buffer: &Buffer) {
-        self.matches = search::find_all(buffer, &self.query, self.options);
+        self.matches = search::find_all(buffer, &self.query.text, self.options);
     }
 
     /// The first match at or after `from`, wrapping to the start.
@@ -183,7 +247,7 @@ impl Find {
         self.options.whole_word = !self.options.whole_word;
     }
 
-    /// Applies a command to the query, if it is one the input owns.
+    /// Applies a command to the focused input, if it is one the input owns.
     ///
     /// Returns whether the command was consumed. See the module docs for why
     /// this exists rather than being expressed in `when` clauses alone.
@@ -193,136 +257,170 @@ impl Find {
         args: Option<&Value>,
         clipboard: &mut dyn Clipboard,
     ) -> bool {
+        let input = match self.field {
+            Field::Query => &mut self.query,
+            Field::Replace => &mut self.replace,
+        };
         match command {
             "type" => {
                 let text = args
                     .and_then(|a| a.get("text"))
                     .and_then(Value::as_str)
                     .unwrap_or("");
-                // A newline in a query it cannot represent would be invisible in
-                // a one-line input; `enter` is bound to the next-match command
-                // anyway, so this only guards against a pasted or scripted one.
-                for c in text.chars().filter(|c| *c != '\n' && *c != '\r') {
-                    self.insert(c);
-                }
+                // A newline it cannot represent would be invisible in a one-line
+                // input; `enter` is bound to a command anyway, so this only
+                // guards against a pasted or scripted one.
+                input.insert_str(text);
                 true
             }
             "deleteLeft" => {
-                if self.caret > 0 {
-                    self.caret -= 1;
-                    self.remove_at(self.caret);
-                }
+                input.delete_left();
                 true
             }
             "deleteRight" => {
-                if self.caret < self.len() {
-                    self.remove_at(self.caret);
-                }
+                input.delete_right();
                 true
             }
             "deleteWordLeft" => {
-                let target = self.word_left();
-                for _ in target..self.caret {
-                    self.remove_at(target);
-                }
-                self.caret = target;
+                input.delete_word_left();
                 true
             }
             "deleteWordRight" => {
-                let target = self.word_right();
-                for _ in self.caret..target {
-                    self.remove_at(self.caret);
-                }
+                input.delete_word_right();
                 true
             }
             "cursorLeft" => {
-                self.caret = self.caret.saturating_sub(1);
+                input.caret = input.caret.saturating_sub(1);
                 true
             }
             "cursorRight" => {
-                self.caret = (self.caret + 1).min(self.len());
+                input.caret = (input.caret + 1).min(input.len());
                 true
             }
             // A one-line input has no notion of the top or bottom of a document,
             // so `ctrl+home` and `home` mean the same thing here.
             "cursorHome" | "cursorTop" => {
-                self.caret = 0;
+                input.caret = 0;
                 true
             }
             "cursorEnd" | "cursorBottom" => {
-                self.caret = self.len();
+                input.caret = input.len();
                 true
             }
             "cursorWordLeft" => {
-                self.caret = self.word_left();
+                input.caret = input.word_left();
                 true
             }
             "cursorWordEndRight" => {
-                self.caret = self.word_right();
+                input.caret = input.word_right();
                 true
             }
             "editor.action.clipboardPasteAction" => {
-                for c in clipboard
-                    .read()
-                    .chars()
-                    .filter(|c| *c != '\n' && *c != '\r')
-                {
-                    self.insert(c);
-                }
+                input.insert_str(&clipboard.read());
                 true
             }
             "editor.action.clipboardCopyAction" => {
-                clipboard.write(&self.query);
+                clipboard.write(&input.text);
                 true
             }
             "editor.action.clipboardCutAction" => {
-                clipboard.write(&self.query);
-                self.query.clear();
-                self.caret = 0;
+                clipboard.write(&input.text);
+                input.text.clear();
+                input.caret = 0;
                 true
             }
             // Swallowed rather than handled. There is nothing to select, undo or
-            // redo in the query — and letting these through would apply them to
-            // the document, which is not where the user is looking.
+            // redo in a one-line input — and letting these through would apply
+            // them to the document, which is not where the user is looking.
             "editor.action.selectAll" | "undo" | "redo" => true,
             _ => false,
         }
     }
+}
 
-    /// Inserts one character at the caret.
-    fn insert(&mut self, c: char) {
-        let byte = self.byte_offset(self.caret);
-        self.query.insert(byte, c);
-        self.caret += 1;
+/// One line of editable text with a caret and no selection.
+///
+/// The query and the replacement are the same thing twice, so they are the same
+/// type: a second copy of every motion and deletion would be a second place for
+/// the UTF-16 arithmetic to be wrong.
+#[derive(Debug, Default, Clone)]
+struct Input {
+    text: String,
+    /// Caret offset, counted in characters.
+    caret: usize,
+}
+
+impl Input {
+    /// Replaces the text, putting the caret at the end.
+    fn set(&mut self, text: String) {
+        self.text = text;
+        self.caret = self.text.chars().count();
+    }
+
+    /// Inserts `text` at the caret, dropping line breaks.
+    fn insert_str(&mut self, text: &str) {
+        for c in text.chars().filter(|c| *c != '\n' && *c != '\r') {
+            let byte = self.byte_offset(self.caret);
+            self.text.insert(byte, c);
+            self.caret += 1;
+        }
+    }
+
+    fn delete_left(&mut self) {
+        if self.caret > 0 {
+            self.caret -= 1;
+            self.remove_at(self.caret);
+        }
+    }
+
+    fn delete_right(&mut self) {
+        if self.caret < self.len() {
+            self.remove_at(self.caret);
+        }
+    }
+
+    fn delete_word_left(&mut self) {
+        let target = self.word_left();
+        for _ in target..self.caret {
+            self.remove_at(target);
+        }
+        self.caret = target;
+    }
+
+    fn delete_word_right(&mut self) {
+        let target = self.word_right();
+        for _ in self.caret..target {
+            self.remove_at(self.caret);
+        }
     }
 
     /// Removes the character at character offset `index`.
     fn remove_at(&mut self, index: usize) {
         let byte = self.byte_offset(index);
-        self.query.remove(byte);
+        self.text.remove(byte);
     }
 
-    /// Length of the query in characters.
+    /// Length in characters.
     fn len(&self) -> usize {
-        self.query.chars().count()
+        self.text.chars().count()
     }
 
     /// Byte offset of character offset `index`.
     ///
     /// The caret is counted in characters so that arrow keys move one visible
-    /// thing at a time, but `String` is indexed in bytes, and a query containing
-    /// anything outside ASCII makes the two differ.
+    /// thing at a time, but `String` is indexed in bytes, and any text outside
+    /// ASCII makes the two differ.
     fn byte_offset(&self, index: usize) -> usize {
-        self.query
+        self.text
             .char_indices()
             .nth(index)
             .map(|(byte, _)| byte)
-            .unwrap_or(self.query.len())
+            .unwrap_or(self.text.len())
     }
 
     /// Start of the word to the left of the caret.
     fn word_left(&self) -> usize {
-        let chars: Vec<char> = self.query.chars().collect();
+        let chars: Vec<char> = self.text.chars().collect();
         let mut index = self.caret;
         while index > 0 && !is_word_char(chars[index - 1]) {
             index -= 1;
@@ -335,7 +433,7 @@ impl Find {
 
     /// End of the word to the right of the caret.
     fn word_right(&self) -> usize {
-        let chars: Vec<char> = self.query.chars().collect();
+        let chars: Vec<char> = self.text.chars().collect();
         let mut index = self.caret;
         while index < chars.len() && !is_word_char(chars[index]) {
             index += 1;

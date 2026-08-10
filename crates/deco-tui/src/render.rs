@@ -8,6 +8,7 @@
 use deco_config::LineNumbers;
 use deco_core::movement::display_column;
 use deco_core::position::Range;
+use deco_editor::find::Field;
 use deco_editor::Session;
 use deco_theme::Rgba;
 use unicode_width::UnicodeWidthChar;
@@ -147,12 +148,17 @@ pub fn render_with_overlays(
 }
 
 /// How many rows the chrome below the text takes: the status bar, plus the find
-/// bar when it is open.
+/// bar's one or two rows when it is open.
 ///
 /// The frontend needs this to tell the session how tall the text area is, so
 /// exported rather than folded into the renderer.
 pub fn chrome_height(session: &Session) -> usize {
-    1 + usize::from(session.find.visible())
+    let find = if session.find.visible() {
+        1 + usize::from(session.find.replacing())
+    } else {
+        0
+    };
+    1 + find
 }
 
 fn render_text(session: &Session, width: usize, height: usize) -> Frame {
@@ -217,12 +223,22 @@ fn render_text(session: &Session, width: usize, height: usize) -> Frame {
     // into sits next to the text it is searching and never covers the place the
     // editor reports errors.
     if session.find.visible() {
+        // The caret belongs in whichever input has the keyboard: the document's
+        // cursor is on the current match, which is highlighted, and two visible
+        // carets would be a lie about where typing goes.
+        let focus = session.find.field();
         let (row, caret) = find_bar(session, width, &palette);
         rows.push(row);
-        // The caret belongs in the query while the bar has the keyboard: the
-        // document's cursor is on the current match, which is highlighted, and
-        // two visible carets would be a lie about where typing goes.
-        cursor_cell = Some((caret as u16, rows.len() as u16 - 1));
+        if focus == Field::Query {
+            cursor_cell = Some((caret as u16, rows.len() as u16 - 1));
+        }
+        if session.find.replacing() {
+            let (row, caret) = replace_bar(session, width, &palette);
+            rows.push(row);
+            if focus == Field::Replace {
+                cursor_cell = Some((caret as u16, rows.len() as u16 - 1));
+            }
+        }
     }
 
     rows.push(status_bar(session, width, &palette));
@@ -276,15 +292,48 @@ fn find_bar(session: &Session, width: usize, palette: &Palette) -> (Row, usize) 
         right = String::new();
     }
 
-    let room = width
-        .saturating_sub(columns(PROMPT))
-        .saturating_sub(columns(&right));
-    let query = visible_query(find.query(), find.caret(), room);
+    let caret = match find.field() {
+        Field::Query => find.caret(),
+        // The unfocused input still has to be drawn, and its caret is not
+        // visible, so the end of the text is as good a window as any.
+        Field::Replace => find.query().chars().count(),
+    };
+    input_row(PROMPT, find.query(), caret, &right, width, palette)
+}
 
-    let used = columns(PROMPT) + columns(&query.text) + columns(&right);
+/// The replacement input, and the column its caret sits in.
+///
+/// The same width of prompt as the query's, so the two inputs line up and read
+/// as one sentence: `Find: foo` / `With: bar`.
+fn replace_bar(session: &Session, width: usize, palette: &Palette) -> (Row, usize) {
+    const PROMPT: &str = " With: ";
+
+    let find = &session.find;
+    let caret = match find.field() {
+        Field::Replace => find.caret(),
+        Field::Query => find.replace().chars().count(),
+    };
+    input_row(PROMPT, find.replace(), caret, "", width, palette)
+}
+
+/// One row of the bar: a prompt, an editable field, and a right-aligned readout.
+fn input_row(
+    prompt: &str,
+    value: &str,
+    caret: usize,
+    right: &str,
+    width: usize,
+    palette: &Palette,
+) -> (Row, usize) {
+    let room = width
+        .saturating_sub(columns(prompt))
+        .saturating_sub(columns(right));
+    let field = visible_query(value, caret, room);
+
+    let used = columns(prompt) + columns(&field.text) + columns(right);
     let mut text = format!(
-        "{PROMPT}{}{}{right}",
-        query.text,
+        "{prompt}{}{}{right}",
+        field.text,
         " ".repeat(width.saturating_sub(used))
     );
     text = truncate_to(&text, width);
@@ -292,7 +341,7 @@ fn find_bar(session: &Session, width: usize, palette: &Palette) -> (Row, usize) 
         text.push(' ');
     }
 
-    let caret = (columns(PROMPT) + query.caret_column).min(width.saturating_sub(1));
+    let caret_column = (columns(prompt) + field.caret_column).min(width.saturating_sub(1));
     (
         Row {
             spans: vec![Span {
@@ -301,7 +350,7 @@ fn find_bar(session: &Session, width: usize, palette: &Palette) -> (Row, usize) 
                 bg: palette.status_bg,
             }],
         },
-        caret,
+        caret_column,
     )
 }
 
@@ -1670,5 +1719,119 @@ mod tests {
         // the editor says what is wrong.
         let frame = render(&searching("foo\n", "foo"), 40, 1);
         assert_eq!(frame.rows.len(), 2);
+    }
+
+    // ---- The replace row ------------------------------------------------
+
+    /// A session replacing `query` with `replacement` in `text`.
+    fn replacing(text: &str, query: &str, replacement: &str) -> Session {
+        let mut session = searching(text, query);
+        session.run("deco.find.toggleField", None, 0);
+        for c in replacement.chars() {
+            session.handle_chord(deco_keymap::keys::Chord::parse(&c.to_string()).unwrap(), 0);
+        }
+        session
+    }
+
+    /// The query row while the replace row is also open: third from the bottom.
+    fn query_row_of_two(frame: &Frame) -> String {
+        frame.rows[frame.rows.len() - 3].plain()
+    }
+
+    #[test]
+    fn the_replace_row_sits_under_the_query_row() {
+        let session = replacing("foo\n", "foo", "bar");
+        let frame = render(&session, 40, 8);
+        assert!(query_row_of_two(&frame).contains("Find: foo"));
+        assert!(
+            find_row(&frame).contains("With: bar"),
+            "{:?}",
+            find_row(&frame)
+        );
+        assert!(frame.rows.last().unwrap().plain().contains("Ln 1"));
+    }
+
+    #[test]
+    fn the_two_prompts_line_up() {
+        let frame = render(&replacing("foo\n", "foo", "bar"), 40, 8);
+        let query = query_row_of_two(&frame);
+        let replace = find_row(&frame);
+        assert_eq!(
+            query.find("foo").unwrap(),
+            replace.find("bar").unwrap(),
+            "the two fields should start in the same column"
+        );
+    }
+
+    #[test]
+    fn the_replace_row_costs_a_second_line_of_text() {
+        let text = "a\nb\nc\nd\ne\nf\ng\nh\n";
+        let one = render(&searching(text, "zzz"), 40, 8);
+        let two = render(&replacing(text, "zzz", "x"), 40, 8);
+        assert_eq!(one.rows.len(), two.rows.len());
+        assert!(one.rows[5].plain().contains('f'));
+        assert!(
+            !two.rows[5].plain().contains('f'),
+            "{:?}",
+            two.rows[5].plain()
+        );
+    }
+
+    #[test]
+    fn every_row_is_the_terminal_width_with_both_rows_open() {
+        let frame = render(&replacing("foo\n", "foo", "bar"), 40, 8);
+        for row in &frame.rows {
+            assert_eq!(row.plain().chars().count(), 40, "row was {:?}", row.plain());
+        }
+    }
+
+    #[test]
+    fn the_caret_follows_the_focused_input() {
+        let session = replacing("foo\n", "foo", "bar");
+        let frame = render(&session, 40, 8);
+        let (x, y) = frame.cursor.unwrap();
+        assert_eq!(y as usize, frame.rows.len() - 2, "on the replace row");
+        // " With: " is seven columns, then three typed characters.
+        assert_eq!(x, 10);
+
+        // Back to the query, and the caret goes with it.
+        let mut session = session;
+        session.run("deco.find.toggleField", None, 0);
+        let frame = render(&session, 40, 8);
+        let (x, y) = frame.cursor.unwrap();
+        assert_eq!(y as usize, frame.rows.len() - 3, "on the query row");
+        assert_eq!(x, 10);
+    }
+
+    #[test]
+    fn the_unfocused_input_is_still_drawn() {
+        let session = replacing("foo\n", "foo", "bar");
+        let frame = render(&session, 40, 8);
+        // The query has the text even though the replacement has the keyboard.
+        assert!(query_row_of_two(&frame).contains("foo"));
+    }
+
+    #[test]
+    fn the_count_stays_on_the_query_row() {
+        let frame = render(&replacing("foo foo\n", "foo", "bar"), 40, 8);
+        assert!(query_row_of_two(&frame).contains("1 of 2"));
+        assert!(!find_row(&frame).contains(" of "), "{:?}", find_row(&frame));
+    }
+
+    #[test]
+    fn an_empty_replacement_draws_an_empty_field() {
+        let session = replacing("foo\n", "foo", "");
+        let frame = render(&session, 40, 8);
+        assert_eq!(find_row(&frame).trim(), "With:");
+    }
+
+    #[test]
+    fn the_replace_row_closes_with_the_bar() {
+        let mut session = replacing("foo\n", "foo", "bar");
+        session.run("closeFindWidget", None, 0);
+        let frame = render(&session, 40, 8);
+        let all: String = frame.rows.iter().map(Row::plain).collect();
+        assert!(!all.contains("With:"));
+        assert!(!all.contains("Find:"));
     }
 }
