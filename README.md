@@ -18,6 +18,25 @@ $ cargo run -p deco --features gui -- src/main.rs --frontend gui
 $ cargo run -p deco -- --print-config       # why isn't my setting applying?
 ```
 
+## Documentation
+
+[`docs/`](docs/README.md) documents each feature with an animation of it running:
+
+| | |
+| --- | --- |
+| [Editing](docs/editing.md) | Motion, line operations, multiple cursors, undo |
+| [Find and replace](docs/find-and-replace.md) | `ctrl+f`, `ctrl+h`, `F3`, and the multi-cursor find keys |
+| [Language servers](docs/language-servers.md) | Diagnostics, hover, go-to-definition, completion, formatting |
+| [Configuration](docs/configuration.md) | `settings.json`, `keybindings.json`, themes, and where they are read from |
+| [Extensions](docs/extensions.md) | The capability model, and why an extension gets less power here |
+| [Remote](docs/remote.md) | SSH, container and WSL authorities — and which half exists |
+
+The animations are generated from deco's own renderer by `cargo xtask docs`, and
+`cargo xtask docs --check` runs in CI — so a demonstration cannot show a feature
+behaving in a way the code does not.
+
+![Multiple cursors added with ctrl+d](docs/img/multi-cursor.svg)
+
 ## Why these choices
 
 **Rust, not Electron.** The editor is a native binary with a rope-backed text
@@ -201,6 +220,8 @@ reproduced locally with the command CI itself uses:
 $ cargo xtask ci              # fmt, clippy, rustdoc and the tests
 $ cargo xtask ci --lint-only  # …or just the checks
 $ cargo xtask host-test       # the extension host's own tests
+$ cargo xtask docs            # regenerate the animations in docs/img
+$ cargo xtask docs --check    # …or check they still match the code
 $ cargo xtask dist            # build and package a release for this machine
 $ cargo xtask dist --target aarch64-apple-darwin
 ```

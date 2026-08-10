@@ -3389,6 +3389,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "deco-config",
+ "deco-core",
+ "deco-editor",
+ "deco-keymap",
+ "deco-lsp",
+ "deco-theme",
+ "deco-tui",
  "flate2",
  "sha2",
  "tar",

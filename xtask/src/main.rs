@@ -10,10 +10,12 @@
 //! $ cargo xtask ci                                  # everything the CI checks run
 //! $ cargo xtask dist                                # package for this machine
 //! $ cargo xtask dist --target aarch64-apple-darwin  # …or for another target
+//! $ cargo xtask docs                                # regenerate the docs images
 //! ```
 
 mod commitlint;
 mod dist;
+mod docs;
 
 use std::path::{Path, PathBuf};
 
@@ -61,6 +63,13 @@ enum Command {
     HostTest,
     /// Check the dependency graph against the supply-chain policy in deny.toml.
     Deny,
+    /// Regenerate the animated demonstrations in `docs/img`.
+    Docs {
+        /// Check that the committed files match what the code renders, instead
+        /// of rewriting them.
+        #[arg(long)]
+        check: bool,
+    },
     /// Check commit messages against Conventional Commits.
     Commitlint {
         /// Revision range to check, e.g. `origin/main..HEAD`.
@@ -99,6 +108,17 @@ fn main() -> Result<()> {
         }
         Command::HostTest => host_test(&root),
         Command::Deny => deny(&root),
+        Command::Docs { check } => {
+            let written = docs::run(&root, check)?;
+            if check {
+                println!("{} demonstrations are up to date", written.len());
+            } else {
+                for path in &written {
+                    println!("{}", path.display());
+                }
+            }
+            Ok(())
+        }
         Command::Commitlint { range } => commit_lint(&root, range.as_deref()),
     }
 }

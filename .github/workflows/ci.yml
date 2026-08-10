@@ -57,6 +57,12 @@ jobs:
       - name: Commit messages
         if: github.event_name == 'pull_request'
         run: cargo xtask commitlint --range "origin/${{ github.base_ref }}..HEAD"
+      # Also a step rather than a job, for the same reason. The documentation's
+      # animations are rendered by the editor itself, so a behaviour change that
+      # nobody regenerated them for would otherwise leave the documentation
+      # describing an editor that no longer exists.
+      - name: Documentation is up to date
+        run: cargo xtask docs --check
 
   test:
     name: Test (${{ matrix.os }})
