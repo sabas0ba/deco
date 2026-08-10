@@ -118,6 +118,10 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
                 // itself and narrows an open list, and afterwards there is no way
                 // to tell which key it was.
                 let typed = printable(&chord);
+                // Remembered so a tab switch can be seen afterwards: the chord
+                // may put a different document on screen, and the language
+                // server has to be told which file it is now looking at.
+                let path_before = session.document.path.clone();
                 let was_backspace = chord.key
                     == deco_keymap::keys::Key::Named(deco_keymap::keys::NamedKey::Backspace)
                     && !chord.modifiers.ctrl
@@ -188,6 +192,19 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
                     }
                 } else if was_backspace {
                     lsp.backspaced(session);
+                }
+                // The chord may have switched tabs — ctrl+tab, ctrl+w, a file
+                // opened from a jump. `attach` is idempotent, so calling it for
+                // the same document costs a comparison; for a new one it sends
+                // didClose/didOpen or starts the right server, and the stored
+                // diagnostics for the returning document are collected.
+                if session.document.path != path_before {
+                    // A hover or completion list anchored in the old document
+                    // would describe text that is no longer on screen.
+                    lsp.dismiss_hover();
+                    lsp.dismiss_suggest();
+                    lsp.attach(session);
+                    lsp.refresh_diagnostics(session);
                 }
                 // After the command, not before: the server has to be told
                 // about the text as it now is.

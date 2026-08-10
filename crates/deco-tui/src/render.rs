@@ -158,7 +158,15 @@ pub fn chrome_height(session: &Session) -> usize {
     } else {
         0
     };
-    1 + find + prompt_height(session)
+    1 + find + prompt_height(session) + tab_bar_height(session)
+}
+
+/// One row for the tab bar, or none while a single document is open.
+///
+/// Hidden for a single tab so that opening one file looks exactly as it always
+/// did — the bar earns its row only once there is a choice to show.
+pub fn tab_bar_height(session: &Session) -> usize {
+    usize::from(session.tab_count() > 1)
 }
 
 /// Rows the quick-open prompt takes: its own, plus a row per offered choice.
@@ -178,8 +186,13 @@ fn render_text(session: &Session, width: usize, height: usize) -> Frame {
     let gutter = gutter_width(session);
     let text_height = height.saturating_sub(chrome_height(session));
     let text_width = width.saturating_sub(gutter);
+    // Screen rows the text area starts below: the tab bar, when it is showing.
+    let top = tab_bar_height(session);
 
     let mut rows = Vec::with_capacity(height);
+    if top > 0 {
+        rows.push(tab_bar(session, width, &palette));
+    }
     let buffer = &session.document.buffer;
     let tab_size = session.document.settings.tab_size;
     let cursor_line = session.view.cursor().line as usize;
@@ -226,7 +239,7 @@ fn render_text(session: &Session, width: usize, height: usize) -> Frame {
         if line == cursor_line {
             let column = display_column(&text, session.view.cursor().character, tab_size);
             if column < text_width {
-                cursor_cell = Some(((gutter + column) as u16, row_index as u16));
+                cursor_cell = Some(((gutter + column) as u16, (top + row_index) as u16));
             }
         }
     }
@@ -274,6 +287,51 @@ fn render_text(session: &Session, width: usize, height: usize) -> Frame {
         rows,
         cursor: cursor_cell,
     }
+}
+
+/// The tab bar: every open document, the active one set apart.
+fn tab_bar(session: &Session, width: usize, palette: &Palette) -> Row {
+    let theme = &session.theme;
+    let bar_bg = theme
+        .color("editorGroupHeader.tabsBackground")
+        .unwrap_or(palette.status_bg);
+    let active_bg = theme.color("tab.activeBackground").unwrap_or(palette.bg);
+    let active_fg = theme.color("tab.activeForeground").unwrap_or(palette.fg);
+    let inactive_bg = theme.color("tab.inactiveBackground").unwrap_or(bar_bg);
+    let inactive_fg = theme
+        .color("tab.inactiveForeground")
+        .unwrap_or(palette.status_fg);
+
+    let mut spans = Vec::new();
+    let mut used = 0usize;
+    for label in session.tab_labels() {
+        // The same marker the status bar uses for the active document, so the
+        // two read as one vocabulary.
+        let dirty = if label.dirty { "*" } else { "" };
+        let text = format!(" {}{dirty} ", label.title);
+        let cells = columns(&text);
+        if used + cells > width {
+            // Out of room. The bar truncates rather than scrolling; with the
+            // active tab always reachable by ctrl+tab, a scrolling bar is not
+            // worth its complexity yet.
+            break;
+        }
+        let (fg, bg) = if label.active {
+            (active_fg, active_bg)
+        } else {
+            (inactive_fg, inactive_bg)
+        };
+        spans.push(Span { text, fg, bg });
+        used += cells;
+    }
+    if used < width {
+        spans.push(Span {
+            text: " ".repeat(width - used),
+            fg: inactive_fg,
+            bg: bar_bg,
+        });
+    }
+    Row { spans }
 }
 
 /// The prompt's own row, and the column its caret sits in.
@@ -773,7 +831,9 @@ fn overlay_hover(
         // the cursor fits nowhere relative to it, so it goes at the top, where
         // at least it does not cover the line being edited when the cursor is
         // low on the screen.
-        cursor_row.saturating_sub(box_height)
+        cursor_row
+            .saturating_sub(box_height)
+            .max(tab_bar_height(session))
     };
 
     for (index, row) in (top..(top + box_height).min(text_height)).enumerate() {
@@ -962,7 +1022,9 @@ fn overlay_suggest(
     let top = if cursor_row + 1 + box_height <= text_height {
         cursor_row + 1
     } else {
-        cursor_row.saturating_sub(box_height)
+        cursor_row
+            .saturating_sub(box_height)
+            .max(tab_bar_height(session))
     };
 
     for (index, row) in (top..(top + box_height).min(text_height)).enumerate() {
@@ -1941,6 +2003,130 @@ mod tests {
         let session = replacing("foo\n", "foo", "");
         let frame = render(&session, 40, 8);
         assert_eq!(find_row(&frame).trim(), "With:");
+    }
+
+    // ---- The tab bar ------------------------------------------------------
+
+    /// A session with exactly `names` open as tabs, the first one active.
+    ///
+    /// Built from scratch rather than through `session()`, which already opens a
+    /// file — the first open below replaces the pristine untitled tab, so the
+    /// count comes out exact.
+    fn tabbed(names: &[&str]) -> Session {
+        let mut session = Session::new(
+            deco_config::Settings::with_defaults(),
+            None,
+            deco_keymap::binding::Platform::Linux,
+        );
+        for (index, name) in names.iter().enumerate() {
+            session.open(
+                PathBuf::from(format!("/w/{name}")),
+                &format!("file {index}\n"),
+            );
+        }
+        for _ in 1..names.len() {
+            session.run("workbench.action.previousEditor", None, 0);
+        }
+        session
+    }
+
+    #[test]
+    fn one_tab_shows_no_bar() {
+        let frame = render(&tabbed(&["a.rs"]), 40, 6);
+        assert!(
+            !frame.rows[0].plain().contains("a.rs"),
+            "{:?}",
+            frame.rows[0].plain()
+        );
+        assert!(
+            frame.rows[0].plain().contains("file 0"),
+            "row 0 is still the text"
+        );
+    }
+
+    #[test]
+    fn two_tabs_put_a_bar_on_the_top_row() {
+        let session = tabbed(&["a.rs", "b.rs"]);
+        let frame = render(&session, 40, 6);
+        let bar = frame.rows[0].plain();
+        assert!(bar.contains("a.rs") && bar.contains("b.rs"), "{bar:?}");
+        // The text moved down a row, and so did the cursor.
+        assert!(
+            frame.rows[1].plain().contains("file 0"),
+            "{:?}",
+            frame.rows[1].plain()
+        );
+        assert_eq!(frame.cursor.unwrap().1, 1);
+    }
+
+    #[test]
+    fn the_bar_costs_the_text_area_a_row_not_the_status_bar() {
+        let one = render(&tabbed(&["a.rs"]), 40, 6);
+        let two = render(&tabbed(&["a.rs", "b.rs"]), 40, 6);
+        assert_eq!(one.rows.len(), two.rows.len());
+        assert!(two.rows.last().unwrap().plain().contains("Ln 1"));
+    }
+
+    #[test]
+    fn the_active_tab_is_set_apart_by_colour() {
+        let session = tabbed(&["a.rs", "b.rs"]);
+        let frame = render(&session, 40, 6);
+        let spans = &frame.rows[0].spans;
+        let active = spans
+            .iter()
+            .find(|span| span.text.contains("a.rs"))
+            .expect("the active tab is drawn");
+        let inactive = spans
+            .iter()
+            .find(|span| span.text.contains("b.rs"))
+            .expect("the inactive tab is drawn");
+        assert_ne!(
+            (active.fg, active.bg),
+            (inactive.fg, inactive.bg),
+            "the two tabs must not look the same"
+        );
+    }
+
+    #[test]
+    fn a_dirty_tab_is_marked_in_the_bar() {
+        let mut session = tabbed(&["a.rs", "b.rs"]);
+        session.run("type", Some(&serde_json::json!({ "text": "x" })), 0);
+        let bar = render(&session, 40, 6).rows[0].plain();
+        assert!(bar.contains("a.rs*"), "{bar:?}");
+        assert!(!bar.contains("b.rs*"), "{bar:?}");
+    }
+
+    #[test]
+    fn every_row_is_the_terminal_width_with_the_bar_open() {
+        let frame = render(&tabbed(&["a.rs", "b.rs"]), 40, 6);
+        for row in &frame.rows {
+            assert_eq!(row.plain().chars().count(), 40, "row was {:?}", row.plain());
+        }
+    }
+
+    #[test]
+    fn a_bar_wider_than_the_terminal_truncates_whole_tabs() {
+        let names: Vec<String> = (0..12).map(|n| format!("file-{n:02}.rs")).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let frame = render(&tabbed(&refs), 30, 6);
+        let bar = frame.rows[0].plain();
+        assert_eq!(bar.chars().count(), 30);
+        assert!(!bar.contains("file-11"), "the tail is dropped: {bar:?}");
+    }
+
+    #[test]
+    fn a_hover_box_never_covers_the_tab_bar() {
+        let mut session = tabbed(&["a.rs", "b.rs"]);
+        // The cursor is on the first text row, so a box drawn above it would
+        // land on the bar if nothing stopped it.
+        session.view.selections = SelectionSet::caret(Position::ZERO);
+        let hover = deco_lsp::Hover {
+            contents: "one\ntwo\nthree\nfour".to_owned(),
+            range: None,
+        };
+        let frame = render_with_hover(&session, 40, 8, Some(&hover));
+        let bar = frame.rows[0].plain();
+        assert!(bar.contains("a.rs"), "the bar survived: {bar:?}");
     }
 
     // ---- Syntax highlighting --------------------------------------------

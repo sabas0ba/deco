@@ -122,6 +122,10 @@ fn demos() -> Vec<Demo> {
             name: "highlighting",
             build: highlighting,
         },
+        Demo {
+            name: "tabs",
+            build: tabs,
+        },
     ]
 }
 
@@ -204,14 +208,7 @@ impl Take {
     /// A frame per letter makes a long word into a slideshow nobody reads.
     fn type_text(&mut self, text: &str) -> &mut Self {
         for c in text.chars() {
-            let key = if c == ' ' {
-                "space".to_owned()
-            } else {
-                c.to_string()
-            };
-            let chord = Chord::parse(&key).expect("a printable character is a chord");
-            self.session
-                .handle_chord(chord, self.shots.len() as u64 * 10_000);
+            self.type_char(c);
         }
         self.resize_for_chrome();
         self.capture(&format!("type “{text}”"), 3);
@@ -219,8 +216,15 @@ impl Take {
     }
 
     /// Types one character without capturing a frame.
+    ///
+    /// The chord is built rather than parsed, because that is what a terminal
+    /// sends: a space arrives as the character `' '`, not as the named `space`
+    /// key — and the named key types nothing.
     fn type_char(&mut self, c: char) {
-        let chord = Chord::parse(&c.to_string()).expect("a printable character is a chord");
+        let chord = deco_keymap::keys::Chord {
+            key: deco_keymap::keys::Key::Char(c),
+            modifiers: Default::default(),
+        };
         self.session
             .handle_chord(chord, self.shots.len() as u64 * 10_000);
     }
@@ -445,6 +449,35 @@ fn highlighting() -> String {
         take.session.resize(COLUMNS, ROWS - 1);
         take.capture(file, 5);
     }
+    take.finish()
+}
+
+fn tabs() -> String {
+    let mut take = Take::new(
+        "main.rs",
+        "fn main() {\n    let total = items().sum();\n    println!(\"{total}\");\n}\n",
+    );
+    take.capture("one file open — no tab bar", 3);
+    take.session.open(
+        PathBuf::from("/demo/lib.rs"),
+        "/// The numbers to add up.\npub fn items() -> Vec<u32> {\n    vec![1, 2, 3]\n}\n",
+    );
+    take.resize_for_chrome();
+    take.capture("a second file opens in a new tab", 4);
+    take.press_and_hold(&["ctrl+tab"], 3)
+        .at(1, 8)
+        .type_text("mut ")
+        .press_and_hold(&["ctrl+tab"], 3)
+        .press_and_hold(&["ctrl+tab"], 4)
+        // A dirty tab refuses to close — losing edits to a keystroke is the
+        // worst thing an editor can do, and deco has no dialog to ask with.
+        .press_and_hold(&["ctrl+w"], 5);
+    // The refusal has been read; a status message persists until the next one,
+    // and carrying it into the closing frames would read as a second refusal.
+    take.session.status = None;
+    take.press_and_hold(&["ctrl+tab"], 2)
+        // The clean tab closes, and with one document left the bar goes away.
+        .press_and_hold(&["ctrl+w"], 5);
     take.finish()
 }
 
