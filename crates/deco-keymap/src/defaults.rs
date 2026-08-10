@@ -113,6 +113,13 @@ pub const DEFAULT_KEYBINDINGS_JSONC: &str = r#"[
     { "key": "alt+c",        "command": "toggleFindCaseSensitive", "when": "findWidgetVisible" },
     { "key": "alt+w",        "command": "toggleFindWholeWord",     "when": "findWidgetVisible" },
     { "key": "alt+r",        "command": "toggleFindRegex",         "when": "findWidgetVisible" },
+    { "key": "enter",        "command": "editor.action.replaceOne", "when": "replaceInputFocussed" },
+    { "key": "ctrl+alt+enter", "mac": "cmd+alt+enter", "command": "editor.action.replaceAll", "when": "findWidgetVisible" },
+    // VS Code moves between the two inputs with the browser's own focus
+    // traversal, so there is no command identifier of its to be faithful to. A
+    // `deco.` one says as much.
+    { "key": "tab",          "command": "deco.find.toggleField", "when": "findWidgetVisible" },
+    { "key": "shift+tab",    "command": "deco.find.toggleField", "when": "findWidgetVisible" },
 
     // ---- Navigation -----------------------------------------------------
     { "key": "ctrl+p",       "mac": "cmd+p",       "command": "workbench.action.quickOpen" },

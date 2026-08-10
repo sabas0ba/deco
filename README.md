@@ -18,6 +18,25 @@ $ cargo run -p deco --features gui -- src/main.rs --frontend gui
 $ cargo run -p deco -- --print-config       # why isn't my setting applying?
 ```
 
+## Documentation
+
+[`docs/`](docs/README.md) documents each feature with an animation of it running:
+
+| | |
+| --- | --- |
+| [Editing](docs/editing.md) | Motion, line operations, multiple cursors, undo |
+| [Find and replace](docs/find-and-replace.md) | `ctrl+f`, `ctrl+h`, `F3`, and the multi-cursor find keys |
+| [Language servers](docs/language-servers.md) | Diagnostics, hover, go-to-definition, completion, formatting |
+| [Configuration](docs/configuration.md) | `settings.json`, `keybindings.json`, themes, and where they are read from |
+| [Extensions](docs/extensions.md) | The capability model, and why an extension gets less power here |
+| [Remote](docs/remote.md) | SSH, container and WSL authorities — and which half exists |
+
+The animations are generated from deco's own renderer by `cargo xtask docs`, and
+`cargo xtask docs --check` runs in CI — so a demonstration cannot show a feature
+behaving in a way the code does not.
+
+![Multiple cursors added with ctrl+d](docs/img/multi-cursor.svg)
+
 ## Why these choices
 
 **Rust, not Electron.** The editor is a native binary with a rope-backed text
@@ -48,7 +67,7 @@ thin painter.
 | Code extensions (`main`) | Protocol and sandbox built; host not yet wired to the editor |
 | Remote SSH / containers / WSL | Authorities and transports built; server not yet |
 | Language servers (LSP) | Diagnostics, hover, go-to-definition, completion, formatting |
-| Find (`ctrl+f`, `F3`, `ctrl+d`, `ctrl+shift+l`) | Literal search only — no regex, no replace, no find-in-files |
+| Find and replace (`ctrl+f`, `ctrl+h`, `F3`, `ctrl+d`, `ctrl+shift+l`) | Literal search only — no regex, no find-in-files |
 | `.tmTheme` (plist) themes, `-` scope exclusions | No |
 
 Settings are read from deco's own configuration directory, falling back to VS
@@ -173,12 +192,14 @@ does not:
 - **The extension host is not connected.** The protocol, the capability broker,
   the sandbox and the `vscode` shim all exist and are tested against each other;
   the editor does not yet start a host or dispatch to one.
-- **Search finds but does not replace.** `ctrl+f` opens a find bar with a query,
-  a match count and highlighting; `F3`, `enter` and `alt+c` / `alt+w` work as they
-  do in VS Code, and the multi-cursor keys (`ctrl+d`, `ctrl+shift+l`,
-  `ctrl+k ctrl+d`) search the same way. What is missing is `ctrl+h` (replace),
-  regular expressions — `deco-core::search` is deliberately literal — and
-  find-in-files, which needs more than one document. All three say so when pressed
+- **Search is literal, and only within the open file.** `ctrl+f` and `ctrl+h`
+  open a find bar with a query, a replacement, a match count and highlighting;
+  `F3`, `enter`, `ctrl+alt+enter` and `alt+c` / `alt+w` work as they do in VS
+  Code, and the multi-cursor keys (`ctrl+d`, `ctrl+shift+l`, `ctrl+k ctrl+d`)
+  search the same way. What is missing is regular expressions —
+  `deco-core::search` is deliberately literal, and a regex mode needs its own
+  escaping rules and its own error reporting for an invalid pattern — and
+  find-in-files, which needs more than one document. Both say so when pressed
   rather than reporting an unknown command.
 - **One document at a time.** No tabs, splits, file tree, search-in-files,
   command palette or quick open — the keybindings for them resolve to commands
@@ -199,6 +220,8 @@ reproduced locally with the command CI itself uses:
 $ cargo xtask ci              # fmt, clippy, rustdoc and the tests
 $ cargo xtask ci --lint-only  # …or just the checks
 $ cargo xtask host-test       # the extension host's own tests
+$ cargo xtask docs            # regenerate the animations in docs/img
+$ cargo xtask docs --check    # …or check they still match the code
 $ cargo xtask dist            # build and package a release for this machine
 $ cargo xtask dist --target aarch64-apple-darwin
 ```
