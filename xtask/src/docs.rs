@@ -118,6 +118,10 @@ fn demos() -> Vec<Demo> {
             name: "go-to-line",
             build: go_to_line,
         },
+        Demo {
+            name: "highlighting",
+            build: highlighting,
+        },
     ]
 }
 
@@ -400,6 +404,47 @@ fn completion() -> String {
     take.session
         .replace_range(Range::new(anchor, caret), &insert, 99_000);
     take.capture("enter", 5);
+    take.finish()
+}
+
+fn highlighting() -> String {
+    // One frame per language, so the colours can be compared across them. Each is
+    // a separate document, which is also what proves the lexer is chosen from the
+    // file name rather than guessed at.
+    let samples: [(&str, &str); 5] = [
+        (
+            "main.rs",
+            "// A Rust sample.\nfn total(items: &[u32]) -> u32 {\n    let mut sum = 0;\n    for n in items {\n        sum += *n;\n    }\n    sum\n}\n",
+        ),
+        (
+            "app.ts",
+            "// TypeScript.\ninterface User { name: string; age: number }\n\nexport function greet(user: User): string {\n  return `hello ${user.name}`;\n}\n",
+        ),
+        (
+            "script.py",
+            "# Python.\nclass Counter:\n    \"\"\"Counts things.\"\"\"\n\n    def __init__(self, start=0):\n        self.value = start\n\n    def bump(self):\n        self.value += 1\n        return self.value\n",
+        ),
+        (
+            "config.toml",
+            "# A manifest.\n[package]\nname = \"deco\"\nedition = \"2021\"\n\n[dependencies]\nropey = { version = \"1\", default-features = false }\n",
+        ),
+        (
+            "data.json",
+            "{\n  \"name\": \"deco\",\n  \"version\": 1,\n  \"nested\": { \"ok\": true, \"missing\": null },\n  \"list\": [1, 2, 3]\n}\n",
+        ),
+    ];
+
+    let mut take = Take::new(samples[0].0, samples[0].1);
+    take.capture(
+        &format!("{} — colours come from the theme", samples[0].0),
+        5,
+    );
+    for (file, text) in &samples[1..] {
+        take.session
+            .open(PathBuf::from(format!("/demo/{file}")), text);
+        take.session.resize(COLUMNS, ROWS - 1);
+        take.capture(file, 5);
+    }
     take.finish()
 }
 

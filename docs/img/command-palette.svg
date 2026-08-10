@@ -20,13 +20,23 @@
 <rect width="670" height="316" rx="6" fill="#1f1f1f"/>
 <g class="s s0">
 <text x="12.0" y="26.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  1 </text>
-<text x="46.0" y="26.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">fn main() {                                                             </text>
+<text x="46.0" y="26.0" font-size="14px" fill="#c586c0" textLength="17.0" lengthAdjust="spacingAndGlyphs">fn</text>
+<text x="71.5" y="26.0" font-size="14px" fill="#dcdcaa" textLength="34.0" lengthAdjust="spacingAndGlyphs">main</text>
+<text x="105.5" y="26.0" font-size="14px" fill="#cccccc" textLength="552.5" lengthAdjust="spacingAndGlyphs">() {                                                             </text>
 <text x="12.0" y="45.0" font-size="14px" fill="#cccccc" textLength="34.0" lengthAdjust="spacingAndGlyphs">  2 </text>
-<text x="46.0" y="45.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">    let total = 1;                                                      </text>
+<text x="80.0" y="45.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
+<text x="105.5" y="45.0" font-size="14px" fill="#cccccc" textLength="76.5" lengthAdjust="spacingAndGlyphs"> total = </text>
+<text x="182.0" y="45.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">1</text>
+<text x="190.5" y="45.0" font-size="14px" fill="#cccccc" textLength="467.5" lengthAdjust="spacingAndGlyphs">;                                                      </text>
 <text x="12.0" y="64.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  3 </text>
-<text x="46.0" y="64.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">    let count = 2;                                                      </text>
+<text x="80.0" y="64.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
+<text x="105.5" y="64.0" font-size="14px" fill="#cccccc" textLength="76.5" lengthAdjust="spacingAndGlyphs"> count = </text>
+<text x="182.0" y="64.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">2</text>
+<text x="190.5" y="64.0" font-size="14px" fill="#cccccc" textLength="467.5" lengthAdjust="spacingAndGlyphs">;                                                      </text>
 <text x="12.0" y="83.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  4 </text>
-<text x="46.0" y="83.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">    println!(&quot;{total}&quot;);                                                </text>
+<text x="46.0" y="83.0" font-size="14px" fill="#cccccc" textLength="110.5" lengthAdjust="spacingAndGlyphs">    println!(</text>
+<text x="156.5" y="83.0" font-size="14px" fill="#ce9178" textLength="76.5" lengthAdjust="spacingAndGlyphs">&quot;{total}&quot;</text>
+<text x="233.0" y="83.0" font-size="14px" fill="#cccccc" textLength="425.0" lengthAdjust="spacingAndGlyphs">);                                                </text>
 <text x="12.0" y="102.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  5 </text>
 <text x="46.0" y="102.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">}                                                                       </text>
 <text x="12.0" y="121.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  6 </text>
@@ -37,13 +47,23 @@
 </g>
 <g class="s s1">
 <text x="12.0" y="26.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  1 </text>
-<text x="46.0" y="26.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">fn main() {                                                             </text>
+<text x="46.0" y="26.0" font-size="14px" fill="#c586c0" textLength="17.0" lengthAdjust="spacingAndGlyphs">fn</text>
+<text x="71.5" y="26.0" font-size="14px" fill="#dcdcaa" textLength="34.0" lengthAdjust="spacingAndGlyphs">main</text>
+<text x="105.5" y="26.0" font-size="14px" fill="#cccccc" textLength="552.5" lengthAdjust="spacingAndGlyphs">() {                                                             </text>
 <text x="12.0" y="45.0" font-size="14px" fill="#cccccc" textLength="34.0" lengthAdjust="spacingAndGlyphs">  2 </text>
-<text x="46.0" y="45.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">    let total = 1;                                                      </text>
+<text x="80.0" y="45.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
+<text x="105.5" y="45.0" font-size="14px" fill="#cccccc" textLength="76.5" lengthAdjust="spacingAndGlyphs"> total = </text>
+<text x="182.0" y="45.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">1</text>
+<text x="190.5" y="45.0" font-size="14px" fill="#cccccc" textLength="467.5" lengthAdjust="spacingAndGlyphs">;                                                      </text>
 <text x="12.0" y="64.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  3 </text>
-<text x="46.0" y="64.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">    let count = 2;                                                      </text>
+<text x="80.0" y="64.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
+<text x="105.5" y="64.0" font-size="14px" fill="#cccccc" textLength="76.5" lengthAdjust="spacingAndGlyphs"> count = </text>
+<text x="182.0" y="64.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">2</text>
+<text x="190.5" y="64.0" font-size="14px" fill="#cccccc" textLength="467.5" lengthAdjust="spacingAndGlyphs">;                                                      </text>
 <text x="12.0" y="83.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  4 </text>
-<text x="46.0" y="83.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">    println!(&quot;{total}&quot;);                                                </text>
+<text x="46.0" y="83.0" font-size="14px" fill="#cccccc" textLength="110.5" lengthAdjust="spacingAndGlyphs">    println!(</text>
+<text x="156.5" y="83.0" font-size="14px" fill="#ce9178" textLength="76.5" lengthAdjust="spacingAndGlyphs">&quot;{total}&quot;</text>
+<text x="233.0" y="83.0" font-size="14px" fill="#cccccc" textLength="425.0" lengthAdjust="spacingAndGlyphs">);                                                </text>
 <rect x="12.0" y="88.0" width="646.0" height="19.0" fill="#cccccc"/>
 <text x="12.0" y="102.0" font-size="14px" fill="#1f1f1f" textLength="646.0" lengthAdjust="spacingAndGlyphs">  Add Line Comment                             editor.action.addCommentLine </text>
 <rect x="12.0" y="107.0" width="646.0" height="19.0" fill="#181818"/>
@@ -69,13 +89,23 @@
 </g>
 <g class="s s2">
 <text x="12.0" y="26.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  1 </text>
-<text x="46.0" y="26.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">fn main() {                                                             </text>
+<text x="46.0" y="26.0" font-size="14px" fill="#c586c0" textLength="17.0" lengthAdjust="spacingAndGlyphs">fn</text>
+<text x="71.5" y="26.0" font-size="14px" fill="#dcdcaa" textLength="34.0" lengthAdjust="spacingAndGlyphs">main</text>
+<text x="105.5" y="26.0" font-size="14px" fill="#cccccc" textLength="552.5" lengthAdjust="spacingAndGlyphs">() {                                                             </text>
 <text x="12.0" y="45.0" font-size="14px" fill="#cccccc" textLength="34.0" lengthAdjust="spacingAndGlyphs">  2 </text>
-<text x="46.0" y="45.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">    let total = 1;                                                      </text>
+<text x="80.0" y="45.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
+<text x="105.5" y="45.0" font-size="14px" fill="#cccccc" textLength="76.5" lengthAdjust="spacingAndGlyphs"> total = </text>
+<text x="182.0" y="45.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">1</text>
+<text x="190.5" y="45.0" font-size="14px" fill="#cccccc" textLength="467.5" lengthAdjust="spacingAndGlyphs">;                                                      </text>
 <text x="12.0" y="64.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  3 </text>
-<text x="46.0" y="64.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">    let count = 2;                                                      </text>
+<text x="80.0" y="64.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
+<text x="105.5" y="64.0" font-size="14px" fill="#cccccc" textLength="76.5" lengthAdjust="spacingAndGlyphs"> count = </text>
+<text x="182.0" y="64.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">2</text>
+<text x="190.5" y="64.0" font-size="14px" fill="#cccccc" textLength="467.5" lengthAdjust="spacingAndGlyphs">;                                                      </text>
 <text x="12.0" y="83.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  4 </text>
-<text x="46.0" y="83.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">    println!(&quot;{total}&quot;);                                                </text>
+<text x="46.0" y="83.0" font-size="14px" fill="#cccccc" textLength="110.5" lengthAdjust="spacingAndGlyphs">    println!(</text>
+<text x="156.5" y="83.0" font-size="14px" fill="#ce9178" textLength="76.5" lengthAdjust="spacingAndGlyphs">&quot;{total}&quot;</text>
+<text x="233.0" y="83.0" font-size="14px" fill="#cccccc" textLength="425.0" lengthAdjust="spacingAndGlyphs">);                                                </text>
 <text x="12.0" y="102.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  5 </text>
 <text x="46.0" y="102.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">}                                                                       </text>
 <text x="12.0" y="121.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  6 </text>
@@ -94,13 +124,23 @@
 </g>
 <g class="s s3">
 <text x="12.0" y="26.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  1 </text>
-<text x="46.0" y="26.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">fn main() {                                                             </text>
+<text x="46.0" y="26.0" font-size="14px" fill="#c586c0" textLength="17.0" lengthAdjust="spacingAndGlyphs">fn</text>
+<text x="71.5" y="26.0" font-size="14px" fill="#dcdcaa" textLength="34.0" lengthAdjust="spacingAndGlyphs">main</text>
+<text x="105.5" y="26.0" font-size="14px" fill="#cccccc" textLength="552.5" lengthAdjust="spacingAndGlyphs">() {                                                             </text>
 <text x="12.0" y="45.0" font-size="14px" fill="#cccccc" textLength="34.0" lengthAdjust="spacingAndGlyphs">  2 </text>
-<text x="46.0" y="45.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">    let total = 1;                                                      </text>
+<text x="80.0" y="45.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
+<text x="105.5" y="45.0" font-size="14px" fill="#cccccc" textLength="76.5" lengthAdjust="spacingAndGlyphs"> total = </text>
+<text x="182.0" y="45.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">1</text>
+<text x="190.5" y="45.0" font-size="14px" fill="#cccccc" textLength="467.5" lengthAdjust="spacingAndGlyphs">;                                                      </text>
 <text x="12.0" y="64.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  3 </text>
-<text x="46.0" y="64.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">    let count = 2;                                                      </text>
+<text x="80.0" y="64.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
+<text x="105.5" y="64.0" font-size="14px" fill="#cccccc" textLength="76.5" lengthAdjust="spacingAndGlyphs"> count = </text>
+<text x="182.0" y="64.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">2</text>
+<text x="190.5" y="64.0" font-size="14px" fill="#cccccc" textLength="467.5" lengthAdjust="spacingAndGlyphs">;                                                      </text>
 <text x="12.0" y="83.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  4 </text>
-<text x="46.0" y="83.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">    println!(&quot;{total}&quot;);                                                </text>
+<text x="46.0" y="83.0" font-size="14px" fill="#cccccc" textLength="110.5" lengthAdjust="spacingAndGlyphs">    println!(</text>
+<text x="156.5" y="83.0" font-size="14px" fill="#ce9178" textLength="76.5" lengthAdjust="spacingAndGlyphs">&quot;{total}&quot;</text>
+<text x="233.0" y="83.0" font-size="14px" fill="#cccccc" textLength="425.0" lengthAdjust="spacingAndGlyphs">);                                                </text>
 <text x="12.0" y="102.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  5 </text>
 <text x="46.0" y="102.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">}                                                                       </text>
 <text x="12.0" y="121.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  6 </text>
@@ -119,13 +159,23 @@
 </g>
 <g class="s s4">
 <text x="12.0" y="26.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  1 </text>
-<text x="46.0" y="26.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">fn main() {                                                             </text>
+<text x="46.0" y="26.0" font-size="14px" fill="#c586c0" textLength="17.0" lengthAdjust="spacingAndGlyphs">fn</text>
+<text x="71.5" y="26.0" font-size="14px" fill="#dcdcaa" textLength="34.0" lengthAdjust="spacingAndGlyphs">main</text>
+<text x="105.5" y="26.0" font-size="14px" fill="#cccccc" textLength="552.5" lengthAdjust="spacingAndGlyphs">() {                                                             </text>
 <text x="12.0" y="45.0" font-size="14px" fill="#cccccc" textLength="34.0" lengthAdjust="spacingAndGlyphs">  2 </text>
-<text x="46.0" y="45.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">    let total = 1;                                                      </text>
+<text x="80.0" y="45.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
+<text x="105.5" y="45.0" font-size="14px" fill="#cccccc" textLength="76.5" lengthAdjust="spacingAndGlyphs"> total = </text>
+<text x="182.0" y="45.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">1</text>
+<text x="190.5" y="45.0" font-size="14px" fill="#cccccc" textLength="467.5" lengthAdjust="spacingAndGlyphs">;                                                      </text>
 <text x="12.0" y="64.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  3 </text>
-<text x="46.0" y="64.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">    let count = 2;                                                      </text>
+<text x="80.0" y="64.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
+<text x="105.5" y="64.0" font-size="14px" fill="#cccccc" textLength="76.5" lengthAdjust="spacingAndGlyphs"> count = </text>
+<text x="182.0" y="64.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">2</text>
+<text x="190.5" y="64.0" font-size="14px" fill="#cccccc" textLength="467.5" lengthAdjust="spacingAndGlyphs">;                                                      </text>
 <text x="12.0" y="83.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  4 </text>
-<text x="46.0" y="83.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">    println!(&quot;{total}&quot;);                                                </text>
+<text x="46.0" y="83.0" font-size="14px" fill="#cccccc" textLength="110.5" lengthAdjust="spacingAndGlyphs">    println!(</text>
+<text x="156.5" y="83.0" font-size="14px" fill="#ce9178" textLength="76.5" lengthAdjust="spacingAndGlyphs">&quot;{total}&quot;</text>
+<text x="233.0" y="83.0" font-size="14px" fill="#cccccc" textLength="425.0" lengthAdjust="spacingAndGlyphs">);                                                </text>
 <text x="12.0" y="102.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  5 </text>
 <text x="46.0" y="102.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">}                                                                       </text>
 <text x="12.0" y="121.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  6 </text>
@@ -144,13 +194,20 @@
 </g>
 <g class="s s5">
 <text x="12.0" y="26.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  1 </text>
-<text x="46.0" y="26.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">fn main() {                                                             </text>
+<text x="46.0" y="26.0" font-size="14px" fill="#c586c0" textLength="17.0" lengthAdjust="spacingAndGlyphs">fn</text>
+<text x="71.5" y="26.0" font-size="14px" fill="#dcdcaa" textLength="34.0" lengthAdjust="spacingAndGlyphs">main</text>
+<text x="105.5" y="26.0" font-size="14px" fill="#cccccc" textLength="552.5" lengthAdjust="spacingAndGlyphs">() {                                                             </text>
 <text x="12.0" y="45.0" font-size="14px" fill="#cccccc" textLength="34.0" lengthAdjust="spacingAndGlyphs">  2 </text>
-<text x="46.0" y="45.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">    // let total = 1;                                                   </text>
+<text x="80.0" y="45.0" font-size="14px" fill="#6a9955" textLength="144.5" lengthAdjust="spacingAndGlyphs">// let total = 1;</text>
 <text x="12.0" y="64.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  3 </text>
-<text x="46.0" y="64.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">    let count = 2;                                                      </text>
+<text x="80.0" y="64.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
+<text x="105.5" y="64.0" font-size="14px" fill="#cccccc" textLength="76.5" lengthAdjust="spacingAndGlyphs"> count = </text>
+<text x="182.0" y="64.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">2</text>
+<text x="190.5" y="64.0" font-size="14px" fill="#cccccc" textLength="467.5" lengthAdjust="spacingAndGlyphs">;                                                      </text>
 <text x="12.0" y="83.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  4 </text>
-<text x="46.0" y="83.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">    println!(&quot;{total}&quot;);                                                </text>
+<text x="46.0" y="83.0" font-size="14px" fill="#cccccc" textLength="110.5" lengthAdjust="spacingAndGlyphs">    println!(</text>
+<text x="156.5" y="83.0" font-size="14px" fill="#ce9178" textLength="76.5" lengthAdjust="spacingAndGlyphs">&quot;{total}&quot;</text>
+<text x="233.0" y="83.0" font-size="14px" fill="#cccccc" textLength="425.0" lengthAdjust="spacingAndGlyphs">);                                                </text>
 <text x="12.0" y="102.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  5 </text>
 <text x="46.0" y="102.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">}                                                                       </text>
 <text x="12.0" y="121.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  6 </text>

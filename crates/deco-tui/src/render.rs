@@ -500,9 +500,17 @@ fn line_spans(
     // positioning the cursor by column. `column` counts *terminal columns*, not
     // characters — a CJK character occupies two, so padding by character count
     // would push every row past the right edge.
-    let mut cells: Vec<(char, Cell)> = Vec::new();
+    let mut cells: Vec<(char, Cell, Rgba)> = Vec::new();
     let mut column = 0usize;
     let mut utf16 = 0u32;
+
+    // The scope stack the theme resolves against: the language's `source.*` scope,
+    // then the token's own. Two elements, so the theme's parent selectors work.
+    let source = session.document.syntax.source_scope();
+    let highlights = session
+        .document
+        .syntax
+        .spans(&session.document.buffer, line);
 
     let selected_ranges = clipped_to_line(
         session
@@ -534,8 +542,28 @@ fn line_spans(
         (false, false) => Cell::Plain,
     };
 
+    // Foreground colour per UTF-16 offset, from the highlighting.
+    let colour_at = |utf16: u32| -> Rgba {
+        let Some(span) = highlights
+            .iter()
+            .find(|span| utf16 >= span.start && utf16 < span.end)
+        else {
+            return palette.fg;
+        };
+        let stack: Vec<&str> = match source {
+            Some(source) => vec![source, span.scope],
+            None => vec![span.scope],
+        };
+        session
+            .theme
+            .style_for_scopes(&stack)
+            .foreground
+            .unwrap_or(palette.fg)
+    };
+
     for c in text.chars() {
         let cell = cell_at(utf16);
+        let fg = colour_at(utf16);
         let advance = if c == '\t' {
             tab_size - (column % tab_size)
         } else {
@@ -548,10 +576,10 @@ fn line_spans(
         }
         if c == '\t' {
             for _ in 0..advance {
-                cells.push((' ', cell));
+                cells.push((' ', cell, fg));
             }
         } else {
-            cells.push((c, cell));
+            cells.push((c, cell, fg));
         }
         column += advance;
         utf16 += c.len_utf16() as u32;
@@ -561,18 +589,18 @@ fn line_spans(
     // that selecting a line break is visible rather than invisible.
     let trailing = cell_at(utf16);
     if trailing != Cell::Plain && column < width {
-        cells.push((' ', trailing));
+        cells.push((' ', trailing, palette.fg));
         column += 1;
     }
     while column < width {
-        cells.push((' ', Cell::Plain));
+        cells.push((' ', Cell::Plain, palette.fg));
         column += 1;
     }
 
     // Coalesce runs sharing a style; one span per character would be correct
     // but would make the terminal writer do far more work than it needs to.
     let mut spans: Vec<Span> = Vec::new();
-    for (c, cell) in cells {
+    for (c, cell, fg) in cells {
         let bg = match cell {
             Cell::Plain => palette.bg,
             Cell::Selected => palette.selection_bg,
@@ -580,10 +608,12 @@ fn line_spans(
             Cell::OtherMatch => palette.find_highlight_bg,
         };
         match spans.last_mut() {
-            Some(last) if last.bg == bg => last.text.push(c),
+            // Coalesced on both colours now: a run of one style is one span, and
+            // highlighting breaks runs far more often than a selection does.
+            Some(last) if last.bg == bg && last.fg == fg => last.text.push(c),
             _ => spans.push(Span {
                 text: c.to_string(),
-                fg: palette.fg,
+                fg,
                 bg,
             }),
         }
@@ -1911,6 +1941,159 @@ mod tests {
         let session = replacing("foo\n", "foo", "");
         let frame = render(&session, 40, 8);
         assert_eq!(find_row(&frame).trim(), "With:");
+    }
+
+    // ---- Syntax highlighting --------------------------------------------
+
+    /// The foreground colour of every cell of row 0, one entry per column.
+    fn foregrounds(frame: &Frame) -> Vec<Rgba> {
+        frame.rows[0]
+            .spans
+            .iter()
+            .flat_map(|span| span.text.chars().map(move |_| span.fg))
+            .collect()
+    }
+
+    /// The colour the theme gives `scope`.
+    fn styled(session: &Session, scope: &str) -> Rgba {
+        let source = session.document.syntax.source_scope().unwrap();
+        session
+            .theme
+            .style_for_scopes(&[source, scope])
+            .foreground
+            .expect("the default theme styles this scope")
+    }
+
+    #[test]
+    fn a_keyword_gets_the_themes_keyword_colour() {
+        let session = session("let x = 1;\n");
+        let gutter = gutter_width(&session);
+        let colours = foregrounds(&render(&session, 40, 5));
+        let keyword = styled(&session, deco_syntax::scopes::KEYWORD);
+        assert_eq!(colours[gutter], keyword, "`l` of `let`");
+        assert_eq!(colours[gutter + 2], keyword, "`t` of `let`");
+    }
+
+    #[test]
+    fn strings_and_comments_each_get_their_own_colour() {
+        let with_string = session("let s = \"hi\"; // note\n");
+        let gutter = gutter_width(&with_string);
+        let colours = foregrounds(&render(&with_string, 40, 5));
+        assert_eq!(
+            colours[gutter + 8],
+            styled(&with_string, deco_syntax::scopes::DOUBLE_STRING)
+        );
+        assert_eq!(
+            colours[gutter + 15],
+            styled(&with_string, deco_syntax::scopes::LINE_COMMENT)
+        );
+    }
+
+    #[test]
+    fn a_number_gets_the_themes_numeric_colour() {
+        let numbers = session("let n = 42;\n");
+        let gutter = gutter_width(&numbers);
+        let colours = foregrounds(&render(&numbers, 40, 5));
+        assert_eq!(
+            colours[gutter + 8],
+            styled(&numbers, deco_syntax::scopes::NUMBER)
+        );
+    }
+
+    #[test]
+    fn unhighlighted_text_keeps_the_editors_foreground() {
+        let session = session("let x = 1;\n");
+        let palette = Palette::from(&session);
+        let gutter = gutter_width(&session);
+        // `x` is an identifier with no classification.
+        assert_eq!(
+            foregrounds(&render(&session, 40, 5))[gutter + 4],
+            palette.fg
+        );
+    }
+
+    #[test]
+    fn a_language_with_no_rules_renders_in_one_colour() {
+        let mut markdown = session("let x = 1;\n");
+        markdown.open(PathBuf::from("/w/notes.md"), "let x = 1;\n");
+        let palette = Palette::from(&markdown);
+        assert!(
+            foregrounds(&render(&markdown, 40, 5))
+                .iter()
+                .skip(gutter_width(&markdown))
+                .all(|colour| *colour == palette.fg),
+            "markdown has no lexer, so nothing should be coloured"
+        );
+    }
+
+    #[test]
+    fn highlighting_survives_a_selection_over_it() {
+        // The background says selected, the foreground still says keyword: losing
+        // the highlighting under a selection would make selected code unreadable
+        // in a different way from unselected code.
+        let mut session = session("let x = 1;\n");
+        session.view.selections =
+            SelectionSet::single(Selection::new(Position::new(0, 0), Position::new(0, 3)));
+        let gutter = gutter_width(&session);
+        let frame = render(&session, 40, 5);
+        let palette = Palette::from(&session);
+        let cells: Vec<(Rgba, Rgba)> = frame.rows[0]
+            .spans
+            .iter()
+            .flat_map(|span| span.text.chars().map(move |_| (span.fg, span.bg)))
+            .collect();
+        assert_eq!(cells[gutter].1, palette.selection_bg);
+        assert_eq!(
+            cells[gutter].0,
+            styled(&session, deco_syntax::scopes::KEYWORD)
+        );
+    }
+
+    #[test]
+    fn highlighting_follows_an_edit() {
+        // The cache is invalidated from the edited line, so a `//` typed at the
+        // start of a line must colour the rest of it as a comment.
+        let mut session = session("let x = 1;\n");
+        session.view.selections = SelectionSet::caret(Position::ZERO);
+        session.run("type", Some(&serde_json::json!({ "text": "//" })), 0);
+        let gutter = gutter_width(&session);
+        let colours = foregrounds(&render(&session, 40, 5));
+        let comment = styled(&session, deco_syntax::scopes::LINE_COMMENT);
+        assert_eq!(colours[gutter], comment);
+        assert_eq!(
+            colours[gutter + 5],
+            comment,
+            "`let` is inside the comment now"
+        );
+    }
+
+    #[test]
+    fn a_block_comment_opened_above_colours_the_line_below_it() {
+        let session = session("/* one\ntwo\n");
+        let gutter = gutter_width(&session);
+        let frame = render(&session, 40, 5);
+        let second: Vec<Rgba> = frame.rows[1]
+            .spans
+            .iter()
+            .flat_map(|span| span.text.chars().map(move |_| span.fg))
+            .collect();
+        assert_eq!(
+            second[gutter],
+            styled(&session, deco_syntax::scopes::BLOCK_COMMENT)
+        );
+    }
+
+    #[test]
+    fn highlighting_lines_up_with_text_outside_the_bmp() {
+        // Spans are in UTF-16 units and the renderer walks characters, so an emoji
+        // before a keyword would shift the colouring if either side were wrong.
+        let session = session("let e = \"😀\"; let x = 1;\n");
+        let gutter = gutter_width(&session);
+        let colours = foregrounds(&render(&session, 60, 5));
+        let keyword = styled(&session, deco_syntax::scopes::KEYWORD);
+        // `let e = "😀"; ` occupies 13 display columns before the second `let`.
+        assert_eq!(colours[gutter], keyword);
+        assert_eq!(colours[gutter + 14], keyword, "the second `let`");
     }
 
     // ---- The quick-open prompt ------------------------------------------

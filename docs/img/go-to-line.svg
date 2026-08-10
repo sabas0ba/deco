@@ -16,15 +16,29 @@
 <rect width="670" height="316" rx="6" fill="#1f1f1f"/>
 <g class="s s0">
 <text x="12.0" y="26.0" font-size="14px" fill="#cccccc" textLength="34.0" lengthAdjust="spacingAndGlyphs">  1 </text>
-<text x="46.0" y="26.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">fn main() {                                                             </text>
+<text x="46.0" y="26.0" font-size="14px" fill="#c586c0" textLength="17.0" lengthAdjust="spacingAndGlyphs">fn</text>
+<text x="71.5" y="26.0" font-size="14px" fill="#dcdcaa" textLength="34.0" lengthAdjust="spacingAndGlyphs">main</text>
+<text x="105.5" y="26.0" font-size="14px" fill="#cccccc" textLength="552.5" lengthAdjust="spacingAndGlyphs">() {                                                             </text>
 <text x="12.0" y="45.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  2 </text>
-<text x="46.0" y="45.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">    let a = 1;                                                          </text>
+<text x="80.0" y="45.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
+<text x="105.5" y="45.0" font-size="14px" fill="#cccccc" textLength="42.5" lengthAdjust="spacingAndGlyphs"> a = </text>
+<text x="148.0" y="45.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">1</text>
+<text x="156.5" y="45.0" font-size="14px" fill="#cccccc" textLength="501.5" lengthAdjust="spacingAndGlyphs">;                                                          </text>
 <text x="12.0" y="64.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  3 </text>
-<text x="46.0" y="64.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">    let b = 2;                                                          </text>
+<text x="80.0" y="64.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
+<text x="105.5" y="64.0" font-size="14px" fill="#cccccc" textLength="42.5" lengthAdjust="spacingAndGlyphs"> b = </text>
+<text x="148.0" y="64.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">2</text>
+<text x="156.5" y="64.0" font-size="14px" fill="#cccccc" textLength="501.5" lengthAdjust="spacingAndGlyphs">;                                                          </text>
 <text x="12.0" y="83.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  4 </text>
-<text x="46.0" y="83.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">    let c = 3;                                                          </text>
+<text x="80.0" y="83.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
+<text x="105.5" y="83.0" font-size="14px" fill="#cccccc" textLength="42.5" lengthAdjust="spacingAndGlyphs"> c = </text>
+<text x="148.0" y="83.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">3</text>
+<text x="156.5" y="83.0" font-size="14px" fill="#cccccc" textLength="501.5" lengthAdjust="spacingAndGlyphs">;                                                          </text>
 <text x="12.0" y="102.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  5 </text>
-<text x="46.0" y="102.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">    let d = 4;                                                          </text>
+<text x="80.0" y="102.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
+<text x="105.5" y="102.0" font-size="14px" fill="#cccccc" textLength="42.5" lengthAdjust="spacingAndGlyphs"> d = </text>
+<text x="148.0" y="102.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">4</text>
+<text x="156.5" y="102.0" font-size="14px" fill="#cccccc" textLength="501.5" lengthAdjust="spacingAndGlyphs">;                                                          </text>
 <text x="12.0" y="121.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  6 </text>
 <text x="46.0" y="121.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">}                                                                       </text>
 <text x="12.0" y="140.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  7 </text>
@@ -35,15 +49,29 @@
 </g>
 <g class="s s1">
 <text x="12.0" y="26.0" font-size="14px" fill="#cccccc" textLength="34.0" lengthAdjust="spacingAndGlyphs">  1 </text>
-<text x="46.0" y="26.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">fn main() {                                                             </text>
+<text x="46.0" y="26.0" font-size="14px" fill="#c586c0" textLength="17.0" lengthAdjust="spacingAndGlyphs">fn</text>
+<text x="71.5" y="26.0" font-size="14px" fill="#dcdcaa" textLength="34.0" lengthAdjust="spacingAndGlyphs">main</text>
+<text x="105.5" y="26.0" font-size="14px" fill="#cccccc" textLength="552.5" lengthAdjust="spacingAndGlyphs">() {                                                             </text>
 <text x="12.0" y="45.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  2 </text>
-<text x="46.0" y="45.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">    let a = 1;                                                          </text>
+<text x="80.0" y="45.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
+<text x="105.5" y="45.0" font-size="14px" fill="#cccccc" textLength="42.5" lengthAdjust="spacingAndGlyphs"> a = </text>
+<text x="148.0" y="45.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">1</text>
+<text x="156.5" y="45.0" font-size="14px" fill="#cccccc" textLength="501.5" lengthAdjust="spacingAndGlyphs">;                                                          </text>
 <text x="12.0" y="64.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  3 </text>
-<text x="46.0" y="64.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">    let b = 2;                                                          </text>
+<text x="80.0" y="64.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
+<text x="105.5" y="64.0" font-size="14px" fill="#cccccc" textLength="42.5" lengthAdjust="spacingAndGlyphs"> b = </text>
+<text x="148.0" y="64.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">2</text>
+<text x="156.5" y="64.0" font-size="14px" fill="#cccccc" textLength="501.5" lengthAdjust="spacingAndGlyphs">;                                                          </text>
 <text x="12.0" y="83.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  4 </text>
-<text x="46.0" y="83.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">    let c = 3;                                                          </text>
+<text x="80.0" y="83.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
+<text x="105.5" y="83.0" font-size="14px" fill="#cccccc" textLength="42.5" lengthAdjust="spacingAndGlyphs"> c = </text>
+<text x="148.0" y="83.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">3</text>
+<text x="156.5" y="83.0" font-size="14px" fill="#cccccc" textLength="501.5" lengthAdjust="spacingAndGlyphs">;                                                          </text>
 <text x="12.0" y="102.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  5 </text>
-<text x="46.0" y="102.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">    let d = 4;                                                          </text>
+<text x="80.0" y="102.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
+<text x="105.5" y="102.0" font-size="14px" fill="#cccccc" textLength="42.5" lengthAdjust="spacingAndGlyphs"> d = </text>
+<text x="148.0" y="102.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">4</text>
+<text x="156.5" y="102.0" font-size="14px" fill="#cccccc" textLength="501.5" lengthAdjust="spacingAndGlyphs">;                                                          </text>
 <text x="12.0" y="121.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  6 </text>
 <text x="46.0" y="121.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">}                                                                       </text>
 <text x="12.0" y="140.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  7 </text>
@@ -56,15 +84,29 @@
 </g>
 <g class="s s2">
 <text x="12.0" y="26.0" font-size="14px" fill="#cccccc" textLength="34.0" lengthAdjust="spacingAndGlyphs">  1 </text>
-<text x="46.0" y="26.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">fn main() {                                                             </text>
+<text x="46.0" y="26.0" font-size="14px" fill="#c586c0" textLength="17.0" lengthAdjust="spacingAndGlyphs">fn</text>
+<text x="71.5" y="26.0" font-size="14px" fill="#dcdcaa" textLength="34.0" lengthAdjust="spacingAndGlyphs">main</text>
+<text x="105.5" y="26.0" font-size="14px" fill="#cccccc" textLength="552.5" lengthAdjust="spacingAndGlyphs">() {                                                             </text>
 <text x="12.0" y="45.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  2 </text>
-<text x="46.0" y="45.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">    let a = 1;                                                          </text>
+<text x="80.0" y="45.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
+<text x="105.5" y="45.0" font-size="14px" fill="#cccccc" textLength="42.5" lengthAdjust="spacingAndGlyphs"> a = </text>
+<text x="148.0" y="45.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">1</text>
+<text x="156.5" y="45.0" font-size="14px" fill="#cccccc" textLength="501.5" lengthAdjust="spacingAndGlyphs">;                                                          </text>
 <text x="12.0" y="64.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  3 </text>
-<text x="46.0" y="64.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">    let b = 2;                                                          </text>
+<text x="80.0" y="64.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
+<text x="105.5" y="64.0" font-size="14px" fill="#cccccc" textLength="42.5" lengthAdjust="spacingAndGlyphs"> b = </text>
+<text x="148.0" y="64.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">2</text>
+<text x="156.5" y="64.0" font-size="14px" fill="#cccccc" textLength="501.5" lengthAdjust="spacingAndGlyphs">;                                                          </text>
 <text x="12.0" y="83.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  4 </text>
-<text x="46.0" y="83.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">    let c = 3;                                                          </text>
+<text x="80.0" y="83.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
+<text x="105.5" y="83.0" font-size="14px" fill="#cccccc" textLength="42.5" lengthAdjust="spacingAndGlyphs"> c = </text>
+<text x="148.0" y="83.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">3</text>
+<text x="156.5" y="83.0" font-size="14px" fill="#cccccc" textLength="501.5" lengthAdjust="spacingAndGlyphs">;                                                          </text>
 <text x="12.0" y="102.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  5 </text>
-<text x="46.0" y="102.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">    let d = 4;                                                          </text>
+<text x="80.0" y="102.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
+<text x="105.5" y="102.0" font-size="14px" fill="#cccccc" textLength="42.5" lengthAdjust="spacingAndGlyphs"> d = </text>
+<text x="148.0" y="102.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">4</text>
+<text x="156.5" y="102.0" font-size="14px" fill="#cccccc" textLength="501.5" lengthAdjust="spacingAndGlyphs">;                                                          </text>
 <text x="12.0" y="121.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  6 </text>
 <text x="46.0" y="121.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">}                                                                       </text>
 <text x="12.0" y="140.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  7 </text>
@@ -77,15 +119,29 @@
 </g>
 <g class="s s3">
 <text x="12.0" y="26.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  1 </text>
-<text x="46.0" y="26.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">fn main() {                                                             </text>
+<text x="46.0" y="26.0" font-size="14px" fill="#c586c0" textLength="17.0" lengthAdjust="spacingAndGlyphs">fn</text>
+<text x="71.5" y="26.0" font-size="14px" fill="#dcdcaa" textLength="34.0" lengthAdjust="spacingAndGlyphs">main</text>
+<text x="105.5" y="26.0" font-size="14px" fill="#cccccc" textLength="552.5" lengthAdjust="spacingAndGlyphs">() {                                                             </text>
 <text x="12.0" y="45.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  2 </text>
-<text x="46.0" y="45.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">    let a = 1;                                                          </text>
+<text x="80.0" y="45.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
+<text x="105.5" y="45.0" font-size="14px" fill="#cccccc" textLength="42.5" lengthAdjust="spacingAndGlyphs"> a = </text>
+<text x="148.0" y="45.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">1</text>
+<text x="156.5" y="45.0" font-size="14px" fill="#cccccc" textLength="501.5" lengthAdjust="spacingAndGlyphs">;                                                          </text>
 <text x="12.0" y="64.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  3 </text>
-<text x="46.0" y="64.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">    let b = 2;                                                          </text>
+<text x="80.0" y="64.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
+<text x="105.5" y="64.0" font-size="14px" fill="#cccccc" textLength="42.5" lengthAdjust="spacingAndGlyphs"> b = </text>
+<text x="148.0" y="64.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">2</text>
+<text x="156.5" y="64.0" font-size="14px" fill="#cccccc" textLength="501.5" lengthAdjust="spacingAndGlyphs">;                                                          </text>
 <text x="12.0" y="83.0" font-size="14px" fill="#cccccc" textLength="34.0" lengthAdjust="spacingAndGlyphs">  4 </text>
-<text x="46.0" y="83.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">    let c = 3;                                                          </text>
+<text x="80.0" y="83.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
+<text x="105.5" y="83.0" font-size="14px" fill="#cccccc" textLength="42.5" lengthAdjust="spacingAndGlyphs"> c = </text>
+<text x="148.0" y="83.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">3</text>
+<text x="156.5" y="83.0" font-size="14px" fill="#cccccc" textLength="501.5" lengthAdjust="spacingAndGlyphs">;                                                          </text>
 <text x="12.0" y="102.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  5 </text>
-<text x="46.0" y="102.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">    let d = 4;                                                          </text>
+<text x="80.0" y="102.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
+<text x="105.5" y="102.0" font-size="14px" fill="#cccccc" textLength="42.5" lengthAdjust="spacingAndGlyphs"> d = </text>
+<text x="148.0" y="102.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">4</text>
+<text x="156.5" y="102.0" font-size="14px" fill="#cccccc" textLength="501.5" lengthAdjust="spacingAndGlyphs">;                                                          </text>
 <text x="12.0" y="121.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  6 </text>
 <text x="46.0" y="121.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">}                                                                       </text>
 <text x="12.0" y="140.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  7 </text>
