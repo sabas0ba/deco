@@ -10,8 +10,10 @@
 
 pub mod commands;
 pub mod document;
+pub mod find;
 pub mod session;
 
 pub use commands::{Clipboard, Context, MemoryClipboard, Outcome};
 pub use document::{Document, View};
+pub use find::Find;
 pub use session::Session;

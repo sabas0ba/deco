@@ -326,6 +326,7 @@ impl ApplicationHandler for App<'_> {
                     }
                     _ => {}
                 }
+                refuse_find(self.session);
                 gpu.window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
@@ -336,6 +337,19 @@ impl ApplicationHandler for App<'_> {
             }
             _ => {}
         }
+    }
+}
+
+/// Closes the find bar if a command opened it.
+///
+/// This frontend has nowhere to draw it — no status bar, no chrome of any kind
+/// yet — and a find bar that is invisible while holding the keyboard would look
+/// exactly like an editor that had stopped responding. `ctrl+f` therefore does
+/// nothing here rather than something the user cannot see, and says so.
+fn refuse_find(session: &mut Session) {
+    if session.find.visible() {
+        session.find.close();
+        session.status = Some("the find bar is only in the terminal frontend so far".to_owned());
     }
 }
 
@@ -401,5 +415,22 @@ mod tests {
         let mut session = Session::with_defaults();
         save(&mut session, None).unwrap();
         assert!(session.status.as_deref().unwrap().contains("no filename"));
+    }
+
+    #[test]
+    fn the_find_bar_is_refused_rather_than_left_invisible() {
+        let mut session = Session::with_defaults();
+        session.run("actions.find", None, 0);
+        assert!(session.find.visible());
+        refuse_find(&mut session);
+        assert!(!session.find.visible());
+        assert!(session.status.as_deref().unwrap().contains("terminal"));
+    }
+
+    #[test]
+    fn refusing_is_a_no_op_when_the_bar_was_never_opened() {
+        let mut session = Session::with_defaults();
+        refuse_find(&mut session);
+        assert!(session.status.is_none(), "nothing to report");
     }
 }
