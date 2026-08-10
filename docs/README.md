@@ -8,6 +8,7 @@ the honest place to look for what is **not** built yet.
 | --- | --- |
 | [Editing](editing.md) | Motion, selection, line operations, multiple cursors, undo |
 | [Find and replace](find-and-replace.md) | `ctrl+f`, `ctrl+h`, `F3`, and the multi-cursor find keys |
+| [Running commands](commands.md) | The command palette, and go to line |
 | [Language servers](language-servers.md) | Diagnostics, hover, go-to-definition, completion, formatting |
 | [Configuration](configuration.md) | `settings.json`, `keybindings.json`, colour themes, and where they are read from |
 | [Extensions](extensions.md) | The capability model, and why an extension gets less power here than in VS Code |

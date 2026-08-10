@@ -14,6 +14,7 @@ use serde_json::json;
 use crate::commands::{self, Clipboard, Context, MemoryClipboard, Outcome};
 use crate::document::{Document, View};
 use crate::find::Find;
+use crate::prompt::{Prompt, PromptKind};
 
 /// The length of `text` in UTF-16 code units, which is how positions count.
 fn utf16_len(text: &str) -> u32 {
@@ -60,6 +61,18 @@ pub struct Session {
     pub clipboard: Box<dyn Clipboard>,
     /// A transient message for the status bar.
     pub status: Option<String>,
+    /// The open prompt — go to line, or the command palette — if there is one.
+    pub prompt: Option<Prompt>,
+    /// Commands the frontend implements, offered in the palette alongside the
+    /// core's own.
+    ///
+    /// Filled in by the frontend at startup. The core cannot know whether a
+    /// command it routes onward will be handled: the terminal frontend can format
+    /// a document because it has a language-server client, and the GPU frontend
+    /// cannot because it has neither. Listing something on the assumption that
+    /// somebody downstream will handle it is how a palette comes to offer what
+    /// the editor cannot do.
+    pub frontend_commands: Vec<crate::commands::PaletteEntry>,
     /// The find bar, open or not.
     ///
     /// Always present so that `F3` still has a query to search for after the bar
@@ -117,6 +130,8 @@ impl Session {
             clipboard: Box::new(MemoryClipboard::default()),
             status: None,
             find: Find::new(),
+            prompt: None,
+            frontend_commands: Vec::new(),
             diagnostics: Vec::new(),
             problems,
         };
@@ -211,7 +226,12 @@ impl Session {
         // `left` and `backspace` keep doing so — and `Find::consume` claims them.
         let find_focus = self.find.visible();
         let on_replace = find_focus && self.find.field() == crate::find::Field::Replace;
-        self.context.set("editorTextFocus", !find_focus);
+        // VS Code's key for "a quick-open widget has the keyboard". It takes
+        // `editorTextFocus` away for the same reason the find bar does.
+        let in_quick_open = self.prompt.is_some();
+        self.context.set("inQuickOpen", in_quick_open);
+        self.context
+            .set("editorTextFocus", !find_focus && !in_quick_open);
         self.context.set("editorFocus", true);
         self.context.set("textInputFocus", true);
         self.context.set("findWidgetVisible", find_focus);
@@ -289,6 +309,13 @@ impl Session {
         args: Option<&serde_json::Value>,
         now_ms: u64,
     ) -> Outcome {
+        // The prompt first: it is drawn over the find bar, so it is what holds the
+        // keyboard when both are open.
+        if let Some(prompt) = &mut self.prompt {
+            if prompt.consume(command, args, self.clipboard.as_mut()) {
+                return Outcome::Handled;
+            }
+        }
         if self.find.visible() && self.find.consume(command, args, self.clipboard.as_mut()) {
             return self.find_query_changed();
         }
@@ -331,6 +358,34 @@ impl Session {
                 Outcome::Message("regular-expression search is not implemented yet".to_owned())
             }
             "editor.action.startFindReplaceAction" => self.open_find(true),
+            // The quick-open prompt. Same reasoning as the find bar: it needs the
+            // whole session, not the document and view a command in `commands`
+            // sees.
+            "workbench.action.gotoLine" => {
+                self.prompt = Some(Prompt::plain(PromptKind::GoToLine));
+                Outcome::Handled
+            }
+            "workbench.action.showCommands" => {
+                self.prompt = Some(Prompt::list(PromptKind::Commands, self.palette()));
+                Outcome::Handled
+            }
+            "workbench.action.closeQuickOpen" => {
+                self.prompt = None;
+                Outcome::Handled
+            }
+            "workbench.action.quickOpenSelectNext" => {
+                if let Some(prompt) = &mut self.prompt {
+                    prompt.next();
+                }
+                Outcome::Handled
+            }
+            "workbench.action.quickOpenSelectPrevious" => {
+                if let Some(prompt) = &mut self.prompt {
+                    prompt.previous();
+                }
+                Outcome::Handled
+            }
+            "workbench.action.acceptSelectedQuickOpenItem" => self.accept_prompt(now_ms),
             "deco.find.toggleField" => {
                 self.find.toggle_field();
                 Outcome::Handled
@@ -369,6 +424,84 @@ impl Session {
         }
         self.refresh_context();
         outcome
+    }
+
+    /// Everything the palette can offer: this crate's commands and the
+    /// frontend's.
+    fn palette(&self) -> Vec<crate::commands::PaletteEntry> {
+        let mut entries: Vec<crate::commands::PaletteEntry> = commands::PALETTE
+            .iter()
+            .map(|(id, title)| crate::commands::PaletteEntry::new(id, title))
+            .collect();
+        entries.extend(self.frontend_commands.iter().cloned());
+        entries
+    }
+
+    /// Runs whatever the open prompt was asking for.
+    fn accept_prompt(&mut self, now_ms: u64) -> Outcome {
+        // Taken rather than borrowed: running a command needs `&mut self`, and a
+        // command may open a prompt of its own — `Go to Line` chosen from the
+        // palette does exactly that.
+        let Some(prompt) = self.prompt.take() else {
+            return Outcome::Handled;
+        };
+        match prompt.kind() {
+            PromptKind::GoToLine => self.go_to_line(prompt.text()),
+            PromptKind::Commands => match prompt.selected() {
+                Some(entry) => {
+                    let id = entry.id.clone();
+                    self.run(&id, None, now_ms)
+                }
+                // Nothing matched what was typed. Closing without saying so would
+                // look like the command had run.
+                None => Outcome::Message(format!("no command matches `{}`", prompt.text())),
+            },
+        }
+    }
+
+    /// Moves the cursor to a line the user typed, one-based as the status bar
+    /// shows it.
+    ///
+    /// Accepts `12` and `12:5` — VS Code's `line:column` — because the status bar
+    /// reports both and a reader who has one has usually read the other.
+    fn go_to_line(&mut self, text: &str) -> Outcome {
+        let text = text.trim();
+        if text.is_empty() {
+            return Outcome::Handled;
+        }
+        let (line, column) = match text.split_once(':') {
+            Some((line, column)) => (line.trim(), Some(column.trim())),
+            None => (text, None),
+        };
+        let Ok(line) = line.parse::<u32>() else {
+            return Outcome::Message(format!("`{text}` is not a line number"));
+        };
+        let column = match column.map(str::parse::<u32>) {
+            Some(Ok(column)) => column,
+            Some(Err(_)) => return Outcome::Message(format!("`{text}` is not a line number")),
+            None => 1,
+        };
+
+        let lines = self.document.buffer.line_count() as u32;
+        if line == 0 || line > lines {
+            // The count is part of the message: "out of range" without it leaves
+            // the user guessing what the range was.
+            return Outcome::Message(format!("line {line} is outside 1-{lines}"));
+        }
+
+        // Clamped rather than refused: a column past the end of the line is a
+        // reasonable thing to ask for, and the end of the line is what was meant.
+        let target = self
+            .document
+            .buffer
+            .clamp_position(deco_core::position::Position::new(
+                line - 1,
+                column.saturating_sub(1),
+            ));
+        self.view.selections = deco_core::selection::SelectionSet::caret(target);
+        self.view
+            .reveal_cursor(&self.document.buffer, &self.document.settings);
+        Outcome::Handled
     }
 
     /// Opens the find bar, seeding it from the selection.
@@ -1915,6 +2048,246 @@ mod tests {
             "bar",
             "the replacement is not thrown away"
         );
+    }
+
+    // ---- Quick open: go to line, and the command palette ----------------
+
+    #[test]
+    fn every_command_the_palette_offers_actually_runs() {
+        // The registry is a list of strings beside two `match`es on strings, so
+        // they can drift. This is the check that they have not: a palette entry
+        // resolving to `NotFound` would be offered to the user and then report
+        // itself as unknown when chosen.
+        for (id, title) in commands::PALETTE {
+            // A fresh session per entry, because several of them change state —
+            // and `quit` is in the list, which is exactly the point.
+            let mut s = session();
+            s.open(PathBuf::from("/w/a.rs"), "fn main() {\n    let x = 1;\n}\n");
+            s.resize(80, 10);
+            assert_ne!(
+                s.run(id, None, 0),
+                Outcome::NotFound,
+                "the palette offers `{title}` ({id}), which nothing implements"
+            );
+        }
+    }
+
+    #[test]
+    fn ctrl_g_opens_a_go_to_line_prompt() {
+        let mut s = searchable("a\nb\nc\n");
+        press(&mut s, "ctrl+g");
+        let prompt = s.prompt.as_ref().expect("a prompt should be open");
+        assert_eq!(prompt.kind(), crate::prompt::PromptKind::GoToLine);
+        assert!(
+            !prompt.has_list(),
+            "a line number is not chosen from a list"
+        );
+        assert_eq!(s.context.get("inQuickOpen"), Some(&json!(true)));
+        assert_eq!(s.context.get("editorTextFocus"), Some(&json!(false)));
+    }
+
+    #[test]
+    fn typing_a_line_number_and_pressing_enter_jumps_there() {
+        let mut s = searchable("one\ntwo\nthree\nfour\n");
+        press(&mut s, "ctrl+g");
+        press(&mut s, "3");
+        assert_eq!(s.prompt.as_ref().unwrap().text(), "3");
+        assert_eq!(s.document.buffer.text(), "one\ntwo\nthree\nfour\n");
+        press(&mut s, "enter");
+        assert!(s.prompt.is_none(), "accepting closes the prompt");
+        assert_eq!(s.view.selections.primary().active, Position::new(2, 0));
+        assert_eq!(s.context.get("editorTextFocus"), Some(&json!(true)));
+    }
+
+    #[test]
+    fn a_line_and_column_are_both_honoured() {
+        let mut s = searchable("one\ntwo\nthree\n");
+        press(&mut s, "ctrl+g");
+        for key in ["3", ":", "4"] {
+            press(&mut s, key);
+        }
+        press(&mut s, "enter");
+        assert_eq!(s.view.selections.primary().active, Position::new(2, 3));
+    }
+
+    #[test]
+    fn a_column_past_the_end_of_the_line_lands_at_its_end() {
+        let mut s = searchable("one\ntwo\n");
+        press(&mut s, "ctrl+g");
+        for key in ["1", ":", "9", "9"] {
+            press(&mut s, key);
+        }
+        press(&mut s, "enter");
+        assert_eq!(s.view.selections.primary().active, Position::new(0, 3));
+    }
+
+    #[test]
+    fn a_line_outside_the_document_says_so_and_says_the_range() {
+        let mut s = searchable("one\ntwo\n");
+        press(&mut s, "ctrl+g");
+        for key in ["9", "9"] {
+            press(&mut s, key);
+        }
+        let outcome = press(&mut s, "enter");
+        assert_eq!(
+            outcome,
+            Outcome::Message("line 99 is outside 1-3".to_owned())
+        );
+        assert_eq!(s.view.selections.primary().active, Position::ZERO);
+    }
+
+    #[test]
+    fn something_that_is_not_a_number_is_refused() {
+        let mut s = searchable("one\n");
+        press(&mut s, "ctrl+g");
+        for key in ["a", "b"] {
+            press(&mut s, key);
+        }
+        assert_eq!(
+            press(&mut s, "enter"),
+            Outcome::Message("`ab` is not a line number".to_owned())
+        );
+    }
+
+    #[test]
+    fn escape_closes_the_prompt_without_moving_the_cursor() {
+        let mut s = searchable("one\ntwo\nthree\n");
+        press(&mut s, "ctrl+g");
+        press(&mut s, "3");
+        press(&mut s, "escape");
+        assert!(s.prompt.is_none());
+        assert_eq!(s.view.selections.primary().active, Position::ZERO);
+    }
+
+    #[test]
+    fn typing_into_a_prompt_never_reaches_the_document() {
+        let mut s = searchable("x\n");
+        press(&mut s, "ctrl+g");
+        for key in ["1", "2", "backspace", "ctrl+z", "tab"] {
+            press(&mut s, key);
+        }
+        assert_eq!(s.document.buffer.text(), "x\n");
+        assert_eq!(s.prompt.as_ref().unwrap().text(), "1");
+    }
+
+    #[test]
+    fn ctrl_shift_p_opens_the_palette_with_every_command() {
+        let mut s = searchable("x\n");
+        press(&mut s, "ctrl+shift+p");
+        let prompt = s.prompt.as_ref().expect("a prompt should be open");
+        assert_eq!(prompt.kind(), crate::prompt::PromptKind::Commands);
+        assert!(prompt.has_list());
+        assert_eq!(prompt.matches(), commands::PALETTE.len());
+    }
+
+    #[test]
+    fn the_palette_offers_the_frontends_commands_too() {
+        let mut s = searchable("x\n");
+        s.frontend_commands.push(commands::PaletteEntry::new(
+            "editor.action.showHover",
+            "Show Hover",
+        ));
+        press(&mut s, "ctrl+shift+p");
+        assert_eq!(
+            s.prompt.as_ref().unwrap().matches(),
+            commands::PALETTE.len() + 1
+        );
+    }
+
+    #[test]
+    fn choosing_a_command_from_the_palette_runs_it() {
+        // A Rust file, because `commentLine` needs the language to have a token.
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "fn main() {}\n");
+        s.resize(80, 10);
+        press(&mut s, "ctrl+shift+p");
+        for c in "toggle line".chars() {
+            press(&mut s, &c.to_string().replace(' ', "space"));
+        }
+        assert_eq!(
+            s.prompt.as_ref().unwrap().selected().unwrap().id,
+            "editor.action.commentLine"
+        );
+        press(&mut s, "enter");
+        assert!(s.prompt.is_none());
+        assert_eq!(s.document.buffer.text(), "// fn main() {}\n");
+    }
+
+    #[test]
+    fn a_frontend_routed_command_chosen_from_the_palette_reaches_the_frontend() {
+        let mut s = searchable("x\n");
+        s.frontend_commands.push(commands::PaletteEntry::new(
+            "editor.action.showHover",
+            "Show Hover",
+        ));
+        press(&mut s, "ctrl+shift+p");
+        for c in "hover".chars() {
+            press(&mut s, &c.to_string());
+        }
+        assert_eq!(
+            press(&mut s, "enter"),
+            Outcome::Frontend("editor.action.showHover".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_palette_command_that_opens_a_prompt_of_its_own_works() {
+        // `accept_prompt` takes the prompt rather than borrowing it, which is what
+        // makes this possible at all.
+        let mut s = searchable("one\ntwo\n");
+        s.frontend_commands.push(commands::PaletteEntry::new(
+            "workbench.action.gotoLine",
+            "Go to Line",
+        ));
+        press(&mut s, "ctrl+shift+p");
+        for c in "go to".chars() {
+            press(&mut s, &c.to_string().replace(' ', "space"));
+        }
+        press(&mut s, "enter");
+        let prompt = s.prompt.as_ref().expect("go to line should have opened");
+        assert_eq!(prompt.kind(), crate::prompt::PromptKind::GoToLine);
+    }
+
+    #[test]
+    fn arrow_keys_move_the_palette_selection_rather_than_the_cursor() {
+        let mut s = searchable("one\ntwo\nthree\n");
+        press(&mut s, "ctrl+shift+p");
+        let first = s.prompt.as_ref().unwrap().selected().unwrap().id.clone();
+        press(&mut s, "down");
+        let second = s.prompt.as_ref().unwrap().selected().unwrap().id.clone();
+        assert_ne!(first, second);
+        assert_eq!(
+            s.view.selections.primary().active,
+            Position::ZERO,
+            "the document cursor must not have moved"
+        );
+        press(&mut s, "up");
+        assert_eq!(s.prompt.as_ref().unwrap().selected().unwrap().id, first);
+    }
+
+    #[test]
+    fn accepting_when_nothing_matches_says_so_rather_than_looking_like_success() {
+        let mut s = searchable("x\n");
+        press(&mut s, "ctrl+shift+p");
+        for c in "zzzz".chars() {
+            press(&mut s, &c.to_string());
+        }
+        assert_eq!(
+            press(&mut s, "enter"),
+            Outcome::Message("no command matches `zzzz`".to_owned())
+        );
+        assert!(s.prompt.is_none());
+    }
+
+    #[test]
+    fn the_context_key_follows_the_prompt() {
+        let mut s = searchable("x\n");
+        assert_eq!(s.context.get("inQuickOpen"), Some(&json!(false)));
+        press(&mut s, "ctrl+shift+p");
+        assert_eq!(s.context.get("inQuickOpen"), Some(&json!(true)));
+        press(&mut s, "escape");
+        assert_eq!(s.context.get("inQuickOpen"), Some(&json!(false)));
+        assert_eq!(s.context.get("editorTextFocus"), Some(&json!(true)));
     }
 
     #[test]

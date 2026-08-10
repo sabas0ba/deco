@@ -110,6 +110,14 @@ fn demos() -> Vec<Demo> {
             name: "completion",
             build: completion,
         },
+        Demo {
+            name: "command-palette",
+            build: command_palette,
+        },
+        Demo {
+            name: "go-to-line",
+            build: go_to_line,
+        },
     ]
 }
 
@@ -392,6 +400,37 @@ fn completion() -> String {
     take.session
         .replace_range(Range::new(anchor, caret), &insert, 99_000);
     take.capture("enter", 5);
+    take.finish()
+}
+
+fn command_palette() -> String {
+    let mut take = Take::new("main.rs", SAMPLE);
+    // The terminal frontend's own list, so the demonstration cannot offer a
+    // command the editor does not.
+    take.session.frontend_commands = deco_tui::app::frontend_commands();
+    take.at(1, 4)
+        .capture("ctrl+shift+p lists every command", 2)
+        .press(&["ctrl+shift+p"])
+        .type_text("comment")
+        // Down to `Toggle Line Comment`, which is the one with something to show:
+        // `Remove Line Comment` on a line that is not commented correctly does
+        // nothing, and a demonstration of nothing happening teaches nothing.
+        .press(&["down"])
+        .press_and_hold(&["down"], 3)
+        .press_and_hold(&["enter"], 5);
+    take.finish()
+}
+
+fn go_to_line() -> String {
+    let mut take = Take::new(
+        "main.rs",
+        "fn main() {\n    let a = 1;\n    let b = 2;\n    let c = 3;\n    let d = 4;\n}\n",
+    );
+    take.at(0, 0)
+        .capture("ctrl+g jumps to a line", 2)
+        .press(&["ctrl+g"])
+        .type_text("4")
+        .press_and_hold(&["enter"], 5);
     take.finish()
 }
 

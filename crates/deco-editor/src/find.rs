@@ -38,6 +38,7 @@ use deco_core::Buffer;
 use serde_json::Value;
 
 use crate::commands::Clipboard;
+use crate::input::Input;
 
 /// Which of the bar's inputs has the keyboard.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -98,19 +99,19 @@ impl Find {
 
     /// The query as typed.
     pub fn query(&self) -> &str {
-        &self.query.text
+        self.query.text()
     }
 
     /// The replacement as typed.
     pub fn replace(&self) -> &str {
-        &self.replace.text
+        self.replace.text()
     }
 
     /// Caret offset within whichever input has the keyboard, in characters.
     pub fn caret(&self) -> usize {
         match self.field {
-            Field::Query => self.query.caret,
-            Field::Replace => self.replace.caret,
+            Field::Query => self.query.caret(),
+            Field::Replace => self.replace.caret(),
         }
     }
 
@@ -160,7 +161,6 @@ impl Find {
                 self.query.set(seed);
             }
         }
-        self.query.caret = self.query.len();
     }
 
     /// Opens the bar with the replacement shown and focused.
@@ -199,7 +199,7 @@ impl Find {
     /// document was edited. Nothing here caches across calls, because a cache
     /// keyed on nothing is a stale highlight waiting to happen.
     pub fn refresh(&mut self, buffer: &Buffer) {
-        self.matches = search::find_all(buffer, &self.query.text, self.options);
+        self.matches = search::find_all(buffer, self.query.text(), self.options);
     }
 
     /// The first match at or after `from`, wrapping to the start.
@@ -249,208 +249,20 @@ impl Find {
 
     /// Applies a command to the focused input, if it is one the input owns.
     ///
-    /// Returns whether the command was consumed. See the module docs for why
-    /// this exists rather than being expressed in `when` clauses alone.
+    /// Returns whether the command was consumed. The mapping from commands to
+    /// edits lives in [`Input`], because the go-to-line box and the command
+    /// palette need exactly the same one.
     pub fn consume(
         &mut self,
         command: &str,
         args: Option<&Value>,
         clipboard: &mut dyn Clipboard,
     ) -> bool {
-        let input = match self.field {
-            Field::Query => &mut self.query,
-            Field::Replace => &mut self.replace,
-        };
-        match command {
-            "type" => {
-                let text = args
-                    .and_then(|a| a.get("text"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
-                // A newline it cannot represent would be invisible in a one-line
-                // input; `enter` is bound to a command anyway, so this only
-                // guards against a pasted or scripted one.
-                input.insert_str(text);
-                true
-            }
-            "deleteLeft" => {
-                input.delete_left();
-                true
-            }
-            "deleteRight" => {
-                input.delete_right();
-                true
-            }
-            "deleteWordLeft" => {
-                input.delete_word_left();
-                true
-            }
-            "deleteWordRight" => {
-                input.delete_word_right();
-                true
-            }
-            "cursorLeft" => {
-                input.caret = input.caret.saturating_sub(1);
-                true
-            }
-            "cursorRight" => {
-                input.caret = (input.caret + 1).min(input.len());
-                true
-            }
-            // A one-line input has no notion of the top or bottom of a document,
-            // so `ctrl+home` and `home` mean the same thing here.
-            "cursorHome" | "cursorTop" => {
-                input.caret = 0;
-                true
-            }
-            "cursorEnd" | "cursorBottom" => {
-                input.caret = input.len();
-                true
-            }
-            "cursorWordLeft" => {
-                input.caret = input.word_left();
-                true
-            }
-            "cursorWordEndRight" => {
-                input.caret = input.word_right();
-                true
-            }
-            "editor.action.clipboardPasteAction" => {
-                input.insert_str(&clipboard.read());
-                true
-            }
-            "editor.action.clipboardCopyAction" => {
-                clipboard.write(&input.text);
-                true
-            }
-            "editor.action.clipboardCutAction" => {
-                clipboard.write(&input.text);
-                input.text.clear();
-                input.caret = 0;
-                true
-            }
-            // Swallowed rather than handled. There is nothing to select, undo or
-            // redo in a one-line input — and letting these through would apply
-            // them to the document, which is not where the user is looking.
-            "editor.action.selectAll" | "undo" | "redo" => true,
-            _ => false,
+        match self.field {
+            Field::Query => self.query.consume(command, args, clipboard),
+            Field::Replace => self.replace.consume(command, args, clipboard),
         }
     }
-}
-
-/// One line of editable text with a caret and no selection.
-///
-/// The query and the replacement are the same thing twice, so they are the same
-/// type: a second copy of every motion and deletion would be a second place for
-/// the UTF-16 arithmetic to be wrong.
-#[derive(Debug, Default, Clone)]
-struct Input {
-    text: String,
-    /// Caret offset, counted in characters.
-    caret: usize,
-}
-
-impl Input {
-    /// Replaces the text, putting the caret at the end.
-    fn set(&mut self, text: String) {
-        self.text = text;
-        self.caret = self.text.chars().count();
-    }
-
-    /// Inserts `text` at the caret, dropping line breaks.
-    fn insert_str(&mut self, text: &str) {
-        for c in text.chars().filter(|c| *c != '\n' && *c != '\r') {
-            let byte = self.byte_offset(self.caret);
-            self.text.insert(byte, c);
-            self.caret += 1;
-        }
-    }
-
-    fn delete_left(&mut self) {
-        if self.caret > 0 {
-            self.caret -= 1;
-            self.remove_at(self.caret);
-        }
-    }
-
-    fn delete_right(&mut self) {
-        if self.caret < self.len() {
-            self.remove_at(self.caret);
-        }
-    }
-
-    fn delete_word_left(&mut self) {
-        let target = self.word_left();
-        for _ in target..self.caret {
-            self.remove_at(target);
-        }
-        self.caret = target;
-    }
-
-    fn delete_word_right(&mut self) {
-        let target = self.word_right();
-        for _ in self.caret..target {
-            self.remove_at(self.caret);
-        }
-    }
-
-    /// Removes the character at character offset `index`.
-    fn remove_at(&mut self, index: usize) {
-        let byte = self.byte_offset(index);
-        self.text.remove(byte);
-    }
-
-    /// Length in characters.
-    fn len(&self) -> usize {
-        self.text.chars().count()
-    }
-
-    /// Byte offset of character offset `index`.
-    ///
-    /// The caret is counted in characters so that arrow keys move one visible
-    /// thing at a time, but `String` is indexed in bytes, and any text outside
-    /// ASCII makes the two differ.
-    fn byte_offset(&self, index: usize) -> usize {
-        self.text
-            .char_indices()
-            .nth(index)
-            .map(|(byte, _)| byte)
-            .unwrap_or(self.text.len())
-    }
-
-    /// Start of the word to the left of the caret.
-    fn word_left(&self) -> usize {
-        let chars: Vec<char> = self.text.chars().collect();
-        let mut index = self.caret;
-        while index > 0 && !is_word_char(chars[index - 1]) {
-            index -= 1;
-        }
-        while index > 0 && is_word_char(chars[index - 1]) {
-            index -= 1;
-        }
-        index
-    }
-
-    /// End of the word to the right of the caret.
-    fn word_right(&self) -> usize {
-        let chars: Vec<char> = self.text.chars().collect();
-        let mut index = self.caret;
-        while index < chars.len() && !is_word_char(chars[index]) {
-            index += 1;
-        }
-        while index < chars.len() && is_word_char(chars[index]) {
-            index += 1;
-        }
-        index
-    }
-}
-
-/// The same word rule the rest of the editor uses.
-///
-/// Duplicated from `deco_core::search` rather than exposed from it: that one
-/// describes the *document's* words, and a search query is not a document.
-fn is_word_char(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
 }
 
 #[cfg(test)]

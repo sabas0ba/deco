@@ -158,7 +158,19 @@ pub fn chrome_height(session: &Session) -> usize {
     } else {
         0
     };
-    1 + find
+    1 + find + prompt_height(session)
+}
+
+/// Rows the quick-open prompt takes: its own, plus a row per offered choice.
+///
+/// The list is bounded by how many choices there are as well as by
+/// [`deco_editor::prompt::MAX_ROWS`], so a prompt with two matches costs two rows
+/// and not eight — the file is what the user is trying to look at.
+fn prompt_height(session: &Session) -> usize {
+    match &session.prompt {
+        Some(prompt) => 1 + prompt.matches().min(deco_editor::prompt::MAX_ROWS),
+        None => 0,
+    }
 }
 
 fn render_text(session: &Session, width: usize, height: usize) -> Frame {
@@ -241,10 +253,86 @@ fn render_text(session: &Session, width: usize, height: usize) -> Frame {
         }
     }
 
+    // Below the find bar, because the prompt is the thing that just opened and so
+    // is the thing holding the keyboard.
+    if let Some(prompt) = &session.prompt {
+        for (index, entry) in prompt.visible().iter().enumerate() {
+            rows.push(choice_row(
+                entry,
+                index == prompt.selected_row(),
+                width,
+                &palette,
+            ));
+        }
+        let (row, caret) = prompt_row(prompt, width, &palette);
+        rows.push(row);
+        cursor_cell = Some((caret as u16, rows.len() as u16 - 1));
+    }
+
     rows.push(status_bar(session, width, &palette));
     Frame {
         rows,
         cursor: cursor_cell,
+    }
+}
+
+/// The prompt's own row, and the column its caret sits in.
+fn prompt_row(prompt: &deco_editor::Prompt, width: usize, palette: &Palette) -> (Row, usize) {
+    let label = format!(" {} ", prompt.kind().label());
+    // The match count, for a prompt that has a list to count. A go-to-line box
+    // has nothing to say here.
+    let right = if prompt.has_list() {
+        match prompt.matches() {
+            0 => "No commands ".to_owned(),
+            count => format!("{count} commands "),
+        }
+    } else {
+        String::new()
+    };
+    input_row(
+        &label,
+        prompt.text(),
+        prompt.caret(),
+        &right,
+        width,
+        palette,
+    )
+}
+
+/// One offered choice: its title, and the key bound to it on the right.
+fn choice_row(
+    entry: &deco_editor::commands::PaletteEntry,
+    selected: bool,
+    width: usize,
+    palette: &Palette,
+) -> Row {
+    // The identifier on the right, not the title: two commands can read alike and
+    // the identifier is what a `keybindings.json` refers to.
+    let left = format!("  {} ", entry.title);
+    let right = format!(" {} ", entry.id);
+    let room = width.saturating_sub(columns(&left));
+    let right = if room >= columns(&right) + 2 {
+        truncate_to(&right, room)
+    } else {
+        String::new()
+    };
+
+    let used = columns(&left) + columns(&right);
+    let mut text = format!("{left}{}{right}", " ".repeat(width.saturating_sub(used)));
+    text = truncate_to(&text, width);
+    while columns(&text) < width {
+        text.push(' ');
+    }
+
+    // The selected row is drawn as the status bar is, inverted against the
+    // editor's own colours, which is how the completion list marks its selection.
+    let (fg, bg) = if selected {
+        (palette.bg, palette.status_fg)
+    } else {
+        (palette.status_fg, palette.status_bg)
+    };
+    Row {
+        spans: vec![Span { text, fg, bg }],
     }
 }
 
@@ -1823,6 +1911,145 @@ mod tests {
         let session = replacing("foo\n", "foo", "");
         let frame = render(&session, 40, 8);
         assert_eq!(find_row(&frame).trim(), "With:");
+    }
+
+    // ---- The quick-open prompt ------------------------------------------
+
+    /// A session with the command palette open, filtered by `query`.
+    fn palette(query: &str) -> Session {
+        let mut session = session("fn main() {}\n");
+        session.resize(60, 14);
+        session.run("workbench.action.showCommands", None, 0);
+        for c in query.chars() {
+            session.handle_chord(deco_keymap::keys::Chord::parse(&c.to_string()).unwrap(), 0);
+        }
+        session
+    }
+
+    /// The prompt's own row: the one above the status bar.
+    fn prompt_line(frame: &Frame) -> String {
+        frame.rows[frame.rows.len() - 2].plain()
+    }
+
+    #[test]
+    fn the_prompt_sits_above_the_status_bar() {
+        let mut session = session("a\n");
+        session.run("workbench.action.gotoLine", None, 0);
+        let frame = render(&session, 60, 14);
+        assert!(
+            prompt_line(&frame).contains("Go to line:"),
+            "{:?}",
+            prompt_line(&frame)
+        );
+        assert!(frame.rows.last().unwrap().plain().contains("Ln 1"));
+    }
+
+    #[test]
+    fn a_go_to_line_prompt_has_no_list_and_costs_one_row() {
+        let mut with = session("a\nb\nc\nd\ne\nf\ng\nh\n");
+        let without = render(&with, 60, 14);
+        with.run("workbench.action.gotoLine", None, 0);
+        with.resize(60, 14 - chrome_height(&with));
+        let frame = render(&with, 60, 14);
+        assert_eq!(frame.rows.len(), without.rows.len());
+        assert!(
+            !prompt_line(&frame).contains("commands"),
+            "no count to show"
+        );
+    }
+
+    #[test]
+    fn the_palette_lists_its_choices_above_the_prompt() {
+        let session = palette("comment");
+        let frame = render(&session, 60, 14);
+        let all: String = frame.rows.iter().map(Row::plain).collect();
+        assert!(all.contains("Toggle Line Comment"), "{all:?}");
+        // The identifier is shown too: it is what a keybindings.json refers to.
+        assert!(all.contains("editor.action.commentLine"));
+        assert!(prompt_line(&frame).contains("Command:"));
+    }
+
+    #[test]
+    fn the_prompt_counts_the_matching_commands() {
+        let session = palette("comment");
+        assert!(prompt_line(&render(&session, 60, 14)).contains("3 commands"));
+    }
+
+    #[test]
+    fn the_prompt_says_when_nothing_matches() {
+        let session = palette("zzzzz");
+        let frame = render(&session, 60, 14);
+        assert!(prompt_line(&frame).contains("No commands"));
+        // And the list is gone, so it costs a single row.
+        assert_eq!(chrome_height(&session), 2);
+    }
+
+    #[test]
+    fn the_list_never_takes_more_than_its_share_of_the_screen() {
+        let session = palette("");
+        assert!(
+            deco_editor::prompt::MAX_ROWS >= session.prompt.as_ref().unwrap().visible().len(),
+            "the window is capped"
+        );
+        assert_eq!(
+            chrome_height(&session),
+            1 + 1 + deco_editor::prompt::MAX_ROWS
+        );
+    }
+
+    #[test]
+    fn every_row_is_the_terminal_width_with_the_palette_open() {
+        let frame = render(&palette("line"), 60, 14);
+        for row in &frame.rows {
+            assert_eq!(row.plain().chars().count(), 60, "row was {:?}", row.plain());
+        }
+    }
+
+    #[test]
+    fn the_selected_choice_is_drawn_inverted() {
+        let session = palette("comment");
+        let frame = render(&session, 60, 14);
+        let palette_colours = Palette::from(&session);
+        // The choices sit directly above the prompt row.
+        let count = session.prompt.as_ref().unwrap().matches();
+        let first_choice = frame.rows.len() - 2 - count;
+        let selected_row = first_choice + session.prompt.as_ref().unwrap().selected_row();
+        assert_eq!(
+            frame.rows[selected_row].spans[0].bg, palette_colours.status_fg,
+            "the selection should be inverted"
+        );
+        let other =
+            frame.rows[first_choice + (selected_row - first_choice + 1) % count].spans[0].bg;
+        assert_eq!(other, palette_colours.status_bg);
+    }
+
+    #[test]
+    fn the_caret_sits_in_the_prompt() {
+        let session = palette("li");
+        let frame = render(&session, 60, 14);
+        let (x, y) = frame.cursor.expect("the caret has to be somewhere");
+        assert_eq!(y as usize, frame.rows.len() - 2);
+        // " Command: " is ten columns, then two typed characters.
+        assert_eq!(x, 12);
+    }
+
+    #[test]
+    fn closing_the_prompt_gives_the_rows_back() {
+        let mut session = palette("comment");
+        session.run("workbench.action.closeQuickOpen", None, 0);
+        let frame = render(&session, 60, 14);
+        let all: String = frame.rows.iter().map(Row::plain).collect();
+        assert!(!all.contains("Command:"));
+        assert!(!all.contains("Toggle Line Comment"));
+        assert_eq!(chrome_height(&session), 1);
+    }
+
+    #[test]
+    fn a_narrow_terminal_drops_the_identifier_rather_than_the_title() {
+        let frame = render(&palette("comment"), 26, 14);
+        let all: String = frame.rows.iter().map(Row::plain).collect();
+        assert!(all.contains("Toggle"), "the title survives: {all:?}");
+        assert!(!all.contains("editor.action.commentLine"));
     }
 
     #[test]

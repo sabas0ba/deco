@@ -65,6 +65,81 @@ pub enum Outcome {
     Message(String),
 }
 
+/// One entry in the command palette: what to run, and what to call it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaletteEntry {
+    /// The command identifier, VS Code's.
+    pub id: String,
+    /// The title to show, VS Code's wording where it has one.
+    pub title: String,
+}
+
+impl PaletteEntry {
+    /// Builds an entry from a borrowed pair.
+    pub fn new(id: &str, title: &str) -> Self {
+        Self {
+            id: id.to_owned(),
+            title: title.to_owned(),
+        }
+    }
+}
+
+/// The commands the palette offers from this module.
+///
+/// Deliberately not every arm of [`execute`]: a palette entry has to *work* when
+/// chosen, and the entries here are the ones that need nothing but a document, a
+/// view and a clipboard. Commands that need something only a frontend has — a
+/// language server, a window — are contributed by the frontend instead, through
+/// `Session::frontend_commands`. A palette that offers something the editor cannot
+/// do is worse than a short one.
+///
+/// Motions are left out on purpose. `cursorDown` is a keypress, not a thing anyone
+/// looks up by name, and listing forty of them would bury the commands people do
+/// look for.
+pub const PALETTE: &[(&str, &str)] = &[
+    ("undo", "Undo"),
+    ("redo", "Redo"),
+    ("editor.action.selectAll", "Select All"),
+    ("expandLineSelection", "Expand Line Selection"),
+    ("removeSecondaryCursors", "Remove Secondary Cursors"),
+    ("editor.action.commentLine", "Toggle Line Comment"),
+    ("editor.action.addCommentLine", "Add Line Comment"),
+    ("editor.action.removeCommentLine", "Remove Line Comment"),
+    ("editor.action.indentLines", "Indent Lines"),
+    ("editor.action.outdentLines", "Outdent Lines"),
+    ("editor.action.deleteLines", "Delete Line"),
+    ("editor.action.insertLineAfter", "Insert Line Below"),
+    ("editor.action.insertLineBefore", "Insert Line Above"),
+    ("editor.action.moveLinesUpAction", "Move Line Up"),
+    ("editor.action.moveLinesDownAction", "Move Line Down"),
+    ("editor.action.copyLinesUpAction", "Copy Line Up"),
+    ("editor.action.copyLinesDownAction", "Copy Line Down"),
+    (
+        "editor.action.addSelectionToNextFindMatch",
+        "Add Selection To Next Find Match",
+    ),
+    ("editor.action.selectHighlights", "Select All Occurrences"),
+    (
+        "editor.action.moveSelectionToNextFindMatch",
+        "Move Last Selection To Next Find Match",
+    ),
+    ("editor.action.clipboardCopyAction", "Copy"),
+    ("editor.action.clipboardCutAction", "Cut"),
+    ("editor.action.clipboardPasteAction", "Paste"),
+    // Implemented by `Session::run` rather than by `execute`, because they need
+    // the whole session. Listed here all the same: what matters to the palette is
+    // that the editor runs them, not which function does.
+    ("actions.find", "Find"),
+    ("editor.action.startFindReplaceAction", "Replace"),
+    ("editor.action.nextMatchFindAction", "Find Next"),
+    ("editor.action.previousMatchFindAction", "Find Previous"),
+    ("workbench.action.gotoLine", "Go to Line"),
+    ("editor.action.marker.next", "Go to Next Problem"),
+    ("editor.action.marker.prev", "Go to Previous Problem"),
+    ("workbench.action.files.save", "Save"),
+    ("workbench.action.quit", "Quit"),
+];
+
 /// Everything a command may touch.
 pub struct Context<'a> {
     /// The document being edited.
@@ -1741,5 +1816,21 @@ mod tests {
         let mut h = Harness::new(THREE_FOOS).at(2, 5);
         h.run("editor.action.moveSelectionToNextFindMatch");
         assert_eq!(spans(&h), vec![((2, 4), (2, 7))]);
+    }
+
+    #[test]
+    fn the_palette_has_no_duplicates_and_every_entry_is_titled() {
+        let mut ids: Vec<&str> = PALETTE.iter().map(|(id, _)| *id).collect();
+        let before = ids.len();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(before, ids.len(), "an identifier is listed twice");
+
+        for (id, title) in PALETTE {
+            assert!(!title.is_empty(), "{id} has no title");
+            // A title that is just the identifier is not a title; the palette is
+            // searched by what things are called.
+            assert_ne!(title, id, "{id} needs a human title");
+        }
     }
 }

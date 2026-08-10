@@ -326,7 +326,7 @@ impl ApplicationHandler for App<'_> {
                     }
                     _ => {}
                 }
-                refuse_find(self.session);
+                refuse_overlays(self.session);
                 gpu.window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
@@ -340,16 +340,21 @@ impl ApplicationHandler for App<'_> {
     }
 }
 
-/// Closes the find bar if a command opened it.
+/// Closes any bar or prompt a command opened.
 ///
-/// This frontend has nowhere to draw it — no status bar, no chrome of any kind
-/// yet — and a find bar that is invisible while holding the keyboard would look
-/// exactly like an editor that had stopped responding. `ctrl+f` therefore does
-/// nothing here rather than something the user cannot see, and says so.
-fn refuse_find(session: &mut Session) {
+/// This frontend has nowhere to draw them — no status bar, no chrome of any kind
+/// yet — and a widget that is invisible while holding the keyboard would look
+/// exactly like an editor that had stopped responding. `ctrl+f`, `ctrl+g` and
+/// `ctrl+shift+p` therefore do nothing here rather than something the user cannot
+/// see, and say so.
+fn refuse_overlays(session: &mut Session) {
     if session.find.visible() {
         session.find.close();
         session.status = Some("the find bar is only in the terminal frontend so far".to_owned());
+    }
+    if session.prompt.take().is_some() {
+        session.status =
+            Some("the command palette is only in the terminal frontend so far".to_owned());
     }
 }
 
@@ -422,15 +427,25 @@ mod tests {
         let mut session = Session::with_defaults();
         session.run("actions.find", None, 0);
         assert!(session.find.visible());
-        refuse_find(&mut session);
+        refuse_overlays(&mut session);
         assert!(!session.find.visible());
         assert!(session.status.as_deref().unwrap().contains("terminal"));
     }
 
     #[test]
-    fn refusing_is_a_no_op_when_the_bar_was_never_opened() {
+    fn the_command_palette_is_refused_too() {
         let mut session = Session::with_defaults();
-        refuse_find(&mut session);
+        session.run("workbench.action.showCommands", None, 0);
+        assert!(session.prompt.is_some());
+        refuse_overlays(&mut session);
+        assert!(session.prompt.is_none());
+        assert!(session.status.as_deref().unwrap().contains("palette"));
+    }
+
+    #[test]
+    fn refusing_is_a_no_op_when_nothing_was_opened() {
+        let mut session = Session::with_defaults();
+        refuse_overlays(&mut session);
         assert!(session.status.is_none(), "nothing to report");
     }
 }
