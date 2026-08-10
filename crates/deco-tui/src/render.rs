@@ -7,6 +7,7 @@
 
 use deco_config::LineNumbers;
 use deco_core::movement::display_column;
+use deco_core::position::Range;
 use deco_editor::Session;
 use deco_theme::Rgba;
 use unicode_width::UnicodeWidthChar;
@@ -52,6 +53,8 @@ struct Palette {
     gutter_fg: Rgba,
     gutter_active_fg: Rgba,
     selection_bg: Rgba,
+    find_match_bg: Rgba,
+    find_highlight_bg: Rgba,
     status_fg: Rgba,
     status_bg: Rgba,
 }
@@ -72,6 +75,16 @@ impl Palette {
             // so they are composited against the editor background here.
             selection_bg: theme
                 .color("editor.selectionBackground")
+                .map(|c| c.over(bg))
+                .unwrap_or(fg),
+            // Composited for the same reason as the selection: both are
+            // translucent in every theme that ships with VS Code.
+            find_match_bg: theme
+                .color("editor.findMatchBackground")
+                .map(|c| c.over(bg))
+                .unwrap_or(fg),
+            find_highlight_bg: theme
+                .color("editor.findMatchHighlightBackground")
                 .map(|c| c.over(bg))
                 .unwrap_or(fg),
             status_fg: theme.color("statusBar.foreground").unwrap_or(fg),
@@ -133,11 +146,19 @@ pub fn render_with_overlays(
     frame
 }
 
+/// How many rows the chrome below the text takes: the status bar, plus the find
+/// bar when it is open.
+///
+/// The frontend needs this to tell the session how tall the text area is, so
+/// exported rather than folded into the renderer.
+pub fn chrome_height(session: &Session) -> usize {
+    1 + usize::from(session.find.visible())
+}
+
 fn render_text(session: &Session, width: usize, height: usize) -> Frame {
     let palette = Palette::from(session);
     let gutter = gutter_width(session);
-    // The last row is the status bar, so the text area is one shorter.
-    let text_height = height.saturating_sub(1);
+    let text_height = height.saturating_sub(chrome_height(session));
     let text_width = width.saturating_sub(gutter);
 
     let mut rows = Vec::with_capacity(height);
@@ -192,10 +213,131 @@ fn render_text(session: &Session, width: usize, height: usize) -> Frame {
         }
     }
 
+    // Between the text and the status bar, so that the bar the user is typing
+    // into sits next to the text it is searching and never covers the place the
+    // editor reports errors.
+    if session.find.visible() {
+        let (row, caret) = find_bar(session, width, &palette);
+        rows.push(row);
+        // The caret belongs in the query while the bar has the keyboard: the
+        // document's cursor is on the current match, which is highlighted, and
+        // two visible carets would be a lie about where typing goes.
+        cursor_cell = Some((caret as u16, rows.len() as u16 - 1));
+    }
+
     rows.push(status_bar(session, width, &palette));
     Frame {
         rows,
         cursor: cursor_cell,
+    }
+}
+
+/// The find bar, and the column its caret sits in.
+///
+/// One line, because that is what fits: the query, the two toggles as the
+/// letters VS Code puts on its buttons, and the match count.
+fn find_bar(session: &Session, width: usize, palette: &Palette) -> (Row, usize) {
+    const PROMPT: &str = " Find: ";
+
+    let find = &session.find;
+    let options = find.options();
+    let toggles = format!(
+        "[{}a {}w] ",
+        if options.case_sensitive { 'A' } else { 'a' },
+        if options.whole_word { 'W' } else { 'w' },
+    );
+    // `Aa`/`ab` on VS Code's buttons; here the capital says the option is on.
+    // Spelled out in the status bar the first time either is toggled, so the
+    // letters do not have to be guessed at.
+    let count = if find.query().is_empty() {
+        String::new()
+    } else if find.matches().is_empty() {
+        "No results ".to_owned()
+    } else {
+        let primary = session.view.selections.primary();
+        match find.ordinal(Range::new(primary.start(), primary.end())) {
+            Some(ordinal) => format!("{ordinal} of {} ", find.matches().len()),
+            // The cursor was moved off the match, so claiming a position in the
+            // list would be wrong. The total is still true.
+            None => format!("{} results ", find.matches().len()),
+        }
+    };
+
+    // The query is the last thing to go, because it is what the user is typing:
+    // a search term you cannot see is a search term you cannot correct. On a
+    // terminal too narrow for all three the count is dropped first and the
+    // toggles second, both recoverable by widening the window.
+    let mut right = format!("{count}{toggles}");
+    let fits = |right: &str| width.saturating_sub(columns(PROMPT) + columns(right)) >= MIN_QUERY;
+    if !fits(&right) {
+        right = toggles;
+    }
+    if !fits(&right) {
+        right = String::new();
+    }
+
+    let room = width
+        .saturating_sub(columns(PROMPT))
+        .saturating_sub(columns(&right));
+    let query = visible_query(find.query(), find.caret(), room);
+
+    let used = columns(PROMPT) + columns(&query.text) + columns(&right);
+    let mut text = format!(
+        "{PROMPT}{}{}{right}",
+        query.text,
+        " ".repeat(width.saturating_sub(used))
+    );
+    text = truncate_to(&text, width);
+    while columns(&text) < width {
+        text.push(' ');
+    }
+
+    let caret = (columns(PROMPT) + query.caret_column).min(width.saturating_sub(1));
+    (
+        Row {
+            spans: vec![Span {
+                text,
+                fg: palette.status_fg,
+                bg: palette.status_bg,
+            }],
+        },
+        caret,
+    )
+}
+
+/// The fewest columns the query is given before the readouts beside it are
+/// dropped to make room.
+///
+/// Eight is enough to see a short search term whole and enough of a long one to
+/// recognise it.
+const MIN_QUERY: usize = 8;
+
+/// The window of a query that fits in `room` columns, and where its caret is.
+struct VisibleQuery {
+    text: String,
+    caret_column: usize,
+}
+
+/// Scrolls a long query so the caret stays on screen.
+///
+/// A query wider than the bar has to be windowed rather than truncated: an input
+/// that stops showing what is being typed is worse than one that scrolls.
+fn visible_query(query: &str, caret: usize, room: usize) -> VisibleQuery {
+    if room == 0 {
+        return VisibleQuery {
+            text: String::new(),
+            caret_column: 0,
+        };
+    }
+    let chars: Vec<char> = query.chars().collect();
+    // One column reserved so the caret has somewhere to sit at the end of the
+    // text rather than on top of the last character.
+    let visible = room.saturating_sub(1).max(1);
+    let start = caret.saturating_sub(visible);
+    let end = (start + visible).min(chars.len());
+    VisibleQuery {
+        text: chars[start..end].iter().collect(),
+        caret_column: caret - start,
     }
 }
 
@@ -221,42 +363,42 @@ fn line_spans(
     // positioning the cursor by column. `column` counts *terminal columns*, not
     // characters — a CJK character occupies two, so padding by character count
     // would push every row past the right edge.
-    let mut cells: Vec<(char, bool)> = Vec::new();
+    let mut cells: Vec<(char, Cell)> = Vec::new();
     let mut column = 0usize;
     let mut utf16 = 0u32;
 
-    let selected_ranges: Vec<(u32, u32)> = session
-        .view
-        .selections
-        .iter()
-        .filter(|s| !s.is_empty())
-        .filter_map(|s| {
-            let (start, end) = (s.start(), s.end());
-            if (line as u32) < start.line || (line as u32) > end.line {
-                return None;
-            }
-            let from = if start.line == line as u32 {
-                start.character
-            } else {
-                0
-            };
-            let to = if end.line == line as u32 {
-                end.character
-            } else {
-                u32::MAX
-            };
-            Some((from, to))
-        })
-        .collect();
+    let selected_ranges = clipped_to_line(
+        session
+            .view
+            .selections
+            .iter()
+            .filter(|s| !s.is_empty())
+            .map(|s| Range::new(s.start(), s.end())),
+        line,
+    );
+    // Empty whenever the find bar is closed, which is what makes this free for
+    // everyone not searching.
+    let match_ranges = clipped_to_line(session.find.matches().iter().copied(), line);
 
-    let is_selected = |utf16: u32| {
-        selected_ranges
+    let covers = |ranges: &[(u32, u32)], utf16: u32| {
+        ranges
             .iter()
             .any(|(from, to)| utf16 >= *from && utf16 < *to)
     };
+    let cell_at = |utf16: u32| match (
+        covers(&selected_ranges, utf16),
+        covers(&match_ranges, utf16),
+    ) {
+        // The current match is both: `Session` selects the match it moves to, so
+        // this is where VS Code's distinct current-match colour comes from.
+        (true, true) => Cell::CurrentMatch,
+        (true, false) => Cell::Selected,
+        (false, true) => Cell::OtherMatch,
+        (false, false) => Cell::Plain,
+    };
 
     for c in text.chars() {
-        let selected = is_selected(utf16);
+        let cell = cell_at(utf16);
         let advance = if c == '\t' {
             tab_size - (column % tab_size)
         } else {
@@ -269,10 +411,10 @@ fn line_spans(
         }
         if c == '\t' {
             for _ in 0..advance {
-                cells.push((' ', selected));
+                cells.push((' ', cell));
             }
         } else {
-            cells.push((c, selected));
+            cells.push((c, cell));
         }
         column += advance;
         utf16 += c.len_utf16() as u32;
@@ -280,23 +422,25 @@ fn line_spans(
 
     // A selection that runs past the end of the line is drawn one cell wide, so
     // that selecting a line break is visible rather than invisible.
-    if is_selected(utf16) && column < width {
-        cells.push((' ', true));
+    let trailing = cell_at(utf16);
+    if trailing != Cell::Plain && column < width {
+        cells.push((' ', trailing));
         column += 1;
     }
     while column < width {
-        cells.push((' ', false));
+        cells.push((' ', Cell::Plain));
         column += 1;
     }
 
     // Coalesce runs sharing a style; one span per character would be correct
     // but would make the terminal writer do far more work than it needs to.
     let mut spans: Vec<Span> = Vec::new();
-    for (c, selected) in cells {
-        let bg = if selected {
-            palette.selection_bg
-        } else {
-            palette.bg
+    for (c, cell) in cells {
+        let bg = match cell {
+            Cell::Plain => palette.bg,
+            Cell::Selected => palette.selection_bg,
+            Cell::CurrentMatch => palette.find_match_bg,
+            Cell::OtherMatch => palette.find_highlight_bg,
         };
         match spans.last_mut() {
             Some(last) if last.bg == bg => last.text.push(c),
@@ -308,6 +452,46 @@ fn line_spans(
         }
     }
     spans
+}
+
+/// What one cell of a rendered line is part of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Cell {
+    /// Just text.
+    Plain,
+    /// Inside a selection.
+    Selected,
+    /// Inside the find match the editor is sitting on.
+    CurrentMatch,
+    /// Inside one of the other find matches.
+    OtherMatch,
+}
+
+/// The parts of `ranges` that fall on `line`, as UTF-16 column pairs.
+///
+/// A range that starts above the line begins at column zero, and one that ends
+/// below it runs to `u32::MAX` — which the caller draws as one cell past the end
+/// of the text, so that a selected line break is visible.
+fn clipped_to_line(ranges: impl Iterator<Item = Range>, line: usize) -> Vec<(u32, u32)> {
+    let line = line as u32;
+    ranges
+        .filter_map(|range| {
+            if line < range.start.line || line > range.end.line {
+                return None;
+            }
+            let from = if range.start.line == line {
+                range.start.character
+            } else {
+                0
+            };
+            let to = if range.end.line == line {
+                range.end.character
+            } else {
+                u32::MAX
+            };
+            Some((from, to))
+        })
+        .collect()
 }
 
 /// The status bar.
@@ -382,7 +566,9 @@ fn overlay_hover(
     hover: &deco_lsp::Hover,
 ) {
     let palette = Palette::from(session);
-    let text_height = height.saturating_sub(1);
+    // Never over the chrome: the status bar is where the editor reports things,
+    // and the find bar is where the user is typing.
+    let text_height = height.saturating_sub(chrome_height(session));
     if text_height < 3 || width < 8 {
         // Not enough screen to draw a box that says anything. The status bar
         // still carries the first line, so nothing is lost silently.
@@ -558,7 +744,9 @@ fn overlay_suggest(
     suggest: &crate::suggest::Suggest,
 ) {
     let palette = Palette::from(session);
-    let text_height = height.saturating_sub(1);
+    // Never over the chrome: the status bar is where the editor reports things,
+    // and the find bar is where the user is typing.
+    let text_height = height.saturating_sub(chrome_height(session));
     let rows = suggest.rows();
     if rows.is_empty() || text_height < 2 || width < 10 {
         return;
@@ -1260,5 +1448,227 @@ mod tests {
         let frame = render_with_overlays(&session, 8, 10, None, Some(&completion(&["push"])));
         let all: String = frame.rows.iter().map(Row::plain).collect();
         assert!(!all.contains("push"));
+    }
+
+    // ---- The find bar ---------------------------------------------------
+
+    /// A session searching `text` for `query`, as though the user had typed it.
+    fn searching(text: &str, query: &str) -> Session {
+        let mut session = session(text);
+        session.resize(40, 8);
+        session.run("actions.find", None, 0);
+        for c in query.chars() {
+            session.handle_chord(deco_keymap::keys::Chord::parse(&c.to_string()).unwrap(), 0);
+        }
+        session
+    }
+
+    /// The find bar's row: the second from the bottom while it is open.
+    fn find_row(frame: &Frame) -> String {
+        frame.rows[frame.rows.len() - 2].plain()
+    }
+
+    #[test]
+    fn the_find_bar_is_drawn_above_the_status_bar() {
+        let session = searching("foo\n", "foo");
+        let frame = render(&session, 40, 8);
+        assert!(
+            find_row(&frame).contains("Find: foo"),
+            "{:?}",
+            find_row(&frame)
+        );
+        // The status bar is still the last row and still says where the cursor is.
+        assert!(frame.rows.last().unwrap().plain().contains("Ln 1"));
+    }
+
+    #[test]
+    fn the_find_bar_costs_the_text_area_a_row() {
+        let text = "a\nb\nc\nd\ne\nf\ng\nh\n";
+        let closed = render(&session(text), 40, 8);
+        let open = render(&searching(text, "zzz"), 40, 8);
+        assert_eq!(closed.rows.len(), open.rows.len(), "both fill the terminal");
+        // The line that was on the last text row is no longer drawn.
+        assert!(closed.rows[6].plain().contains('g'));
+        assert!(
+            !open.rows[6].plain().contains('g'),
+            "{:?}",
+            open.rows[6].plain()
+        );
+    }
+
+    #[test]
+    fn every_row_is_still_exactly_the_terminal_width() {
+        let frame = render(&searching("foo\n", "foo"), 40, 8);
+        for row in &frame.rows {
+            assert_eq!(row.plain().chars().count(), 40, "row was {:?}", row.plain());
+        }
+    }
+
+    #[test]
+    fn the_bar_counts_the_matches_and_says_which_one_is_current() {
+        let session = searching("foo\nfoo\nfoo\n", "foo");
+        assert!(find_row(&render(&session, 40, 8)).contains("1 of 3"));
+    }
+
+    #[test]
+    fn the_bar_says_when_nothing_matches() {
+        let session = searching("foo\n", "zzz");
+        assert!(find_row(&render(&session, 40, 8)).contains("No results"));
+    }
+
+    #[test]
+    fn an_empty_query_is_counted_neither_way() {
+        let session = searching("foo\n", "");
+        let row = find_row(&render(&session, 40, 8));
+        assert!(!row.contains("No results"), "{row:?}");
+        assert!(!row.contains(" of "), "{row:?}");
+    }
+
+    #[test]
+    fn moving_off_the_match_reports_the_total_without_claiming_a_position() {
+        let mut session = searching("foo\nfoo\n", "foo");
+        session.find.close();
+        session.find.refresh(&session.document.buffer);
+        session.view.selections = SelectionSet::caret(Position::new(1, 2));
+        session.find.open(None, Position::ZERO);
+        // Reopened without re-searching, so the matches stand but the cursor is
+        // not on one.
+        session.find.refresh(&session.document.buffer);
+        let row = find_row(&render(&session, 40, 8));
+        assert!(row.contains("2 results"), "{row:?}");
+        assert!(!row.contains(" of "), "{row:?}");
+    }
+
+    #[test]
+    fn the_toggles_show_which_options_are_on() {
+        let mut session = searching("foo\n", "foo");
+        let row = find_row(&render(&session, 40, 8));
+        assert!(row.contains("[aa ww]") || row.contains("[a"), "{row:?}");
+        session.run("toggleFindCaseSensitive", None, 0);
+        session.run("toggleFindWholeWord", None, 0);
+        let row = find_row(&render(&session, 40, 8));
+        assert!(row.contains("[Aa Ww]"), "{row:?}");
+    }
+
+    #[test]
+    fn the_cursor_sits_in_the_query_while_the_bar_has_the_keyboard() {
+        let session = searching("foo\n", "fo");
+        let frame = render(&session, 40, 8);
+        let (x, y) = frame.cursor.expect("the caret has to be somewhere");
+        assert_eq!(y as usize, frame.rows.len() - 2, "on the find bar's row");
+        // " Find: " is seven columns, then two typed characters.
+        assert_eq!(x, 9);
+    }
+
+    #[test]
+    fn the_cursor_returns_to_the_document_when_the_bar_closes() {
+        let mut session = searching("foo\n", "foo");
+        session.run("closeFindWidget", None, 0);
+        let frame = render(&session, 40, 8);
+        let (_, y) = frame.cursor.unwrap();
+        assert!(
+            (y as usize) < frame.rows.len() - 1,
+            "the caret should be back in the text"
+        );
+    }
+
+    #[test]
+    fn a_query_longer_than_the_bar_scrolls_to_keep_the_caret_visible() {
+        let session = searching("x\n", "abcdefghijklmnopqrstuvwxyz");
+        let frame = render(&session, 20, 8);
+        let row = find_row(&frame);
+        assert_eq!(row.chars().count(), 20);
+        // The tail is what matters: the caret is at the end of what was typed.
+        assert!(row.contains('z'), "{row:?}");
+        assert!(
+            !row.contains("abc"),
+            "the head should have scrolled off: {row:?}"
+        );
+        let (x, _) = frame.cursor.unwrap();
+        assert!((x as usize) < 20, "the caret must stay on screen");
+    }
+
+    #[test]
+    fn a_narrow_bar_drops_the_readouts_before_the_query() {
+        // A search term you cannot see is a search term you cannot correct, so
+        // the count goes first and the toggles second.
+        let session = searching("foo\n", "foo");
+        let wide = find_row(&render(&session, 40, 8));
+        assert!(
+            wide.contains("1 of 1") && wide.contains("[aa ww]"),
+            "{wide:?}"
+        );
+
+        let narrow = find_row(&render(&session, 24, 8));
+        assert!(
+            !narrow.contains("1 of 1"),
+            "the count should go first: {narrow:?}"
+        );
+        assert!(narrow.contains("[aa ww]"), "{narrow:?}");
+        assert!(narrow.contains("foo"), "{narrow:?}");
+
+        let tiny = find_row(&render(&session, 16, 8));
+        assert!(!tiny.contains("[aa ww]"), "the toggles go next: {tiny:?}");
+        assert!(tiny.contains("foo"), "the query survives: {tiny:?}");
+    }
+
+    #[test]
+    fn every_match_is_highlighted_and_the_current_one_differently() {
+        let session = searching("foo bar foo\n", "foo");
+        let palette = Palette::from(&session);
+        let frame = render(&session, 40, 8);
+        let backgrounds: Vec<Rgba> = frame.rows[0]
+            .spans
+            .iter()
+            .flat_map(|span| span.text.chars().map(move |_| span.bg))
+            .collect();
+        let gutter = gutter_width(&session);
+        // The first `foo` is where the cursor is; the second is a plain highlight.
+        assert_eq!(backgrounds[gutter], palette.find_match_bg);
+        assert_eq!(backgrounds[gutter + 3], palette.bg, "the space between");
+        assert_eq!(backgrounds[gutter + 8], palette.find_highlight_bg);
+    }
+
+    #[test]
+    fn nothing_is_highlighted_once_the_bar_is_closed() {
+        let mut session = searching("foo foo\n", "foo");
+        session.run("closeFindWidget", None, 0);
+        let palette = Palette::from(&session);
+        let frame = render(&session, 40, 8);
+        let gutter = gutter_width(&session);
+        let backgrounds: Vec<Rgba> = frame.rows[0]
+            .spans
+            .iter()
+            .flat_map(|span| span.text.chars().map(move |_| span.bg))
+            .collect();
+        // The first match is still selected — closing the bar does not deselect —
+        // but the second is back to plain text.
+        assert_eq!(backgrounds[gutter], palette.selection_bg);
+        assert_eq!(backgrounds[gutter + 4], palette.bg);
+    }
+
+    #[test]
+    fn a_completion_list_is_not_drawn_over_the_find_bar() {
+        let session = searching("fn main() {}\n", "main");
+        let frame = render_with_overlays(
+            &session,
+            40,
+            8,
+            None,
+            Some(&completion(&["a", "b", "c", "d", "e", "f", "g", "h"])),
+        );
+        assert!(
+            find_row(&frame).contains("Find: main"),
+            "{:?}",
+            find_row(&frame)
+        );
+    }
+
+    #[test]
+    fn a_one_row_terminal_still_renders_something() {
+        // Not enough room for both bars; the status bar wins, since it is where
+        // the editor says what is wrong.
+        let frame = render(&searching("foo\n", "foo"), 40, 1);
+        assert_eq!(frame.rows.len(), 2);
     }
 }

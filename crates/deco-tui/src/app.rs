@@ -76,7 +76,7 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
     let mut out = io::stdout();
 
     let (mut width, mut height) = terminal::size().unwrap_or((80, 24));
-    session.resize(width as usize, height.saturating_sub(1) as usize);
+    resize(session, width, height);
 
     let mut lsp = Lsp::new(session, workspace_root(path.as_deref()));
     lsp.attach(session);
@@ -84,6 +84,9 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
     let mut dirty = true;
     loop {
         if dirty {
+            // The find bar costs a row, so the text area's height depends on
+            // whether it is open — which the last keypress may have changed.
+            resize(session, width, height);
             let frame =
                 render::render_with_hover(session, width as usize, height as usize, lsp.hover());
             paint(&mut out, &frame)?;
@@ -156,10 +159,18 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
                     _ => {}
                 }
 
+                // While the find bar has the keyboard, a keystroke narrows the
+                // query and the document never sees it. A completion list left
+                // open underneath would be narrowed by text that was never
+                // typed into the file — so it goes, along with any hover.
+                if session.find.visible() {
+                    lsp.dismiss_suggest();
+                    lsp.dismiss_hover();
+                }
                 // A printable key both typed itself and narrowed the list; a
                 // backspace both deleted and widened it. Both after the command,
                 // so the list and the document agree about what has been typed.
-                if let Some(c) = typed {
+                else if let Some(c) = typed {
                     if !lsp.typed(session, c) {
                         // No list was open, so this may be a trigger character —
                         // `.` or `::` — that should open one.
@@ -186,7 +197,7 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
             Event::Resize(new_width, new_height) => {
                 width = new_width;
                 height = new_height;
-                session.resize(width as usize, height.saturating_sub(1) as usize);
+                resize(session, width, height);
                 dirty = true;
             }
             _ => {}
@@ -197,6 +208,16 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
     // moment to stop does so while the editor still looks alive.
     lsp.detach();
     Ok(())
+}
+
+/// Tells the session how much of the terminal is text.
+///
+/// The remainder is chrome — the status bar, and the find bar when it is open —
+/// so this has to be redone whenever either the terminal or the find bar changes
+/// size, or the last line of the file ends up underneath the bar.
+fn resize(session: &mut Session, width: u16, height: u16) {
+    let text_height = (height as usize).saturating_sub(render::chrome_height(session));
+    session.resize(width as usize, text_height);
 }
 
 /// The character a chord types, if it types one.

@@ -48,7 +48,7 @@ thin painter.
 | Code extensions (`main`) | Protocol and sandbox built; host not yet wired to the editor |
 | Remote SSH / containers / WSL | Authorities and transports built; server not yet |
 | Language servers (LSP) | Diagnostics, hover, go-to-definition, completion, formatting |
-| Find | Multi-cursor find (`ctrl+d`, `ctrl+shift+l`, `ctrl+k ctrl+d`); no find bar yet |
+| Find (`ctrl+f`, `F3`, `ctrl+d`, `ctrl+shift+l`) | Literal search only — no regex, no replace, no find-in-files |
 | `.tmTheme` (plist) themes, `-` scope exclusions | No |
 
 Settings are read from deco's own configuration directory, falling back to VS
@@ -173,18 +173,20 @@ does not:
 - **The extension host is not connected.** The protocol, the capability broker,
   the sandbox and the `vscode` shim all exist and are tested against each other;
   the editor does not yet start a host or dispatch to one.
-- **There is no find bar.** Search is implemented in `deco-core` and reachable
-  through the multi-cursor keys — `ctrl+d` adds a cursor at the next occurrence
-  of the selection, `ctrl+shift+l` at every occurrence, `ctrl+k ctrl+d` moves the
-  last one instead of adding — but `ctrl+f` needs a query field, a match count
-  and highlighting that deco has nowhere to put yet. Regular-expression search is
-  not implemented at all.
+- **Search finds but does not replace.** `ctrl+f` opens a find bar with a query,
+  a match count and highlighting; `F3`, `enter` and `alt+c` / `alt+w` work as they
+  do in VS Code, and the multi-cursor keys (`ctrl+d`, `ctrl+shift+l`,
+  `ctrl+k ctrl+d`) search the same way. What is missing is `ctrl+h` (replace),
+  regular expressions — `deco-core::search` is deliberately literal — and
+  find-in-files, which needs more than one document. All three say so when pressed
+  rather than reporting an unknown command.
 - **One document at a time.** No tabs, splits, file tree, search-in-files,
   command palette or quick open — the keybindings for them resolve to commands
   that are not implemented yet.
 - **The GPU frontend draws text, a gutter and a caret.** Selection and
   current-line rectangles are computed and tested but not yet painted; there is
-  no scrollbar, minimap or mouse input.
+  no scrollbar, minimap or mouse input — and no chrome, so `ctrl+f` refuses there
+  rather than opening a find bar the frontend cannot show.
 
 ## Building
 

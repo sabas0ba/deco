@@ -13,6 +13,7 @@ use serde_json::json;
 
 use crate::commands::{self, Clipboard, Context, MemoryClipboard, Outcome};
 use crate::document::{Document, View};
+use crate::find::Find;
 
 /// The length of `text` in UTF-16 code units, which is how positions count.
 fn utf16_len(text: &str) -> u32 {
@@ -59,6 +60,11 @@ pub struct Session {
     pub clipboard: Box<dyn Clipboard>,
     /// A transient message for the status bar.
     pub status: Option<String>,
+    /// The find bar, open or not.
+    ///
+    /// Always present so that `F3` still has a query to search for after the bar
+    /// is closed, which is how VS Code behaves.
+    pub find: Find,
     /// Diagnostics for the open document, newest publication wins.
     ///
     /// Owned by the session rather than by the LSP client so that the frontends
@@ -110,6 +116,7 @@ impl Session {
             context: ContextKeys::for_platform(platform),
             clipboard: Box::new(MemoryClipboard::default()),
             status: None,
+            find: Find::new(),
             diagnostics: Vec::new(),
             problems,
         };
@@ -136,6 +143,9 @@ impl Session {
         // that is no longer on screen. Carrying them over would decorate the
         // new one with the old one's errors.
         self.diagnostics.clear();
+        // Same reasoning for the match list. The query survives, since searching
+        // the next file for the same thing is a reasonable thing to want.
+        self.find.close();
         self.refresh_context();
     }
 
@@ -194,9 +204,17 @@ impl Session {
     /// frame the selection appears.
     pub fn refresh_context(&mut self) {
         let selections = &self.view.selections;
-        self.context.set("editorTextFocus", true);
+        // VS Code's own distinction, and the find bar depends on it:
+        // `editorTextFocus` is the text area, `textInputFocus` is any text input
+        // including the find box, and `editorFocus` covers the editor as a whole.
+        // So with the find bar open, `tab` and `ctrl+space` stop resolving while
+        // `left` and `backspace` keep doing so — and `Find::consume` claims them.
+        let find_focus = self.find.visible();
+        self.context.set("editorTextFocus", !find_focus);
         self.context.set("editorFocus", true);
         self.context.set("textInputFocus", true);
+        self.context.set("findWidgetVisible", find_focus);
+        self.context.set("findInputFocussed", find_focus);
         self.context.set("editorReadonly", false);
         self.context.set(
             "editorHasSelection",
@@ -227,7 +245,7 @@ impl Session {
 
         let outcome = match resolution {
             Resolution::Pending { .. } => Outcome::Handled,
-            Resolution::Match { command, args } => self.run(&command, args.as_ref(), now_ms),
+            Resolution::Match { command, args } => self.dispatch(&command, args.as_ref(), now_ms),
             Resolution::NoMatch => {
                 // An unbound printable key types itself. Modifiers other than
                 // Shift mean the user was reaching for a command, so those are
@@ -243,7 +261,7 @@ impl Session {
                         } else {
                             c.to_string()
                         };
-                        self.run("type", Some(&json!({ "text": text })), now_ms)
+                        self.dispatch("type", Some(&json!({ "text": text })), now_ms)
                     }
                     _ => Outcome::NotFound,
                 }
@@ -252,6 +270,24 @@ impl Session {
 
         self.refresh_context();
         outcome
+    }
+
+    /// Runs a command, giving the find input first refusal on it.
+    ///
+    /// The find input is a text input, so while it holds the keyboard the
+    /// text-editing commands belong to it — see the [`crate::find`] module for
+    /// why that cannot be expressed as a `when` clause. Everything else, and
+    /// everything at all when the bar is closed, goes to [`Session::run`].
+    fn dispatch(
+        &mut self,
+        command: &str,
+        args: Option<&serde_json::Value>,
+        now_ms: u64,
+    ) -> Outcome {
+        if self.find.visible() && self.find.consume(command, args, self.clipboard.as_mut()) {
+            return self.find_query_changed();
+        }
+        self.run(command, args, now_ms)
     }
 
     /// Runs a command by identifier.
@@ -265,6 +301,32 @@ impl Session {
             }
             "editor.action.marker.prev" | "editor.action.marker.prevInFiles" => {
                 self.goto_marker(Direction::Prev)
+            }
+            // The find bar, for the same reason: it needs the whole document and
+            // its own state, neither of which a command in `commands` can see.
+            "actions.find" => self.open_find(),
+            "closeFindWidget" => {
+                self.find.close();
+                Outcome::Handled
+            }
+            "editor.action.nextMatchFindAction" => self.step_find(Direction::Next),
+            "editor.action.previousMatchFindAction" => self.step_find(Direction::Prev),
+            "toggleFindCaseSensitive" => {
+                self.find.toggle_case_sensitive();
+                self.find_query_changed()
+            }
+            "toggleFindWholeWord" => {
+                self.find.toggle_whole_word();
+                self.find_query_changed()
+            }
+            // Recognised so the key says what is missing. `deco_core::search` is
+            // literal, and a regex mode needs its own escaping and its own error
+            // reporting for an invalid pattern.
+            "toggleFindRegex" => {
+                Outcome::Message("regular-expression search is not implemented yet".to_owned())
+            }
+            "editor.action.startFindReplaceAction" => {
+                Outcome::Message("replace is not implemented yet".to_owned())
             }
             // Commands that need something the core has no concept of. Named
             // here rather than left to fall through as `NotFound`, so a typo in
@@ -298,6 +360,104 @@ impl Session {
         }
         self.refresh_context();
         outcome
+    }
+
+    /// Opens the find bar, seeding it from the selection.
+    ///
+    /// `editor.find.seedSearchStringFromSelection` is on by default in VS Code,
+    /// and the reason is that selecting a word and pressing `ctrl+f` is how the
+    /// find bar is usually reached.
+    fn open_find(&mut self) -> Outcome {
+        let primary = *self.view.selections.primary();
+        let seed =
+            (!primary.is_empty()).then(|| self.document.buffer.text_in_range(primary.range()));
+        // The start of the selection, not the cursor: seeding from a selection
+        // must leave that same occurrence as the current match rather than
+        // skipping to the next one.
+        self.find.open(seed, primary.start());
+        self.find_query_changed()
+    }
+
+    /// Re-finds the matches and moves to the first one from the search origin.
+    ///
+    /// Called after anything that changes what matches: a keystroke in the query,
+    /// a toggled option. Searching from the origin rather than from the cursor is
+    /// what stops typing `f`, `o`, `o` from walking down the file one match at a
+    /// time.
+    fn find_query_changed(&mut self) -> Outcome {
+        self.find.refresh(&self.document.buffer);
+        if let Some(range) = self.find.first_at_or_after(self.find.origin()) {
+            self.select_match(range);
+        }
+        Outcome::Handled
+    }
+
+    /// `F3` and `shift+F3`: the next or previous match, wrapping.
+    fn step_find(&mut self, direction: Direction) -> Outcome {
+        // `F3` with nothing typed yet searches for the selection, or for the word
+        // under the cursor — which is what makes it useful without `ctrl+f`
+        // first.
+        if self.find.query().is_empty() {
+            let Some((seed, range)) = self.seed_from_document() else {
+                return Outcome::Message("nothing to search for".to_owned());
+            };
+            self.find.set_query(seed);
+            // Select the seed, so that the step below moves off it. Without this
+            // the search starts at a bare caret sitting inside the very word it
+            // just seeded from, finds that word, and appears to do nothing.
+            self.select_match(range);
+        }
+        self.find.refresh(&self.document.buffer);
+        if self.find.matches().is_empty() {
+            return Outcome::Message(format!("no results for `{}`", self.find.query()));
+        }
+
+        let primary = *self.view.selections.primary();
+        // From the far end of the selection in the direction of travel, so that
+        // pressing the key while sitting on a match moves off it instead of
+        // finding it again.
+        let found = match direction {
+            Direction::Next => self.find.first_at_or_after(primary.end()),
+            Direction::Prev => self.find.last_at_or_before(primary.start()),
+        };
+        let Some(range) = found else {
+            return Outcome::Handled;
+        };
+        self.select_match(range);
+        // The bar shows the count when it is open; when it is closed this is the
+        // only place the user learns whether the search wrapped or found nothing.
+        match self.find.ordinal(range) {
+            Some(ordinal) if !self.find.visible() => Outcome::Message(format!(
+                "{ordinal} of {} for `{}`",
+                self.find.matches().len(),
+                self.find.query()
+            )),
+            _ => Outcome::Handled,
+        }
+    }
+
+    /// The text `F3` should search for when the query is still empty, and where
+    /// in the document it came from.
+    ///
+    /// The range matters as much as the text: it is the match the cursor is
+    /// already on, and `F3` has to step off it rather than onto it.
+    fn seed_from_document(&self) -> Option<(String, deco_core::position::Range)> {
+        let primary = *self.view.selections.primary();
+        if !primary.is_empty() {
+            let range = primary.range();
+            let text = self.document.buffer.text_in_range(range);
+            return (!text.is_empty()).then_some((text, range));
+        }
+        let word = deco_core::search::word_at(&self.document.buffer, primary.active)?;
+        Some((self.document.buffer.text_in_range(word), word))
+    }
+
+    /// Selects `range` and scrolls it into view.
+    fn select_match(&mut self, range: deco_core::position::Range) {
+        use deco_core::selection::{Selection, SelectionSet};
+        self.view.selections = SelectionSet::single(Selection::new(range.start, range.end));
+        self.view
+            .reveal_cursor(&self.document.buffer, &self.document.settings);
     }
 
     /// Moves the cursor to the next or previous diagnostic.
@@ -1109,5 +1269,307 @@ mod tests {
             Outcome::Frontend("editor.action.formatSelection".into())
         );
         assert_eq!(s.run("editor.action.nonsense", None, 0), Outcome::NotFound);
+    }
+
+    // ---- The find bar ---------------------------------------------------
+
+    /// A session holding `text`, with the caret at the start.
+    fn searchable(text: &str) -> Session {
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.txt"), text);
+        s.resize(80, 10);
+        s
+    }
+
+    /// The primary selection as `(line, start)..(line, end)`.
+    fn selected(s: &Session) -> ((u32, u32), (u32, u32)) {
+        let primary = s.view.selections.primary();
+        (
+            (primary.start().line, primary.start().character),
+            (primary.end().line, primary.end().character),
+        )
+    }
+
+    #[test]
+    fn ctrl_f_opens_the_find_bar() {
+        let mut s = searchable("foo\n");
+        press(&mut s, "ctrl+f");
+        assert!(s.find.visible());
+    }
+
+    #[test]
+    fn typing_with_the_bar_open_goes_into_the_query_not_the_document() {
+        let mut s = searchable("foo bar\n");
+        press(&mut s, "ctrl+f");
+        for key in ["b", "a", "r"] {
+            press(&mut s, key);
+        }
+        assert_eq!(s.find.query(), "bar");
+        assert_eq!(
+            s.document.buffer.text(),
+            "foo bar\n",
+            "the document must be untouched"
+        );
+    }
+
+    #[test]
+    fn typing_selects_the_first_match_from_the_search_origin() {
+        let mut s = searchable("xx\nfoo\nfoo\n");
+        press(&mut s, "ctrl+f");
+        for key in ["f", "o", "o"] {
+            press(&mut s, key);
+        }
+        // The first match, not the third: narrowing the query must not walk the
+        // cursor down the file one keystroke at a time.
+        assert_eq!(selected(&s), ((1, 0), (1, 3)));
+    }
+
+    #[test]
+    fn backspace_edits_the_query_and_leaves_the_document_alone() {
+        let mut s = searchable("foo\n");
+        press(&mut s, "ctrl+f");
+        press(&mut s, "f");
+        press(&mut s, "x");
+        press(&mut s, "backspace");
+        assert_eq!(s.find.query(), "f");
+        assert_eq!(s.document.buffer.text(), "foo\n");
+    }
+
+    #[test]
+    fn ctrl_v_pastes_into_the_query_not_the_document() {
+        let mut s = searchable("foo\n");
+        s.clipboard.write("foo");
+        press(&mut s, "ctrl+f");
+        press(&mut s, "ctrl+v");
+        assert_eq!(s.find.query(), "foo");
+        assert_eq!(s.document.buffer.text(), "foo\n");
+    }
+
+    #[test]
+    fn undo_cannot_rewrite_the_document_from_behind_an_open_find_bar() {
+        let mut s = searchable("");
+        for key in ["h", "i"] {
+            press(&mut s, key);
+        }
+        assert_eq!(s.document.buffer.text(), "hi");
+        press(&mut s, "ctrl+f");
+        press(&mut s, "ctrl+z");
+        assert_eq!(
+            s.document.buffer.text(),
+            "hi",
+            "the user was looking at the find bar"
+        );
+    }
+
+    #[test]
+    fn tab_does_not_indent_the_document_while_the_bar_is_open() {
+        // `tab` is gated on `editorTextFocus`, which the find bar turns off.
+        let mut s = searchable("x\n");
+        press(&mut s, "ctrl+f");
+        press(&mut s, "tab");
+        assert_eq!(s.document.buffer.text(), "x\n");
+    }
+
+    #[test]
+    fn ctrl_f_seeds_the_query_from_the_selection() {
+        let mut s = searchable("hello world\n");
+        s.view.selections = deco_core::selection::SelectionSet::single(
+            deco_core::selection::Selection::new(Position::new(0, 6), Position::new(0, 11)),
+        );
+        press(&mut s, "ctrl+f");
+        assert_eq!(s.find.query(), "world");
+        // Seeding from a selection leaves that same occurrence current rather
+        // than skipping to the next one.
+        assert_eq!(selected(&s), ((0, 6), (0, 11)));
+    }
+
+    #[test]
+    fn pressing_ctrl_f_again_does_not_wipe_the_query() {
+        let mut s = searchable("foo\n");
+        press(&mut s, "ctrl+f");
+        press(&mut s, "f");
+        press(&mut s, "ctrl+f");
+        assert_eq!(s.find.query(), "f");
+    }
+
+    #[test]
+    fn enter_goes_to_the_next_match_rather_than_inserting_a_newline() {
+        let mut s = searchable("foo\nfoo\n");
+        press(&mut s, "ctrl+f");
+        for key in ["f", "o", "o"] {
+            press(&mut s, key);
+        }
+        assert_eq!(selected(&s), ((0, 0), (0, 3)));
+        press(&mut s, "enter");
+        assert_eq!(selected(&s), ((1, 0), (1, 3)));
+        assert_eq!(s.document.buffer.text(), "foo\nfoo\n");
+    }
+
+    #[test]
+    fn shift_enter_goes_to_the_previous_match() {
+        let mut s = searchable("foo\nfoo\n");
+        press(&mut s, "ctrl+f");
+        for key in ["f", "o", "o"] {
+            press(&mut s, key);
+        }
+        press(&mut s, "shift+enter");
+        assert_eq!(selected(&s), ((1, 0), (1, 3)), "wrapped to the last match");
+    }
+
+    #[test]
+    fn f3_walks_forward_and_wraps() {
+        let mut s = searchable("foo\nfoo\n");
+        press(&mut s, "ctrl+f");
+        for key in ["f", "o", "o"] {
+            press(&mut s, key);
+        }
+        press(&mut s, "f3");
+        assert_eq!(selected(&s), ((1, 0), (1, 3)));
+        press(&mut s, "f3");
+        assert_eq!(selected(&s), ((0, 0), (0, 3)), "wrapped to the first match");
+    }
+
+    #[test]
+    fn f3_with_no_query_searches_for_the_word_under_the_cursor() {
+        let mut s = searchable("foo bar\nfoo\n");
+        press(&mut s, "f3");
+        assert_eq!(s.find.query(), "foo");
+        assert_eq!(selected(&s), ((1, 0), (1, 3)));
+        assert!(!s.find.visible(), "F3 does not open the bar");
+    }
+
+    #[test]
+    fn f3_with_nothing_to_search_for_says_so() {
+        let mut s = searchable("   \n");
+        s.view.selections = deco_core::selection::SelectionSet::caret(Position::new(0, 1));
+        assert_eq!(
+            press(&mut s, "f3"),
+            Outcome::Message("nothing to search for".to_owned())
+        );
+    }
+
+    #[test]
+    fn f3_reports_where_it_landed_while_the_bar_is_closed() {
+        let mut s = searchable("foo\nfoo\n");
+        // The bar is closed, so the status bar is the only place a count can go.
+        let outcome = press(&mut s, "f3");
+        assert_eq!(outcome, Outcome::Message("2 of 2 for `foo`".to_owned()));
+    }
+
+    #[test]
+    fn a_query_matching_nothing_says_so_and_leaves_the_cursor_alone() {
+        let mut s = searchable("foo\n");
+        s.find.set_query("zzz".to_owned());
+        let before = selected(&s);
+        assert_eq!(
+            press(&mut s, "f3"),
+            Outcome::Message("no results for `zzz`".to_owned())
+        );
+        assert_eq!(selected(&s), before);
+    }
+
+    #[test]
+    fn escape_closes_the_bar_and_keeps_the_query_for_f3() {
+        let mut s = searchable("foo\nfoo\n");
+        press(&mut s, "ctrl+f");
+        for key in ["f", "o", "o"] {
+            press(&mut s, key);
+        }
+        press(&mut s, "escape");
+        assert!(!s.find.visible());
+        assert_eq!(s.find.query(), "foo");
+        assert!(s.find.matches().is_empty(), "no stale highlight");
+        // And F3 still knows what to look for.
+        press(&mut s, "f3");
+        assert_eq!(selected(&s), ((1, 0), (1, 3)));
+    }
+
+    #[test]
+    fn typing_reaches_the_document_again_once_the_bar_is_closed() {
+        let mut s = searchable("");
+        press(&mut s, "ctrl+f");
+        press(&mut s, "x");
+        press(&mut s, "escape");
+        press(&mut s, "y");
+        assert_eq!(s.document.buffer.text(), "y");
+        assert_eq!(s.find.query(), "x");
+    }
+
+    #[test]
+    fn alt_c_toggles_case_sensitivity_and_re_searches() {
+        let mut s = searchable("FOO\nfoo\n");
+        press(&mut s, "ctrl+f");
+        for key in ["f", "o", "o"] {
+            press(&mut s, key);
+        }
+        assert_eq!(s.find.matches().len(), 2, "case-insensitive to begin with");
+        press(&mut s, "alt+c");
+        assert!(s.find.options().case_sensitive);
+        assert_eq!(s.find.matches().len(), 1);
+        assert_eq!(selected(&s), ((1, 0), (1, 3)));
+    }
+
+    #[test]
+    fn alt_w_toggles_whole_word_and_re_searches() {
+        let mut s = searchable("foobar\nfoo\n");
+        press(&mut s, "ctrl+f");
+        for key in ["f", "o", "o"] {
+            press(&mut s, key);
+        }
+        assert_eq!(s.find.matches().len(), 2);
+        press(&mut s, "alt+w");
+        assert!(s.find.options().whole_word);
+        assert_eq!(s.find.matches().len(), 1);
+    }
+
+    #[test]
+    fn the_features_that_are_missing_say_so_rather_than_reporting_unknown() {
+        let mut s = searchable("foo\n");
+        press(&mut s, "ctrl+f");
+        assert_eq!(
+            press(&mut s, "alt+r"),
+            Outcome::Message("regular-expression search is not implemented yet".to_owned())
+        );
+        press(&mut s, "escape");
+        assert_eq!(
+            press(&mut s, "ctrl+h"),
+            Outcome::Message("replace is not implemented yet".to_owned())
+        );
+    }
+
+    #[test]
+    fn the_context_keys_follow_the_find_bar() {
+        let mut s = searchable("foo\n");
+        assert_eq!(s.context.get("findWidgetVisible"), Some(&json!(false)));
+        assert_eq!(s.context.get("editorTextFocus"), Some(&json!(true)));
+
+        press(&mut s, "ctrl+f");
+        // VS Code's spelling, both of them, so a `when` clause copied out of a
+        // keybindings.json means the same thing here.
+        assert_eq!(s.context.get("findWidgetVisible"), Some(&json!(true)));
+        assert_eq!(s.context.get("findInputFocussed"), Some(&json!(true)));
+        assert_eq!(s.context.get("editorTextFocus"), Some(&json!(false)));
+        assert_eq!(
+            s.context.get("textInputFocus"),
+            Some(&json!(true)),
+            "the find box is still a text input"
+        );
+
+        press(&mut s, "escape");
+        assert_eq!(s.context.get("findWidgetVisible"), Some(&json!(false)));
+        assert_eq!(s.context.get("editorTextFocus"), Some(&json!(true)));
+    }
+
+    #[test]
+    fn opening_another_file_drops_the_matches_but_keeps_the_query() {
+        let mut s = searchable("foo\n");
+        press(&mut s, "ctrl+f");
+        for key in ["f", "o", "o"] {
+            press(&mut s, key);
+        }
+        assert!(!s.find.matches().is_empty());
+        s.open(PathBuf::from("/w/b.txt"), "nothing here\n");
+        assert!(s.find.matches().is_empty());
+        assert_eq!(s.find.query(), "foo");
     }
 }
