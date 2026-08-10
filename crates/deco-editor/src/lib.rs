@@ -11,9 +11,12 @@
 pub mod commands;
 pub mod document;
 pub mod find;
+pub mod input;
+pub mod prompt;
 pub mod session;
 
 pub use commands::{Clipboard, Context, MemoryClipboard, Outcome};
 pub use document::{Document, View};
 pub use find::Find;
+pub use prompt::{Prompt, PromptKind};
 pub use session::Session;

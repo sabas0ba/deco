@@ -141,6 +141,17 @@ pub const DEFAULT_KEYBINDINGS_JSONC: &str = r#"[
     { "key": "tab",          "command": "acceptSelectedSuggestion", "when": "suggestWidgetVisible && textInputFocus" },
     { "key": "enter",        "command": "acceptSelectedSuggestion", "when": "suggestWidgetVisible && textInputFocus" },
 
+    // ---- Quick open -----------------------------------------------------
+    // Last, so these win whenever a prompt holds the keyboard: a later rule takes
+    // precedence, as in VS Code, and every key here is also bound to something in
+    // the editor or to another widget.
+    { "key": "escape",       "command": "workbench.action.closeQuickOpen",              "when": "inQuickOpen" },
+    { "key": "enter",        "command": "workbench.action.acceptSelectedQuickOpenItem",  "when": "inQuickOpen" },
+    { "key": "down",         "command": "workbench.action.quickOpenSelectNext",          "when": "inQuickOpen" },
+    { "key": "up",           "command": "workbench.action.quickOpenSelectPrevious",      "when": "inQuickOpen" },
+    { "key": "tab",          "command": "workbench.action.quickOpenSelectNext",          "when": "inQuickOpen" },
+    { "key": "shift+tab",    "command": "workbench.action.quickOpenSelectPrevious",      "when": "inQuickOpen" },
+
     // ---- Editors and tabs -----------------------------------------------
     { "key": "ctrl+tab",       "command": "workbench.action.nextEditor" },
     { "key": "ctrl+shift+tab", "command": "workbench.action.previousEditor" },

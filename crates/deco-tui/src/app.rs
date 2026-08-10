@@ -80,6 +80,7 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
 
     let mut lsp = Lsp::new(session, workspace_root(path.as_deref()));
     lsp.attach(session);
+    session.frontend_commands = frontend_commands();
 
     let mut dirty = true;
     loop {
@@ -163,7 +164,7 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
                 // query and the document never sees it. A completion list left
                 // open underneath would be narrowed by text that was never
                 // typed into the file — so it goes, along with any hover.
-                if session.find.visible() {
+                if session.find.visible() || session.prompt.is_some() {
                     lsp.dismiss_suggest();
                     lsp.dismiss_hover();
                 }
@@ -208,6 +209,26 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
     // moment to stop does so while the editor still looks alive.
     lsp.detach();
     Ok(())
+}
+
+/// The commands this frontend implements, for the command palette.
+///
+/// Only the ones the core cannot run on its own — every one of these needs the
+/// language-server client that lives here. The core cannot know which of the
+/// commands it hands onward a frontend has wired up, so each frontend says: a
+/// palette offering `Go to References`, which this one answers with "not
+/// implemented yet", would be worse than one that leaves it out.
+pub fn frontend_commands() -> Vec<deco_editor::commands::PaletteEntry> {
+    [
+        ("editor.action.showHover", "Show Hover"),
+        ("editor.action.revealDefinition", "Go to Definition"),
+        ("editor.action.triggerSuggest", "Trigger Suggest"),
+        ("editor.action.formatDocument", "Format Document"),
+        ("editor.action.formatSelection", "Format Selection"),
+    ]
+    .iter()
+    .map(|(id, title)| deco_editor::commands::PaletteEntry::new(id, title))
+    .collect()
 }
 
 /// Tells the session how much of the terminal is text.
