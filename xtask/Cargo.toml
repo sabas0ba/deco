@@ -10,15 +10,19 @@ publish = false
 
 [dependencies]
 # deco's own crates, so the documentation generator can drive the real editor and
-# the real renderer. No third-party crate enters the graph that was not already
-# in it, and none of this reaches the shipped binary.
-deco-config = { path = "../crates/deco-config" }
-deco-core = { path = "../crates/deco-core" }
-deco-editor = { path = "../crates/deco-editor" }
-deco-keymap = { path = "../crates/deco-keymap" }
-deco-lsp = { path = "../crates/deco-lsp" }
-deco-theme = { path = "../crates/deco-theme" }
-deco-tui = { path = "../crates/deco-tui" }
+# the real renderer. Through the workspace, like every other crate here: a bare
+# `path` dependency carries no version, which cargo records as `*` and the
+# supply-chain policy refuses — a wildcard accepts whatever it is handed.
+#
+# No third-party crate enters the graph that was not already in it, and none of
+# this reaches the shipped binary.
+deco-config.workspace = true
+deco-core.workspace = true
+deco-editor.workspace = true
+deco-keymap.workspace = true
+deco-lsp.workspace = true
+deco-theme.workspace = true
+deco-tui.workspace = true
 
 anyhow.workspace = true
 clap.workspace = true
