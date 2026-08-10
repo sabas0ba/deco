@@ -25,6 +25,7 @@ $ cargo run -p deco -- --print-config       # why isn't my setting applying?
 | | |
 | --- | --- |
 | [Editing](docs/editing.md) | Motion, line operations, multiple cursors, undo |
+| [Syntax highlighting](docs/highlighting.md) | Scopes, languages, and why not tree-sitter |
 | [Find and replace](docs/find-and-replace.md) | `ctrl+f`, `ctrl+h`, `F3`, and the multi-cursor find keys |
 | [Running commands](docs/commands.md) | The command palette, and go to line |
 | [Language servers](docs/language-servers.md) | Diagnostics, hover, go-to-definition, completion, formatting |
@@ -63,6 +64,7 @@ thin painter.
 | `settings.json` (JSONC, `[language]` overrides, scope layering) | Yes |
 | `keybindings.json` (chords, `when` clauses, `-command` removals, per-platform keys) | Yes |
 | Colour themes (`colors`, `tokenColors`, `semanticTokenColors`, `include` chains) | Yes |
+| Syntax highlighting | 19 languages, from a lexer — see [why not tree-sitter](docs/highlighting.md#why-not-tree-sitter) |
 | Command identifiers | Yes, for implemented commands |
 | Theme extensions from the marketplace | Yes — declarative, no host process |
 | Code extensions (`main`) | Protocol and sandbox built; host not yet wired to the editor |
@@ -141,6 +143,7 @@ need no capability at all.
 crates/
   deco-core     rope buffer, UTF-16 positions, selections, invertible edits, undo,
                 literal search
+  deco-syntax   a lexer per language, emitting TextMate scopes for the theme
   deco-config   JSONC reader; default < user < remote < workspace < folder
   deco-keymap   key parsing, when-clause engine, chord resolution, default keymap
   deco-lsp      LSP client: framing, lifecycle, capabilities, sync, diagnostics,
@@ -187,10 +190,14 @@ does not:
   and says so rather than losing them, and when a server returns several results
   it takes the first and says how many there were, because there is nowhere to
   list the rest.
-- **Syntax highlighting.** The theme layer resolves a style for any scope stack
-  and is tested doing so — but nothing produces scope stacks yet, because there
-  is no TextMate grammar engine or tree-sitter integration. Text renders in the
-  theme's foreground colour.
+- **Syntax highlighting is lexical, and terminal-only.** 19 languages are
+  coloured from a hand-written lexer emitting TextMate scopes, which the theme
+  layer resolves exactly as it resolves a real grammar's — see
+  [Syntax highlighting](docs/highlighting.md). What a lexer cannot do is anything
+  structural: a type told from a variable by its declaration, or a language
+  embedded in another. Markdown, HTML and XML are deliberately left plain for that
+  reason. Language-server semantic tokens are the intended refinement and are
+  parsed but not yet rendered. The GPU frontend draws one colour per line.
 - **The extension host is not connected.** The protocol, the capability broker,
   the sandbox and the `vscode` shim all exist and are tested against each other;
   the editor does not yet start a host or dispatch to one.

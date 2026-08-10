@@ -766,7 +766,7 @@ impl Session {
         );
 
         let transaction = Transaction::single(Change::replace(range, text.to_owned()));
-        let inverse = self.document.buffer.apply(&transaction);
+        let inverse = self.document.apply(&transaction);
 
         // Where the inserted text ends, which is where a caret belongs after an
         // insertion — computed from the text rather than by re-searching the
@@ -846,7 +846,7 @@ impl Session {
         let transaction = Transaction::new(changes).map_err(|_| EditError::Overlapping)?;
 
         let before = self.view.selections.clone();
-        let inverse = self.document.buffer.apply(&transaction);
+        let inverse = self.document.apply(&transaction);
 
         let cursor = self.document.buffer.clamp_position(before.primary().active);
         let after = deco_core::SelectionSet::caret(cursor);

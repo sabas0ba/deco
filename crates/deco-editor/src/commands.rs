@@ -202,6 +202,10 @@ pub fn execute(ctx: &mut Context<'_>, command: &str, args: Option<&Value>) -> Ou
             Outcome::Handled
         }
         "undo" => {
+            // The history applies its own transaction, so this cannot go through
+            // `Document::apply`; invalidate wholesale instead of guessing which
+            // lines an undo touched.
+            ctx.document.invalidate();
             if let Some(selections) = ctx.document.history.undo(&mut ctx.document.buffer) {
                 ctx.view.selections = selections;
                 ctx.document.dirty = true;
@@ -209,6 +213,7 @@ pub fn execute(ctx: &mut Context<'_>, command: &str, args: Option<&Value>) -> Ou
             Outcome::Handled
         }
         "redo" => {
+            ctx.document.invalidate();
             if let Some(selections) = ctx.document.history.redo(&mut ctx.document.buffer) {
                 ctx.view.selections = selections;
                 ctx.document.dirty = true;
@@ -430,7 +435,7 @@ fn edit_at_selections(
         return;
     };
 
-    let inverse = ctx.document.buffer.apply(&transaction);
+    let inverse = ctx.document.apply(&transaction);
 
     let mut carets = Vec::with_capacity(planned.len());
     let mut delta: isize = 0;
@@ -627,7 +632,7 @@ fn apply_line_changes(ctx: &mut Context<'_>, changes: Vec<Change>, before: Selec
     let Ok(transaction) = Transaction::new(changes) else {
         return;
     };
-    let inverse = ctx.document.buffer.apply(&transaction);
+    let inverse = ctx.document.apply(&transaction);
 
     let after = SelectionSet::from_vec(
         before
@@ -694,7 +699,7 @@ fn insert_line(ctx: &mut Context<'_>, below: bool) {
 
     let before = ctx.view.selections.clone();
     let transaction = Transaction::single(Change::insert(position, text.clone()));
-    let inverse = ctx.document.buffer.apply(&transaction);
+    let inverse = ctx.document.apply(&transaction);
 
     let caret = if below {
         Position::new(line + 1, indent.chars().count() as u32)
@@ -751,7 +756,7 @@ fn move_lines(ctx: &mut Context<'_>, up: bool) {
         Position::new(block_end, buffer.line_len_utf16(block_end as usize)),
     );
     let transaction = Transaction::single(Change::replace(range, texts.join("\n")));
-    let inverse = ctx.document.buffer.apply(&transaction);
+    let inverse = ctx.document.apply(&transaction);
 
     let shift: i64 = if up { -1 } else { 1 };
     let after = SelectionSet::from_vec(
@@ -788,7 +793,7 @@ fn copy_lines(ctx: &mut Context<'_>, up: bool) {
     let block: Vec<String> = (first..=last).map(|l| line_text(buffer, l)).collect();
     let text = format!("{}\n", block.join("\n"));
     let transaction = Transaction::single(Change::insert(Position::new(first, 0), text));
-    let inverse = ctx.document.buffer.apply(&transaction);
+    let inverse = ctx.document.apply(&transaction);
 
     let shift = if up { 0 } else { (last - first + 1) as i64 };
     let after = SelectionSet::from_vec(

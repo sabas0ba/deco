@@ -598,6 +598,7 @@ dependencies = [
  "deco-core",
  "deco-keymap",
  "deco-lsp",
+ "deco-syntax",
  "deco-theme",
  "serde_json",
  "thiserror 2.0.19",
@@ -661,6 +662,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "deco-syntax"
+version = "0.1.0"
+dependencies = [
+ "deco-core",
+]
+
+[[package]]
 name = "deco-theme"
 version = "0.1.0"
 dependencies = [
@@ -681,6 +689,7 @@ dependencies = [
  "deco-editor",
  "deco-keymap",
  "deco-lsp",
+ "deco-syntax",
  "deco-theme",
  "serde_json",
  "unicode-width",

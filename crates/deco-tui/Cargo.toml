@@ -14,6 +14,7 @@ deco-core.workspace = true
 deco-editor.workspace = true
 deco-keymap.workspace = true
 deco-lsp.workspace = true
+deco-syntax.workspace = true
 deco-theme.workspace = true
 anyhow.workspace = true
 crossterm.workspace = true

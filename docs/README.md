@@ -7,6 +7,7 @@ the honest place to look for what is **not** built yet.
 | Page | What it covers |
 | --- | --- |
 | [Editing](editing.md) | Motion, selection, line operations, multiple cursors, undo |
+| [Syntax highlighting](highlighting.md) | Scopes, languages, and why not tree-sitter |
 | [Find and replace](find-and-replace.md) | `ctrl+f`, `ctrl+h`, `F3`, and the multi-cursor find keys |
 | [Running commands](commands.md) | The command palette, and go to line |
 | [Language servers](language-servers.md) | Diagnostics, hover, go-to-definition, completion, formatting |

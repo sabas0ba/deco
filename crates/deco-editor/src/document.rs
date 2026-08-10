@@ -3,7 +3,8 @@
 use std::path::{Path, PathBuf};
 
 use deco_config::EditorSettings;
-use deco_core::{Buffer, History, LineEnding, Position, SelectionSet};
+use deco_core::{Buffer, History, LineEnding, Position, SelectionSet, Transaction};
+use deco_syntax::Syntax;
 
 /// Guesses a language id from a path, using the associations deco knows about
 /// before any extension has contributed its own.
@@ -72,6 +73,12 @@ pub struct Document {
     pub settings: EditorSettings,
     /// Whether the buffer differs from what is on disk.
     pub dirty: bool,
+    /// Highlighting for this document's language.
+    ///
+    /// Lives here rather than in a frontend because the lexer state entering each
+    /// line is a property of the text, not of a screen — and because both
+    /// frontends would otherwise keep their own copy of it.
+    pub syntax: Syntax,
 }
 
 impl Document {
@@ -84,6 +91,7 @@ impl Document {
             language_id: None,
             settings,
             dirty: false,
+            syntax: Syntax::new(None),
         }
     }
 
@@ -101,10 +109,38 @@ impl Document {
             buffer,
             history: History::default(),
             path: Some(path),
+            syntax: Syntax::new(language_id.as_deref()),
             language_id,
             settings,
             dirty: false,
         }
+    }
+
+    /// Applies `transaction` to the text, returning its inverse.
+    ///
+    /// The one place the buffer is mutated by an edit, so that everything derived
+    /// from the text is invalidated without each caller having to remember to.
+    /// Highlighting is the first such thing; there will be more.
+    pub fn apply(&mut self, transaction: &Transaction) -> Transaction {
+        // From the earliest line the edit touched. Everything above it is still
+        // true — a change on line 900 cannot alter what line 3 left open — which
+        // is what keeps editing a large file from re-lexing all of it.
+        let first = transaction
+            .changes()
+            .iter()
+            .map(|change| change.range.start.line as usize)
+            .min()
+            .unwrap_or(0);
+        self.syntax.invalidate_from(first);
+        self.buffer.apply(transaction)
+    }
+
+    /// Marks everything derived from the text as unknown.
+    ///
+    /// For a change that did not come through [`Document::apply`] — undo and redo
+    /// apply their own transactions inside the history.
+    pub fn invalidate(&mut self) {
+        self.syntax.invalidate_from(0);
     }
 
     /// The name to show in the tab and status bar.

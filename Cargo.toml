@@ -12,6 +12,7 @@ members = [
     "crates/deco-tui",
     "crates/deco-gui",
     "crates/deco-remote",
+    "crates/deco-syntax",
     "xtask",
 ]
 
@@ -32,6 +33,7 @@ deco-ext = { path = "crates/deco-ext", version = "0.1.0" }
 deco-editor = { path = "crates/deco-editor", version = "0.1.0" }
 deco-lsp = { path = "crates/deco-lsp", version = "0.1.0" }
 deco-remote = { path = "crates/deco-remote", version = "0.1.0" }
+deco-syntax = { path = "crates/deco-syntax", version = "0.1.0" }
 deco-tui = { path = "crates/deco-tui", version = "0.1.0" }
 deco-gui = { path = "crates/deco-gui", version = "0.1.0" }
 
