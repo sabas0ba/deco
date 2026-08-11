@@ -187,6 +187,12 @@ pub struct Session {
     /// The frontend answers a `Revert` with the file's text and nothing else, so
     /// which of the two revert commands asked has to be remembered here.
     pending_close: bool,
+    /// How a project-wide search matches.
+    ///
+    /// Its own, not the find bar's. They were one pair of booleans, so
+    /// case-sensitivity set for a search across the workspace changed what the
+    /// next `ctrl+f` matched — and VS Code keeps the two apart.
+    search_options: deco_core::search::SearchOptions,
     /// Whether the last command was a quit that was refused for unsaved work.
     ///
     /// Cleared by anything else, so "again" means the next keystroke rather than
@@ -287,6 +293,7 @@ impl Session {
             document,
             view: View::default(),
             pending_close: false,
+            search_options: deco_core::search::SearchOptions::default(),
             quit_refused: false,
             split_view: None,
             split_focused: false,
@@ -805,6 +812,11 @@ impl Session {
         // `editorTextFocus` away for the same reason the find bar does.
         let in_quick_open = self.prompt.is_some();
         self.context.set("inQuickOpen", in_quick_open);
+        // VS Code's own name for its search view being up. The widget is a prompt
+        // here rather than a viewlet, but a `when` clause copied out of somebody's
+        // keybindings.json should gate on the same thing.
+        self.context
+            .set("searchViewletVisible", self.searching_project());
         self.context
             .set("editorTextFocus", !find_focus && !in_quick_open);
         self.context.set("editorFocus", true);
@@ -928,13 +940,29 @@ impl Session {
             }
             "editor.action.nextMatchFindAction" => self.step_find(Direction::Next),
             "editor.action.previousMatchFindAction" => self.step_find(Direction::Prev),
+            // Whichever search is being typed into. The two are separate: the find
+            // bar's options belong to the document on screen, and a project
+            // search's belong to the project search.
             "toggleFindCaseSensitive" => {
-                self.find.toggle_case_sensitive();
-                self.find_query_changed()
+                if self.searching_project() {
+                    self.search_options.case_sensitive = !self.search_options.case_sensitive;
+                    // Not an early `return`: the tail of this function is what
+                    // puts an `Outcome::Message` on the status bar, and a toggle
+                    // that reports nothing is one nobody can tell they pressed.
+                    self.report_search_options()
+                } else {
+                    self.find.toggle_case_sensitive();
+                    self.find_query_changed()
+                }
             }
             "toggleFindWholeWord" => {
-                self.find.toggle_whole_word();
-                self.find_query_changed()
+                if self.searching_project() {
+                    self.search_options.whole_word = !self.search_options.whole_word;
+                    self.report_search_options()
+                } else {
+                    self.find.toggle_whole_word();
+                    self.find_query_changed()
+                }
             }
             // Recognised so the key says what is missing. `deco_core::search` is
             // literal, and a regex mode needs its own escaping and its own error
@@ -956,8 +984,17 @@ impl Session {
             }
             // The list of files has to be walked from disk, which only a frontend
             // can do; it calls `offer_files` when it has one.
-            "workbench.action.quickOpen" | "workbench.action.findInFiles" => {
-                Outcome::Frontend(command.to_owned())
+            "workbench.action.quickOpen" => Outcome::Frontend(command.to_owned()),
+            // Asks what to look for first. It used to search for the seed straight
+            // away, which meant a project search could only ever look for what the
+            // cursor happened to be on.
+            "workbench.action.findInFiles" => {
+                self.prompt = Some(Prompt::seeded(
+                    PromptKind::SearchQuery,
+                    self.search_seed().unwrap_or_default(),
+                ));
+                self.refresh_context();
+                Outcome::Handled
             }
             "workbench.action.closeQuickOpen" => {
                 self.prompt = None;
@@ -1258,6 +1295,24 @@ impl Session {
         self.refresh_context();
     }
 
+    /// Whether the search prompt is what has the keyboard.
+    fn searching_project(&self) -> bool {
+        self.prompt
+            .as_ref()
+            .is_some_and(|prompt| prompt.kind() == PromptKind::SearchQuery)
+    }
+
+    /// Says which options a project search will use, since the prompt has no room
+    /// to draw them and a toggle nobody can see is a toggle nobody trusts.
+    fn report_search_options(&mut self) -> Outcome {
+        let describe = |on: bool| if on { "on" } else { "off" };
+        Outcome::Message(format!(
+            "Search: case {}, whole word {}",
+            describe(self.search_options.case_sensitive),
+            describe(self.search_options.whole_word)
+        ))
+    }
+
     /// What a project-wide search should look for.
     ///
     /// The selection, the word under the cursor, or whatever the find bar was last
@@ -1306,6 +1361,16 @@ impl Session {
                 // look like the command had run.
                 None => Outcome::Message(format!("no command matches `{}`", prompt.text())),
             },
+            PromptKind::SearchQuery => {
+                let typed = prompt.text().trim();
+                if typed.is_empty() {
+                    return Outcome::Message("nothing to search for".to_owned());
+                }
+                Outcome::SearchInFiles {
+                    query: typed.to_owned(),
+                    options: self.search_options,
+                }
+            }
             PromptKind::SaveAs => {
                 let typed = prompt.text().trim();
                 if typed.is_empty() {
@@ -3216,11 +3281,71 @@ mod tests {
     // ---- Search in files ---------------------------------------------------
 
     #[test]
-    fn ctrl_shift_f_asks_the_frontend_to_search() {
-        let mut s = searchable("x\n");
+    fn ctrl_shift_f_asks_what_to_look_for() {
+        // It used to search for the seed straight away, so a project search could
+        // only ever look for what the cursor happened to be on.
+        let mut s = searchable("alpha beta\n");
+        s.view.selections = deco_core::SelectionSet::caret(Position::new(0, 1));
+        assert_eq!(press(&mut s, "ctrl+shift+f"), Outcome::Handled);
+        let prompt = s.prompt.as_ref().expect("a prompt should be open");
+        assert_eq!(prompt.kind(), crate::prompt::PromptKind::SearchQuery);
         assert_eq!(
-            press(&mut s, "ctrl+shift+f"),
-            Outcome::Frontend("workbench.action.findInFiles".to_owned())
+            prompt.text(),
+            "alpha",
+            "seeded with the word under the cursor"
+        );
+    }
+
+    #[test]
+    fn accepting_the_search_prompt_hands_over_the_query_and_its_options() {
+        let mut s = searchable("x\n");
+        s.run("workbench.action.findInFiles", None, 0);
+        press(&mut s, "ctrl+x");
+        for key in ["t", "o", "d", "o"] {
+            press(&mut s, key);
+        }
+        assert_eq!(
+            press(&mut s, "enter"),
+            Outcome::SearchInFiles {
+                query: "todo".to_owned(),
+                options: deco_core::search::SearchOptions::default(),
+            }
+        );
+    }
+
+    #[test]
+    fn a_project_search_and_the_find_bar_have_their_own_options() {
+        // One pair of booleans meant case-sensitivity set for a search across the
+        // workspace changed what the next ctrl+f matched. VS Code keeps them apart.
+        let mut s = searchable("x\n");
+        s.run("workbench.action.findInFiles", None, 0);
+        press(&mut s, "alt+c");
+        assert_eq!(
+            s.status.as_deref(),
+            Some("Search: case on, whole word off"),
+            "a toggle nobody can see is a toggle nobody trusts"
+        );
+        assert!(
+            !s.find.options().case_sensitive,
+            "the find bar is untouched"
+        );
+
+        press(&mut s, "ctrl+x");
+        press(&mut s, "x");
+        let Outcome::SearchInFiles { options, .. } = press(&mut s, "enter") else {
+            panic!("the search should run");
+        };
+        assert!(options.case_sensitive, "the search kept its own");
+    }
+
+    #[test]
+    fn an_empty_search_query_says_so_rather_than_walking_the_workspace() {
+        let mut s = session();
+        s.resize(80, 10);
+        s.run("workbench.action.findInFiles", None, 0);
+        assert_eq!(
+            press(&mut s, "enter"),
+            Outcome::Message("nothing to search for".to_owned())
         );
     }
 

@@ -148,18 +148,35 @@ the file walk, the search and the language servers are all anchored to.
 
 ## Search in files
 
-`ctrl+shift+f` searches every file under the workspace root and lists what it
-found; `enter` opens that file at that line.
+`ctrl+shift+f` asks what to look for, searches every file under the workspace root
+and lists what it found; `enter` opens that file at that line.
 
 ![Searching the workspace and opening a result](img/search-in-files.svg)
 
-There is no query field yet. The term is the selection, the word under the cursor,
-or whatever the find bar last searched for — in that order, because that is the
-order of how recently you said it. The matching options are the find bar's too, so
-`alt+c` and `alt+w` change what a project search finds in the same way they change
-what `ctrl+f` finds. That is **one find state being shared, not a convenience**:
-VS Code keeps the two independent, and case-sensitivity you set for a search
-across the project has no business changing what the next `ctrl+f` matches.
+| Key | Command |
+| --- | --- |
+| `ctrl+shift+f` | `workbench.action.findInFiles` |
+| `alt+c` / `alt+w` | `toggleFindCaseSensitive` / `toggleFindWholeWord` |
+
+The query field is seeded with the selection, the word under the cursor, or
+whatever the find bar last searched for — in that order, because that is the order
+of how recently you said it. It is a seed and not the query: `ctrl+x` clears the
+line, the way it does in every other prompt, so a search for something the cursor
+is nowhere near takes one extra keystroke rather than being impossible. An empty
+query is refused with `nothing to search for` instead of walking the workspace for
+a match everything has.
+
+`alt+c` and `alt+w` toggle **this search's** options while the field is open, and
+the find bar's while `ctrl+f` is open. The two are independent, as they are in VS
+Code: case-sensitivity set for a search across the project has no business
+changing what the next `ctrl+f` matches. Since the prompt has one line and no room
+to draw the state, each toggle reports it — `Search: case on, whole word off` — on
+the grounds that a toggle nobody can see is a toggle nobody trusts.
+
+The keys are bound twice over, once on `findWidgetVisible` and once on
+`searchViewletVisible`, which are VS Code's own context-key names for the find bar
+and the search view being up. A `when` clause copied out of somebody's
+`keybindings.json` gates on the same thing it gates on there.
 
 Each row is `path:line: the line's text`, which is also what the filter matches —
 so typing `report` narrows four results to the one in `src/report.rs`.
@@ -227,8 +244,9 @@ symbols of a file are reachable with `ctrl+shift+o`, but typing `@` after `ctrl+
 does not switch a file list into a symbol one, which needs the prompt to re-source
 its choices mid-typing. Nor is there a recently-opened ordering: the list is
 alphabetical.
-Search in files has no query field, no replace-across-files, and no regular
-expressions.
+Search in files has no replace-across-files and no regular expressions. Nor is
+there a results view that stays open: the matches are a picker, so reading the
+second one means pressing `ctrl+shift+f` again.
 
 The GPU frontend has no chrome to draw a prompt in, so it refuses `ctrl+g`,
 `ctrl+shift+p` and `ctrl+p` and says so — an invisible widget holding the keyboard
