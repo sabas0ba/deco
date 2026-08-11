@@ -33,7 +33,12 @@ knows what to search for.
 
 - **A file already open is switched to, not opened twice.** Two tabs onto one
   file would be two divergent copies of it, and whichever was saved last would
-  silently win.
+  silently win. Paths are compared with their `.` and `..` segments resolved, so
+  the spelling that got there first does not decide — `deco src/main.rs` and the
+  same file picked from `ctrl+p` are one tab. **Symlinks still defeat it**: two
+  names for one file through a link are two tabs, which is the answer VS Code
+  gives too, and telling them apart needs the filesystem the core deliberately
+  does not have.
 - **A dirty tab refuses to close, by name**: `main.rs has unsaved changes — save
   it first`. Losing edits to a keystroke is the worst thing an editor can do — but
   a refusal with no way past it is a trap rather than a safeguard, so

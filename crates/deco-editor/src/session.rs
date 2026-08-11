@@ -107,6 +107,38 @@ pub struct TabLabel {
 /// a settings key that does something.
 const AUTO_LANGUAGE: &str = "deco.language.auto";
 
+/// A path with its `.` and `..` segments resolved, without touching the disk.
+///
+/// Enough to tell `/w/src/main.rs` from `/w/./src/../src/main.rs`, which is what
+/// decides whether two tabs are one file. Deliberately **not**
+/// `fs::canonicalize`: the core has no filesystem, and a path that does not exist
+/// yet — a file being created — has to normalise too.
+///
+/// Symlinks therefore still defeat it. Two names for one file through a link are
+/// two tabs, which is the same answer VS Code gives.
+fn normalise(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                // Only when there is something to pop: a leading `..` is part of
+                // the path's meaning and dropping it would change where it points.
+                if matches!(
+                    out.components().next_back(),
+                    Some(std::path::Component::Normal(_))
+                ) {
+                    out.pop();
+                } else {
+                    out.push(component);
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 /// Exactly the bytes to write for `document`.
 ///
 /// Its *own* settings, not the session's: `files.insertFinalNewline` can differ
@@ -332,7 +364,17 @@ impl Session {
 
     /// The display index of the tab holding `path`, if any tab does.
     fn tab_of(&self, path: &Path) -> Option<usize> {
-        let matches = |document: &Document| document.path.as_deref() == Some(path);
+        // Compared after normalising rather than as spelled. `src/main.rs` from
+        // the command line and `/w/src/main.rs` from quick open are one file, and
+        // an exact comparison made them two tabs — two buffers, two undo
+        // histories, and whichever was saved last winning silently.
+        //
+        // Callers are expected to hand over absolute paths, and every one does;
+        // normalising here as well is what keeps that from being a rule each new
+        // caller has to remember.
+        let wanted = normalise(path);
+        let matches =
+            |document: &Document| document.path.as_deref().map(normalise) == Some(wanted.clone());
         if let Some(index) = self.left.iter().position(|tab| matches(&tab.document)) {
             return Some(index);
         }
@@ -3390,6 +3432,63 @@ mod tests {
         press(&mut s, "y");
         let panes = s.panes();
         assert_eq!(panes[0].document.buffer.text(), "yx\n");
+    }
+
+    // ---- One file, one tab -------------------------------------------------
+
+    #[test]
+    fn a_file_reached_by_two_spellings_is_one_tab() {
+        // `deco src/main.rs` and then picking the same file from `ctrl+p` used to
+        // open it twice: two buffers, two undo histories, and whichever was saved
+        // last winning silently.
+        let mut s = session();
+        s.resize(80, 10);
+        s.open(PathBuf::from("/w/src/main.rs"), "fn main() {}\n");
+        s.open(PathBuf::from("/w/./src/../src/main.rs"), "fn main() {}\n");
+        assert_eq!(s.tab_count(), 1);
+    }
+
+    #[test]
+    fn switching_to_it_keeps_the_edits_rather_than_rereading() {
+        // The point of one tab per file: the second open is a switch, so unsaved
+        // work is still there.
+        let mut s = session();
+        s.resize(80, 10);
+        s.open(PathBuf::from("/w/a.rs"), "saved\n");
+        press(&mut s, "y");
+        s.open(PathBuf::from("/w/./a.rs"), "saved\n");
+        assert_eq!(s.document.buffer.text(), "ysaved\n");
+        assert_eq!(s.tab_count(), 1);
+    }
+
+    #[test]
+    fn normalising_leaves_a_leading_parent_alone() {
+        // `../a.rs` points somewhere; dropping the `..` would change where.
+        assert_eq!(normalise(Path::new("../a.rs")), PathBuf::from("../a.rs"));
+        assert_eq!(
+            normalise(Path::new("../../a.rs")),
+            PathBuf::from("../../a.rs")
+        );
+        assert_eq!(normalise(Path::new("/../a.rs")), PathBuf::from("/../a.rs"));
+    }
+
+    #[test]
+    fn normalising_resolves_what_it_can() {
+        assert_eq!(normalise(Path::new("/w/./a.rs")), PathBuf::from("/w/a.rs"));
+        assert_eq!(
+            normalise(Path::new("/w/src/../a.rs")),
+            PathBuf::from("/w/a.rs")
+        );
+        assert_eq!(normalise(Path::new("/w/a.rs")), PathBuf::from("/w/a.rs"));
+    }
+
+    #[test]
+    fn two_different_files_are_still_two_tabs() {
+        let mut s = session();
+        s.resize(80, 10);
+        s.open(PathBuf::from("/w/a.rs"), "a\n");
+        s.open(PathBuf::from("/w/b.rs"), "b\n");
+        assert_eq!(s.tab_count(), 2);
     }
 
     // ---- Reverting and quitting -------------------------------------------
