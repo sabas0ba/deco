@@ -27,15 +27,15 @@ Filtering matches, best first:
 | The identifier contains it | `commentLine` → Toggle Line Comment |
 | The title's letters appear in order | `gtl` → **G**o **t**o **L**ine |
 
-The selection follows the **same command** as the list narrows, rather than
-staying on the same row or moving to the best match.
+The selection is the **best match** for what has been typed, re-chosen on every
+keystroke, as VS Code's quick pick does. Type a few letters and press `enter`.
 
-**This diverges from VS Code**, whose quick pick selects the top result as the
-list changes. The reasoning here was that the next key runs whatever is selected,
-so a keystroke that moved the selection would be a way to run the wrong command —
-but it cuts the other way too: typing more can leave the selection on an entry that
-is no longer the best match for what you typed, which is its own way to run the
-wrong one. VS Code's answer is the one most people have in their fingers.
+Following the previously selected entry instead was tried, to stop a keystroke
+moving the selection onto a different command. It cut the other way: the selection
+starts on row 0, which nobody chose — it is whatever the registry listed first — so
+if that entry still matched at all it stayed selected however badly it ranked, and
+`enter` ran something the user never looked at while the entry they were typing
+towards sat at the top.
 
 If nothing matches, `enter` says so instead of closing quietly, which would look
 like the command had run.

@@ -291,7 +291,6 @@ impl Prompt {
     /// from silently moving the selection onto something else — the thing that
     /// makes a palette dangerous, since the next key runs it.
     fn refilter(&mut self) {
-        let previous = self.selected().map(|entry| entry.id.clone());
         let query = self.input.text();
 
         let mut scored: Vec<(Rank, usize)> = self
@@ -321,13 +320,17 @@ impl Prompt {
         }
 
         self.matching = scored.into_iter().map(|(_, index)| index).collect();
-        self.selected = previous
-            .and_then(|id| {
-                self.matching
-                    .iter()
-                    .position(|index| self.choices[*index].id == id)
-            })
-            .unwrap_or(0);
+        // The best match, which is what `enter` should run: type a few letters and
+        // press it, as a fuzzy picker is used everywhere else.
+        //
+        // This used to follow whichever entry was selected before, to keep a
+        // keystroke from moving the selection onto a different command. It cut the
+        // other way: the selection starts on row 0, which nobody chose — it is
+        // whatever the registry listed first — and if that entry still matched the
+        // narrowed query at all it stayed selected however badly it now ranked. So
+        // `enter` ran an entry the user never looked at while the one they were
+        // typing towards sat at the top.
+        self.selected = 0;
     }
 }
 

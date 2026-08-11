@@ -58,10 +58,14 @@ The list opens on `ctrl+space` and also on a trigger character the server asked
 for — `.` or `::`. Typing narrows it in place and the same keystroke goes into the
 document, so the list and the file always agree about what has been typed; a
 backspace widens it again. Ranking prefers a prefix match, then a
-case-insensitive prefix, then a subsequence, and the selection follows the same
-item as the list narrows rather than moving to the best match. VS Code's
-`editor.suggestSelection` defaults to `first`, which does the opposite; deco does
-not read that setting yet.
+case-insensitive prefix, then a subsequence, and the selection is the best match
+for what has been typed, re-chosen as the list narrows and widens — which is what
+`editor.suggestSelection: "first"`, VS Code's default, does. deco does not read
+that setting, so the other values are not available.
+
+A server's `preselect` still decides the row the list *opens* on: a server that
+knows the likely answer puts it there, and it is answering the query as it stood
+when the list was asked for.
 
 The marker in the left column is the item's kind: `f` function, `v` value, `t`
 type, `m` module, `k` keyword, `s` snippet, `·` anything else.

@@ -117,13 +117,12 @@ impl Suggest {
         self.visible().is_empty()
     }
 
-    /// Extends the prefix as the user types, keeping the selection where it can.
+    /// Extends the prefix as the user types, selecting the best match again.
     ///
     /// Returns whether the list still has anything to show.
     pub fn push(&mut self, c: char) -> bool {
-        let previous = self.selected_item().map(|item| item.label.clone());
         self.prefix.push(c);
-        self.restore_selection(previous);
+        self.selected = 0;
         !self.is_empty()
     }
 
@@ -133,23 +132,13 @@ impl Suggest {
     /// delete, which means the user has backspaced out of the word the list was
     /// opened for.
     pub fn pop(&mut self) -> bool {
-        let previous = self.selected_item().map(|item| item.label.clone());
         if self.prefix.pop().is_none() {
             return false;
         }
-        self.restore_selection(previous);
+        // Widening re-ranks too: what was the best match for `pri` is not
+        // necessarily the best match for `pr`.
+        self.selected = 0;
         true
-    }
-
-    /// Keeps the same item selected across a filter change when it survived.
-    ///
-    /// Without this, narrowing the list resets the selection to the top, and an
-    /// item the user had arrowed to jumps away under them.
-    fn restore_selection(&mut self, previous: Option<String>) {
-        let visible = self.visible();
-        self.selected = previous
-            .and_then(|label| visible.iter().position(|shown| shown.item.label == label))
-            .unwrap_or(0);
     }
 
     /// Moves the selection down, wrapping.
@@ -414,25 +403,42 @@ mod tests {
     }
 
     #[test]
-    fn the_selection_follows_its_item_when_the_list_narrows() {
-        // Otherwise narrowing resets to the top and the item the user arrowed to
-        // jumps away under them.
-        let mut s = suggest(&["pop", "push", "pull"]);
-        s.push('p');
+    fn narrowing_selects_the_best_match_again() {
+        // `tab` accepts whatever is selected, so it has to be the best match for
+        // what has been typed. Keeping the previous item selected meant typing
+        // more could leave the selection on something that no longer ranked first.
+        //
+        // The data matters: both items survive the narrowing and the arrowed-to
+        // one is not the best match, which is the only case where the two rules
+        // give different answers.
+        let mut s = suggest(&["ab", "abc"]);
+        s.push('a');
         s.next();
-        let chosen = s.selected_item().unwrap().label.clone();
-        assert_eq!(chosen, "pull", "sorted: pop, pull, push");
+        assert_eq!(s.selected_item().map(|i| i.label.as_str()), Some("abc"));
 
-        s.push('u');
+        s.push('b');
         assert_eq!(
             s.selected_item().map(|i| i.label.as_str()),
-            Some("pull"),
-            "the same item stays selected"
+            Some("ab"),
+            "the best match for `ab`, not the item that was selected"
         );
+        assert_eq!(s.selected_row(), 0);
     }
 
     #[test]
-    fn the_selection_falls_back_to_the_top_when_its_item_is_filtered_out() {
+    fn widening_selects_the_best_match_too() {
+        // What was the best match for `abc` is not necessarily the best for `ab`.
+        let mut s = suggest(&["ab", "abc"]);
+        s.push('a');
+        s.push('b');
+        s.push('c');
+        assert_eq!(s.selected_item().map(|i| i.label.as_str()), Some("abc"));
+        s.pop();
+        assert_eq!(s.selected_item().map(|i| i.label.as_str()), Some("ab"));
+    }
+
+    #[test]
+    fn an_item_that_is_filtered_out_leaves_the_top_selected() {
         let mut s = suggest(&["pop", "push"]);
         s.next();
         assert_eq!(s.selected_item().map(|i| i.label.as_str()), Some("push"));
