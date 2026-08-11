@@ -112,6 +112,10 @@ pub const DEFAULT_KEYBINDINGS_JSONC: &str = r#"[
     { "key": "shift+enter",  "command": "editor.action.previousMatchFindAction", "when": "findInputFocussed" },
     { "key": "alt+c",        "command": "toggleFindCaseSensitive", "when": "findWidgetVisible" },
     { "key": "alt+w",        "command": "toggleFindWholeWord",     "when": "findWidgetVisible" },
+    // The same keys while a project search is being typed, where they toggle that
+    // search's own options rather than the find bar's.
+    { "key": "alt+c",        "command": "toggleFindCaseSensitive", "when": "searchViewletVisible" },
+    { "key": "alt+w",        "command": "toggleFindWholeWord",     "when": "searchViewletVisible" },
     { "key": "alt+r",        "command": "toggleFindRegex",         "when": "findWidgetVisible" },
     { "key": "enter",        "command": "editor.action.replaceOne", "when": "replaceInputFocussed" },
     { "key": "ctrl+alt+enter", "mac": "cmd+alt+enter", "command": "editor.action.replaceAll", "when": "findWidgetVisible" },

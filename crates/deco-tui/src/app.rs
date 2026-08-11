@@ -193,6 +193,20 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
                             None => {}
                         }
                     }
+                    // The prompt asked what to look for; walking the workspace is
+                    // this side's job.
+                    Outcome::SearchInFiles { query, options } => {
+                        let root =
+                            workspace_root(path.as_deref()).unwrap_or_else(|| PathBuf::from("."));
+                        let found = crate::files::search(&root, &session.settings, &query, options);
+                        let (truncated, count) = (found.truncated, found.matches.len());
+                        session.offer_search_results(&query, found.matches);
+                        if truncated {
+                            session.status = Some(format!(
+                                "{count} matches for `{query}`, and there may be more"
+                            ));
+                        }
+                    }
                     Outcome::SaveAll => {
                         // The loop and the reporting are the core's; only the
                         // write is this side's, because only this side has a
@@ -265,30 +279,6 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
                                 ));
                             }
                         }
-                        // Every file under the workspace root, searched here for
-                        // the same reason the file list is walked here.
-                        "workbench.action.findInFiles" => match session.search_seed() {
-                            Some(needle) => {
-                                let root = workspace_root(path.as_deref())
-                                    .unwrap_or_else(|| PathBuf::from("."));
-                                let found = crate::files::search(
-                                    &root,
-                                    &session.settings,
-                                    &needle,
-                                    session.find.options(),
-                                );
-                                let (truncated, count) = (found.truncated, found.matches.len());
-                                session.offer_search_results(&needle, found.matches);
-                                if truncated {
-                                    session.status = Some(format!(
-                                        "{count} matches for `{needle}`, and there may be more"
-                                    ));
-                                }
-                            }
-                            None => {
-                                session.status = Some("nothing to search for".to_owned());
-                            }
-                        },
                         "editor.action.formatDocument" => lsp.request_formatting(session, false),
                         "editor.action.formatSelection" => lsp.request_formatting(session, true),
                         "hideSuggestWidget" => lsp.dismiss_suggest(),

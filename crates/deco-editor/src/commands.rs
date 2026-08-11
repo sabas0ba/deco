@@ -78,6 +78,18 @@ pub enum Outcome {
     /// has — so the frontend resolves it, writes, and reports the path it settled
     /// on with [`Session::rename_to`](crate::Session::rename_to).
     SaveAs(std::path::PathBuf),
+    /// The workspace should be searched for `query`.
+    ///
+    /// Carries the options rather than leaving the frontend to read the find
+    /// bar's: a project search and the find bar are different searches, and
+    /// "case-insensitive while I skim this file" and "case-sensitive across the
+    /// project" are ordinary things to want at once.
+    SearchInFiles {
+        /// What to look for. Never empty — the session refuses before this.
+        query: String,
+        /// How to match, this search's own.
+        options: deco_core::search::SearchOptions,
+    },
     /// The document should be re-read from disk, throwing away the edits.
     ///
     /// The frontend reads `session.document.path` and hands the text back with

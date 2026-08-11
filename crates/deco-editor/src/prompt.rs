@@ -41,6 +41,8 @@ pub enum PromptKind {
     SaveAs,
     /// `ctrl+o`: which file to open.
     OpenPath,
+    /// `ctrl+shift+f`: what to look for across the workspace.
+    SearchQuery,
 }
 
 impl PromptKind {
@@ -56,6 +58,7 @@ impl PromptKind {
             Self::Themes => "Color theme:",
             Self::SaveAs => "Save as:",
             Self::OpenPath => "Open file:",
+            Self::SearchQuery => "Search:",
         }
     }
 
@@ -68,7 +71,7 @@ impl PromptKind {
         match (self, count) {
             (Self::GoToLine, _) => "",
             // Nothing to count: a path is typed, not chosen from a list.
-            (Self::SaveAs, _) | (Self::OpenPath, _) => "",
+            (Self::SaveAs, _) | (Self::OpenPath, _) | (Self::SearchQuery, _) => "",
             (Self::Commands, 1) => "command",
             (Self::Commands, _) => "commands",
             (Self::Files, 1) => "file",
@@ -100,6 +103,7 @@ impl PromptKind {
             Self::Themes => "the theme picker",
             Self::SaveAs => "save as",
             Self::OpenPath => "open file",
+            Self::SearchQuery => "search in files",
         }
     }
 

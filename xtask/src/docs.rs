@@ -841,45 +841,49 @@ fn quick_open() -> String {
 
 fn search_in_files() -> String {
     let mut take = Take::new("main.rs", SAMPLE);
+    take.at(1, 9)
+        .capture("the caret is on `total`", 3)
+        // The field is seeded from the caret, and the seed is only a seed: `ctrl+x`
+        // clears it, so a search for something the cursor is nowhere near takes one
+        // keystroke rather than being impossible.
+        .press_and_hold(&["ctrl+shift+f"], 5)
+        .press_and_hold(&["ctrl+x"], 3)
+        .type_text("amount")
+        // The prompt has one line and no room to draw the options, so the toggle
+        // reports them. They are this search's own, not the find bar's.
+        .press_and_hold(&["alt+c"], 5);
+
     // Handed in for the same reason as the quick-open list: a demonstration must
     // not depend on what happens to be on disk when it is generated.
-    take.at(1, 9)
-        .capture("the caret is on `total` — ctrl+shift+f searches for it", 4);
     take.session.offer_search_results(
-        "total",
+        "amount",
         vec![
-            entry("/demo/src/main.rs", "src/main.rs:2: let total = 1;", 1, 8),
-            entry(
-                "/demo/src/main.rs",
-                "src/main.rs:4: println!(\"{total}\");",
-                3,
-                15,
-            ),
             entry(
                 "/demo/src/report.rs",
                 "src/report.rs:7: total += row.amount;",
                 6,
-                4,
+                26,
             ),
+            entry("/demo/src/row.rs", "src/row.rs:3: pub amount: u32,", 2, 8),
             entry(
                 "/demo/tests/totals.rs",
-                "tests/totals.rs:3: assert_eq!(total, 6);",
-                2,
-                15,
+                "tests/totals.rs:5: Row { amount: 2 },",
+                4,
+                10,
             ),
         ],
     );
     take.resize_for_chrome();
-    take.capture("ctrl+shift+f", 5);
-    take.type_text("report");
+    take.capture("enter — three matches, listed", 5);
+
     take.session.prompt = None;
     take.session.open(
         PathBuf::from("/demo/src/report.rs"),
         "use crate::Row;\n\n/// Adds up a column.\npub fn sum(rows: &[Row]) -> u32 {\n    let mut total = 0;\n    for row in rows {\n        total += row.amount;\n    }\n    total\n}\n",
     );
-    take.at(6, 8);
+    take.at(6, 26);
     take.resize_for_chrome();
-    take.capture("enter — the file opens at the match", 5);
+    take.capture("enter again — the file opens at the match", 5);
     take.finish()
 }
 
