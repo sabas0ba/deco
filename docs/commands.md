@@ -123,6 +123,24 @@ The key is gated on `editorHasDocumentSymbolProvider`, so it does not resolve at
 all without a server that can answer — a key that reports nothing rather than one
 that reports a failure. See [Language servers](language-servers.md#go-to-symbol).
 
+## Opening a path
+
+`ctrl+o` types a path instead of choosing from a list, which is what you want for a
+file outside the workspace — quick open only offers what it walked. The prompt is
+seeded with the current file's **directory**, not its name: the point is to open
+something else, and a seed whose last component you have to delete is a seed that
+cost you.
+
+`~` expands and a relative path is taken against the workspace root, the same
+resolution save-as uses.
+
+| Key | Command |
+| --- | --- |
+| `ctrl+o` | `workbench.action.files.openFile` |
+
+`workbench.action.files.openFolder` is still pending: a new workspace root is what
+the file walk, the search and the language servers are all anchored to.
+
 ## Search in files
 
 `ctrl+shift+f` searches every file under the workspace root and lists what it
@@ -192,9 +210,8 @@ the palette: an entry there has to work when chosen, and one that only apologise
 is worse than a shorter list.
 
 What is on that list today: splits and editor groups, the side bar, panel,
-terminal and zen mode, zoom, save as, open file and open folder, the settings and
-keyboard-shortcut editors, block comment, rename and quick fix, and the remote
-menu.
+terminal and zen mode, zoom, open folder, the settings and keyboard-shortcut
+editors, block comment, rename and quick fix, and the remote menu.
 
 ## Not built yet
 

@@ -71,6 +71,13 @@ pub enum Outcome {
         /// The file to read, or `None` for a theme compiled in.
         path: Option<std::path::PathBuf>,
     },
+    /// The document should be written to this path, which then becomes its own.
+    ///
+    /// The path is **exactly what was typed**. Resolving `~` and a relative path
+    /// needs a home directory and a working directory, neither of which the core
+    /// has — so the frontend resolves it, writes, and reports the path it settled
+    /// on with [`Session::rename_to`](crate::Session::rename_to).
+    SaveAs(std::path::PathBuf),
     /// Every unsaved document should be written to disk.
     ///
     /// Names no paths and no bytes, for the same reason [`Outcome::Save`] does not:
@@ -215,10 +222,8 @@ pub const PENDING: &[(&str, &str)] = &[
     ("workbench.action.zoomIn", "Zoom In"),
     ("workbench.action.zoomOut", "Zoom Out"),
     ("workbench.action.zoomReset", "Reset Zoom"),
-    // Needs a filename prompt and a tab that can be renamed under it.
-    ("workbench.action.files.saveAs", "Save As"),
-    // Needs a file dialog, or a path prompt standing in for one.
-    ("workbench.action.files.openFile", "Open File"),
+    // Needs a new workspace root, which the file walk, the search and the language
+    // servers are all anchored to.
     ("workbench.action.files.openFolder", "Open Folder"),
     // Needs an editor for a file deco reads but never writes.
     ("workbench.action.openSettings", "Open Settings"),
@@ -278,6 +283,8 @@ pub const PALETTE: &[(&str, &str)] = &[
     ("editor.action.marker.prev", "Go to Previous Problem"),
     ("workbench.action.files.save", "Save"),
     ("workbench.action.files.saveAll", "Save All"),
+    ("workbench.action.files.saveAs", "Save As"),
+    ("workbench.action.files.openFile", "Open File"),
     (
         "workbench.action.editor.changeLanguageMode",
         "Change Language Mode",
