@@ -63,13 +63,18 @@ pub enum Outcome {
     Quit,
     /// Something worth telling the user.
     Message(String),
-    /// The frontend should read this path and open it.
+    /// The frontend should read this path, open it, and put the cursor at `at`.
     ///
     /// The core has no filesystem — `Document::from_file` is handed text, never a
     /// path to read — which is what keeps the whole editable surface testable
     /// without one. Quick open therefore names the file and lets the frontend
     /// fetch it, exactly as [`Outcome::Save`] names no bytes.
-    OpenFile(std::path::PathBuf),
+    OpenFile {
+        /// What to open.
+        path: std::path::PathBuf,
+        /// Where to put the cursor, or `None` to leave it at the start.
+        at: Option<deco_core::position::Position>,
+    },
 }
 
 /// One entry in the command palette: what to run, and what to call it.
@@ -80,6 +85,12 @@ pub struct PaletteEntry {
     pub id: String,
     /// The title to show, VS Code's wording where it has one.
     pub title: String,
+    /// Where in the file to land, for an entry that names a place rather than a
+    /// whole file.
+    ///
+    /// `None` for a command and for quick open, which opens a file at wherever
+    /// the cursor last was; `Some` for a search result, which is a position.
+    pub at: Option<deco_core::position::Position>,
 }
 
 impl PaletteEntry {
@@ -88,6 +99,15 @@ impl PaletteEntry {
         Self {
             id: id.to_owned(),
             title: title.to_owned(),
+            at: None,
+        }
+    }
+
+    /// Builds an entry that names a position within a file.
+    pub fn at(id: &str, title: &str, at: deco_core::position::Position) -> Self {
+        Self {
+            at: Some(at),
+            ..Self::new(id, title)
         }
     }
 }

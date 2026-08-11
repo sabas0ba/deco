@@ -594,7 +594,9 @@ impl Session {
             }
             // The list of files has to be walked from disk, which only a frontend
             // can do; it calls `offer_files` when it has one.
-            "workbench.action.quickOpen" => Outcome::Frontend(command.to_owned()),
+            "workbench.action.quickOpen" | "workbench.action.findInFiles" => {
+                Outcome::Frontend(command.to_owned())
+            }
             "workbench.action.closeQuickOpen" => {
                 self.prompt = None;
                 Outcome::Handled
@@ -673,6 +675,38 @@ impl Session {
         self.refresh_context();
     }
 
+    /// Opens the search-results prompt over `results`.
+    ///
+    /// Separate from [`Session::offer_files`] only in what it says when there is
+    /// nothing: an empty file list means the workspace is empty, and an empty
+    /// result list means the term is not in it — different facts, and reporting
+    /// one as the other would send the reader looking in the wrong place.
+    pub fn offer_search_results(
+        &mut self,
+        needle: &str,
+        results: Vec<crate::commands::PaletteEntry>,
+    ) {
+        if results.is_empty() {
+            self.status = Some(format!("`{needle}` is not in any file here"));
+            return;
+        }
+        self.prompt = Some(Prompt::list(PromptKind::SearchResults, results));
+        self.refresh_context();
+    }
+
+    /// What a project-wide search should look for.
+    ///
+    /// The selection, the word under the cursor, or whatever the find bar was last
+    /// searching for — in that order, because that is the order of how recently the
+    /// user said it.
+    pub fn search_seed(&self) -> Option<String> {
+        if let Some((text, _)) = self.seed_from_document() {
+            return Some(text);
+        }
+        let query = self.find.query();
+        (!query.is_empty()).then(|| query.to_owned())
+    }
+
     /// Everything the palette can offer: this crate's commands and the
     /// frontend's.
     fn palette(&self) -> Vec<crate::commands::PaletteEntry> {
@@ -703,10 +737,18 @@ impl Session {
                 // look like the command had run.
                 None => Outcome::Message(format!("no command matches `{}`", prompt.text())),
             },
-            PromptKind::Files => match prompt.selected() {
+            PromptKind::Files | PromptKind::SearchResults => match prompt.selected() {
                 // The frontend reads it: the core has no filesystem.
-                Some(entry) => Outcome::OpenFile(PathBuf::from(&entry.id)),
-                None => Outcome::Message(format!("no file matches `{}`", prompt.text())),
+                Some(entry) => Outcome::OpenFile {
+                    path: PathBuf::from(&entry.id),
+                    at: entry.at,
+                },
+                None => Outcome::Message(match prompt.kind() {
+                    PromptKind::SearchResults => {
+                        format!("no result matches `{}`", prompt.text())
+                    }
+                    _ => format!("no file matches `{}`", prompt.text()),
+                }),
             },
         }
     }
@@ -2377,7 +2419,10 @@ mod tests {
         }
         assert_eq!(
             press(&mut s, "enter"),
-            Outcome::OpenFile(PathBuf::from("/w/README.md"))
+            Outcome::OpenFile {
+                path: PathBuf::from("/w/README.md"),
+                at: None,
+            }
         );
         assert!(s.prompt.is_none());
     }
@@ -2411,6 +2456,103 @@ mod tests {
             press(&mut s, key);
         }
         assert_eq!(s.document.buffer.text(), "x\n");
+    }
+
+    // ---- Search in files ---------------------------------------------------
+
+    #[test]
+    fn ctrl_shift_f_asks_the_frontend_to_search() {
+        let mut s = searchable("x\n");
+        assert_eq!(
+            press(&mut s, "ctrl+shift+f"),
+            Outcome::Frontend("workbench.action.findInFiles".to_owned())
+        );
+    }
+
+    #[test]
+    fn the_search_seed_prefers_the_selection_then_the_word_then_the_find_query() {
+        let mut s = searchable("alpha beta\n");
+        // The word under the cursor.
+        s.view.selections = deco_core::selection::SelectionSet::caret(Position::new(0, 7));
+        assert_eq!(s.search_seed().as_deref(), Some("beta"));
+
+        // A selection wins over the word it sits in.
+        s.view.selections = deco_core::selection::SelectionSet::single(
+            deco_core::selection::Selection::new(Position::new(0, 0), Position::new(0, 5)),
+        );
+        assert_eq!(s.search_seed().as_deref(), Some("alpha"));
+
+        // Neither: the find bar's last query is the remaining evidence of intent.
+        let mut blank = searchable("   \n");
+        blank.view.selections = deco_core::selection::SelectionSet::caret(Position::new(0, 1));
+        assert_eq!(blank.search_seed(), None);
+        blank.find.set_query("gamma".to_owned());
+        assert_eq!(blank.search_seed().as_deref(), Some("gamma"));
+    }
+
+    #[test]
+    fn results_open_a_prompt_that_counts_matches() {
+        let mut s = searchable("x\n");
+        s.offer_search_results(
+            "total",
+            vec![
+                commands::PaletteEntry::at(
+                    "/w/a.rs",
+                    "a.rs:2: let total = 1;",
+                    Position::new(1, 8),
+                ),
+                commands::PaletteEntry::at("/w/b.rs", "b.rs:1: // total", Position::new(0, 3)),
+            ],
+        );
+        let prompt = s.prompt.as_ref().expect("a prompt should be open");
+        assert_eq!(prompt.kind(), crate::prompt::PromptKind::SearchResults);
+        assert_eq!(prompt.matches(), 2);
+    }
+
+    #[test]
+    fn accepting_a_result_asks_for_the_file_and_the_position() {
+        let mut s = searchable("x\n");
+        s.offer_search_results(
+            "total",
+            vec![commands::PaletteEntry::at(
+                "/w/a.rs",
+                "a.rs:2: let total = 1;",
+                Position::new(1, 8),
+            )],
+        );
+        assert_eq!(
+            press(&mut s, "enter"),
+            Outcome::OpenFile {
+                path: PathBuf::from("/w/a.rs"),
+                at: Some(Position::new(1, 8)),
+            }
+        );
+    }
+
+    #[test]
+    fn a_term_found_nowhere_says_that_rather_than_that_there_are_no_files() {
+        // Two different facts. Reporting one as the other sends the reader looking
+        // in the wrong place.
+        let mut s = searchable("x\n");
+        s.offer_search_results("zzz", Vec::new());
+        assert!(s.prompt.is_none());
+        assert_eq!(s.status.as_deref(), Some("`zzz` is not in any file here"));
+
+        s.offer_files(Vec::new());
+        assert_eq!(s.status.as_deref(), Some("no files found here"));
+    }
+
+    #[test]
+    fn quick_open_still_opens_a_file_with_no_position() {
+        let mut s = searchable("x\n");
+        s.offer_files(vec![commands::PaletteEntry::new("/w/a.rs", "a.rs")]);
+        assert_eq!(
+            press(&mut s, "enter"),
+            Outcome::OpenFile {
+                path: PathBuf::from("/w/a.rs"),
+                at: None,
+            }
+        );
     }
 
     // ---- Tabs -------------------------------------------------------------

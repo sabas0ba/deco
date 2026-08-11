@@ -273,6 +273,7 @@ fn render_text(session: &Session, width: usize, height: usize) -> Frame {
             rows.push(choice_row(
                 entry,
                 index == prompt.selected_row(),
+                prompt.kind().shows_ids(),
                 width,
                 &palette,
             ));
@@ -340,8 +341,9 @@ fn prompt_row(prompt: &deco_editor::Prompt, width: usize, palette: &Palette) -> 
     // The match count, for a prompt that has a list to count. A go-to-line box
     // has nothing to say here.
     let right = if prompt.has_list() {
-        let noun = prompt.kind().noun();
-        match prompt.matches() {
+        let count = prompt.matches();
+        let noun = prompt.kind().noun(count);
+        match count {
             0 => format!("No {noun} "),
             count => format!("{count} {noun} "),
         }
@@ -362,18 +364,18 @@ fn prompt_row(prompt: &deco_editor::Prompt, width: usize, palette: &Palette) -> 
 fn choice_row(
     entry: &deco_editor::commands::PaletteEntry,
     selected: bool,
+    show_id: bool,
     width: usize,
     palette: &Palette,
 ) -> Row {
     let left = format!("  {} ", entry.title);
-    // The identifier on the right — but only when it says something the title does
-    // not. It is what a `keybindings.json` refers to, so it is worth a column for
-    // a command; for a file the title *is* the path's tail, and repeating
-    // `/home/you/src/main.rs` beside `src/main.rs` is noise.
-    let right = if entry.id.ends_with(&entry.title) {
-        String::new()
-    } else {
+    // The identifier on the right, for the prompts whose identifiers say something
+    // their titles do not — see `PromptKind::shows_ids`. Repeating
+    // `/home/you/src/main.rs` beside `src/main.rs:2: …` would be noise.
+    let right = if show_id {
         format!(" {} ", entry.id)
+    } else {
+        String::new()
     };
     let room = width.saturating_sub(columns(&left));
     let right = if room >= columns(&right) + 2 {
@@ -2358,8 +2360,31 @@ mod tests {
             "/w/a.rs", "a.rs",
         )]);
         let line = prompt_line(&render(&session, 60, 14));
-        assert!(line.contains("1 files"), "{line:?}");
+        assert!(line.contains("1 file"), "{line:?}");
         assert!(!line.contains("commands"), "{line:?}");
+        assert!(!line.contains("1 files"), "one is singular: {line:?}");
+    }
+
+    #[test]
+    fn a_result_row_does_not_repeat_the_path_the_title_already_shows() {
+        let mut session = session("x\n");
+        session.offer_search_results(
+            "total",
+            vec![deco_editor::commands::PaletteEntry::at(
+                "/w/src/main.rs",
+                "src/main.rs:2: let total = 1;",
+                Position::new(1, 8),
+            )],
+        );
+        let frame = render(&session, 60, 14);
+        let all: String = frame.rows.iter().map(Row::plain).collect();
+        assert!(all.contains("src/main.rs:2:"), "{all:?}");
+        assert!(!all.contains("/w/src/main.rs"), "{all:?}");
+        assert!(
+            prompt_line(&frame).contains("1 match"),
+            "{:?}",
+            prompt_line(&frame)
+        );
     }
 
     #[test]
