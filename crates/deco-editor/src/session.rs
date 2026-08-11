@@ -2827,11 +2827,17 @@ mod tests {
     fn each_tab_is_written_with_its_own_settings() {
         // `files.insertFinalNewline` can differ per language, and a batch save has
         // to respect each tab's rather than the active one's.
+        //
+        // `files.eol` is pinned rather than left at `auto`: a document with no
+        // existing line ending takes the platform's, so the newline this appends
+        // would be CRLF on Windows and the assertion would be about the host
+        // instead of about the setting under test.
         let mut settings = deco_config::Settings::with_defaults();
         settings
             .load_layer(
                 Scope::User,
-                r#"{ "files.insertFinalNewline": false,
+                r#"{ "files.eol": "\n",
+                     "files.insertFinalNewline": false,
                      "[markdown]": { "files.insertFinalNewline": true } }"#,
             )
             .unwrap();
