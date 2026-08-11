@@ -29,7 +29,7 @@ running, and is published at
 | | |
 | --- | --- |
 | [Editing](docs/editing.md) | Motion, line and block comments, multiple cursors, undo |
-| [Tabs](docs/tabs.md) | Several documents, one per tab; what a tab keeps |
+| [Tabs](docs/tabs.md) | Several documents, one per tab; splitting; what a tab keeps |
 | [Syntax highlighting](docs/highlighting.md) | Scopes, languages, choosing one, and why not tree-sitter |
 | [Find and replace](docs/find-and-replace.md) | `ctrl+f`, `ctrl+h`, `F3`, and the multi-cursor find keys |
 | [Running commands](docs/commands.md) | The command palette, quick open, go to symbol, search in files, go to line |
@@ -218,7 +218,7 @@ does not:
   escaping rules and its own error reporting for an invalid pattern — and
   find-in-files, which needs more than one document. Both say so when pressed
   rather than reporting an unknown command.
-- **Tabs, quick open and search in files, but no splits and no file tree.**
+- **Tabs, splits, quick open and search in files, but no file tree.**
   Several documents open at once, one per tab (see [Tabs](docs/tabs.md)); `ctrl+p`
   opens any file in the workspace and `ctrl+shift+f` searches all of them,
   bounded and saying so; `ctrl+o` types a path for a file outside it, `ctrl+k s`

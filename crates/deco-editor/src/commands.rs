@@ -193,20 +193,6 @@ impl PaletteEntry {
 ///
 /// An identifier leaves this list when the feature lands.
 pub const PENDING: &[(&str, &str)] = &[
-    // Needs a second view onto a document, and a layout that can hold two.
-    ("workbench.action.splitEditor", "Split Editor"),
-    (
-        "workbench.action.focusFirstEditorGroup",
-        "Focus First Editor Group",
-    ),
-    (
-        "workbench.action.focusSecondEditorGroup",
-        "Focus Second Editor Group",
-    ),
-    (
-        "workbench.action.focusThirdEditorGroup",
-        "Focus Third Editor Group",
-    ),
     // Needs chrome deco has no concept of yet.
     (
         "workbench.action.toggleSidebarVisibility",
@@ -281,6 +267,7 @@ pub const PALETTE: &[(&str, &str)] = &[
     ("editor.action.marker.next", "Go to Next Problem"),
     ("editor.action.marker.prev", "Go to Previous Problem"),
     ("workbench.action.files.save", "Save"),
+    ("workbench.action.splitEditor", "Split Editor"),
     ("workbench.action.files.saveAll", "Save All"),
     ("workbench.action.files.saveAs", "Save As"),
     ("workbench.action.files.openFile", "Open File"),

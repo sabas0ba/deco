@@ -132,6 +132,23 @@ pub struct Session {
     pub document: Document,
     /// The view onto it.
     pub view: View,
+    /// The other editor group's view onto the same document, when the editor is
+    /// split.
+    ///
+    /// A second *view*, not a second document: `ctrl+\` in VS Code shows one file
+    /// in two groups, and one buffer with two views is what that is. Two documents
+    /// would be two divergent copies of one file, which is exactly what
+    /// [`Session::open`] refuses for tabs.
+    ///
+    /// [`Session::view`] is always the view of the group with the keyboard, and
+    /// this is the other one — the same zipper the tabs use, so every command that
+    /// reads `session.view` keeps working without knowing that groups exist.
+    split_view: Option<View>,
+    /// Whether the group with the keyboard is the second one.
+    ///
+    /// Only meaningful while split. Kept so that the panes can be listed in the
+    /// order they sit on screen while `view` stays the active one.
+    split_focused: bool,
     /// Tabs to the left of the active one, in display order.
     ///
     /// The active tab's state lives directly in [`Session::document`],
@@ -220,6 +237,8 @@ impl Session {
             theme,
             document,
             view: View::default(),
+            split_view: None,
+            split_focused: false,
             // Seeded from the same platform the keymap was built for, so a
             // `!isMac` binding cannot be chosen and then gated out.
             context: ContextKeys::for_platform(platform),
@@ -320,14 +339,35 @@ impl Session {
     /// One today. The shape is here so that a renderer is written against groups
     /// from the start rather than against the one the session happens to expose.
     pub fn panes(&self) -> Vec<Pane<'_>> {
-        vec![Pane {
+        let mut panes = vec![self.pane(&self.view, true)];
+        if let Some(other) = &self.split_view {
+            let other = self.pane(other, false);
+            if self.split_focused {
+                // The active view is the second group's, so it goes second on
+                // screen and the stored one goes first.
+                panes.insert(0, other);
+            } else {
+                panes.push(other);
+            }
+        }
+        panes
+    }
+
+    /// How many editor groups there are.
+    pub fn group_count(&self) -> usize {
+        1 + usize::from(self.split_view.is_some())
+    }
+
+    /// One group, described for whoever is drawing it.
+    fn pane<'a>(&'a self, view: &'a View, focused: bool) -> Pane<'a> {
+        Pane {
             document: &self.document,
-            view: &self.view,
+            view,
             semantic: &self.semantic_tokens,
             diagnostics: &self.diagnostics,
             tabs: self.tab_labels(),
-            focused: true,
-        }]
+            focused,
+        }
     }
 
     pub fn tab_count(&self) -> usize {
@@ -416,6 +456,63 @@ impl Session {
     /// ask with, and losing edits to a keystroke is the worst thing an editor
     /// can do. Closing the last tab leaves an untitled document, because the
     /// session always shows something.
+    /// Splits the editor, giving the same document a second view.
+    ///
+    /// The new group starts where the old one is looking and takes the keyboard,
+    /// which is what VS Code does — you split in order to work in the new one.
+    /// Scrolling it afterwards leaves the first group where it was, which is the
+    /// whole point: two places in one file, at once.
+    fn split(&mut self) -> Outcome {
+        if self.split_view.is_some() {
+            // A third group would need a third view and a narrower column each;
+            // saying so beats a key that silently does nothing.
+            return Outcome::Message("the editor is already split".to_owned());
+        }
+        self.split_view = Some(self.view.clone());
+        self.split_focused = true;
+        self.refresh_context();
+        Outcome::Message("Split editor — ctrl+1 and ctrl+2 move between them".to_owned())
+    }
+
+    /// Moves the keyboard to group `index`, counting from zero on screen.
+    fn focus_group(&mut self, index: usize) -> Outcome {
+        let count = self.group_count();
+        if index >= count {
+            return Outcome::Message(match count {
+                1 => "there is only one editor group".to_owned(),
+                _ => format!("there are only {count} editor groups"),
+            });
+        }
+        let wanted = index == 1;
+        if wanted != self.split_focused {
+            // The active view is always `self.view`, so moving the keyboard is a
+            // swap rather than an index change — the same trick the tabs use.
+            if let Some(other) = self.split_view.as_mut() {
+                std::mem::swap(other, &mut self.view);
+            }
+            self.split_focused = wanted;
+            // The find bar's matches were found in the other group's view, and its
+            // current match is where that group's cursor is.
+            self.find.close();
+        }
+        self.refresh_context();
+        Outcome::Handled
+    }
+
+    /// `ctrl+w`: closes the group when the editor is split, and the tab otherwise.
+    ///
+    /// VS Code's rule, and the useful one: having split, the first thing you want
+    /// that key to do is put the screen back.
+    fn close_editor(&mut self) -> Outcome {
+        if self.split_view.is_some() {
+            self.split_view = None;
+            self.split_focused = false;
+            self.refresh_context();
+            return Outcome::Message("Closed the second group".to_owned());
+        }
+        self.close_active_tab()
+    }
+
     fn close_active_tab(&mut self) -> Outcome {
         if self.document.dirty {
             return Outcome::Message(format!(
@@ -702,7 +799,11 @@ impl Session {
             // which a command in `commands` cannot see past.
             "workbench.action.nextEditor" => self.cycle_tab(Direction::Next),
             "workbench.action.previousEditor" => self.cycle_tab(Direction::Prev),
-            "workbench.action.closeActiveEditor" => self.close_active_tab(),
+            "workbench.action.closeActiveEditor" => self.close_editor(),
+            "workbench.action.splitEditor" | "workbench.action.splitEditorRight" => self.split(),
+            "workbench.action.focusFirstEditorGroup" => self.focus_group(0),
+            "workbench.action.focusSecondEditorGroup" => self.focus_group(1),
+            "workbench.action.focusThirdEditorGroup" => self.focus_group(2),
             "workbench.action.files.newUntitledFile" => self.new_untitled_tab(),
             "deco.find.toggleField" => {
                 self.find.toggle_field();
@@ -3135,6 +3236,132 @@ mod tests {
         assert_eq!(panes[0].document.buffer.text(), "yx\n");
     }
 
+    // ---- Split editor -----------------------------------------------------
+
+    #[test]
+    fn splitting_gives_the_same_document_a_second_view() {
+        // One buffer, two views. Two documents would be two divergent copies of
+        // one file, which is what `open` refuses for tabs.
+        let mut s = searchable("one\ntwo\nthree\n");
+        assert_eq!(s.group_count(), 1);
+        press(&mut s, "ctrl+\\");
+        assert_eq!(s.group_count(), 2);
+
+        let panes = s.panes();
+        assert_eq!(panes.len(), 2);
+        assert!(std::ptr::eq(panes[0].document, panes[1].document));
+        // The new group starts where the old one was looking and takes the
+        // keyboard, because you split in order to work in the new one.
+        assert!(!panes[0].focused);
+        assert!(panes[1].focused);
+    }
+
+    #[test]
+    fn each_group_scrolls_and_moves_on_its_own() {
+        // The whole point: two places in one file, at once.
+        let mut s = searchable(&"line\n".repeat(60));
+        s.resize(80, 10);
+        press(&mut s, "ctrl+\\");
+        s.view.scroll_top = 40;
+        s.view.selections = deco_core::SelectionSet::caret(Position::new(42, 0));
+
+        let panes = s.panes();
+        assert_eq!(panes[0].view.scroll_top, 0, "the first group stayed put");
+        assert_eq!(panes[1].view.scroll_top, 40);
+    }
+
+    #[test]
+    fn ctrl_1_and_ctrl_2_move_the_keyboard_between_the_groups() {
+        let mut s = searchable(&"line\n".repeat(60));
+        s.resize(80, 10);
+        press(&mut s, "ctrl+\\");
+        s.view.scroll_top = 40;
+
+        press(&mut s, "ctrl+1");
+        assert_eq!(s.view.scroll_top, 0, "the first group's view is now active");
+        assert!(s.panes()[0].focused);
+
+        press(&mut s, "ctrl+2");
+        assert_eq!(s.view.scroll_top, 40, "and the second group's is back");
+        assert!(s.panes()[1].focused);
+    }
+
+    #[test]
+    fn typing_goes_into_the_group_with_the_keyboard() {
+        // Both groups show the edit, since there is one document — but only the
+        // focused view's cursor moved.
+        let mut s = searchable("abc\n");
+        press(&mut s, "ctrl+\\");
+        s.view.selections = deco_core::SelectionSet::caret(Position::new(0, 3));
+        press(&mut s, "d");
+
+        assert_eq!(s.document.buffer.text(), "abcd\n");
+        let panes = s.panes();
+        assert_eq!(panes[1].view.cursor(), Position::new(0, 4));
+        assert_eq!(
+            panes[0].view.cursor(),
+            Position::new(0, 0),
+            "the other group's cursor stayed where it was"
+        );
+    }
+
+    #[test]
+    fn splitting_twice_says_it_is_already_split() {
+        let mut s = searchable("x\n");
+        press(&mut s, "ctrl+\\");
+        assert_eq!(
+            press(&mut s, "ctrl+\\"),
+            Outcome::Message("the editor is already split".to_owned())
+        );
+        assert_eq!(s.group_count(), 2);
+    }
+
+    #[test]
+    fn focusing_a_group_that_is_not_there_says_so() {
+        let mut s = searchable("x\n");
+        assert_eq!(
+            press(&mut s, "ctrl+2"),
+            Outcome::Message("there is only one editor group".to_owned())
+        );
+        press(&mut s, "ctrl+\\");
+        assert_eq!(
+            press(&mut s, "ctrl+3"),
+            Outcome::Message("there are only 2 editor groups".to_owned())
+        );
+    }
+
+    #[test]
+    fn ctrl_w_closes_the_group_before_it_closes_the_tab() {
+        // Having split, the first thing that key should do is put the screen back.
+        let mut s = searchable("x\n");
+        s.open(PathBuf::from("/w/b.rs"), "fn main() {}\n");
+        press(&mut s, "ctrl+\\");
+        assert_eq!(s.tab_count(), 2);
+
+        assert_eq!(
+            press(&mut s, "ctrl+w"),
+            Outcome::Message("Closed the second group".to_owned())
+        );
+        assert_eq!(s.group_count(), 1);
+        assert_eq!(s.tab_count(), 2, "and the tab is still open");
+
+        // With one group again, it closes the tab as it always did.
+        press(&mut s, "ctrl+w");
+        assert_eq!(s.tab_count(), 1);
+    }
+
+    #[test]
+    fn moving_between_groups_closes_the_find_bar() {
+        // Its matches were found against the other view, and its current match is
+        // where that group's cursor is.
+        let mut s = searchable("hello hello\n");
+        press(&mut s, "ctrl+\\");
+        s.run("actions.find", None, 0);
+        assert!(s.find.visible());
+        press(&mut s, "ctrl+1");
+        assert!(!s.find.visible());
+    }
+
     // ---- Colour theme -----------------------------------------------------
 
     #[test]
@@ -3598,12 +3825,12 @@ mod tests {
     fn an_unimplemented_command_says_which_feature_it_is() {
         let mut s = searchable("x\n");
         assert_eq!(
-            s.run("workbench.action.splitEditor", None, 0),
-            Outcome::Message("Split Editor is not implemented yet".to_owned())
+            s.run("workbench.action.togglePanel", None, 0),
+            Outcome::Message("Toggle Panel is not implemented yet".to_owned())
         );
         assert_eq!(
             s.status.as_deref(),
-            Some("Split Editor is not implemented yet")
+            Some("Toggle Panel is not implemented yet")
         );
     }
 
