@@ -367,9 +367,13 @@ fn refuse_overlays(session: &mut Session) {
         session.find.close();
         session.status = Some("the find bar is only in the terminal frontend so far".to_owned());
     }
-    if session.prompt.take().is_some() {
-        session.status =
-            Some("the command palette is only in the terminal frontend so far".to_owned());
+    if let Some(prompt) = session.prompt.take() {
+        // Named by kind: saying "the command palette" about a save-as prompt would
+        // be worse than saying nothing.
+        session.status = Some(format!(
+            "{} is only in the terminal frontend so far",
+            prompt.kind().describe()
+        ));
     }
 }
 

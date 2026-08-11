@@ -37,6 +37,10 @@ pub enum PromptKind {
     Languages,
     /// `ctrl+k ctrl+t`: which colour theme to use.
     Themes,
+    /// `ctrl+shift+s`: where to write this document.
+    SaveAs,
+    /// `ctrl+o`: which file to open.
+    OpenPath,
 }
 
 impl PromptKind {
@@ -50,6 +54,8 @@ impl PromptKind {
             Self::Symbols => "Go to symbol:",
             Self::Languages => "Select language mode:",
             Self::Themes => "Color theme:",
+            Self::SaveAs => "Save as:",
+            Self::OpenPath => "Open file:",
         }
     }
 
@@ -61,6 +67,8 @@ impl PromptKind {
     pub fn noun(self, count: usize) -> &'static str {
         match (self, count) {
             (Self::GoToLine, _) => "",
+            // Nothing to count: a path is typed, not chosen from a list.
+            (Self::SaveAs, _) | (Self::OpenPath, _) => "",
             (Self::Commands, 1) => "command",
             (Self::Commands, _) => "commands",
             (Self::Files, 1) => "file",
@@ -73,6 +81,25 @@ impl PromptKind {
             (Self::Languages, _) => "languages",
             (Self::Themes, 1) => "theme",
             (Self::Themes, _) => "themes",
+        }
+    }
+
+    /// What to call this prompt in a sentence.
+    ///
+    /// For a frontend that has to refuse it: "the command palette is only in the
+    /// terminal frontend" is the wrong thing to say about a save-as prompt, and a
+    /// message that names the wrong widget is worse than a vague one.
+    pub fn describe(self) -> &'static str {
+        match self {
+            Self::GoToLine => "go to line",
+            Self::Commands => "the command palette",
+            Self::Files => "quick open",
+            Self::SearchResults => "the results list",
+            Self::Symbols => "the symbol list",
+            Self::Languages => "the language picker",
+            Self::Themes => "the theme picker",
+            Self::SaveAs => "save as",
+            Self::OpenPath => "open file",
         }
     }
 
@@ -128,6 +155,22 @@ impl Prompt {
         Self {
             kind,
             input: Input::new(),
+            choices: Vec::new(),
+            matching: Vec::new(),
+            selected: 0,
+        }
+    }
+
+    /// A prompt with no list, pre-filled with `text` and the caret at its end.
+    ///
+    /// For the prompts that stand in for a file dialog: typing a whole path from
+    /// nothing is worse than editing the one you are already in.
+    pub fn seeded(kind: PromptKind, text: String) -> Self {
+        let mut input = Input::new();
+        input.set(text);
+        Self {
+            kind,
+            input,
             choices: Vec::new(),
             matching: Vec::new(),
             selected: 0,

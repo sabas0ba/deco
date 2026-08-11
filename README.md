@@ -217,7 +217,8 @@ does not:
 - **Tabs, quick open and search in files, but no splits and no file tree.**
   Several documents open at once, one per tab (see [Tabs](docs/tabs.md)); `ctrl+p`
   opens any file in the workspace and `ctrl+shift+f` searches all of them,
-  bounded and saying so; `ctrl+k s` saves every edited tab. Every remaining
+  bounded and saying so; `ctrl+o` types a path for a file outside it, `ctrl+k s`
+  saves every edited tab and `ctrl+shift+s` saves one somewhere else. Every remaining
   keybinding in that family **names the feature it is waiting on** rather than
   doing nothing, and a test over the whole default keymap keeps it that way. See
   [Running commands](docs/commands.md).

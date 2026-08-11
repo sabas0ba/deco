@@ -664,6 +664,8 @@ impl Session {
                 Outcome::Handled
             }
             "workbench.action.editor.changeLanguageMode" => self.offer_languages(),
+            "workbench.action.files.saveAs" => self.offer_save_as(),
+            "workbench.action.files.openFile" => self.offer_open_path(),
             "editor.action.replaceOne" => self.replace_one(now_ms),
             "editor.action.replaceAll" => self.replace_all(now_ms),
             // Commands that need something the core has no concept of. Named
@@ -776,6 +778,71 @@ impl Session {
         self.prompt = Some(Prompt::list(PromptKind::Languages, entries));
         self.refresh_context();
         Outcome::Handled
+    }
+
+    /// Opens the save-as prompt, seeded with this document's own path.
+    ///
+    /// Editing the path you are already in beats typing a whole one: "save this
+    /// next to itself under another name" is what save-as is usually for.
+    fn offer_save_as(&mut self) -> Outcome {
+        let seed = self
+            .document
+            .path
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        self.prompt = Some(Prompt::seeded(PromptKind::SaveAs, seed));
+        self.refresh_context();
+        Outcome::Handled
+    }
+
+    /// Opens the open-file prompt, seeded with this document's directory.
+    ///
+    /// The directory and not the file: the point is to open something *else*, and
+    /// a seed you have to delete the last component of is a seed that cost you.
+    fn offer_open_path(&mut self) -> Outcome {
+        let seed = self
+            .document
+            .path
+            .as_deref()
+            .and_then(Path::parent)
+            .map(|parent| {
+                let mut text = parent.to_string_lossy().into_owned();
+                if !text.is_empty() && !text.ends_with('/') && !text.ends_with('\\') {
+                    text.push('/');
+                }
+                text
+            })
+            .unwrap_or_default();
+        self.prompt = Some(Prompt::seeded(PromptKind::OpenPath, seed));
+        self.refresh_context();
+        Outcome::Handled
+    }
+
+    /// Adopts `path` as this document's, after the frontend has written it there.
+    ///
+    /// Everything the path decides is redone: the language, and so the lexer and
+    /// the `[language]` settings, since `notes.txt` saved as `notes.toml` is a TOML
+    /// file now. The document is clean, because what is on disk is what is in the
+    /// buffer.
+    ///
+    /// A language the user chose by hand is **kept**. Having said "this is TOML"
+    /// and then saved it, being told it is now plain text would undo a decision
+    /// nobody revisited.
+    pub fn rename_to(&mut self, path: PathBuf) -> Outcome {
+        let chosen_by_hand = self.document.language()
+            != self
+                .document
+                .path
+                .as_deref()
+                .and_then(crate::document::language_for_path);
+        self.document.path = Some(path.clone());
+        if !chosen_by_hand {
+            self.set_language(None);
+        }
+        self.document.settings = EditorSettings::resolve(&self.settings, self.document.language());
+        self.mark_saved();
+        Outcome::Message(format!("Saved {}", path.display()))
     }
 
     /// Opens the colour-theme picker over `themes`.
@@ -904,6 +971,23 @@ impl Session {
                 // look like the command had run.
                 None => Outcome::Message(format!("no command matches `{}`", prompt.text())),
             },
+            PromptKind::SaveAs => {
+                let typed = prompt.text().trim();
+                if typed.is_empty() {
+                    return Outcome::Message("no filename given".to_owned());
+                }
+                Outcome::SaveAs(PathBuf::from(typed))
+            }
+            PromptKind::OpenPath => {
+                let typed = prompt.text().trim();
+                if typed.is_empty() {
+                    return Outcome::Message("no filename given".to_owned());
+                }
+                Outcome::OpenFile {
+                    path: PathBuf::from(typed),
+                    at: None,
+                }
+            }
             PromptKind::Themes => match prompt.selected() {
                 // The identifier is the file to read, empty for one compiled in.
                 Some(entry) => Outcome::LoadTheme {
@@ -2849,6 +2933,134 @@ mod tests {
                 at: None,
             }
         );
+    }
+
+    // ---- Save as, and open by path ----------------------------------------
+
+    #[test]
+    fn save_as_seeds_the_prompt_with_the_current_path() {
+        // Editing the path you are already in beats typing a whole one.
+        let mut s = searchable("x\n");
+        s.open(PathBuf::from("/w/notes.txt"), "text\n");
+        assert_eq!(press(&mut s, "ctrl+shift+s"), Outcome::Handled);
+        let prompt = s.prompt.as_ref().expect("a prompt should be open");
+        assert_eq!(prompt.kind(), crate::prompt::PromptKind::SaveAs);
+        assert_eq!(prompt.text(), "/w/notes.txt");
+    }
+
+    #[test]
+    fn open_file_seeds_the_prompt_with_the_directory_only() {
+        // The point is to open something else, so a seed whose last component you
+        // have to delete is a seed that cost you.
+        let mut s = searchable("x\n");
+        s.open(PathBuf::from("/w/src/main.rs"), "fn main() {}\n");
+        s.run("workbench.action.files.openFile", None, 0);
+        let prompt = s.prompt.as_ref().expect("a prompt should be open");
+        assert_eq!(prompt.kind(), crate::prompt::PromptKind::OpenPath);
+        assert_eq!(prompt.text(), "/w/src/");
+    }
+
+    #[test]
+    fn an_untitled_document_gets_an_empty_seed_rather_than_a_guess() {
+        let mut s = session();
+        s.resize(80, 10);
+        s.run("workbench.action.files.saveAs", None, 0);
+        assert_eq!(s.prompt.as_ref().unwrap().text(), "");
+    }
+
+    #[test]
+    fn accepting_save_as_hands_the_path_to_the_frontend() {
+        let mut s = searchable("x\n");
+        s.open(PathBuf::from("/w/notes.txt"), "text\n");
+        s.run("workbench.action.files.saveAs", None, 0);
+        // `ctrl+x` clears a one-line input, which is how a seed is replaced rather
+        // than appended to. `ctrl+a` is swallowed: half a selection in a field with
+        // no selection would be worse than none.
+        press(&mut s, "ctrl+x");
+        for key in ["a", ".", "t", "o", "m", "l"] {
+            press(&mut s, key);
+        }
+        assert_eq!(
+            press(&mut s, "enter"),
+            Outcome::SaveAs(PathBuf::from("a.toml"))
+        );
+    }
+
+    #[test]
+    fn accepting_a_typed_path_opens_it_the_same_way_quick_open_does() {
+        let mut s = searchable("x\n");
+        s.run("workbench.action.files.openFile", None, 0);
+        press(&mut s, "ctrl+x");
+        for key in ["a", ".", "r", "s"] {
+            press(&mut s, key);
+        }
+        assert_eq!(
+            press(&mut s, "enter"),
+            Outcome::OpenFile {
+                path: PathBuf::from("a.rs"),
+                at: None,
+            }
+        );
+    }
+
+    #[test]
+    fn an_empty_path_says_so_rather_than_writing_somewhere() {
+        // Untitled, so the seed is empty to begin with.
+        let mut s = session();
+        s.resize(80, 10);
+        s.run("workbench.action.files.saveAs", None, 0);
+        assert_eq!(
+            press(&mut s, "enter"),
+            Outcome::Message("no filename given".to_owned())
+        );
+        s.run("workbench.action.files.openFile", None, 0);
+        assert_eq!(
+            press(&mut s, "enter"),
+            Outcome::Message("no filename given".to_owned())
+        );
+    }
+
+    #[test]
+    fn renaming_redetects_the_language_from_the_new_name() {
+        // `notes.txt` saved as `notes.toml` is a TOML file now.
+        let mut s = searchable("x\n");
+        s.open(PathBuf::from("/w/notes.txt"), "name = 1\n");
+        assert_eq!(s.document.language(), None);
+
+        assert_eq!(
+            s.rename_to(PathBuf::from("/w/notes.toml")),
+            Outcome::Message("Saved /w/notes.toml".to_owned())
+        );
+        assert_eq!(s.document.language(), Some("toml"));
+        assert!(s.document.syntax.is_active());
+        assert!(
+            !s.document.dirty,
+            "what is on disk is what is in the buffer"
+        );
+        assert_eq!(s.document.path.as_deref(), Some(Path::new("/w/notes.toml")));
+    }
+
+    #[test]
+    fn renaming_keeps_a_language_that_was_chosen_by_hand() {
+        // Having said "this is TOML" and then saved it, being told it is now plain
+        // text would undo a decision nobody revisited.
+        let mut s = searchable("x\n");
+        s.open(PathBuf::from("/w/notes.txt"), "name = 1\n");
+        s.set_language(Some("toml"));
+
+        s.rename_to(PathBuf::from("/w/other.txt"));
+        assert_eq!(s.document.language(), Some("toml"));
+    }
+
+    #[test]
+    fn renaming_a_detected_language_still_follows_the_name() {
+        // The mirror of the case above: nothing was chosen by hand here, so the
+        // name is still the only evidence there is.
+        let mut s = searchable("x\n");
+        s.open(PathBuf::from("/w/main.rs"), "fn main() {}\n");
+        assert_eq!(s.document.language(), Some("rust"));
+        s.rename_to(PathBuf::from("/w/main.py"));
+        assert_eq!(s.document.language(), Some("python"));
     }
 
     // ---- Colour theme -----------------------------------------------------

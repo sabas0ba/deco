@@ -92,8 +92,34 @@ The loop and its reporting live in the core, and only the write itself belongs t
 the frontend — so both frontends say the same thing about the same batch, and the
 behaviour is tested with no filesystem involved.
 
-`ctrl+shift+s` (save as) is **not** built: it needs a filename prompt and a tab
-that can be renamed under it. It says so when pressed.
+## Saving somewhere else
+
+`ctrl+shift+s` asks where, seeded with the path you are already in — "save this next
+to itself under another name" is what save-as is usually for, and typing a whole
+path from nothing is worse than editing one. `ctrl+x` clears the field when the
+answer is somewhere else entirely.
+
+![Saving notes.txt as Cargo.toml, which makes it TOML](img/save-as.svg)
+
+The new name **redetects the language**: `notes.txt` saved as `notes.toml` is a TOML
+file now, so the lexer wakes up and `[toml]` settings start applying. A language you
+chose by hand with `ctrl+k m` is kept instead — having said "this is TOML" and then
+saved it, being told it is now plain text would undo a decision nobody revisited.
+
+A relative path is taken against the workspace root and `~` expands, so `~/notes.md`
+and `docs/notes.md` both work. Resolving against the process's working directory
+instead would mean a path that worked when deco was launched from the project and
+not when it was launched from anywhere else.
+
+| Key | Command |
+| --- | --- |
+| `ctrl+s` | `workbench.action.files.save` |
+| `ctrl+k s` | `workbench.action.files.saveAll` |
+| `ctrl+shift+s` | `workbench.action.files.saveAs` |
+
+The path the prompt hands back is **exactly what was typed**; the frontend resolves
+it, writes, and reports back the path it settled on. Resolving needs a home
+directory and a working directory, and the core has neither.
 
 ## Not built yet
 

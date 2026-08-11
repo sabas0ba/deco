@@ -139,6 +139,10 @@ fn demos() -> Vec<Demo> {
             build: save_all,
         },
         Demo {
+            name: "save-as",
+            build: save_as,
+        },
+        Demo {
             name: "language-mode",
             build: language_mode,
         },
@@ -698,6 +702,31 @@ fn color_theme() -> String {
     }
     take.resize_for_chrome();
     take.capture("enter — the same theme keys, resolved again", 6);
+    take.finish()
+}
+
+fn save_as() -> String {
+    let mut take = Take::new("notes.txt", "name = \"deco\"\nedition = \"2021\"\n");
+    take.at(0, 0)
+        .capture("notes.txt — plain, and named as such", 4);
+    take.press_and_hold(&["ctrl+shift+s"], 5);
+
+    // `ctrl+x` clears a one-line input, which is how the seed is replaced rather
+    // than appended to.
+    take.press(&["ctrl+x"]);
+    take.type_text("/demo/Cargo.toml");
+
+    // What the frontend does with `Outcome::SaveAs`: resolve the path, write it,
+    // and hand it back. The write is elided here — a demonstration must not touch a
+    // disk — but the renaming is the real thing.
+    take.session.prompt = None;
+    if let deco_editor::commands::Outcome::Message(report) =
+        take.session.rename_to(PathBuf::from("/demo/Cargo.toml"))
+    {
+        take.session.status = Some(report);
+    }
+    take.resize_for_chrome();
+    take.capture("enter — written, renamed, and TOML from now on", 6);
     take.finish()
 }
 

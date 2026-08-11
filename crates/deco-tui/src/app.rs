@@ -151,6 +151,26 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
                             }
                         }
                     }
+                    // The prompt named a path; writing it is this side's job, and
+                    // so is working out what it meant.
+                    Outcome::SaveAs(target) => {
+                        let target = resolve_path(&target, path.as_deref());
+                        match write_file(&target, &session.save_contents()) {
+                            Ok(()) => {
+                                if let Outcome::Message(report) = session.rename_to(target) {
+                                    session.status = Some(report);
+                                }
+                                // A different path is a different document to a
+                                // server, and possibly a different language.
+                                lsp.attach(session);
+                                lsp.saved(session);
+                            }
+                            Err(error) => {
+                                session.status = Some(error.clone());
+                                session.problems.push(error);
+                            }
+                        }
+                    }
                     Outcome::SaveAll => {
                         // The loop and the reporting are the core's; only the
                         // write is this side's, because only this side has a
@@ -164,6 +184,11 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
                     // Quick open and search named a file; reading it is this
                     // side's job.
                     Outcome::OpenFile { path: target, at } => {
+                        // Resolved because the path may have been typed: `ctrl+o`
+                        // accepts `~/notes.txt` and `src/main.rs`. Quick open and
+                        // search hand over absolute paths, for which this is
+                        // identity.
+                        let target = resolve_path(&target, path.as_deref());
                         match std::fs::read_to_string(&target) {
                             Ok(text) => {
                                 session.open(target, &text);
@@ -408,6 +433,36 @@ fn workspace_root(path: Option<&Path>) -> Option<PathBuf> {
     absolute.parent().map(Path::to_path_buf)
 }
 
+/// Works out what a typed path meant.
+///
+/// `~` is expanded, and a relative path is taken against the workspace root —
+/// which is the directory the editor was started in or the directory of the file
+/// it was started with, the same root quick open walks. Resolving against the
+/// process's working directory instead would mean a path that worked when deco was
+/// launched from the project and not when it was launched from anywhere else.
+///
+/// An absolute path is returned unchanged, so callers that already have one — quick
+/// open, search results, a go-to-definition jump — can go through here too.
+fn resolve_path(typed: &Path, started_with: Option<&Path>) -> PathBuf {
+    let text = typed.to_string_lossy();
+    if let Some(rest) = text.strip_prefix('~') {
+        if rest.is_empty() || rest.starts_with('/') || rest.starts_with('\\') {
+            if let Some(home) = deco_config::paths::Env::from_process().home {
+                // `trim_start_matches` rather than `join`, because joining an
+                // absolute `/notes.txt` onto the home directory discards it.
+                return home.join(rest.trim_start_matches(['/', '\\']));
+            }
+        }
+    }
+    if typed.is_absolute() {
+        return typed.to_path_buf();
+    }
+    match workspace_root(started_with) {
+        Some(root) => root.join(typed),
+        None => typed.to_path_buf(),
+    }
+}
+
 /// Every directory that may hold installed extensions.
 ///
 /// deco's own and VS Code's, so a theme installed for VS Code is offered here
@@ -468,6 +523,52 @@ fn save(session: &mut Session, path: Option<&PathBuf>) -> Result<()> {
 mod tests {
     use super::*;
     use deco_theme::Rgba;
+
+    #[test]
+    fn an_absolute_path_is_left_alone() {
+        // Quick open, search results and go-to-definition all hand over absolute
+        // paths, so this has to be identity for them.
+        assert_eq!(
+            resolve_path(
+                Path::new("/w/src/main.rs"),
+                Some(Path::new("/elsewhere/a.rs"))
+            ),
+            PathBuf::from("/w/src/main.rs")
+        );
+    }
+
+    #[test]
+    fn a_relative_path_is_taken_against_the_workspace_root() {
+        // Not the process's working directory: a path that worked when deco was
+        // launched from the project and not from anywhere else would be worse than
+        // one that always means the same thing.
+        assert_eq!(
+            resolve_path(Path::new("src/main.rs"), Some(Path::new("/w/notes.txt"))),
+            PathBuf::from("/w/src/main.rs")
+        );
+    }
+
+    #[test]
+    fn a_tilde_expands_to_the_home_directory() {
+        let Some(home) = deco_config::paths::Env::from_process().home else {
+            // No HOME in this environment; there is nothing to expand to and the
+            // path is left as typed.
+            return;
+        };
+        assert_eq!(
+            resolve_path(Path::new("~/notes.txt"), None),
+            home.join("notes.txt")
+        );
+        assert_eq!(resolve_path(Path::new("~"), None), home);
+    }
+
+    #[test]
+    fn a_tilde_inside_a_name_is_part_of_the_name() {
+        // `~backup` is a file called `~backup`, and `a~b` is not a home directory.
+        // Only a leading `~` on its own component means one.
+        let resolved = resolve_path(Path::new("~backup"), Some(Path::new("/w/a.txt")));
+        assert_eq!(resolved, PathBuf::from("/w/~backup"));
+    }
 
     #[test]
     fn colours_are_converted_to_truecolor() {
