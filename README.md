@@ -1,3 +1,5 @@
+<img src="docs/assets/deco-mark.svg" alt="" width="84" align="right">
+
 # deco
 
 A lightweight, VS Code-compatible text editor written in Rust. No Electron.
@@ -20,7 +22,9 @@ $ cargo run -p deco -- --print-config       # why isn't my setting applying?
 
 ## Documentation
 
-[`docs/`](docs/README.md) documents each feature with an animation of it running:
+[`docs/`](docs/README.md) documents each feature with an animation of it
+running, and is published at
+[sabas0ba.github.io/deco](https://sabas0ba.github.io/deco/):
 
 | | |
 | --- | --- |

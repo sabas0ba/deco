@@ -1,0 +1,55 @@
+# The sidebar, in reading order. `path` is the source file, which is what the
+# layout matches against `page.path` to find the current entry — and what the
+# previous/next links at the foot of a page are ordered by.
+#
+# A new page in this directory is not in the navigation until it is listed here.
+
+- title: Overview
+  path: README.md
+  url: /
+  blurb: What deco is, and what these pages cover
+
+- title: Editing
+  path: editing.md
+  url: /editing.html
+  blurb: Motion, selection, line operations, multiple cursors, undo
+
+- title: Tabs
+  path: tabs.md
+  url: /tabs.html
+  blurb: Several documents, one per tab; what a tab keeps
+
+- title: Syntax highlighting
+  path: highlighting.md
+  url: /highlighting.html
+  blurb: Scopes, languages, choosing one, and why not tree-sitter
+
+- title: Find and replace
+  path: find-and-replace.md
+  url: /find-and-replace.html
+  blurb: ctrl+f, ctrl+h, F3, and the multi-cursor find keys
+
+- title: Running commands
+  path: commands.md
+  url: /commands.html
+  blurb: Command palette, quick open, go to symbol, search in files
+
+- title: Language servers
+  path: language-servers.md
+  url: /language-servers.html
+  blurb: Diagnostics, hover, definition, completion, formatting
+
+- title: Configuration
+  path: configuration.md
+  url: /configuration.html
+  blurb: settings.json, keybindings.json, themes, and where they are read from
+
+- title: Extensions
+  path: extensions.md
+  url: /extensions.html
+  blurb: The capability model, and why an extension gets less power here
+
+- title: Remote
+  path: remote.md
+  url: /remote.html
+  blurb: SSH, container and WSL authorities — and which half exists

@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="{{ site.lang | default: 'en' }}">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#181818" media="(prefers-color-scheme: dark)">
+    <meta name="theme-color" content="#f8f8f8" media="(prefers-color-scheme: light)">
+    {%- seo -%}
+    <link rel="icon" type="image/svg+xml" href="{{ '/assets/deco-mark.svg' | relative_url }}">
+    <link rel="stylesheet" href="{{ '/assets/css/deco.css' | relative_url }}">
+    <!-- Applied before the first paint, so a chosen theme does not flash the other one. -->
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem("deco-theme");
+          if (t === "light" || t === "dark") {
+            document.documentElement.setAttribute("data-theme", t);
+          }
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body>
+    <a class="skip-link" href="#content">Skip to content</a>
+
+    {%- assign nav = site.data.nav -%}
+    {%- assign home = false -%}
+    {%- if page.url == '/' or page.path == 'README.md' -%}{%- assign home = true -%}{%- endif -%}
+
+    <header class="topbar">
+      <a class="brand" href="{{ '/' | relative_url }}">
+        <img src="{{ '/assets/deco-mark.svg' | relative_url }}" alt="" width="26" height="26">
+        <span class="brand-name">deco</span>
+        <span class="brand-kind">docs</span>
+      </a>
+      <div class="topbar-actions">
+        <button type="button" id="theme-toggle" aria-live="polite" title="Switch between the light and dark theme">
+          <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1Zm0 1.5v11a5.5 5.5 0 0 1 0-11Z"/></svg>
+          <span class="label">Theme</span>
+        </button>
+        <a href="{{ site.github_repo_url }}" rel="noopener">
+          <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 0C3.58 0 0 3.58 0 8a8 8 0 0 0 5.47 7.59c.4.07.55-.17.55-.38l-.01-1.49c-2.01.36-2.53-.5-2.7-.96-.09-.24-.48-.96-.82-1.16-.28-.15-.68-.51-.01-.52.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48l-.01 2.19c0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+          <span class="label">GitHub</span>
+        </a>
+      </div>
+    </header>
+
+    <div class="shell">
+      <nav class="sidebar" aria-label="Documentation pages">
+        <p class="sidebar-title">Pages</p>
+        <ul>
+          {%- for item in nav -%}
+            {%- assign current = false -%}
+            {%- if item.path == page.path or item.url == page.url -%}{%- assign current = true -%}{%- endif -%}
+            <li>
+              <a href="{{ item.url | relative_url }}"{% if current %} aria-current="page"{% endif %}>
+                {{ item.title }}
+                <span class="file">{{ item.path }}</span>
+              </a>
+            </li>
+          {%- endfor -%}
+        </ul>
+      </nav>
+
+      <main id="content">
+        {%- if home -%}
+          <div class="hero">
+            <img src="{{ '/assets/deco-mark.svg' | relative_url }}" alt="" width="56" height="56">
+            <h1>deco</h1>
+            <p>{{ site.tagline }}. One page per feature, each of them showing an
+            animation generated from the editor&rsquo;s own renderer.</p>
+            <div class="hero-actions">
+              <a class="button button-primary" href="{{ nav[1].url | relative_url }}">Read the documentation</a>
+              <a class="button" href="{{ site.github_repo_url }}" rel="noopener">
+                <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 0C3.58 0 0 3.58 0 8a8 8 0 0 0 5.47 7.59c.4.07.55-.17.55-.38l-.01-1.49c-2.01.36-2.53-.5-2.7-.96-.09-.24-.48-.96-.82-1.16-.28-.15-.68-.51-.01-.52.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48l-.01 2.19c0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+                Source
+              </a>
+            </div>
+          </div>
+        {%- endif -%}
+
+        <article class="prose">
+          {%- unless home -%}
+            <h1>{{ page.title }}</h1>
+          {%- endunless -%}
+          {{ content }}
+        </article>
+
+        {%- comment -%}
+          Previous and next, in the order `_data/nav.yml` lists the pages.
+        {%- endcomment -%}
+        {%- assign index = -1 -%}
+        {%- for item in nav -%}
+          {%- if item.path == page.path or item.url == page.url -%}
+            {%- assign index = forloop.index0 -%}
+          {%- endif -%}
+        {%- endfor -%}
+        {%- if index >= 0 -%}
+          {%- assign previous_index = index | minus: 1 -%}
+          {%- assign next_index = index | plus: 1 -%}
+          {%- assign previous_page = nil -%}
+          {%- assign next_page = nil -%}
+          {%- for item in nav -%}
+            {%- if forloop.index0 == previous_index -%}{%- assign previous_page = item -%}{%- endif -%}
+            {%- if forloop.index0 == next_index -%}{%- assign next_page = item -%}{%- endif -%}
+          {%- endfor -%}
+          {%- if previous_page or next_page -%}
+            <nav class="pager" aria-label="Previous and next page">
+              {%- if previous_page -%}
+                <a class="previous" href="{{ previous_page.url | relative_url }}">
+                  <span class="dir">← Previous</span>{{ previous_page.title }}
+                </a>
+              {%- endif -%}
+              {%- if next_page -%}
+                <a class="next" href="{{ next_page.url | relative_url }}">
+                  <span class="dir">Next →</span>{{ next_page.title }}
+                </a>
+              {%- endif -%}
+            </nav>
+          {%- endif -%}
+        {%- endif -%}
+
+        <p class="page-meta">
+          <a href="{{ site.github_repo_url }}/blob/main/docs/{{ page.path }}" rel="noopener">Edit this page on GitHub</a>
+        </p>
+      </main>
+
+      <aside class="toc" id="toc" aria-label="On this page" hidden></aside>
+    </div>
+
+    <footer class="statusbar">
+      <span>deco</span>
+      <span>{{ site.tagline | downcase }}</span>
+      <span class="spacer"></span>
+      <a href="{{ site.github_repo_url }}" rel="noopener">github.com/{{ site.repository }}</a>
+      <a href="{{ site.github_repo_url }}/blob/main/LICENSE" rel="noopener">Apache-2.0</a>
+    </footer>
+
+    <script src="{{ '/assets/js/deco.js' | relative_url }}" defer></script>
+  </body>
+</html>

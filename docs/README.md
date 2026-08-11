@@ -1,8 +1,9 @@
 # deco documentation
 
 A lightweight VS Code-compatible editor in Rust. This directory is the detailed
-reference; the [top-level README](../README.md) is the short version, and it is
-the honest place to look for what is **not** built yet.
+reference; the [top-level README](https://github.com/sabas0ba/deco#readme) is
+the short version, and it is the honest place to look for what is **not** built
+yet.
 
 | Page | What it covers |
 | --- | --- |
@@ -39,3 +40,24 @@ pull request, and it needs neither an encoder dependency nor an embedded bitmap
 font. GitHub animates it in Markdown all the same.
 
 The caption under each frame is the key that was pressed to produce it.
+
+## About this site
+
+These pages are also published at
+[sabas0ba.github.io/deco](https://sabas0ba.github.io/deco/), built by GitHub
+Pages straight from this directory — so the site and the Markdown you are
+reading on GitHub never drift apart.
+
+The theme lives here rather than in a gem, in `_layouts/default.html`,
+`_data/nav.yml` and `assets/css/deco.css`. Its palette is deco's own: the dark
+side is Default Dark Modern and the light side Default Light Modern, both read
+off `crates/deco-theme/src/defaults.rs`, and the page is arranged the way the
+editor is — a bar top and bottom, an explorer down the left. The animations are
+captures of the real renderer, and this is the surrounding they were captured
+in. Only plugins GitHub Pages already enables are used, so there is no build
+step to run and nothing to deploy.
+
+```console
+$ cd docs && bundle install
+$ bundle exec jekyll serve    # preview the site at http://127.0.0.1:4000/deco/
+```
