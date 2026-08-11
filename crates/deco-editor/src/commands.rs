@@ -63,12 +63,20 @@ pub enum Outcome {
     Quit,
     /// Something worth telling the user.
     Message(String),
+    /// The frontend should read this path and open it.
+    ///
+    /// The core has no filesystem — `Document::from_file` is handed text, never a
+    /// path to read — which is what keeps the whole editable surface testable
+    /// without one. Quick open therefore names the file and lets the frontend
+    /// fetch it, exactly as [`Outcome::Save`] names no bytes.
+    OpenFile(std::path::PathBuf),
 }
 
 /// One entry in the command palette: what to run, and what to call it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaletteEntry {
-    /// The command identifier, VS Code's.
+    /// The command identifier, VS Code's — or, for a quick-open entry, the path
+    /// to open.
     pub id: String,
     /// The title to show, VS Code's wording where it has one.
     pub title: String,

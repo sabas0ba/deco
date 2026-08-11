@@ -126,6 +126,10 @@ fn demos() -> Vec<Demo> {
             name: "tabs",
             build: tabs,
         },
+        Demo {
+            name: "quick-open",
+            build: quick_open,
+        },
     ]
 }
 
@@ -478,6 +482,43 @@ fn tabs() -> String {
     take.press_and_hold(&["ctrl+tab"], 2)
         // The clean tab closes, and with one document left the bar goes away.
         .press_and_hold(&["ctrl+w"], 5);
+    take.finish()
+}
+
+fn quick_open() -> String {
+    let mut take = Take::new("main.rs", SAMPLE);
+    // The list is handed in rather than walked: a demonstration must not depend on
+    // what happens to be in the working directory when it is generated, or the
+    // committed file would differ by who ran the command.
+    let files = [
+        "src/main.rs",
+        "src/lib.rs",
+        "src/config/mod.rs",
+        "src/config/parse.rs",
+        "tests/smoke.rs",
+        "README.md",
+        "Cargo.toml",
+    ];
+    take.capture("ctrl+p opens any file in the workspace", 3);
+    take.session.offer_files(
+        files
+            .iter()
+            .map(|path| deco_editor::commands::PaletteEntry::new(&format!("/demo/{path}"), path))
+            .collect(),
+    );
+    take.resize_for_chrome();
+    take.capture("ctrl+p", 4);
+    take.type_text("conf");
+    take.press_and_hold(&["down"], 4);
+    // Accepting asks the frontend to read the file; the demonstration stands in
+    // for that, since there is nothing on disk to read.
+    take.session.prompt = None;
+    take.session.open(
+        PathBuf::from("/demo/src/config/parse.rs"),
+        "pub fn parse(text: &str) -> Config {\n    Config::from(text)\n}\n",
+    );
+    take.resize_for_chrome();
+    take.capture("enter — opened in a new tab", 5);
     take.finish()
 }
 

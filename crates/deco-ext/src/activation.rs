@@ -5,7 +5,7 @@
 //! requests at all, so narrow activation events are the cheapest possible
 //! mitigation for a compromised extension.
 
-use crate::glob;
+use deco_config::glob;
 
 /// One entry of `activationEvents`.
 #[derive(Debug, Clone, PartialEq, Eq)]

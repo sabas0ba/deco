@@ -324,6 +324,13 @@ impl ApplicationHandler for App<'_> {
                             self.session.status = Some(error.to_string());
                         }
                     }
+                    // Named rather than ignored: quick open reaches the frontend
+                    // by design, and this one has nowhere to draw its list. A
+                    // key that silently does nothing is the thing to avoid.
+                    Outcome::Frontend(command) => {
+                        self.session.status =
+                            Some(format!("{command} is only in the terminal frontend so far"));
+                    }
                     _ => {}
                 }
                 refuse_overlays(self.session);

@@ -9,11 +9,15 @@
 //!    `[language]` override sections.
 //! 3. [`editor`] projects the result into typed fields for the hot paths.
 //!
+//! [`glob`] implements the small glob dialect `files.exclude` and an extension's
+//! `workspaceContains` are written in.
+//!
 //! The goal is that an existing `settings.json` can be dropped in unchanged and
 //! mean the same thing it does in VS Code.
 
 pub mod defaults;
 pub mod editor;
+pub mod glob;
 pub mod jsonc;
 pub mod paths;
 pub mod settings;
