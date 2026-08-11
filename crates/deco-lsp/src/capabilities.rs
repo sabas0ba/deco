@@ -146,6 +146,22 @@ pub struct ServerCapabilities {
     pub formatting: bool,
     /// `textDocument/documentSymbol`.
     pub document_symbol: bool,
+    /// `textDocument/semanticTokens/full`, with the legend needed to read one.
+    pub semantic_tokens: Option<SemanticTokensOptions>,
+}
+
+/// What a server offers for semantic tokens.
+///
+/// The legend is not optional in practice: the wire format is integers, and
+/// without the server's own lists there is no way to turn a `3` into
+/// `"function"`. A server that offers the feature without a legend is offering
+/// something unreadable, and is treated as offering nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticTokensOptions {
+    /// Token type names, indexed by the integer on the wire.
+    pub token_types: Vec<String>,
+    /// Modifier names, indexed by *bit position* in the modifier bitset.
+    pub token_modifiers: Vec<String>,
 }
 
 /// What the server wants on save.
@@ -223,8 +239,51 @@ impl ServerCapabilities {
             rename: read_rename(value.get("renameProvider")),
             formatting: is_provider(value.get("documentFormattingProvider")),
             document_symbol: is_provider(value.get("documentSymbolProvider")),
+            semantic_tokens: read_semantic_tokens(value.get("semanticTokensProvider")),
         }
     }
+}
+
+/// Reads `semanticTokensProvider`.
+///
+/// `None` unless the server offers the **full** document request and a legend.
+/// deco has no use for `range`-only support: it highlights the visible lines of a
+/// document it has already lexed, and asking per range would mean a request per
+/// scroll.
+fn read_semantic_tokens(value: Option<&serde_json::Value>) -> Option<SemanticTokensOptions> {
+    let options = value.filter(|v| !v.is_null())?;
+    // `full` is `boolean | { delta?: boolean }`, and absent means not offered.
+    let full = match options.get("full") {
+        Some(serde_json::Value::Bool(enabled)) => *enabled,
+        Some(serde_json::Value::Object(_)) => true,
+        _ => false,
+    };
+    if !full {
+        return None;
+    }
+    let legend = options.get("legend")?;
+    let names = |key: &str| -> Vec<String> {
+        legend
+            .get(key)
+            .and_then(|v| v.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let token_types = names("tokenTypes");
+    if token_types.is_empty() {
+        // Nothing could be resolved, so the feature would produce spans with no
+        // type. Better to report it as unavailable than to colour by index.
+        return None;
+    }
+    Some(SemanticTokensOptions {
+        token_types,
+        token_modifiers: names("tokenModifiers"),
+    })
 }
 
 /// A provider field is `true`, or an options object, or absent/`false`.

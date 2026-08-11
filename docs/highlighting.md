@@ -64,10 +64,10 @@ What a lexer cannot do:
 - **Highlight a language inside another** — SQL in a string, CSS in HTML.
 - **Distinguish a shadowed name, a macro from a function, a field from a method.**
 
-The other half of that is already in place: a language server's **semantic
-tokens** carry exactly the information a lexer lacks, and `deco-theme` can already
-style them from `semanticTokenColors`. Wiring them into the renderer refines this
-where a server is running, rather than replacing it.
+The other half of that is a language server's **semantic tokens**, which carry
+exactly the information a lexer lacks. Where a server provides them they are
+drawn, and the lexer keeps colouring everything else — see
+[Semantic tokens](language-servers.md#semantic-tokens).
 
 ## Why not tree-sitter
 

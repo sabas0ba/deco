@@ -103,6 +103,13 @@ pub enum Update {
         /// Where the server pointed. Empty means it found nothing.
         locations: Vec<Location>,
     },
+    /// An answer to [`Supervisor::semantic_tokens`].
+    SemanticTokens {
+        /// The request this answers.
+        id: RequestId,
+        /// The classified runs, already absolute.
+        spans: Vec<crate::requests::SemanticSpan>,
+    },
     /// An answer to [`Supervisor::completion`].
     Completion {
         /// The request this answers.
@@ -570,6 +577,26 @@ impl Supervisor {
         self.positional("textDocument/definition", path, position)
     }
 
+    /// Asks how the whole document is classified.
+    ///
+    /// Full document only: deco highlights the visible lines of a document it has
+    /// already lexed, so a range request would mean one round trip per scroll for
+    /// a refinement the lexer has already approximated.
+    pub fn semantic_tokens(&mut self, path: &Path) -> Result<Option<RequestId>, SupervisorError> {
+        if self.client.capabilities().semantic_tokens.is_none() {
+            return Ok(None);
+        }
+        let Some(uri) = self.uri_for(path) else {
+            return Ok(None);
+        };
+        if !self.sync.is_open(&uri) {
+            return Ok(None);
+        }
+        let params = crate::requests::semantic_tokens_params(&uri);
+        self.request("textDocument/semanticTokens/full", params)
+            .map(Some)
+    }
+
     /// Asks what refers to something.
     pub fn references(
         &mut self,
@@ -840,6 +867,20 @@ impl Supervisor {
                         id,
                         method,
                     }),
+                    "textDocument/semanticTokens/full" => {
+                        // The legend is the server's, so a response cannot be read
+                        // without the capabilities it announced at startup.
+                        let spans = self
+                            .client
+                            .capabilities()
+                            .semantic_tokens
+                            .as_ref()
+                            .map(|legend| {
+                                crate::requests::semantic_spans_from_json(&result, legend)
+                            })
+                            .unwrap_or_default();
+                        Some(Update::SemanticTokens { id, spans })
+                    }
                     // A method deco raises but does not yet consume.
                     other => Some(Update::Noted {
                         detail: format!("unhandled response to {other}"),

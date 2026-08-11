@@ -123,6 +123,10 @@ fn demos() -> Vec<Demo> {
             build: highlighting,
         },
         Demo {
+            name: "semantic-tokens",
+            build: semantic_tokens,
+        },
+        Demo {
             name: "tabs",
             build: tabs,
         },
@@ -458,6 +462,65 @@ fn highlighting() -> String {
         take.capture(file, 5);
     }
     take.finish()
+}
+
+fn semantic_tokens() -> String {
+    // Deliberately a sample the lexer gets *right* as far as it can, so the
+    // difference the frames show is only what a lexer cannot know: which names
+    // are parameters, which calls are methods, and that `LIMIT` is a constant
+    // rather than the type its capitals suggest.
+    const TEXT: &str = "const LIMIT: u32 = 10;\n\nfn scale(values: &mut [u32], factor: u32) {\n    for value in values.iter_mut() {\n        *value = (*value * factor).min(LIMIT);\n    }\n}\n";
+
+    let mut take = Take::new("main.rs", TEXT);
+    take.at(0, 0)
+        .capture("the lexer alone — LIMIT reads as a type", 5);
+
+    // Injected rather than fetched, for the same reason the diagnostics
+    // demonstration injects: building the documentation must not need
+    // rust-analyzer installed, and the renderer cannot tell the difference —
+    // this is the list `textDocument/semanticTokens/full` decodes to.
+    take.session.semantic_tokens = vec![
+        semantic("variable", &["readonly"], 0, 6, 11),
+        semantic("function", &[], 2, 3, 8),
+        semantic("parameter", &[], 2, 9, 15),
+        semantic("parameter", &[], 2, 29, 35),
+        semantic("variable", &[], 3, 8, 13),
+        semantic("parameter", &[], 3, 17, 23),
+        semantic("method", &[], 3, 24, 32),
+        semantic("variable", &[], 4, 9, 14),
+        semantic("variable", &[], 4, 18, 23),
+        semantic("parameter", &[], 4, 26, 32),
+        semantic("method", &[], 4, 34, 37),
+        semantic("variable", &["readonly"], 4, 38, 43),
+    ];
+    take.capture("the server: LIMIT is a constant, and names are bound", 6);
+
+    // Off again, in place: the setting is read on every frame, so the same
+    // document and the same token list answer both ways without reopening it.
+    take.session
+        .settings
+        .load_layer(
+            deco_config::Scope::User,
+            r#"{ "editor.semanticHighlighting.enabled": false }"#,
+        )
+        .expect("the setting is valid JSON");
+    take.capture("editor.semanticHighlighting.enabled: false", 5);
+    take.finish()
+}
+
+/// One token in a server's answer, in the shape the decoder produces.
+fn semantic(
+    token_type: &str,
+    modifiers: &[&str],
+    line: u32,
+    from: u32,
+    to: u32,
+) -> deco_lsp::requests::SemanticSpan {
+    deco_lsp::requests::SemanticSpan {
+        range: Range::new(Position::new(line, from), Position::new(line, to)),
+        token_type: token_type.to_owned(),
+        modifiers: modifiers.iter().map(|m| (*m).to_owned()).collect(),
+    }
 }
 
 fn tabs() -> String {
