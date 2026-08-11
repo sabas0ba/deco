@@ -28,9 +28,14 @@ Filtering matches, best first:
 | The title's letters appear in order | `gtl` → **G**o **t**o **L**ine |
 
 The selection follows the **same command** as the list narrows, rather than
-staying on the same row. That matters more here than in a completion list: the
-next key runs whatever is selected, and a keystroke that silently moved the
-selection onto a different command would be a way to run the wrong one.
+staying on the same row or moving to the best match.
+
+**This diverges from VS Code**, whose quick pick selects the top result as the
+list changes. The reasoning here was that the next key runs whatever is selected,
+so a keystroke that moved the selection would be a way to run the wrong command —
+but it cuts the other way too: typing more can leave the selection on an entry that
+is no longer the best match for what you typed, which is its own way to run the
+wrong one. VS Code's answer is the one most people have in their fingers.
 
 If nothing matches, `enter` says so instead of closing quietly, which would look
 like the command had run.
@@ -152,7 +157,9 @@ There is no query field yet. The term is the selection, the word under the curso
 or whatever the find bar last searched for — in that order, because that is the
 order of how recently you said it. The matching options are the find bar's too, so
 `alt+c` and `alt+w` change what a project search finds in the same way they change
-what `ctrl+f` finds, and a term found in one is found in the other.
+what `ctrl+f` finds. That is **one find state being shared, not a convenience**:
+VS Code keeps the two independent, and case-sensitivity you set for a search
+across the project has no business changing what the next `ctrl+f` matches.
 
 Each row is `path:line: the line's text`, which is also what the filter matches —
 so typing `report` narrows four results to the one in `src/report.rs`.
