@@ -65,6 +65,8 @@ pub struct Lsp {
     hover_request: Option<RequestId>,
     /// The go-to-definition request in flight.
     definition_request: Option<RequestId>,
+    /// The outstanding `textDocument/references` request, if any.
+    references_request: Option<RequestId>,
     /// The completion list on screen, if one is open.
     suggest: Option<Suggest>,
     /// The completion request in flight.
@@ -104,6 +106,19 @@ impl ShownHover {
 
 /// Where the word under the cursor begins.
 ///
+/// `path` relative to `root` when it is inside it, and whole otherwise.
+///
+/// A references list is mostly locations in the workspace, and
+/// `/home/you/work/project/src/main.rs` repeated down the column crowds out the
+/// part that differs. A location outside the workspace keeps its full path,
+/// because there the directory is the informative part.
+fn shorten(path: &Path, root: Option<&Path>) -> String {
+    root.and_then(|root| path.strip_prefix(root).ok())
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
 /// The anchor a completion list filters from. A server is asked at the cursor
 /// and answers about the whole word, so the editor has to agree with it about
 /// where that word started — otherwise the list filters against the wrong text,
@@ -181,6 +196,7 @@ impl Lsp {
             hover: None,
             hover_request: None,
             definition_request: None,
+            references_request: None,
             suggest: None,
             completion_request: None,
             format_request: None,
@@ -426,6 +442,26 @@ impl Lsp {
             }
             Ok(None) => {
                 session.status = Some("this server does not offer formatting".to_owned());
+            }
+            Err(error) => self.report(session, error.to_string()),
+        }
+    }
+
+    /// Requests everything that refers to whatever is under the cursor.
+    pub fn request_references(&mut self, session: &mut Session) {
+        let (Some(path), Some(supervisor)) =
+            (session.document.path.clone(), self.supervisor.as_mut())
+        else {
+            return;
+        };
+        let position = session.view.selections.primary().active;
+        match supervisor.references(&path, position) {
+            Ok(Some(id)) => {
+                self.references_request = Some(id);
+                session.status = Some("Looking for references…".to_owned());
+            }
+            Ok(None) => {
+                session.status = Some("this server does not offer references".to_owned());
             }
             Err(error) => self.report(session, error.to_string()),
         }
@@ -677,6 +713,7 @@ impl Lsp {
                     self.hover = None;
                     self.hover_request = None;
                     self.definition_request = None;
+                    self.references_request = None;
                     self.suggest = None;
                     self.completion_request = None;
                     self.format_request = None;
@@ -711,10 +748,17 @@ impl Lsp {
                     method,
                     locations,
                 } => {
+                    if self.references_request.as_ref() == Some(&id) {
+                        self.references_request = None;
+                        self.offer_locations(session, &locations);
+                        changed = true;
+                        continue;
+                    }
                     if self.definition_request.as_ref() != Some(&id) {
                         continue;
                     }
                     self.definition_request = None;
+                    self.references_request = None;
                     changed |= self.go_to(session, &method, &locations);
                 }
                 Update::Completion {
@@ -818,10 +862,11 @@ impl Lsp {
             return true;
         };
 
+        // Several answers is a question, not a result: offer them rather than
+        // picking one. The same list references uses, for the same reason.
         if locations.len() > 1 {
-            // deco shows one document, so the rest cannot be listed yet. Saying
-            // how many there were is better than silently picking one.
-            session.status = Some(format!("{} results; showing the first", locations.len()));
+            self.offer_locations(session, locations);
+            return true;
         }
 
         let Ok(path) = target.uri.to_path(self.style) else {
@@ -868,6 +913,67 @@ impl Lsp {
         true
     }
 
+    /// Offers `locations` as a list to pick from.
+    ///
+    /// The same prompt a project-wide search uses, because the two are the same
+    /// question — which of these places do you want to be? — and a second list
+    /// widget that behaved almost identically would be a second place for it to
+    /// behave slightly differently.
+    fn offer_locations(&mut self, session: &mut Session, locations: &[deco_lsp::Location]) {
+        let style = self.style;
+        // The line's text is what makes a list of locations readable, and for a
+        // location in a file that is not on screen it has to be read from disk.
+        // One cache per response, because a server answering "find all references"
+        // routinely returns twenty locations in the same file.
+        let mut cache: std::collections::HashMap<PathBuf, Vec<String>> =
+            std::collections::HashMap::new();
+        let mut entries = Vec::new();
+
+        for location in locations {
+            let Ok(path) = location.uri.to_path(style) else {
+                // `jdt:` and friends: nothing here can open one, and an entry that
+                // cannot be opened is worse than one that is missing.
+                continue;
+            };
+            let lines = cache.entry(path.clone()).or_insert_with(|| {
+                // The open document's own text rather than what is on disk, since
+                // the two differ exactly when there are unsaved changes.
+                if session.document.path.as_deref() == Some(path.as_path()) {
+                    session
+                        .document
+                        .buffer
+                        .text()
+                        .lines()
+                        .map(str::to_owned)
+                        .collect()
+                } else {
+                    std::fs::read_to_string(&path)
+                        .map(|text| text.lines().map(str::to_owned).collect())
+                        .unwrap_or_default()
+                }
+            });
+            let line = location.range.start.line as usize;
+            let text = lines.get(line).map(|line| line.trim()).unwrap_or("");
+            let shown = shorten(&path, self.root.as_deref());
+            entries.push(deco_editor::commands::PaletteEntry::at(
+                &path.to_string_lossy(),
+                &format!("{shown}:{}: {text}", line + 1),
+                location.range.start,
+            ));
+        }
+
+        if entries.is_empty() {
+            session.status = Some("no locations found".to_owned());
+            return;
+        }
+        let count = entries.len();
+        session.offer_search_results("locations", entries);
+        session.status = Some(format!(
+            "{count} {}",
+            if count == 1 { "location" } else { "locations" }
+        ));
+    }
+
     /// Reloads the active document's diagnostics from the store.
     ///
     /// For a tab switch: the server has been publishing for every file it knows
@@ -899,6 +1005,7 @@ impl Lsp {
         self.hover = None;
         self.hover_request = None;
         self.definition_request = None;
+        self.references_request = None;
         self.suggest = None;
         self.completion_request = None;
         self.format_request = None;
@@ -1193,6 +1300,102 @@ mod tests {
         assert!(lsp.cursor_moved(&mut s), "outside the range");
         assert!(lsp.hover().is_none());
         assert_eq!(s.context.get("editorHoverVisible"), Some(&json!(false)));
+    }
+
+    // ---- The references list ---------------------------------------------
+
+    fn location(path: &str, line: u32, character: u32) -> deco_lsp::Location {
+        deco_lsp::Location {
+            uri: deco_lsp::Uri::from_path(Path::new(path), PathStyle::Unix).unwrap(),
+            range: deco_core::position::Range::new(
+                Position::new(line, character),
+                Position::new(line, character + 3),
+            ),
+        }
+    }
+
+    #[test]
+    fn references_are_offered_as_a_list_with_their_line_text() {
+        let mut s = session(Settings::with_defaults());
+        s.open(PathBuf::from("/w/a.toml"), "one = 1\ntwo = total\n");
+        let mut lsp = Lsp::new(&mut s, Some(PathBuf::from("/w")));
+
+        lsp.offer_locations(&mut s, &[location("/w/a.toml", 1, 6)]);
+        let prompt = s.prompt.as_ref().expect("a list should be open");
+        assert_eq!(prompt.matches(), 1);
+        // The path is shortened against the workspace root, and the line's text
+        // is what makes the row readable.
+        assert_eq!(prompt.selected().unwrap().title, "a.toml:2: two = total");
+        assert_eq!(s.status.as_deref(), Some("1 location"));
+    }
+
+    #[test]
+    fn the_open_documents_own_text_is_used_rather_than_what_is_on_disk() {
+        // They differ exactly when there are unsaved changes, and the list has to
+        // describe what the user is looking at.
+        let mut s = session(Settings::with_defaults());
+        s.open(PathBuf::from("/w/a.toml"), "edited in memory\n");
+        let mut lsp = Lsp::new(&mut s, Some(PathBuf::from("/w")));
+        lsp.offer_locations(&mut s, &[location("/w/a.toml", 0, 0)]);
+        assert!(
+            s.prompt
+                .as_ref()
+                .unwrap()
+                .selected()
+                .unwrap()
+                .title
+                .contains("edited in memory"),
+            "a file that does not exist on disk still shows its line"
+        );
+    }
+
+    #[test]
+    fn an_empty_answer_says_so_rather_than_opening_an_empty_list() {
+        let mut s = session(Settings::with_defaults());
+        let mut lsp = Lsp::new(&mut s, None);
+        lsp.offer_locations(&mut s, &[]);
+        assert!(s.prompt.is_none());
+        assert_eq!(s.status.as_deref(), Some("no locations found"));
+    }
+
+    #[test]
+    fn several_locations_are_counted_in_the_plural() {
+        let mut s = session(Settings::with_defaults());
+        s.open(PathBuf::from("/w/a.toml"), "a\nb\nc\n");
+        let mut lsp = Lsp::new(&mut s, Some(PathBuf::from("/w")));
+        lsp.offer_locations(
+            &mut s,
+            &[location("/w/a.toml", 0, 0), location("/w/a.toml", 2, 0)],
+        );
+        assert_eq!(s.status.as_deref(), Some("2 locations"));
+        assert_eq!(s.prompt.as_ref().unwrap().matches(), 2);
+    }
+
+    #[test]
+    fn a_location_outside_the_workspace_keeps_its_whole_path() {
+        assert_eq!(
+            shorten(Path::new("/w/src/main.rs"), Some(Path::new("/w"))),
+            "src/main.rs"
+        );
+        assert_eq!(
+            shorten(Path::new("/elsewhere/dep.rs"), Some(Path::new("/w"))),
+            "/elsewhere/dep.rs"
+        );
+        assert_eq!(shorten(Path::new("/w/a.rs"), None), "/w/a.rs");
+    }
+
+    #[test]
+    fn a_stale_references_answer_is_ignored() {
+        // The same rule the other requests follow: an answer to a question the
+        // user has moved on from describes a position that no longer exists.
+        let mut s = session(Settings::with_defaults());
+        let mut lsp = Lsp::new(&mut s, None);
+        lsp.references_request = Some(deco_lsp::RequestId::Number(7));
+        assert_ne!(
+            lsp.references_request,
+            Some(deco_lsp::RequestId::Number(8)),
+            "the ids differ, so the answer is not this request's"
+        );
     }
 
     #[test]

@@ -69,6 +69,29 @@ type, `m` module, `k` keyword, `s` snippet, `·` anything else.
 becomes `foo(arg)` and the status bar says so. Inserting the placeholder syntax
 literally would be worse; there are no tab stops to jump between yet.
 
+## References
+
+`shift+f12` lists everything that refers to the symbol under the cursor, and
+`enter` opens that file at that line. It is the same list a project-wide search
+produces — the question is the same one, *which of these places do you want to be*
+— so it filters as you type in the same way.
+
+| Key | Command |
+| --- | --- |
+| `shift+f12` | `editor.action.goToReferences` |
+
+Each row is `path:line: the line's text`, with the path shortened against the
+workspace root; a location outside the workspace keeps its whole path, because
+there the directory is the informative part. The declaration is included, because
+"find all references" that omits the definition is a surprising answer and VS Code
+includes it too.
+
+The line's text comes from the **open document** when the location is in it, and
+from disk otherwise — the two differ exactly when there are unsaved changes, and
+the list has to describe what you are looking at. Locations in a scheme deco
+cannot open (`jdt:`, `untitled:`) are left out rather than listed as rows that do
+nothing.
+
 ## Formatting
 
 `ctrl+shift+i` formats the document and `ctrl+k ctrl+f` the selection. Both keys
@@ -127,14 +150,17 @@ defining a server you then decline.
 
 ## Not built yet
 
-Rename, the references list and code actions are parsed but not wired: nothing
-renders a reference list, and applying a rename means editing files that are not
-open, which deco cannot do while it holds one document. Those keys say the feature
-is not implemented rather than pretending. Changes are sent as full-document
-syncs; the incremental path exists in `deco-lsp` but the editor does not yet track
-applied ranges.
+Rename and code actions are parsed but not wired. Applying a rename means editing
+files that are not open — possible now that there are tabs, but it needs a
+`WorkspaceEdit` applied across several documents as one undoable action, which
+does not exist yet. Those keys say the feature is not implemented rather than
+pretending.
+
+Changes are sent as full-document syncs; the incremental path exists in
+`deco-lsp` but the editor does not yet track applied ranges. Semantic tokens are
+parsed and the theme can style them, but nothing renders them yet — see
+[Syntax highlighting](highlighting.md).
 
 Go-to-definition across files opens a new tab, or switches to the tab already
-holding the file — see [Tabs](tabs.md). When a server returns several results it
-takes the first and says how many there were, because nothing renders a list of
-locations yet.
+holding the file — see [Tabs](tabs.md). When a server returns several results
+they are offered as the same list references uses, rather than guessed between.
