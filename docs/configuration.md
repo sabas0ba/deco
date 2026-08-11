@@ -124,8 +124,14 @@ thirty-nine of them for nothing.
 
 **The choice lasts the session.** Making it stick means putting
 `workbench.colorTheme` in your settings, which the status bar says when the theme
-changes. deco reads that file and never writes it — an editor that edits your
-configuration behind you is worse than one that tells you what to put in it.
+changes.
+
+deco has **no way to write a settings file at all** — not a policy about this
+setting, but a capability it does not have. There is a good argument for keeping it
+that way, since an editor that edits your configuration behind you is worse than
+one that tells you what to put in it; there is also VS Code, which writes the
+setting and is not thought rude for it. Either way the sentence above is the state
+of the code, not a decision that has been made.
 
 A theme that cannot be read reports why and leaves the current one alone, because
 the alternative is an editor with no colours.

@@ -59,7 +59,9 @@ for — `.` or `::`. Typing narrows it in place and the same keystroke goes into
 document, so the list and the file always agree about what has been typed; a
 backspace widens it again. Ranking prefers a prefix match, then a
 case-insensitive prefix, then a subsequence, and the selection follows the same
-item as the list narrows rather than jumping to whatever is now at the top.
+item as the list narrows rather than moving to the best match. VS Code's
+`editor.suggestSelection` defaults to `first`, which does the opposite; deco does
+not read that setting yet.
 
 The marker in the left column is the item's kind: `f` function, `v` value, `t`
 type, `m` module, `k` keyword, `s` snippet, `·` anything else.

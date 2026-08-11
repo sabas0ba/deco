@@ -24,16 +24,21 @@ state, and the **diagnostics** a language server has published for it. Switch
 away, switch back, and press `ctrl+z` — the edit you made there is undone, not
 one from another file.
 
-The find bar deliberately does not survive a switch. Its match list describes
-text that is no longer on screen, and a stale highlight is worse than none — the
-same rule as when a file replaces the document. The query is kept, so `F3` still
-knows what to search for.
+The find bar does not survive a switch, and that is a limit rather than a
+preference: there is **one find state per session**, so there is nowhere per-tab
+to keep a match list. Closing it is the safe thing to do with state that describes
+text no longer on screen — a stale highlight is worse than none — but a find bar
+per tab would be better than either, and it is what VS Code has. The query is
+kept, so `F3` still knows what to search for.
 
 ## The rules, and why
 
 - **A file already open is switched to, not opened twice.** Two tabs onto one
-  file would be two divergent copies of it, and whichever was saved last would
-  silently win. Paths are compared with their `.` and `..` segments resolved, so
+  file would be two divergent copies of it in deco, because a tab *is* a document
+  and there is no separate view to open a second one in. That is a fact about this
+  editor rather than an argument against the idea: VS Code shows one file twice all
+  the time, as several views onto one buffer, and so does deco — with
+  [`ctrl+\`](#splitting), which is where a second view lives. Paths are compared with their `.` and `..` segments resolved, so
   the spelling that got there first does not decide — `deco src/main.rs` and the
   same file picked from `ctrl+p` are one tab. **Symlinks still defeat it**: two
   names for one file through a link are two tabs, which is the answer VS Code
