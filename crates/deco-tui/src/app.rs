@@ -134,6 +134,16 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
                         save(session, path.as_ref())?;
                         lsp.saved(session);
                     }
+                    Outcome::SaveAll => {
+                        // The loop and the reporting are the core's; only the
+                        // write is this side's, because only this side has a
+                        // filesystem.
+                        let outcome = session.save_all(write_file);
+                        if let Outcome::Message(report) = outcome {
+                            session.status = Some(report);
+                        }
+                        lsp.saved(session);
+                    }
                     // Quick open and search named a file; reading it is this
                     // side's job.
                     Outcome::OpenFile { path: target, at } => {
@@ -368,6 +378,11 @@ fn workspace_root(path: Option<&Path>) -> Option<PathBuf> {
         std::env::current_dir().ok()?.join(path)
     };
     absolute.parent().map(Path::to_path_buf)
+}
+
+/// Writes `contents` to `path`, describing the failure in a form fit to show.
+fn write_file(path: &Path, contents: &str) -> std::result::Result<(), String> {
+    std::fs::write(path, contents).map_err(|error| format!("{}: {error}", path.display()))
 }
 
 /// Writes the open document to disk.

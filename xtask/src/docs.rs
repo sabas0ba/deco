@@ -135,6 +135,10 @@ fn demos() -> Vec<Demo> {
             build: tabs,
         },
         Demo {
+            name: "save-all",
+            build: save_all,
+        },
+        Demo {
             name: "quick-open",
             build: quick_open,
         },
@@ -602,6 +606,37 @@ fn tabs() -> String {
     take.press_and_hold(&["ctrl+tab"], 2)
         // The clean tab closes, and with one document left the bar goes away.
         .press_and_hold(&["ctrl+w"], 5);
+    take.finish()
+}
+
+fn save_all() -> String {
+    let mut take = Take::new(
+        "main.rs",
+        "fn main() {\n    let total = items().sum();\n    println!(\"{total}\");\n}\n",
+    );
+    take.session.open(
+        PathBuf::from("/demo/lib.rs"),
+        "pub fn items() -> Vec<u32> {\n    vec![1, 2, 3]\n}\n",
+    );
+    take.resize_for_chrome();
+    take.at(1, 17).capture("two files open, neither edited", 4);
+
+    // Edit both tabs, so both carry the bar's dirty marker.
+    take.type_text(" // three");
+    take.press_and_hold(&["ctrl+tab"], 3)
+        .at(1, 8)
+        .type_text("mut ");
+    take.capture("two tabs edited — the bar marks both", 5);
+
+    // Exactly what the frontend does with `Outcome::SaveAll`: the loop and the
+    // reporting are the core's, and only the write belongs to the frontend. Here
+    // the write succeeds without touching a disk, which is the same closure the
+    // tests use.
+    if let deco_editor::commands::Outcome::Message(report) = take.session.save_all(|_, _| Ok(())) {
+        take.session.status = Some(report);
+    }
+    take.resize_for_chrome();
+    take.capture("ctrl+k s — both written, and it says how many", 6);
     take.finish()
 }
 

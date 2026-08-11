@@ -65,10 +65,39 @@ The bar uses the theme's own tab keys — `tab.activeBackground`,
 `editorGroupHeader.tabsBackground` — with sensible fallbacks for themes that do
 not set them.
 
+## Saving several at once
+
+`ctrl+k s` writes every tab with unsaved changes, and reports how many.
+
+![Editing two tabs and saving both with ctrl+k s](img/save-all.svg)
+ Each write
+is reported back individually, so one that fails leaves *that* tab dirty rather
+than marking the batch saved — a tab that looks saved and is not is how work gets
+lost. The reason goes where a reader can find it, since a status bar has one line
+and several failures would each shorten the last.
+
+A dirty **untitled** document is counted and skipped: there is no filename to
+write to, and inventing one would put your work somewhere you did not ask for.
+
+Each tab is written through its **own** settings, not the active tab's:
+`files.insertFinalNewline` can be set per language, so a batch that saves a
+`.md` and a `.txt` gives each the ending its own configuration asks for.
+
+| Key | Command |
+| --- | --- |
+| `ctrl+s` | `workbench.action.files.save` |
+| `ctrl+k s` | `workbench.action.files.saveAll` |
+
+The loop and its reporting live in the core, and only the write itself belongs to
+the frontend — so both frontends say the same thing about the same batch, and the
+behaviour is tested with no filesystem involved.
+
+`ctrl+shift+s` (save as) is **not** built: it needs a filename prompt and a tab
+that can be renamed under it. It says so when pressed.
+
 ## Not built yet
 
 No splits and no mouse: tabs are switched from the keyboard. A bar wider than
 the terminal truncates rather than scrolling — every tab is still reachable with
 `ctrl+tab`. The GPU frontend switches tabs but does not draw the bar, because it
-has no chrome to draw it in yet. `ctrl+k s` (save all) is not implemented; save
-saves the active document.
+has no chrome to draw it in yet.
