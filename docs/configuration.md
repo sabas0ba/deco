@@ -65,7 +65,8 @@ Settings deco resolves into an open document's behaviour: `editor.tabSize`,
 
 Not every one of those has a visible effect in every frontend yet — the terminal
 has no font size, and word wrap is resolved but not yet applied to the layout.
-The [top-level README](../README.md) is the place that tracks what is unbuilt.
+The [top-level README](https://github.com/sabas0ba/deco#readme) is the place
+that tracks what is unbuilt.
 
 Unknown keys are kept rather than rejected. A settings file written for VS Code
 contains a great many of them, and failing on the first one would make the file

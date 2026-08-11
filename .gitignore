@@ -13,3 +13,9 @@ extension-host/*.tsbuildinfo
 
 # Release staging produced by `cargo xtask dist`
 /dist
+
+# Local `jekyll serve` of the documentation site; GitHub Pages builds its own
+docs/_site/
+docs/.jekyll-cache/
+docs/.jekyll-metadata
+docs/Gemfile.lock

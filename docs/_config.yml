@@ -1,0 +1,67 @@
+# Jekyll configuration for the GitHub Pages site served from this directory.
+#
+# The site is built by GitHub Pages itself ("Deploy from a branch" → `main`,
+# `/docs`), so only plugins on the Pages allow-list may appear here. Every one
+# below is already enabled by default there; listing them keeps a local
+# `bundle exec jekyll serve` building the same site GitHub does.
+#
+# The theme lives in `_layouts` and `assets/css` rather than in a gem, because
+# the point of it is to look like deco — the palette is deco's own Dark Modern
+# and Light Modern, taken from `crates/deco-theme/src/defaults.rs`.
+
+title: deco
+tagline: A lightweight, VS Code-compatible text editor written in Rust
+description: >-
+  Documentation for deco, a lightweight VS Code-compatible text editor written
+  in Rust. No Electron. Every feature is documented with an animation generated
+  from deco's own renderer.
+lang: en
+
+url: https://sabas0ba.github.io
+baseurl: /deco
+
+repository: sabas0ba/deco
+github_repo_url: https://github.com/sabas0ba/deco
+
+markdown: kramdown
+kramdown:
+  input: GFM
+  syntax_highlighter: rouge
+  auto_ids: true
+
+plugins:
+  - jekyll-optional-front-matter # render .md files that carry no front matter
+  - jekyll-readme-index # README.md becomes the site index
+  - jekyll-relative-links # `editing.md` links resolve to the built page
+  - jekyll-titles-from-headings # page title comes from the leading heading
+  - jekyll-seo-tag
+  - jekyll-sitemap
+
+optional_front_matter:
+  remove_originals: true
+
+readme_index:
+  enabled: true
+  remove_originals: true
+
+relative_links:
+  enabled: true
+  collections: false
+
+# The layout prints the title itself, so the source heading would otherwise be
+# shown twice.
+titles_from_headings:
+  enabled: true
+  strip_title: true
+  collections: false
+
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default
+
+exclude:
+  - Gemfile
+  - Gemfile.lock
+  - vendor

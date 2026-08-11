@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-labelledby="deco-mark-title">
+<title id="deco-mark-title">deco</title>
+<!--
+  A lowercase "d" whose stem is a text cursor: the bowl is the editor, the
+  full-height stem is the caret standing in the middle of it.
+
+  The colours are deco's own Dark Modern defaults — the tile is
+  `editor.background`, the border is `tab.border`, the bowl runs between
+  `editorInfo.foreground` and `focusBorder`, and the stem is the caret. The tile
+  is dark on purpose so the mark keeps its contrast on a light page as well as a
+  dark one, and so a README shows it the same way under either GitHub theme.
+-->
+<defs>
+<linearGradient id="deco-bowl" x1="17" y1="24" x2="45" y2="54" gradientUnits="userSpaceOnUse">
+<stop offset="0" stop-color="#4fc1ff"/>
+<stop offset="1" stop-color="#0078d4"/>
+</linearGradient>
+</defs>
+<rect x="1" y="1" width="62" height="62" rx="15" fill="#1f1f1f"/>
+<rect x="1.5" y="1.5" width="61" height="61" rx="14.5" fill="none" stroke="#3c3c3c"/>
+<circle cx="30" cy="38" r="12" fill="none" stroke="url(#deco-bowl)" stroke-width="6"/>
+<rect x="42" y="9" width="6" height="44" rx="3" fill="#e8e8e8"/>
+</svg>
