@@ -245,6 +245,14 @@ $ cargo xtask dist --target aarch64-apple-darwin
 be rehearsed without pushing a tag. It writes the archive and its `.sha256` to
 `dist/`.
 
+A pull request is checked on Linux. macOS and Windows — whose runner minutes
+bill at ten and two times a Linux one — are checked on every merge to `main`, on
+`workflow_dispatch`, and on a release tag, so nothing lands or ships unbuilt on
+them; a pull request only gives up the per-push signal. Label a pull request
+`ci:full` to get that signal back for a change that needs it, which is worth
+doing before merging anything platform-specific: a path, a terminal or process
+API, a `#[cfg]`, or a dependency with per-platform code.
+
 ## Commit messages
 
 [Conventional Commits](https://www.conventionalcommits.org/), checked in CI:
