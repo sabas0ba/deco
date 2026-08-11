@@ -29,7 +29,7 @@ $ cargo run -p deco -- --print-config       # why isn't my setting applying?
 | [Syntax highlighting](docs/highlighting.md) | Scopes, languages, and why not tree-sitter |
 | [Find and replace](docs/find-and-replace.md) | `ctrl+f`, `ctrl+h`, `F3`, and the multi-cursor find keys |
 | [Running commands](docs/commands.md) | The command palette, quick open, search in files, go to line |
-| [Language servers](docs/language-servers.md) | Diagnostics, hover, go-to-definition, completion, formatting |
+| [Language servers](docs/language-servers.md) | Diagnostics, hover, definition, references, completion, formatting |
 | [Configuration](docs/configuration.md) | `settings.json`, `keybindings.json`, themes, and where they are read from |
 | [Extensions](docs/extensions.md) | The capability model, and why an extension gets less power here |
 | [Remote](docs/remote.md) | SSH, container and WSL authorities — and which half exists |
@@ -70,7 +70,7 @@ thin painter.
 | Theme extensions from the marketplace | Yes — declarative, no host process |
 | Code extensions (`main`) | Protocol and sandbox built; host not yet wired to the editor |
 | Remote SSH / containers / WSL | Authorities and transports built; server not yet |
-| Language servers (LSP) | Diagnostics, hover, go-to-definition, completion, formatting |
+| Language servers (LSP) | Diagnostics, hover, go-to-definition, references, completion, formatting |
 | Find and replace (`ctrl+f`, `ctrl+h`, `F3`, `ctrl+d`, `ctrl+shift+l`) | Literal search only — no regular expressions |
 | Search in files (`ctrl+shift+f`) | Yes — bounded and synchronous, and it says so |
 | Command palette (`ctrl+shift+p`), quick open (`ctrl+p`), go to line (`ctrl+g`) | Yes |
@@ -174,23 +174,22 @@ does not:
   `docker exec` commands to reach them, and speaks the framed protocol the two
   ends would use. What does not exist yet is the other end: there is no
   `deco --server`, no provisioning it onto a remote, and no port forwarding.
-- **Rename, references and code actions are not wired.** Diagnostics, hover
-  (`ctrl+k ctrl+i`), go-to-definition (`F12`), completion (`ctrl+space`) and
-  formatting (`ctrl+shift+i`) work. The client can raise
-  `textDocument/references` and `rename`, and parses the answers, but nothing
-  renders a reference list, and applying a rename means editing files that are
-  not open — which deco cannot do while it holds one document. Those keys say
-  the feature is not implemented rather than pretending. Changes are sent as
-  full-document syncs; the incremental path exists in `deco-lsp` but the editor
-  does not yet track applied ranges.
+- **Rename and code actions are not wired.** Diagnostics, hover
+  (`ctrl+k ctrl+i`), go-to-definition (`F12`), references (`shift+f12`),
+  completion (`ctrl+space`) and formatting (`ctrl+shift+i`) work. Applying a
+  rename means editing files that are not open — possible now that there are
+  tabs, but it needs a `WorkspaceEdit` applied across several documents as one
+  undoable action, which does not exist yet. Those keys say the feature is not
+  implemented rather than pretending. Changes are sent as full-document syncs;
+  the incremental path exists in `deco-lsp` but the editor does not yet track
+  applied ranges.
 - **Snippets are inserted without their placeholders.** deco advertises
   `snippetSupport: false` and several servers send them anyway, so `foo(${1:arg})`
   becomes `foo(arg)` and the status bar says so. There are no tab stops to jump
   between yet.
 - **Go-to-definition across files opens a new tab** (or switches to the tab
-  already holding the file), so unsaved work is never at risk. When a server
-  returns several results it takes the first and says how many there were,
-  because there is nowhere to list the rest.
+  already holding the file), so unsaved work is never at risk. Several results
+  are offered as a list rather than guessed between.
 - **Syntax highlighting is lexical, and terminal-only.** 19 languages are
   coloured from a hand-written lexer emitting TextMate scopes, which the theme
   layer resolves exactly as it resolves a real grammar's — see
