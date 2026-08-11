@@ -3,7 +3,7 @@
 mod cli;
 mod config;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
@@ -59,16 +59,23 @@ fn main() -> Result<()> {
     session.problems.extend(loaded.problems);
 
     for path in &cli.files {
+        // Absolute before the session sees it. Every other way a file gets opened
+        // — quick open, `ctrl+o`, a search result, a jump to a definition —
+        // resolves first, so a relative path from here was the one spelling that
+        // never compared equal to any other: `deco src/main.rs` and then picking
+        // the same file from `ctrl+p` opened it twice, in two buffers with two
+        // undo histories.
+        let path = absolute(path);
         // A path that does not exist yet is a new file, not an error — that is
         // how every editor is used to create one.
-        let text = match std::fs::read_to_string(path) {
+        let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
             Err(error) => {
                 return Err(error).with_context(|| format!("could not read {}", path.display()))
             }
         };
-        session.open(path.clone(), &text);
+        session.open(path, &text);
     }
     // Opening focuses each file in turn, so the last one ends up active. The
     // first is what the user led with, so it is the one shown.
@@ -92,6 +99,21 @@ fn main() -> Result<()> {
     match cli.frontend {
         Frontend::Tui => deco_tui::run(&mut session, cli.files.first().cloned()),
         Frontend::Gui => run_gui(&mut session),
+    }
+}
+
+/// `path` against the working directory, when it is not already absolute.
+///
+/// Lexical: a file that does not exist yet has to resolve too, so this cannot be
+/// `fs::canonicalize`. A working directory that cannot be read leaves the path as
+/// typed, which is what deco did before it resolved anything.
+fn absolute(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    match std::env::current_dir() {
+        Ok(cwd) => cwd.join(path),
+        Err(_) => path.to_path_buf(),
     }
 }
 
