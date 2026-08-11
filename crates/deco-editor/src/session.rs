@@ -3434,6 +3434,43 @@ mod tests {
         assert_eq!(panes[0].document.buffer.text(), "yx\n");
     }
 
+    // ---- Picker selection --------------------------------------------------
+
+    #[test]
+    fn typing_in_a_picker_selects_the_best_match() {
+        // `enter` runs whatever is selected, so it has to be the best match for
+        // what has been typed. The selection used to follow the previously
+        // selected entry — which starts on row 0, whatever the registry listed
+        // first, so nobody chose it — and stayed there however badly it ranked.
+        let mut s = searchable("x\n");
+        s.run("workbench.action.showCommands", None, 0);
+        press(&mut s, "down");
+        let arrowed = s.prompt.as_ref().unwrap().selected().unwrap().id.clone();
+
+        for key in ["u", "n", "d", "o"] {
+            press(&mut s, key);
+        }
+        let prompt = s.prompt.as_ref().expect("still open");
+        assert_eq!(prompt.selected_row(), 0);
+        assert_ne!(prompt.selected().unwrap().id, arrowed);
+        assert_eq!(prompt.selected().unwrap().id, "undo");
+    }
+
+    #[test]
+    fn deleting_from_a_picker_reranks_too() {
+        // Widening is a new query, so the best match for it is what should be
+        // selected rather than the best match for the longer one.
+        let mut s = searchable("x\n");
+        s.run("workbench.action.editor.changeLanguageMode", None, 0);
+        for key in ["j", "s", "o", "n"] {
+            press(&mut s, key);
+        }
+        assert_eq!(s.prompt.as_ref().unwrap().selected().unwrap().title, "JSON");
+        press(&mut s, "backspace");
+        let prompt = s.prompt.as_ref().unwrap();
+        assert_eq!(prompt.selected_row(), 0, "the top of the narrowed list");
+    }
+
     // ---- One file, one tab -------------------------------------------------
 
     #[test]
