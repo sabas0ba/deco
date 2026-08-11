@@ -15,6 +15,8 @@
 use std::path::Path;
 
 use deco_config::{glob, Settings};
+use deco_core::search::SearchOptions;
+use deco_core::Buffer;
 use deco_editor::commands::PaletteEntry;
 
 /// How many files the list holds before the walk gives up.
@@ -76,6 +78,98 @@ pub fn list(root: &Path, settings: &Settings) -> Listing {
     listing
 }
 
+/// How many matches a project-wide search reports before it stops.
+///
+/// A term that appears ten thousand times is not being looked for one occurrence
+/// at a time, and a list nobody can scroll to the end of is not more useful than
+/// a list that says how many it stopped at.
+pub const MAX_MATCHES: usize = 500;
+
+/// Largest file a project-wide search will read.
+///
+/// A minified bundle or a checked-in database is not what anyone means by
+/// "search my project", and reading it is most of the time the search takes.
+pub const MAX_FILE_BYTES: u64 = 1 << 20;
+
+/// What a project-wide search found.
+#[derive(Debug, Default)]
+pub struct Found {
+    /// One entry per match: the file as its `id`, `path:line: text` as its title,
+    /// and the position to land on.
+    pub matches: Vec<PaletteEntry>,
+    /// Whether a limit stopped the search early.
+    pub truncated: bool,
+    /// How many files were read.
+    pub files_searched: usize,
+}
+
+/// Searches every file under `root` for `needle`.
+///
+/// Synchronous and bounded, which is the honest first version: a search that
+/// streams results as it finds them needs a thread and a panel that updates, and
+/// this needs neither to be useful. The bounds are reported rather than hidden.
+pub fn search(root: &Path, settings: &Settings, needle: &str, options: SearchOptions) -> Found {
+    let mut found = Found::default();
+    if needle.is_empty() {
+        return found;
+    }
+    let listing = list(root, settings);
+    found.truncated = listing.truncated;
+
+    for entry in &listing.files {
+        if found.matches.len() >= MAX_MATCHES {
+            found.truncated = true;
+            break;
+        }
+        let path = Path::new(&entry.id);
+        // Size first, so a huge file costs a `stat` rather than a read.
+        if std::fs::metadata(path).map(|m| m.len()).unwrap_or(u64::MAX) > MAX_FILE_BYTES {
+            continue;
+        }
+        // Not UTF-8 is how a binary file presents itself here, and skipping it is
+        // right: a match inside a PNG is not a search result.
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        found.files_searched += 1;
+
+        // The same search the find bar uses, so a term that matches in one place
+        // matches in the other. Reading the file into a rope to do it is more work
+        // than a bespoke scan would be, and worth it for having one definition of
+        // what a match is.
+        let buffer = Buffer::from_text(&text);
+        for range in deco_core::search::find_all(&buffer, needle, options) {
+            if found.matches.len() >= MAX_MATCHES {
+                found.truncated = true;
+                break;
+            }
+            let line = buffer
+                .line_content(range.start.line as usize)
+                .map(|line| line.to_string())
+                .unwrap_or_default();
+            found.matches.push(PaletteEntry::at(
+                &entry.id,
+                &format!(
+                    "{}:{}: {}",
+                    entry.title,
+                    range.start.line + 1,
+                    truncate(line.trim(), 120)
+                ),
+                range.start,
+            ));
+        }
+    }
+    found
+}
+
+/// `text` cut to `limit` characters, with an ellipsis when it was cut.
+fn truncate(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.to_owned();
+    }
+    text.chars().take(limit).collect::<String>() + "…"
+}
+
 fn walk(root: &Path, dir: &Path, depth: usize, excludes: &[String], listing: &mut Listing) {
     if depth > MAX_DEPTH {
         listing.truncated = true;
@@ -111,10 +205,9 @@ fn walk(root: &Path, dir: &Path, depth: usize, excludes: &[String], listing: &mu
             }
             walk(root, &path, depth + 1, excludes, listing);
         } else if kind.is_file() && !is_excluded(excludes, &relative) {
-            listing.files.push(PaletteEntry {
-                id: path.to_string_lossy().into_owned(),
-                title: relative,
-            });
+            listing
+                .files
+                .push(PaletteEntry::new(&path.to_string_lossy(), &relative));
         }
     }
 }
@@ -268,6 +361,158 @@ mod tests {
             )
             .unwrap();
         assert_eq!(titles(&list(&root, &settings)), vec!["a.rs"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ---- Project-wide search ---------------------------------------------
+
+    fn matches(found: &Found) -> Vec<&str> {
+        found.matches.iter().map(|m| m.title.as_str()).collect()
+    }
+
+    #[test]
+    fn a_term_is_found_across_files_with_its_line_and_text() {
+        let root = tree("search", &["a.rs", "b.rs"]);
+        std::fs::write(root.join("a.rs"), "fn one() {}\nlet total = 1;\n").unwrap();
+        std::fs::write(root.join("b.rs"), "// total\n").unwrap();
+        let found = search(
+            &root,
+            &Settings::with_defaults(),
+            "total",
+            SearchOptions::EXACT,
+        );
+        assert_eq!(
+            matches(&found),
+            vec!["a.rs:2: let total = 1;", "b.rs:1: // total"]
+        );
+        assert!(!found.truncated);
+        assert_eq!(found.files_searched, 2);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_match_carries_the_position_to_land_on() {
+        let root = tree("search-pos", &["a.rs"]);
+        std::fs::write(root.join("a.rs"), "one\ntwo total\n").unwrap();
+        let found = search(
+            &root,
+            &Settings::with_defaults(),
+            "total",
+            SearchOptions::EXACT,
+        );
+        let at = found.matches[0].at.expect("a result is a position");
+        assert_eq!((at.line, at.character), (1, 4));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_search_options_are_the_find_bars() {
+        // One definition of what a match is: a term found in the find bar must be
+        // found here too, and not found where the find bar would not find it.
+        let root = tree("search-options", &["a.rs"]);
+        std::fs::write(root.join("a.rs"), "Total\ntotalise\n").unwrap();
+        let settings = Settings::with_defaults();
+
+        let sensitive = search(&root, &settings, "total", SearchOptions::EXACT);
+        assert_eq!(matches(&sensitive), vec!["a.rs:2: totalise"]);
+
+        let insensitive = search(&root, &settings, "total", SearchOptions::default());
+        assert_eq!(insensitive.matches.len(), 2, "`Total` matches too");
+
+        let whole = search(
+            &root,
+            &settings,
+            "total",
+            SearchOptions {
+                case_sensitive: false,
+                whole_word: true,
+            },
+        );
+        assert_eq!(matches(&whole), vec!["a.rs:1: Total"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_empty_needle_finds_nothing_rather_than_everything() {
+        let root = tree("search-empty", &["a.rs"]);
+        let found = search(&root, &Settings::with_defaults(), "", SearchOptions::EXACT);
+        assert!(found.matches.is_empty());
+        assert_eq!(found.files_searched, 0, "nothing was even read");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_file_that_is_not_text_is_skipped_rather_than_matched() {
+        let root = tree("search-binary", &["a.rs"]);
+        std::fs::write(root.join("blob.bin"), [0xff, 0xfe, b'h', b'i', 0x00]).unwrap();
+        std::fs::write(root.join("a.rs"), "hi\n").unwrap();
+        let found = search(
+            &root,
+            &Settings::with_defaults(),
+            "hi",
+            SearchOptions::EXACT,
+        );
+        assert_eq!(matches(&found), vec!["a.rs:1: hi"]);
+        assert_eq!(found.files_searched, 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_file_over_the_size_limit_is_not_read() {
+        let root = tree("search-big", &["a.rs"]);
+        std::fs::write(root.join("a.rs"), "needle\n").unwrap();
+        let big = "x".repeat((MAX_FILE_BYTES + 1) as usize) + "needle";
+        std::fs::write(root.join("big.rs"), big).unwrap();
+        let found = search(
+            &root,
+            &Settings::with_defaults(),
+            "needle",
+            SearchOptions::EXACT,
+        );
+        assert_eq!(matches(&found), vec!["a.rs:1: needle"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn hitting_the_match_limit_is_reported() {
+        let root = tree("search-many", &["a.rs"]);
+        std::fs::write(root.join("a.rs"), "x\n".repeat(MAX_MATCHES + 10)).unwrap();
+        let found = search(&root, &Settings::with_defaults(), "x", SearchOptions::EXACT);
+        assert_eq!(found.matches.len(), MAX_MATCHES);
+        assert!(found.truncated, "the reader has to be told it stopped");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_excluded_file_is_not_searched() {
+        let root = tree("search-excluded", &["keep.rs", "vendor/dep.rs"]);
+        std::fs::write(root.join("keep.rs"), "needle\n").unwrap();
+        std::fs::write(root.join("vendor/dep.rs"), "needle\n").unwrap();
+        let mut settings = Settings::with_defaults();
+        settings
+            .load_layer(
+                deco_config::Scope::User,
+                r#"{ "files.exclude": { "vendor": true } }"#,
+            )
+            .unwrap();
+        let found = search(&root, &settings, "needle", SearchOptions::EXACT);
+        assert_eq!(matches(&found), vec!["keep.rs:1: needle"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_very_long_line_is_shortened_for_the_list() {
+        let root = tree("search-long", &["a.rs"]);
+        std::fs::write(root.join("a.rs"), format!("{} needle", "y".repeat(400))).unwrap();
+        let found = search(
+            &root,
+            &Settings::with_defaults(),
+            "needle",
+            SearchOptions::EXACT,
+        );
+        let title = &found.matches[0].title;
+        assert!(title.ends_with('…'), "{title}");
+        assert!(title.chars().count() < 200, "{}", title.chars().count());
         let _ = std::fs::remove_dir_all(&root);
     }
 

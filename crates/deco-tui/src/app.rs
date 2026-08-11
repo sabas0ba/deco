@@ -134,14 +134,29 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
                         save(session, path.as_ref())?;
                         lsp.saved(session);
                     }
-                    // Quick open named a file; reading it is this side's job.
-                    Outcome::OpenFile(target) => match std::fs::read_to_string(&target) {
-                        Ok(text) => session.open(target, &text),
-                        Err(error) => {
-                            session.status =
-                                Some(format!("could not open {}: {error}", target.display()));
+                    // Quick open and search named a file; reading it is this
+                    // side's job.
+                    Outcome::OpenFile { path: target, at } => {
+                        match std::fs::read_to_string(&target) {
+                            Ok(text) => {
+                                session.open(target, &text);
+                                if let Some(at) = at {
+                                    // Clamped, because the file on disk may have
+                                    // moved on since it was searched.
+                                    let at = session.document.buffer.clamp_position(at);
+                                    session.view.selections = deco_core::SelectionSet::caret(at);
+                                    session.view.reveal_cursor(
+                                        &session.document.buffer,
+                                        &session.document.settings,
+                                    );
+                                }
+                            }
+                            Err(error) => {
+                                session.status =
+                                    Some(format!("could not open {}: {error}", target.display()));
+                            }
                         }
-                    },
+                    }
                     // Commands the core cannot implement because they need a
                     // language server. Named rather than guessed at, so a
                     // mistyped binding still reports as unknown.
@@ -168,6 +183,30 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
                                 ));
                             }
                         }
+                        // Every file under the workspace root, searched here for
+                        // the same reason the file list is walked here.
+                        "workbench.action.findInFiles" => match session.search_seed() {
+                            Some(needle) => {
+                                let root = workspace_root(path.as_deref())
+                                    .unwrap_or_else(|| PathBuf::from("."));
+                                let found = crate::files::search(
+                                    &root,
+                                    &session.settings,
+                                    &needle,
+                                    session.find.options(),
+                                );
+                                let (truncated, count) = (found.truncated, found.matches.len());
+                                session.offer_search_results(&needle, found.matches);
+                                if truncated {
+                                    session.status = Some(format!(
+                                        "{count} matches for `{needle}`, and there may be more"
+                                    ));
+                                }
+                            }
+                            None => {
+                                session.status = Some("nothing to search for".to_owned());
+                            }
+                        },
                         "editor.action.formatDocument" => lsp.request_formatting(session, false),
                         "editor.action.formatSelection" => lsp.request_formatting(session, true),
                         "hideSuggestWidget" => lsp.dismiss_suggest(),
@@ -266,6 +305,7 @@ pub fn frontend_commands() -> Vec<deco_editor::commands::PaletteEntry> {
         ("editor.action.formatDocument", "Format Document"),
         ("editor.action.formatSelection", "Format Selection"),
         ("workbench.action.quickOpen", "Go to File"),
+        ("workbench.action.findInFiles", "Find in Files"),
     ]
     .iter()
     .map(|(id, title)| deco_editor::commands::PaletteEntry::new(id, title))

@@ -29,6 +29,8 @@ pub enum PromptKind {
     Commands,
     /// `ctrl+p`: a file in the workspace to open.
     Files,
+    /// `ctrl+shift+f`: a place in the workspace where a term was found.
+    SearchResults,
 }
 
 impl PromptKind {
@@ -38,18 +40,34 @@ impl PromptKind {
             Self::GoToLine => "Go to line:",
             Self::Commands => "Command:",
             Self::Files => "Open:",
+            Self::SearchResults => "Result:",
         }
     }
 
     /// What the choices are called, for the `3 commands` readout.
     ///
-    /// Empty for a prompt with no list, which has nothing to count.
-    pub fn noun(self) -> &'static str {
-        match self {
-            Self::GoToLine => "",
-            Self::Commands => "commands",
-            Self::Files => "files",
+    /// Empty for a prompt with no list, which has nothing to count. Singular for
+    /// one, because `1 matches` is the kind of detail that makes a careful reader
+    /// distrust everything else on the screen.
+    pub fn noun(self, count: usize) -> &'static str {
+        match (self, count) {
+            (Self::GoToLine, _) => "",
+            (Self::Commands, 1) => "command",
+            (Self::Commands, _) => "commands",
+            (Self::Files, 1) => "file",
+            (Self::Files, _) => "files",
+            (Self::SearchResults, 1) => "match",
+            (Self::SearchResults, _) => "matches",
         }
+    }
+
+    /// Whether a choice's identifier is worth a column of its own.
+    ///
+    /// True for a command, whose identifier is what a `keybindings.json` refers to
+    /// and which the title does not tell you. False for a file or a search result,
+    /// whose title already *is* the path.
+    pub fn shows_ids(self) -> bool {
+        matches!(self, Self::Commands)
     }
 }
 
@@ -289,10 +307,7 @@ mod tests {
     use crate::commands::MemoryClipboard;
 
     fn entry(id: &str, title: &str) -> PaletteEntry {
-        PaletteEntry {
-            id: id.to_owned(),
-            title: title.to_owned(),
-        }
+        PaletteEntry::new(id, title)
     }
 
     fn palette() -> Prompt {

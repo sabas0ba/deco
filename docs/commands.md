@@ -87,6 +87,33 @@ surface be tested without one. `ctrl+p` therefore asks the frontend for the list
 and accepting a choice asks the frontend to read the file, exactly as saving asks
 it to write one.
 
+## Search in files
+
+`ctrl+shift+f` searches every file under the workspace root and lists what it
+found; `enter` opens that file at that line.
+
+![Searching the workspace and opening a result](img/search-in-files.svg)
+
+There is no query field yet. The term is the selection, the word under the cursor,
+or whatever the find bar last searched for — in that order, because that is the
+order of how recently you said it. The matching options are the find bar's too, so
+`alt+c` and `alt+w` change what a project search finds in the same way they change
+what `ctrl+f` finds, and a term found in one is found in the other.
+
+Each row is `path:line: the line's text`, which is also what the filter matches —
+so typing `report` narrows four results to the one in `src/report.rs`.
+
+The search is **synchronous and bounded**: it stops at 500 matches, skips files
+over 1 MiB and files that are not text (which is how a binary presents itself),
+and honours `files.exclude` and the conventional skips exactly as quick open does.
+When a limit stops it, the status bar says how many it found *and that there may
+be more*.
+
+That honesty is the point. A streaming search that fills a panel as it goes needs
+a thread and a results view that updates, and this needs neither to be useful —
+but a search that quietly stopped at 500 and let you believe that was all of them
+would be worse than no search.
+
 ## Go to line
 
 `ctrl+g` asks for a line number.
@@ -115,10 +142,11 @@ built from the same one-line input:
 
 ## Not built yet
 
-Search-in-files (`ctrl+shift+f`), the keyboard-shortcuts editor and the settings
-UI. Those keys report themselves as unimplemented rather than doing nothing.
-Quick open has no symbol mode (`ctrl+p` then `@`) and no recently-opened ordering
-— the list is alphabetical.
+The keyboard-shortcuts editor and the settings UI. Those keys report themselves
+as unimplemented rather than doing nothing. Quick open has no symbol mode
+(`ctrl+p` then `@`) and no recently-opened ordering — the list is alphabetical.
+Search in files has no query field, no replace-across-files, and no regular
+expressions.
 
 The GPU frontend has no chrome to draw a prompt in, so it refuses `ctrl+g`,
 `ctrl+shift+p` and `ctrl+p` and says so — an invisible widget holding the keyboard

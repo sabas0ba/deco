@@ -130,6 +130,10 @@ fn demos() -> Vec<Demo> {
             name: "quick-open",
             build: quick_open,
         },
+        Demo {
+            name: "search-in-files",
+            build: search_in_files,
+        },
     ]
 }
 
@@ -520,6 +524,60 @@ fn quick_open() -> String {
     take.resize_for_chrome();
     take.capture("enter — opened in a new tab", 5);
     take.finish()
+}
+
+fn search_in_files() -> String {
+    let mut take = Take::new("main.rs", SAMPLE);
+    // Handed in for the same reason as the quick-open list: a demonstration must
+    // not depend on what happens to be on disk when it is generated.
+    take.at(1, 9)
+        .capture("the caret is on `total` — ctrl+shift+f searches for it", 4);
+    take.session.offer_search_results(
+        "total",
+        vec![
+            entry("/demo/src/main.rs", "src/main.rs:2: let total = 1;", 1, 8),
+            entry(
+                "/demo/src/main.rs",
+                "src/main.rs:4: println!(\"{total}\");",
+                3,
+                15,
+            ),
+            entry(
+                "/demo/src/report.rs",
+                "src/report.rs:7: total += row.amount;",
+                6,
+                4,
+            ),
+            entry(
+                "/demo/tests/totals.rs",
+                "tests/totals.rs:3: assert_eq!(total, 6);",
+                2,
+                15,
+            ),
+        ],
+    );
+    take.resize_for_chrome();
+    take.capture("ctrl+shift+f", 5);
+    take.type_text("report");
+    take.session.prompt = None;
+    take.session.open(
+        PathBuf::from("/demo/src/report.rs"),
+        "use crate::Row;\n\n/// Adds up a column.\npub fn sum(rows: &[Row]) -> u32 {\n    let mut total = 0;\n    for row in rows {\n        total += row.amount;\n    }\n    total\n}\n",
+    );
+    take.at(6, 8);
+    take.resize_for_chrome();
+    take.capture("enter — the file opens at the match", 5);
+    take.finish()
+}
+
+/// A search result: the file to open, the line to show, and where to land.
+fn entry(
+    path: &str,
+    title: &str,
+    line: u32,
+    character: u32,
+) -> deco_editor::commands::PaletteEntry {
+    deco_editor::commands::PaletteEntry::at(path, title, Position::new(line, character))
 }
 
 fn command_palette() -> String {
