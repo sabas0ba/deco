@@ -69,6 +69,19 @@ pub struct TabLabel {
     pub active: bool,
 }
 
+/// Exactly the bytes to write for `document`.
+///
+/// Its *own* settings, not the session's: `files.insertFinalNewline` can differ
+/// per language, and saving every tab must respect each one.
+fn contents_of(document: &Document) -> String {
+    let mut text = document.buffer.to_disk_string();
+    if document.settings.insert_final_newline && !text.ends_with('\n') {
+        let eol = document.buffer.line_ending().as_str();
+        text.push_str(eol);
+    }
+    text
+}
+
 /// Everything one editor window needs.
 pub struct Session {
     /// Resolved configuration, layered.
@@ -669,6 +682,21 @@ impl Session {
                 commands::execute(&mut ctx, command, args)
             }
         };
+        // A command that resolved from a binding but that nothing handles would
+        // otherwise do nothing at all, which is indistinguishable from an editor
+        // that has stopped responding. Named rather than silent — and named
+        // differently for a feature deco means to build than for an identifier
+        // that does not exist here, because those call for different reactions.
+        let outcome = match outcome {
+            Outcome::NotFound => match commands::pending_title(command) {
+                Some(title) => Outcome::Message(format!("{title} is not implemented yet")),
+                None => {
+                    self.status = Some(format!("there is no command `{command}`"));
+                    Outcome::NotFound
+                }
+            },
+            other => other,
+        };
         // Shared deliberately: a command handled above must report to the
         // status bar the same way every other one does, or F8 lands on an error
         // and says nothing about it.
@@ -1213,12 +1241,122 @@ impl Session {
 
     /// Text to write to disk for the open document.
     pub fn save_contents(&self) -> String {
-        let mut text = self.document.buffer.to_disk_string();
-        if self.document.settings.insert_final_newline && !text.ends_with('\n') {
-            let eol = self.document.buffer.line_ending().as_str();
-            text.push_str(eol);
+        contents_of(&self.document)
+    }
+
+    /// Writes every unsaved document, using `write` for the bytes.
+    ///
+    /// The loop and its reporting live here so both frontends behave identically,
+    /// and so the behaviour is testable with an in-memory `write`. The core still
+    /// performs no I/O of its own: a path and the bytes go out, a result comes
+    /// back, and what to do with them is the caller's business.
+    ///
+    /// Each write is reported individually, so one failure leaves that document
+    /// dirty rather than marking the batch saved — a tab that looks saved and is
+    /// not is how work gets lost. A failure does not stop the rest: the other
+    /// documents still deserve to be written.
+    ///
+    /// A dirty *untitled* document is counted and skipped. There is no filename to
+    /// write to, and inventing one would put the user's work somewhere they did not
+    /// ask for.
+    pub fn save_all(
+        &mut self,
+        mut write: impl FnMut(&Path, &str) -> Result<(), String>,
+    ) -> Outcome {
+        let pending = self.unsaved();
+        let untitled = self.unsaved_untitled();
+        if pending.is_empty() && untitled == 0 {
+            return Outcome::Message("Nothing to save".to_owned());
         }
-        text
+
+        let mut written = 0usize;
+        let mut failures = Vec::new();
+        for (path, contents) in pending {
+            match write(&path, &contents) {
+                Ok(()) => {
+                    self.mark_saved_at(&path);
+                    written += 1;
+                }
+                Err(error) => failures.push(error),
+            }
+        }
+
+        let mut report = format!(
+            "Saved {written} {}",
+            if written == 1 { "file" } else { "files" }
+        );
+        if untitled > 0 {
+            report.push_str(&format!(
+                "; {untitled} {} no filename yet",
+                if untitled == 1 {
+                    "document has"
+                } else {
+                    "documents have"
+                }
+            ));
+        }
+        if !failures.is_empty() {
+            report.push_str(&format!("; {} could not be written", failures.len()));
+            // The reason belongs where a reader can go and find it: a status bar
+            // has one line and several failures would each shorten the last.
+            self.problems.extend(failures);
+        }
+        Outcome::Message(report)
+    }
+
+    /// Every document with unsaved changes and a filename, in tab order.
+    ///
+    /// For `workbench.action.files.saveAll`. Each pair is the path to write and
+    /// exactly the bytes to write there, resolved through that document's own
+    /// settings — a tab holding a `.md` file gets its own
+    /// `files.insertFinalNewline` rather than the active document's.
+    ///
+    /// A dirty *untitled* document is left out: there is no filename to write to,
+    /// and inventing one would put the user's work somewhere they did not ask for.
+    /// [`Session::unsaved_untitled`] counts those so the frontend can say so.
+    pub fn unsaved(&self) -> Vec<(PathBuf, String)> {
+        self.documents()
+            .filter(|document| document.dirty)
+            .filter_map(|document| {
+                let path = document.path.clone()?;
+                Some((path, contents_of(document)))
+            })
+            .collect()
+    }
+
+    /// How many unsaved documents have no filename to be written to.
+    pub fn unsaved_untitled(&self) -> usize {
+        self.documents()
+            .filter(|document| document.dirty && document.path.is_none())
+            .count()
+    }
+
+    /// Every document, in tab order, the active one in its place among them.
+    fn documents(&self) -> impl Iterator<Item = &Document> {
+        self.left
+            .iter()
+            .map(|tab| &tab.document)
+            .chain(std::iter::once(&self.document))
+            .chain(self.right.iter().rev().map(|tab| &tab.document))
+    }
+
+    /// Marks the document at `path` as saved, wherever it is.
+    ///
+    /// Per-path rather than "all of them" so that a write which failed leaves that
+    /// document dirty: a tab that looks saved and is not is how work gets lost.
+    pub fn mark_saved_at(&mut self, path: &Path) {
+        let holds = |document: &Document| document.path.as_deref() == Some(path);
+        if holds(&self.document) {
+            self.mark_saved();
+            return;
+        }
+        for tab in self.left.iter_mut().chain(self.right.iter_mut()) {
+            if holds(&tab.document) {
+                tab.document.dirty = false;
+                tab.document.history.break_group();
+                return;
+            }
+        }
     }
 
     /// Marks the document as saved.
@@ -2595,6 +2733,209 @@ mod tests {
                 at: None,
             }
         );
+    }
+
+    // ---- Save All ---------------------------------------------------------
+
+    /// A session with three tabs, two of them edited.
+    fn three_tabs() -> Session {
+        let mut s = session();
+        s.resize(80, 10);
+        s.open(PathBuf::from("/w/a.txt"), "a\n");
+        s.open(PathBuf::from("/w/b.txt"), "b\n");
+        s.open(PathBuf::from("/w/c.txt"), "c\n");
+        // Edit the first and the last, leaving the middle one clean.
+        s.run("workbench.action.previousEditor", None, 0);
+        s.run("workbench.action.previousEditor", None, 0);
+        press(&mut s, "x");
+        s.run("workbench.action.nextEditor", None, 0);
+        s.run("workbench.action.nextEditor", None, 0);
+        press(&mut s, "y");
+        s
+    }
+
+    #[test]
+    fn save_all_writes_every_edited_tab_and_leaves_the_clean_ones_alone() {
+        let mut s = three_tabs();
+        let mut written = Vec::new();
+        let outcome = s.save_all(|path, contents| {
+            written.push((path.to_path_buf(), contents.to_owned()));
+            Ok(())
+        });
+
+        assert_eq!(
+            written,
+            vec![
+                (PathBuf::from("/w/a.txt"), "xa\n".to_owned()),
+                (PathBuf::from("/w/c.txt"), "yc\n".to_owned()),
+            ],
+            "in tab order, and only the edited ones"
+        );
+        assert_eq!(outcome, Outcome::Message("Saved 2 files".to_owned()));
+        // And nothing is dirty afterwards, including the tabs off screen.
+        assert!(s.unsaved().is_empty());
+    }
+
+    #[test]
+    fn a_failed_write_leaves_that_document_dirty() {
+        // A tab that looks saved and is not is how work gets lost.
+        let mut s = three_tabs();
+        let outcome = s.save_all(|path, _| {
+            if path == Path::new("/w/a.txt") {
+                Err("/w/a.txt: permission denied".to_owned())
+            } else {
+                Ok(())
+            }
+        });
+
+        let still = s.unsaved();
+        assert_eq!(still.len(), 1);
+        assert_eq!(still[0].0, PathBuf::from("/w/a.txt"));
+        assert_eq!(
+            outcome,
+            Outcome::Message("Saved 1 file; 1 could not be written".to_owned())
+        );
+        // The reason is kept where a reader can find it: a status bar has one line.
+        assert_eq!(s.problems, ["/w/a.txt: permission denied"]);
+    }
+
+    #[test]
+    fn an_untitled_document_is_counted_rather_than_given_a_name() {
+        let mut s = session();
+        s.resize(80, 10);
+        press(&mut s, "x");
+        let outcome = s.save_all(|_, _| panic!("nothing to write"));
+        assert_eq!(
+            outcome,
+            Outcome::Message("Saved 0 files; 1 document has no filename yet".to_owned())
+        );
+        assert_eq!(s.unsaved_untitled(), 1);
+    }
+
+    #[test]
+    fn save_all_with_nothing_to_save_says_so() {
+        let mut s = session();
+        s.resize(80, 10);
+        s.open(PathBuf::from("/w/a.txt"), "a\n");
+        assert_eq!(
+            s.save_all(|_, _| panic!("nothing to write")),
+            Outcome::Message("Nothing to save".to_owned())
+        );
+    }
+
+    #[test]
+    fn each_tab_is_written_with_its_own_settings() {
+        // `files.insertFinalNewline` can differ per language, and a batch save has
+        // to respect each tab's rather than the active one's.
+        let mut settings = deco_config::Settings::with_defaults();
+        settings
+            .load_layer(
+                Scope::User,
+                r#"{ "files.insertFinalNewline": false,
+                     "[markdown]": { "files.insertFinalNewline": true } }"#,
+            )
+            .unwrap();
+        let mut s = Session::new(settings, None, Platform::Linux);
+        s.resize(80, 10);
+        s.open(PathBuf::from("/w/notes.md"), "notes");
+        s.open(PathBuf::from("/w/a.txt"), "plain");
+        press(&mut s, "x");
+        s.run("workbench.action.previousEditor", None, 0);
+        press(&mut s, "y");
+
+        let mut written = std::collections::HashMap::new();
+        s.save_all(|path, contents| {
+            written.insert(path.to_path_buf(), contents.to_owned());
+            Ok(())
+        });
+        assert_eq!(
+            written.get(Path::new("/w/notes.md")).map(String::as_str),
+            Some("ynotes\n"),
+            "markdown gets its own final newline"
+        );
+        assert_eq!(
+            written.get(Path::new("/w/a.txt")).map(String::as_str),
+            Some("xplain"),
+            "and the text file does not"
+        );
+    }
+
+    #[test]
+    fn ctrl_k_s_saves_everything() {
+        let mut s = three_tabs();
+        assert_eq!(press(&mut s, "ctrl+k"), Outcome::Handled, "the chord waits");
+        assert_eq!(press(&mut s, "s"), Outcome::SaveAll);
+    }
+
+    // ---- No bound key does nothing ----------------------------------------
+
+    #[test]
+    fn every_default_binding_resolves_to_something_that_answers() {
+        // The guard that makes a dead key impossible to add by accident. A command
+        // nothing handles and that is not on `commands::PENDING` returns
+        // `NotFound`, which the frontend has nowhere to put — so the key would do
+        // nothing at all, which is indistinguishable from a hung editor.
+        let mut dead = Vec::new();
+        for rule in deco_keymap::defaults::default_rules(Platform::Linux) {
+            let mut s = searchable("fn main() {}\n");
+            let command = &rule.binding().command;
+            if s.run(command, None, 0) == Outcome::NotFound {
+                dead.push(command.clone());
+            }
+        }
+        dead.sort();
+        dead.dedup();
+        assert!(
+            dead.is_empty(),
+            "these bound commands answer nothing — implement them or add them to \
+             commands::PENDING: {dead:?}"
+        );
+    }
+
+    #[test]
+    fn an_unimplemented_command_says_which_feature_it_is() {
+        let mut s = searchable("x\n");
+        assert_eq!(
+            s.run("workbench.action.splitEditor", None, 0),
+            Outcome::Message("Split Editor is not implemented yet".to_owned())
+        );
+        assert_eq!(
+            s.status.as_deref(),
+            Some("Split Editor is not implemented yet")
+        );
+    }
+
+    #[test]
+    fn an_identifier_that_does_not_exist_says_that_instead() {
+        // A different fact from "not built yet", and usually a typo in somebody's
+        // keybindings.json rather than a missing feature.
+        let mut s = searchable("x\n");
+        assert_eq!(s.run("editor.action.nonsense", None, 0), Outcome::NotFound);
+        assert_eq!(
+            s.status.as_deref(),
+            Some("there is no command `editor.action.nonsense`")
+        );
+    }
+
+    #[test]
+    fn nothing_pending_is_offered_in_the_palette() {
+        // A palette entry has to work when chosen. One that only apologises is
+        // worse than a shorter list.
+        let s = searchable("x\n");
+        let offered: Vec<&str> = s
+            .palette()
+            .iter()
+            .map(|e| e.id.clone())
+            .map(|id| {
+                commands::PENDING
+                    .iter()
+                    .find(|(pending, _)| *pending == id)
+                    .map(|(pending, _)| *pending)
+                    .unwrap_or("")
+            })
+            .filter(|id| !id.is_empty())
+            .collect();
+        assert!(offered.is_empty(), "{offered:?}");
     }
 
     // ---- Go to symbol -----------------------------------------------------

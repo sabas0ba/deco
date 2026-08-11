@@ -163,10 +163,29 @@ built from the same one-line input:
   the rest stop resolving at all. The context key is VS Code's `inQuickOpen`.
 - The caret is drawn in the prompt, because that is where typing goes.
 
+## A bound key never does nothing
+
+Every command the default keymap binds either runs or **says why it does not**:
+
+- A feature deco means to build names itself — `Split Editor is not implemented
+  yet` — from a list of such commands in `deco-editor::commands::PENDING`.
+- An identifier that does not exist here says *that* instead: `there is no command
+  \`editor.action.nonsens\``. A different fact, and usually a typo in somebody's
+  `keybindings.json` rather than a missing feature.
+
+A test walks the whole default keymap and fails if any binding answers neither, so
+a dead key cannot be added by accident. Nothing on the pending list is offered in
+the palette: an entry there has to work when chosen, and one that only apologises
+is worse than a shorter list.
+
+What is on that list today: splits and editor groups, the side bar, panel,
+terminal and zen mode, zoom, save as, open file and open folder, the language-mode
+and colour-theme pickers, the settings and keyboard-shortcut editors, block
+comment, rename and quick fix, and the remote menu.
+
 ## Not built yet
 
-The keyboard-shortcuts editor and the settings UI. Those keys report themselves
-as unimplemented rather than doing nothing. Quick open has no `@` mode — the
+The keyboard-shortcuts editor and the settings UI. Quick open has no `@` mode — the
 symbols of a file are reachable with `ctrl+shift+o`, but typing `@` after `ctrl+p`
 does not switch a file list into a symbol one, which needs the prompt to re-source
 its choices mid-typing. Nor is there a recently-opened ordering: the list is

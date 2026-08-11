@@ -216,8 +216,9 @@ does not:
 - **Tabs, quick open and search in files, but no splits and no file tree.**
   Several documents open at once, one per tab (see [Tabs](docs/tabs.md)); `ctrl+p`
   opens any file in the workspace and `ctrl+shift+f` searches all of them,
-  bounded and saying so. The remaining keybindings in that family resolve to
-  commands that are not implemented yet. See
+  bounded and saying so; `ctrl+k s` saves every edited tab. Every remaining
+  keybinding in that family **names the feature it is waiting on** rather than
+  doing nothing, and a test over the whole default keymap keeps it that way. See
   [Running commands](docs/commands.md).
 - **The GPU frontend draws text, a gutter and a caret.** Selection and
   current-line rectangles are computed and tested but not yet painted; there is

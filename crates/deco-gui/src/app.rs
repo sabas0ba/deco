@@ -324,6 +324,14 @@ impl ApplicationHandler for App<'_> {
                             self.session.status = Some(error.to_string());
                         }
                     }
+                    Outcome::SaveAll => {
+                        // The loop and the reporting are the core's; only the write
+                        // is this side's. Both frontends therefore say the same
+                        // thing about the same batch.
+                        if let Outcome::Message(report) = self.session.save_all(write_file) {
+                            self.session.status = Some(report);
+                        }
+                    }
                     // Named rather than ignored: quick open reaches the frontend
                     // by design, and this one has nowhere to draw its list. A
                     // key that silently does nothing is the thing to avoid.
@@ -366,6 +374,10 @@ fn refuse_overlays(session: &mut Session) {
 }
 
 /// Writes the open document to disk.
+fn write_file(path: &std::path::Path, contents: &str) -> std::result::Result<(), String> {
+    std::fs::write(path, contents).map_err(|error| format!("{}: {error}", path.display()))
+}
+
 fn save(session: &mut Session, path: Option<&PathBuf>) -> Result<()> {
     let target = session.document.path.clone().or_else(|| path.cloned());
     match target {

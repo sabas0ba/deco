@@ -59,6 +59,15 @@ pub enum Outcome {
     Frontend(String),
     /// The document should be written to disk.
     Save,
+    /// Every unsaved document should be written to disk.
+    ///
+    /// Names no paths and no bytes, for the same reason [`Outcome::Save`] does not:
+    /// the core has no filesystem. The frontend asks
+    /// [`Session::unsaved`](crate::Session::unsaved) what to write and reports each
+    /// success back with
+    /// [`Session::mark_saved_at`](crate::Session::mark_saved_at), so a write that
+    /// fails leaves that document dirty rather than looking saved.
+    SaveAll,
     /// The editor should exit.
     Quit,
     /// Something worth telling the user.
@@ -75,6 +84,17 @@ pub enum Outcome {
         /// Where to put the cursor, or `None` to leave it at the start.
         at: Option<deco_core::position::Position>,
     },
+}
+
+/// The title of a command deco binds but has not built, if `id` is one.
+///
+/// Used to turn an unhandled binding into a sentence rather than silence — see
+/// [`PENDING`].
+pub fn pending_title(id: &str) -> Option<&'static str> {
+    PENDING
+        .iter()
+        .find(|(pending, _)| *pending == id)
+        .map(|(_, title)| *title)
 }
 
 /// One entry in the command palette: what to run, and what to call it.
@@ -138,6 +158,81 @@ impl PaletteEntry {
 /// Motions are left out on purpose. `cursorDown` is a keypress, not a thing anyone
 /// looks up by name, and listing forty of them would bury the commands people do
 /// look for.
+/// Commands the default keymap binds that deco does not implement yet.
+///
+/// # Why this list exists
+///
+/// A key bound to a command nothing handles does *nothing at all*, and a key that
+/// does nothing is indistinguishable from an editor that has stopped responding.
+/// Naming them here turns silence into a sentence — `Split Editor is not
+/// implemented yet` — and gives a test something to check: every command the
+/// default keymap binds either has a handler or is on this list, so a new binding
+/// cannot be added as a dead key by accident.
+///
+/// They are deliberately *not* in [`PALETTE`]. A palette entry has to work when
+/// chosen; offering one that only apologises is worse than a shorter list.
+///
+/// An identifier leaves this list when the feature lands.
+pub const PENDING: &[(&str, &str)] = &[
+    // Needs a second view onto a document, and a layout that can hold two.
+    ("workbench.action.splitEditor", "Split Editor"),
+    (
+        "workbench.action.focusFirstEditorGroup",
+        "Focus First Editor Group",
+    ),
+    (
+        "workbench.action.focusSecondEditorGroup",
+        "Focus Second Editor Group",
+    ),
+    (
+        "workbench.action.focusThirdEditorGroup",
+        "Focus Third Editor Group",
+    ),
+    // Needs chrome deco has no concept of yet.
+    (
+        "workbench.action.toggleSidebarVisibility",
+        "Toggle Side Bar",
+    ),
+    ("workbench.action.togglePanel", "Toggle Panel"),
+    (
+        "workbench.action.terminal.toggleTerminal",
+        "Toggle Terminal",
+    ),
+    ("workbench.action.toggleZenMode", "Zen Mode"),
+    // Needs a font size the frontend can change, which the terminal does not own.
+    ("workbench.action.zoomIn", "Zoom In"),
+    ("workbench.action.zoomOut", "Zoom Out"),
+    ("workbench.action.zoomReset", "Reset Zoom"),
+    // Needs a filename prompt and a tab that can be renamed under it.
+    ("workbench.action.files.saveAs", "Save As"),
+    // Needs a file dialog, or a path prompt standing in for one.
+    ("workbench.action.files.openFile", "Open File"),
+    ("workbench.action.files.openFolder", "Open Folder"),
+    // Needs a picker over the languages the lexer knows, and a per-document
+    // override of the language chosen from the file name.
+    (
+        "workbench.action.editor.changeLanguageMode",
+        "Change Language Mode",
+    ),
+    // Needs a picker over the installed themes, and a reload that re-resolves
+    // every colour already drawn.
+    ("workbench.action.selectTheme", "Color Theme"),
+    // Needs an editor for a file deco reads but never writes.
+    ("workbench.action.openSettings", "Open Settings"),
+    (
+        "workbench.action.openGlobalKeybindings",
+        "Open Keyboard Shortcuts",
+    ),
+    // Needs block comment delimiters per language; deco-syntax has line ones.
+    ("editor.action.blockComment", "Toggle Block Comment"),
+    // Needs a `WorkspaceEdit` applied across several documents as one undoable
+    // action — see docs/language-servers.md.
+    ("editor.action.rename", "Rename Symbol"),
+    ("editor.action.quickFix", "Quick Fix"),
+    // Needs the remote half that does not exist: there is no `deco --server`.
+    ("deco.remote.showMenu", "Remote Menu"),
+];
+
 pub const PALETTE: &[(&str, &str)] = &[
     ("undo", "Undo"),
     ("redo", "Redo"),
@@ -179,6 +274,7 @@ pub const PALETTE: &[(&str, &str)] = &[
     ("editor.action.marker.next", "Go to Next Problem"),
     ("editor.action.marker.prev", "Go to Previous Problem"),
     ("workbench.action.files.save", "Save"),
+    ("workbench.action.files.saveAll", "Save All"),
     ("workbench.action.quit", "Quit"),
     ("workbench.action.nextEditor", "Next Editor"),
     ("workbench.action.previousEditor", "Previous Editor"),
@@ -354,6 +450,7 @@ pub fn execute(ctx: &mut Context<'_>, command: &str, args: Option<&Value>) -> Ou
             Outcome::Handled
         }
         "workbench.action.files.save" => Outcome::Save,
+        "workbench.action.files.saveAll" => Outcome::SaveAll,
         "workbench.action.quit" | "workbench.action.closeWindow" => Outcome::Quit,
         _ => Outcome::NotFound,
     };
