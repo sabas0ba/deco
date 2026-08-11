@@ -56,6 +56,13 @@ struct Tab {
     view: View,
     diagnostics: Vec<deco_lsp::Diagnostic>,
     semantic: Vec<deco_lsp::requests::SemanticSpan>,
+    /// The find bar as this tab left it.
+    ///
+    /// Per tab rather than per session, so switching away parks the bar with the
+    /// document it describes instead of throwing it away. A match list is stale
+    /// only when it belongs to a *different* document; one match list shared by
+    /// every tab was what made every switch discard it.
+    find: Find,
 }
 
 /// One editor group, as something drawing it sees it.
@@ -326,6 +333,9 @@ impl Session {
             ..Default::default()
         };
 
+        // Shared across tabs even though the bar is not — see `switch_to`.
+        let carried_query = self.find.query().to_owned();
+
         // Into a fresh tab — unless the active tab is a pristine untitled
         // document, which is replaced. That is VS Code's rule, and it is what
         // keeps `deco file.rs` from starting with an empty tab beside the file.
@@ -338,6 +348,7 @@ impl Session {
                 view: std::mem::take(&mut self.view),
                 diagnostics: std::mem::take(&mut self.diagnostics),
                 semantic: std::mem::take(&mut self.semantic_tokens),
+                find: std::mem::replace(&mut self.find, Find::new()),
             };
             self.left.push(previous);
         }
@@ -349,9 +360,13 @@ impl Session {
         self.diagnostics.clear();
         // And the token list, which describes the other file's text.
         self.semantic_tokens.clear();
-        // Same reasoning for the match list. The query survives, since searching
-        // the next file for the same thing is a reasonable thing to want.
+        // Same reasoning for the match list: this is a *different* document, so
+        // the matches really are stale. The query survives, since searching the
+        // next file for the same thing is a reasonable thing to want.
         self.find.close();
+        if !carried_query.is_empty() {
+            self.find.set_query(carried_query);
+        }
         self.refresh_context();
     }
 
@@ -465,7 +480,12 @@ impl Session {
             view: std::mem::take(&mut self.view),
             diagnostics: std::mem::take(&mut self.diagnostics),
             semantic: std::mem::take(&mut self.semantic_tokens),
+            find: std::mem::replace(&mut self.find, Find::new()),
         };
+        // The search string is shared even though the bar is not, as it is in VS
+        // Code: opening find in another file shows the same query, and `F3` in a
+        // tab you have not searched yet looks for the last thing you looked for.
+        let carried_query = active.find.query().to_owned();
         let mut all: Vec<Tab> = self.left.drain(..).collect();
         all.push(active);
         all.append(&mut self.right);
@@ -483,8 +503,13 @@ impl Session {
         self.view = chosen.view;
         self.diagnostics = chosen.diagnostics;
         self.semantic_tokens = chosen.semantic;
-        // The match list describes text that is no longer on screen.
-        self.find.close();
+        // Carried rather than closed. It describes *this* tab's text, which is
+        // what is on screen again — switching away and back finds the bar as it
+        // was left, matches and all, which is what VS Code does.
+        self.find = chosen.find;
+        if self.find.query().is_empty() && !carried_query.is_empty() {
+            self.find.set_query(carried_query);
+        }
         self.view
             .reveal_cursor(&self.document.buffer, &self.document.settings);
     }
@@ -545,8 +570,10 @@ impl Session {
                 std::mem::swap(other, &mut self.view);
             }
             self.split_focused = wanted;
-            // The find bar's matches were found in the other group's view, and its
-            // current match is where that group's cursor is.
+            // Closed, because the find state belongs to the tab and both groups
+            // are showing the same one: its current match is where the *other*
+            // group's cursor is. A find bar per group needs a tab list per group,
+            // which is the other half of splitting.
             self.find.close();
         }
         self.refresh_context();
@@ -674,6 +701,7 @@ impl Session {
                 view: View::default(),
                 diagnostics: Vec::new(),
                 semantic: Vec::new(),
+                find: Find::new(),
             }
         };
 
@@ -683,7 +711,7 @@ impl Session {
         self.view.height = sizes.1;
         self.diagnostics = replacement.diagnostics;
         self.semantic_tokens = replacement.semantic;
-        self.find.close();
+        self.find = replacement.find;
         self.refresh_context();
         Outcome::Handled
     }
@@ -699,11 +727,14 @@ impl Session {
             view: std::mem::take(&mut self.view),
             diagnostics: std::mem::take(&mut self.diagnostics),
             semantic: std::mem::take(&mut self.semantic_tokens),
+            find: std::mem::replace(&mut self.find, Find::new()),
         };
         self.left.push(previous);
         self.view.width = sizes.0;
         self.view.height = sizes.1;
-        self.find.close();
+        // A new tab has no matches to show, and the parked one belongs to the tab
+        // it was parked with.
+        self.find = Find::new();
         self.refresh_context();
         Outcome::Handled
     }
@@ -4526,16 +4557,64 @@ mod tests {
     }
 
     #[test]
-    fn switching_tabs_closes_the_find_bar() {
+    fn switching_tabs_parks_the_find_bar_with_its_own_tab() {
+        // The bar belongs to the tab, so switching away puts it down rather than
+        // throwing it away, and switching back finds it as it was left.
         let mut s = session();
+        s.resize(80, 10);
         s.open(PathBuf::from("/w/a.txt"), "foo\n");
-        s.open(PathBuf::from("/w/b.txt"), "foo\n");
+        s.open(PathBuf::from("/w/b.txt"), "bar\n");
         press(&mut s, "ctrl+f");
-        press(&mut s, "f");
+        press(&mut s, "b");
         assert!(s.find.visible());
+        assert_eq!(s.find.matches().len(), 1, "b.txt has one `b`");
+
+        // To a.txt, which has no bar of its own.
         press(&mut s, "ctrl+tab");
-        assert!(!s.find.visible(), "its match list described the other tab");
-        assert_eq!(s.find.query(), "f", "but the query survives for F3");
+        assert!(!s.find.visible(), "a.txt was never searched");
+        assert_eq!(
+            s.find.query(),
+            "b",
+            "the search string is shared, as it is in VS Code"
+        );
+
+        // And back.
+        press(&mut s, "ctrl+tab");
+        assert!(s.find.visible(), "b.txt's bar is where it was left");
+        assert_eq!(s.find.matches().len(), 1);
+    }
+
+    #[test]
+    fn two_tabs_can_be_searching_for_different_things() {
+        // One match list per session was what made a switch have to discard it.
+        let mut s = session();
+        s.resize(80, 10);
+        s.open(PathBuf::from("/w/a.txt"), "aaa\n");
+        press(&mut s, "ctrl+f");
+        press(&mut s, "a");
+        s.open(PathBuf::from("/w/b.txt"), "bbbb\n");
+        press(&mut s, "ctrl+f");
+        // The query came over, so replace it.
+        press(&mut s, "ctrl+x");
+        press(&mut s, "b");
+        assert_eq!(s.find.matches().len(), 4);
+
+        press(&mut s, "ctrl+shift+tab");
+        assert_eq!(s.find.query(), "a", "a.txt kept its own");
+        assert_eq!(s.find.matches().len(), 3);
+    }
+
+    #[test]
+    fn a_new_document_in_the_same_tab_still_drops_the_matches() {
+        // `open` on a pristine untitled tab replaces the document rather than
+        // adding a tab, and then the matches really are stale.
+        let mut s = session();
+        s.resize(80, 10);
+        press(&mut s, "ctrl+f");
+        press(&mut s, "x");
+        s.open(PathBuf::from("/w/a.txt"), "xxx\n");
+        assert!(!s.find.visible());
+        assert_eq!(s.find.query(), "x", "the query still survives");
     }
 
     #[test]
