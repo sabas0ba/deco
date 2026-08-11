@@ -524,16 +524,28 @@ mod tests {
     use super::*;
     use deco_theme::Rgba;
 
+    /// An absolute path made of `parts`, on any platform.
+    ///
+    /// Not a literal `/w/src/main.rs`: that is absolute on Unix and **relative** on
+    /// Windows, where a root needs a drive letter or a UNC prefix. A test that
+    /// hard-coded one would be asserting about the host rather than about
+    /// [`resolve_path`].
+    fn absolute(parts: &[&str]) -> PathBuf {
+        let mut path = std::env::current_dir().expect("a working directory");
+        for part in parts {
+            path.push(part);
+        }
+        path
+    }
+
     #[test]
     fn an_absolute_path_is_left_alone() {
         // Quick open, search results and go-to-definition all hand over absolute
         // paths, so this has to be identity for them.
+        let target = absolute(&["w", "src", "main.rs"]);
         assert_eq!(
-            resolve_path(
-                Path::new("/w/src/main.rs"),
-                Some(Path::new("/elsewhere/a.rs"))
-            ),
-            PathBuf::from("/w/src/main.rs")
+            resolve_path(&target, Some(&absolute(&["elsewhere", "a.rs"]))),
+            target
         );
     }
 
@@ -543,8 +555,11 @@ mod tests {
         // launched from the project and not from anywhere else would be worse than
         // one that always means the same thing.
         assert_eq!(
-            resolve_path(Path::new("src/main.rs"), Some(Path::new("/w/notes.txt"))),
-            PathBuf::from("/w/src/main.rs")
+            resolve_path(
+                Path::new("src/main.rs"),
+                Some(&absolute(&["w", "notes.txt"]))
+            ),
+            absolute(&["w", "src", "main.rs"])
         );
     }
 
@@ -566,8 +581,10 @@ mod tests {
     fn a_tilde_inside_a_name_is_part_of_the_name() {
         // `~backup` is a file called `~backup`, and `a~b` is not a home directory.
         // Only a leading `~` on its own component means one.
-        let resolved = resolve_path(Path::new("~backup"), Some(Path::new("/w/a.txt")));
-        assert_eq!(resolved, PathBuf::from("/w/~backup"));
+        assert_eq!(
+            resolve_path(Path::new("~backup"), Some(&absolute(&["w", "a.txt"]))),
+            absolute(&["w", "~backup"])
+        );
     }
 
     #[test]
