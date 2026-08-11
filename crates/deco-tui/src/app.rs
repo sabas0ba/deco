@@ -171,6 +171,28 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
                             }
                         }
                     }
+                    // The core asked for the file as it is on disk; reading it is
+                    // this side's job.
+                    Outcome::Revert => {
+                        let target = session.document.path.clone();
+                        match target.as_deref().map(std::fs::read_to_string) {
+                            Some(Ok(text)) => {
+                                if let Outcome::Message(report) = session.revert_to(&text) {
+                                    session.status = Some(report);
+                                }
+                                lsp.changed(session);
+                            }
+                            Some(Err(error)) => {
+                                // The edits stay: throwing them away because the
+                                // file could not be read would lose work to a
+                                // failure that had nothing to do with it.
+                                let path = target.unwrap_or_default();
+                                session.status =
+                                    Some(format!("could not read {}: {error}", path.display()));
+                            }
+                            None => {}
+                        }
+                    }
                     Outcome::SaveAll => {
                         // The loop and the reporting are the core's; only the
                         // write is this side's, because only this side has a

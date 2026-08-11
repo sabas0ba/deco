@@ -143,6 +143,16 @@ pub struct Session {
     /// [`Session::view`] is always the view of the group with the keyboard, and
     /// this is the other one — the same zipper the tabs use, so every command that
     /// reads `session.view` keeps working without knowing that groups exist.
+    /// Whether the revert now in flight should close the tab when it lands.
+    ///
+    /// The frontend answers a `Revert` with the file's text and nothing else, so
+    /// which of the two revert commands asked has to be remembered here.
+    pending_close: bool,
+    /// Whether the last command was a quit that was refused for unsaved work.
+    ///
+    /// Cleared by anything else, so "again" means the next keystroke rather than
+    /// the next quit whenever that happens to be.
+    quit_refused: bool,
     split_view: Option<View>,
     /// Whether the group with the keyboard is the second one.
     ///
@@ -237,6 +247,8 @@ impl Session {
             theme,
             document,
             view: View::default(),
+            pending_close: false,
+            quit_refused: false,
             split_view: None,
             split_focused: false,
             // Seeded from the same platform the keymap was built for, so a
@@ -499,6 +511,92 @@ impl Session {
         Outcome::Handled
     }
 
+    /// Refuses to quit while anything is unsaved, and names what.
+    ///
+    /// The editor already refuses to close *one* unsaved document with `ctrl+w`;
+    /// dropping all of them on `ctrl+q` applied that principle to the narrower of
+    /// the two paths. A second press quits anyway, because a refusal with no way
+    /// past it is a trap rather than a safeguard — and it has to be the very next
+    /// keystroke, so that a `ctrl+q` typed minutes later starts the conversation
+    /// again rather than acting on an answer nobody remembers giving.
+    fn quit(&mut self) -> Outcome {
+        if std::mem::take(&mut self.quit_refused) {
+            return Outcome::Quit;
+        }
+        let unsaved: Vec<String> = self
+            .documents()
+            .filter(|document| document.dirty)
+            .map(Document::title)
+            .collect();
+        if unsaved.is_empty() {
+            return Outcome::Quit;
+        }
+        self.quit_refused = true;
+        Outcome::Message(format!(
+            "{} {} unsaved changes: {} — ctrl+q again to quit anyway",
+            unsaved.len(),
+            if unsaved.len() == 1 {
+                "tab has"
+            } else {
+                "tabs have"
+            },
+            unsaved.join(", ")
+        ))
+    }
+
+    /// Throws away this document's edits, optionally closing it afterwards.
+    ///
+    /// An untitled document reverts to empty, which is also what makes one
+    /// closable: there is no file to re-read, and empty is what it was.
+    ///
+    /// The replacement goes through the undo history, so `ctrl+z` brings the edits
+    /// back. A command whose whole purpose is to destroy work should not be the one
+    /// command that cannot be taken back.
+    fn revert(&mut self, and_close: bool) -> Outcome {
+        if !self.document.dirty {
+            return Outcome::Message(format!("{} has no changes", self.document.title()));
+        }
+        if self.document.path.is_some() {
+            // The frontend has the filesystem; it reads and calls `revert_to`.
+            self.pending_close = and_close;
+            return Outcome::Revert;
+        }
+        self.revert_to("");
+        if and_close {
+            return self.close_active_tab();
+        }
+        Outcome::Message("Reverted".to_owned())
+    }
+
+    /// Replaces the document with `text`, as one undoable step, and marks it clean.
+    ///
+    /// Called by the frontend once it has re-read the file.
+    pub fn revert_to(&mut self, text: &str) -> Outcome {
+        let before = self.view.selections.clone();
+        let end = self.document.buffer.end_position();
+        let transaction = deco_core::Transaction::single(deco_core::Change::replace(
+            deco_core::Range::new(deco_core::Position::ZERO, end),
+            text.to_owned(),
+        ));
+        let inverse = self.document.apply(&transaction);
+        let after = deco_core::SelectionSet::caret(
+            self.document.buffer.clamp_position(before.primary().active),
+        );
+        self.view.selections = after.clone();
+        self.document
+            .history
+            .record(inverse, deco_core::EditKind::Discrete, before, after, 0);
+        self.mark_saved();
+        self.view
+            .reveal_cursor(&self.document.buffer, &self.document.settings);
+
+        let title = self.document.title();
+        if std::mem::take(&mut self.pending_close) {
+            return self.close_active_tab();
+        }
+        Outcome::Message(format!("Reverted {title}"))
+    }
+
     /// `ctrl+w`: closes the group when the editor is split, and the tab otherwise.
     ///
     /// VS Code's rule, and the useful one: having split, the first thing you want
@@ -713,6 +811,16 @@ impl Session {
         args: Option<&serde_json::Value>,
         now_ms: u64,
     ) -> Outcome {
+        // "ctrl+q again" means the very next keystroke. Anything else in between
+        // is a user who went back to work, and acting on their earlier answer
+        // minutes later would be acting on one nobody remembers giving.
+        if !matches!(
+            command,
+            "workbench.action.quit" | "workbench.action.closeWindow"
+        ) {
+            self.quit_refused = false;
+        }
+
         // The prompt first: it is drawn over the find bar, so it is what holds the
         // keyboard when both are open.
         if let Some(prompt) = &mut self.prompt {
@@ -816,6 +924,9 @@ impl Session {
             // refusing to save is how an untitled tab became impossible to close.
             "workbench.action.files.save" if self.document.path.is_none() => self.offer_save_as(),
             "workbench.action.files.saveAs" => self.offer_save_as(),
+            "workbench.action.quit" | "workbench.action.closeWindow" => self.quit(),
+            "workbench.action.files.revert" => self.revert(false),
+            "workbench.action.revertAndCloseActiveEditor" => self.revert(true),
             "workbench.action.files.openFile" => self.offer_open_path(),
             "editor.action.replaceOne" => self.replace_one(now_ms),
             "editor.action.replaceAll" => self.replace_all(now_ms),
@@ -3279,6 +3390,145 @@ mod tests {
         press(&mut s, "y");
         let panes = s.panes();
         assert_eq!(panes[0].document.buffer.text(), "yx\n");
+    }
+
+    // ---- Reverting and quitting -------------------------------------------
+
+    #[test]
+    fn reverting_an_untitled_document_empties_it_and_makes_it_closable() {
+        // There is no file to re-read, and empty is what it was — which is the
+        // route out of a scratch buffer that could otherwise be neither saved nor
+        // closed.
+        let mut s = session();
+        s.resize(80, 10);
+        press(&mut s, "y");
+        assert!(s.document.dirty);
+
+        assert_eq!(
+            s.run("workbench.action.files.revert", None, 0),
+            Outcome::Message("Reverted".to_owned())
+        );
+        assert_eq!(s.document.buffer.text(), "");
+        assert!(!s.document.dirty);
+        assert_eq!(press(&mut s, "ctrl+w"), Outcome::Handled);
+    }
+
+    #[test]
+    fn reverting_a_file_asks_the_frontend_for_what_is_on_disk() {
+        let mut s = searchable("saved\n");
+        press(&mut s, "y");
+        assert_eq!(
+            s.run("workbench.action.files.revert", None, 0),
+            Outcome::Revert
+        );
+
+        // What the frontend does with it.
+        assert_eq!(
+            s.revert_to("saved\n"),
+            Outcome::Message("Reverted a.txt".to_owned())
+        );
+        assert_eq!(s.document.buffer.text(), "saved\n");
+        assert!(!s.document.dirty);
+    }
+
+    #[test]
+    fn a_revert_can_be_undone() {
+        // A command whose whole purpose is to destroy work should not be the one
+        // command that cannot be taken back.
+        let mut s = searchable("saved\n");
+        press(&mut s, "y");
+        assert_eq!(s.document.buffer.text(), "ysaved\n");
+        s.run("workbench.action.files.revert", None, 0);
+        s.revert_to("saved\n");
+
+        press(&mut s, "ctrl+z");
+        assert_eq!(s.document.buffer.text(), "ysaved\n");
+    }
+
+    #[test]
+    fn revert_and_close_closes_once_the_text_comes_back() {
+        let mut s = searchable("saved\n");
+        s.open(PathBuf::from("/w/b.rs"), "fn main() {}\n");
+        press(&mut s, "y");
+        assert_eq!(
+            s.run("workbench.action.revertAndCloseActiveEditor", None, 0),
+            Outcome::Revert
+        );
+        assert_eq!(s.tab_count(), 2);
+        s.revert_to("fn main() {}\n");
+        assert_eq!(s.tab_count(), 1, "reverted, then closed");
+    }
+
+    #[test]
+    fn reverting_a_clean_document_says_there_is_nothing_to_do() {
+        let mut s = searchable("saved\n");
+        assert_eq!(
+            s.run("workbench.action.files.revert", None, 0),
+            Outcome::Message("a.txt has no changes".to_owned())
+        );
+    }
+
+    #[test]
+    fn quitting_with_unsaved_work_refuses_and_names_it() {
+        // The editor already refuses to close one unsaved document with ctrl+w;
+        // dropping all of them on ctrl+q applied that principle to the narrower of
+        // the two paths.
+        let mut s = searchable("x\n");
+        s.open(PathBuf::from("/w/b.rs"), "fn main() {}\n");
+        press(&mut s, "y");
+
+        assert_eq!(
+            press(&mut s, "ctrl+q"),
+            Outcome::Message(
+                "1 tab has unsaved changes: b.rs — ctrl+q again to quit anyway".to_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn every_unsaved_tab_is_named_not_just_the_one_on_screen() {
+        let mut s = searchable("x\n");
+        press(&mut s, "y");
+        s.open(PathBuf::from("/w/b.rs"), "fn main() {}\n");
+        press(&mut s, "z");
+
+        let Outcome::Message(report) = press(&mut s, "ctrl+q") else {
+            panic!("quit should be refused");
+        };
+        assert!(
+            report.starts_with("2 tabs have unsaved changes: "),
+            "{report}"
+        );
+        assert!(report.contains("a.txt"), "{report}");
+        assert!(report.contains("b.rs"), "{report}");
+    }
+
+    #[test]
+    fn a_second_quit_goes_through() {
+        let mut s = searchable("x\n");
+        press(&mut s, "y");
+        assert!(matches!(press(&mut s, "ctrl+q"), Outcome::Message(_)));
+        assert_eq!(press(&mut s, "ctrl+q"), Outcome::Quit);
+    }
+
+    #[test]
+    fn anything_in_between_starts_the_conversation_again() {
+        // Acting minutes later on an answer nobody remembers giving is how a
+        // confirmation becomes a formality.
+        let mut s = searchable("x\n");
+        press(&mut s, "y");
+        assert!(matches!(press(&mut s, "ctrl+q"), Outcome::Message(_)));
+        press(&mut s, "left");
+        assert!(
+            matches!(press(&mut s, "ctrl+q"), Outcome::Message(_)),
+            "the refusal should be offered again"
+        );
+    }
+
+    #[test]
+    fn quitting_with_nothing_unsaved_just_quits() {
+        let mut s = searchable("x\n");
+        assert_eq!(press(&mut s, "ctrl+q"), Outcome::Quit);
     }
 
     // ---- Split editor -----------------------------------------------------

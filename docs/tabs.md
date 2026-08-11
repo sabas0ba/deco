@@ -35,8 +35,9 @@ knows what to search for.
   file would be two divergent copies of it, and whichever was saved last would
   silently win.
 - **A dirty tab refuses to close, by name**: `main.rs has unsaved changes — save
-  it first`. deco has no dialog to ask with, and losing edits to a keystroke is
-  the worst thing an editor can do.
+  it first`. Losing edits to a keystroke is the worst thing an editor can do — but
+  a refusal with no way past it is a trap rather than a safeguard, so
+  [reverting](#throwing-changes-away) is the override.
 - **Closing the last tab leaves an untitled document.** The session always shows
   something.
 - **Opening a file replaces a pristine untitled tab** — untouched, unnamed,
@@ -124,6 +125,40 @@ possible instead of reporting that it is not.
 The path the prompt hands back is **exactly what was typed**; the frontend resolves
 it, writes, and reports back the path it settled on. Resolving needs a home
 directory and a working directory, and the core has neither.
+
+## Throwing changes away
+
+`Revert File` in the palette re-reads the document from disk, and
+`Revert and Close Editor` closes it afterwards. Neither has a default key, as in
+VS Code.
+
+**Re-read rather than remembered.** Keeping a second copy of every open file to
+revert to would double what a large one costs, and re-reading is also what
+"revert" means when the file has changed underneath you.
+
+The replacement goes through the undo history, so `ctrl+z` brings the edits back: a
+command whose whole purpose is to destroy work should not be the one command that
+cannot be taken back. If the file cannot be read, the edits stay — throwing them
+away because of a failure that had nothing to do with them would be the worse
+answer.
+
+An **untitled** document reverts to empty, since there is nothing to re-read and
+empty is what it was. That is also the route out of a scratch buffer that could
+otherwise be neither saved nor closed.
+
+## Quitting with work unsaved
+
+`ctrl+q` refuses once and names what is unsaved — `2 tabs have unsaved changes:
+a.txt, b.rs` — and a second `ctrl+q` quits anyway.
+
+It has to be the **very next keystroke**. Anything in between is a user who went
+back to work, and acting on their earlier answer minutes later would be acting on
+one nobody remembers giving.
+
+The check is the session's, over every tab rather than the one on screen, so both
+frontends inherit it. Refusing to close one unsaved document with `ctrl+w` while
+dropping all of them on `ctrl+q` applied the principle to the narrower of the two
+paths.
 
 ## Splitting
 

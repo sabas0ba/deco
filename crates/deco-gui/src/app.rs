@@ -322,6 +322,22 @@ impl ApplicationHandler for App<'_> {
                             self.session.status = Some(error.to_string());
                         }
                     }
+                    Outcome::Revert => {
+                        let target = self.session.document.path.clone();
+                        match target.as_deref().map(std::fs::read_to_string) {
+                            Some(Ok(text)) => {
+                                if let Outcome::Message(report) = self.session.revert_to(&text) {
+                                    self.session.status = Some(report);
+                                }
+                            }
+                            Some(Err(error)) => {
+                                let path = target.unwrap_or_default();
+                                self.session.status =
+                                    Some(format!("could not read {}: {error}", path.display()));
+                            }
+                            None => {}
+                        }
+                    }
                     Outcome::SaveAll => {
                         // The loop and the reporting are the core's; only the write
                         // is this side's. Both frontends therefore say the same

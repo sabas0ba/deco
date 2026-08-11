@@ -78,6 +78,17 @@ pub enum Outcome {
     /// has — so the frontend resolves it, writes, and reports the path it settled
     /// on with [`Session::rename_to`](crate::Session::rename_to).
     SaveAs(std::path::PathBuf),
+    /// The document should be re-read from disk, throwing away the edits.
+    ///
+    /// The frontend reads `session.document.path` and hands the text back with
+    /// [`Session::revert_to`](crate::Session::revert_to). Re-read rather than
+    /// remembered: keeping a second copy of every open file to revert to would
+    /// double what a large one costs, and re-reading is also what "revert" means
+    /// when the file has changed underneath you.
+    ///
+    /// An untitled document never produces this — there is nothing to read, so
+    /// the session reverts it to empty itself.
+    Revert,
     /// Every unsaved document should be written to disk.
     ///
     /// Names no paths and no bytes, for the same reason [`Outcome::Save`] does not:
@@ -269,6 +280,11 @@ pub const PALETTE: &[(&str, &str)] = &[
     ("workbench.action.files.save", "Save"),
     ("workbench.action.splitEditor", "Split Editor"),
     ("workbench.action.files.saveAll", "Save All"),
+    ("workbench.action.files.revert", "Revert File"),
+    (
+        "workbench.action.revertAndCloseActiveEditor",
+        "Revert and Close Editor",
+    ),
     ("workbench.action.files.saveAs", "Save As"),
     ("workbench.action.files.openFile", "Open File"),
     (
