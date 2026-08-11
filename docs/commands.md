@@ -211,7 +211,7 @@ is worse than a shorter list.
 
 What is on that list today: splits and editor groups, the side bar, panel,
 terminal and zen mode, zoom, open folder, the settings and keyboard-shortcut
-editors, block comment, rename and quick fix, and the remote menu.
+editors, rename and quick fix, and the remote menu.
 
 ## Not built yet
 

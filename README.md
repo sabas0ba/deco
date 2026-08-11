@@ -28,7 +28,7 @@ running, and is published at
 
 | | |
 | --- | --- |
-| [Editing](docs/editing.md) | Motion, line operations, multiple cursors, undo |
+| [Editing](docs/editing.md) | Motion, line and block comments, multiple cursors, undo |
 | [Tabs](docs/tabs.md) | Several documents, one per tab; what a tab keeps |
 | [Syntax highlighting](docs/highlighting.md) | Scopes, languages, choosing one, and why not tree-sitter |
 | [Find and replace](docs/find-and-replace.md) | `ctrl+f`, `ctrl+h`, `F3`, and the multi-cursor find keys |

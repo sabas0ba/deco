@@ -139,6 +139,10 @@ fn demos() -> Vec<Demo> {
             build: save_all,
         },
         Demo {
+            name: "block-comment",
+            build: block_comment,
+        },
+        Demo {
             name: "save-as",
             build: save_as,
         },
@@ -702,6 +706,27 @@ fn color_theme() -> String {
     }
     take.resize_for_chrome();
     take.capture("enter — the same theme keys, resolved again", 6);
+    take.finish()
+}
+
+fn block_comment() -> String {
+    let mut take = Take::new(
+        "main.rs",
+        "fn main() {\n    let total = 1;\n    let count = 2;\n    println!(\"{total}\");\n}\n",
+    );
+    // Two whole lines, which is what makes the difference from `ctrl+/` visible:
+    // one comment around the block rather than a token on each line.
+    take.session.view.selections = SelectionSet::single(deco_core::Selection::new(
+        Position::new(1, 4),
+        Position::new(2, 18),
+    ));
+    take.capture("two lines selected", 4);
+    take.press_and_hold(&["ctrl+shift+a"], 6);
+    take.press_and_hold(&["ctrl+shift+a"], 5);
+    // And with nothing selected, an empty comment with the caret inside it.
+    take.at(3, 23);
+    take.press_and_hold(&["ctrl+shift+a"], 5);
+    take.type_text("why");
     take.finish()
 }
 

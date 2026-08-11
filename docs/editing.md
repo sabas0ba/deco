@@ -21,6 +21,7 @@ comment rather than one character of it.
 | `ctrl+enter` / `ctrl+shift+enter` | `editor.action.insertLineAfter` / `…Before` |
 | `ctrl+/` | `editor.action.commentLine` |
 | `ctrl+k ctrl+c` / `ctrl+k ctrl+u` | `editor.action.addCommentLine` / `…remove…` |
+| `ctrl+shift+a` | `editor.action.blockComment` |
 | `ctrl+]` / `ctrl+[` | `editor.action.indentLines` / `…outdentLines` |
 
 Commenting is idempotent in both directions: `ctrl+k ctrl+c` on an
@@ -28,6 +29,45 @@ already-commented line leaves it alone rather than commenting it twice, and a
 partly-commented selection becomes fully commented rather than inverting line by
 line. Blank lines are skipped, and the token goes after the indentation rather
 than at column zero.
+
+### Block comments
+
+`ctrl+shift+a` wraps the selection in one comment rather than commenting each line,
+which is the difference worth having both for.
+
+![Wrapping two lines in a block comment, unwrapping, and opening an empty one](img/block-comment.svg)
+
+It is **its own inverse**: pressing it again removes what it just added. That needs
+the wrap to leave the inner text selected, and it recognises a commented selection in
+either shape — the delimiters inside the selection, which is what you get by
+selecting a commented region, or immediately outside it, which is what a wrap leaves
+behind. Recognising only one would make the second press comment the comment.
+
+With nothing selected it opens an empty comment and puts the caret between the
+spaces, because the point of pressing it there is to write the comment next. Every
+cursor is wrapped, in one undo step.
+
+| Language | Delimiters |
+| --- | --- |
+| Rust, TypeScript, JavaScript, Go, C, C++, Java, CSS, JSONC, SQL | `/*` `*/` |
+| HTML, XML, Markdown | `<!--` `-->` |
+| Lua | `--[[` `]]` |
+| Python | `"""` `"""` |
+
+HTML, XML and Markdown are here even though [the lexer](highlighting.md) does not
+colour them: wrapping a selection needs the delimiters, not a grammar.
+
+Two deliberate absences. **Shell, YAML, TOML, Makefile, Dockerfile and JSON** have no
+block comment, and neither does VS Code claim one for them — the key reports the
+language has none. **Ruby** is left out although VS Code offers `=begin` / `=end`:
+those must each sit alone at the start of a line, so wrapping a selection in the
+middle of one produces text Ruby will not parse, and a command that corrupts the file
+is worse than a command that declines.
+
+**Python's `"""` is a string, not a comment.** It is what VS Code inserts and what a
+Python programmer means by commenting a block out, and it does stop the code running
+— but as an expression statement, so it is only sound where a statement is allowed.
+Matching VS Code beats inventing a third answer.
 
 ## Multiple cursors
 

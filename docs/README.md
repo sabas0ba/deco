@@ -7,7 +7,7 @@ yet.
 
 | Page | What it covers |
 | --- | --- |
-| [Editing](editing.md) | Motion, selection, line operations, multiple cursors, undo |
+| [Editing](editing.md) | Motion, selection, line and block comments, multiple cursors, undo |
 | [Tabs](tabs.md) | Several documents, one per tab; what a tab keeps |
 | [Syntax highlighting](highlighting.md) | Scopes, languages, choosing one, and why not tree-sitter |
 | [Find and replace](find-and-replace.md) | `ctrl+f`, `ctrl+h`, `F3`, and the multi-cursor find keys |

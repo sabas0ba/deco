@@ -10,7 +10,7 @@ use deco_core::movement::{self, VerticalDirection};
 use deco_core::{Buffer, Change, EditKind, Position, Range, Selection, SelectionSet, Transaction};
 use serde_json::Value;
 
-use crate::document::{line_comment_token, Document, View};
+use crate::document::{block_comment_tokens, line_comment_token, Document, View};
 
 /// Somewhere to put cut and copied text.
 ///
@@ -231,8 +231,6 @@ pub const PENDING: &[(&str, &str)] = &[
         "workbench.action.openGlobalKeybindings",
         "Open Keyboard Shortcuts",
     ),
-    // Needs block comment delimiters per language; deco-syntax has line ones.
-    ("editor.action.blockComment", "Toggle Block Comment"),
     // Needs a `WorkspaceEdit` applied across several documents as one undoable
     // action — see docs/language-servers.md.
     ("editor.action.rename", "Rename Symbol"),
@@ -250,6 +248,7 @@ pub const PALETTE: &[(&str, &str)] = &[
     ("editor.action.commentLine", "Toggle Line Comment"),
     ("editor.action.addCommentLine", "Add Line Comment"),
     ("editor.action.removeCommentLine", "Remove Line Comment"),
+    ("editor.action.blockComment", "Toggle Block Comment"),
     ("editor.action.indentLines", "Indent Lines"),
     ("editor.action.outdentLines", "Outdent Lines"),
     ("editor.action.deleteLines", "Delete Line"),
@@ -441,6 +440,10 @@ pub fn execute(ctx: &mut Context<'_>, command: &str, args: Option<&Value>) -> Ou
         }
         "editor.action.addCommentLine" => {
             line_comment(ctx, CommentMode::Add);
+            Outcome::Handled
+        }
+        "editor.action.blockComment" => {
+            block_comment(ctx);
             Outcome::Handled
         }
         "editor.action.removeCommentLine" => {
@@ -977,6 +980,193 @@ fn copy_lines(ctx: &mut Context<'_>, up: bool) {
     ctx.document.dirty = true;
 }
 
+/// Wraps each selection in a block comment, or unwraps one already there.
+///
+/// `editor.action.blockComment`. One transaction for every selection, so a
+/// multi-cursor wrap is one undo step.
+///
+/// # What counts as already commented
+///
+/// Two shapes, because both arise from pressing the key twice. Either the
+/// selection *contains* the delimiters — which is what you get by selecting a
+/// commented region — or it sits immediately *inside* them, which is what this
+/// command leaves behind, so that pressing the key again undoes it. Recognising
+/// only the first would make the command not its own inverse.
+///
+/// An empty selection inserts an empty comment and puts the caret inside it,
+/// which is what VS Code does: the point of pressing it with no selection is to
+/// write the comment next.
+fn block_comment(ctx: &mut Context<'_>) {
+    let Some((open, close)) = block_comment_tokens(ctx.document.language()) else {
+        return;
+    };
+    let before = ctx.view.selections.clone();
+    let buffer = &ctx.document.buffer;
+
+    // Planned in character indices, since every edit after the first sits at a
+    // position the earlier ones moved.
+    let mut planned: Vec<Planned> = Vec::new();
+    for selection in before.iter() {
+        let range = buffer.clamp_range(selection.range());
+        let start = buffer.position_to_char(range.start);
+        let end = buffer.position_to_char(range.end);
+        planned.push(plan_block_comment(buffer, start, end, open, close));
+    }
+    planned.sort_by_key(|p| (p.start, p.end));
+
+    let changes: Vec<Change> = planned
+        .iter()
+        .map(|p| {
+            Change::replace(
+                Range::new(
+                    buffer.char_to_position(p.start),
+                    buffer.char_to_position(p.end),
+                ),
+                p.text.clone(),
+            )
+        })
+        .collect();
+    let Ok(transaction) = Transaction::new(changes) else {
+        // Two cursors fighting over the same text. Dropping the whole thing is
+        // safer than applying half of it.
+        return;
+    };
+    let inverse = ctx.document.apply(&transaction);
+
+    // The selection each edit leaves behind: the text inside the delimiters, so
+    // that pressing the key again unwraps exactly what it just wrapped.
+    let mut selections = Vec::with_capacity(planned.len());
+    let mut delta: isize = 0;
+    for plan in &planned {
+        let moved = (plan.start as isize + delta) as usize;
+        let anchor = ctx
+            .document
+            .buffer
+            .char_to_position(moved + plan.inner.start);
+        let active = ctx.document.buffer.char_to_position(moved + plan.inner.end);
+        selections.push(Selection::new(anchor, active));
+        delta += plan.text.chars().count() as isize - (plan.end - plan.start) as isize;
+    }
+
+    let after = SelectionSet::from_vec(selections, before.primary_index());
+    ctx.view.selections = after.clone();
+    ctx.document
+        .history
+        .record(inverse, EditKind::Discrete, before, after, ctx.now_ms);
+    ctx.document.dirty = true;
+}
+
+/// One selection's share of a block-comment edit.
+struct Planned {
+    /// The character range being replaced.
+    start: usize,
+    end: usize,
+    /// What replaces it.
+    text: String,
+    /// Where the interesting part of `text` is, in characters from its start —
+    /// the text inside the delimiters after a wrap, or the whole of it after an
+    /// unwrap.
+    inner: std::ops::Range<usize>,
+}
+
+/// Decides whether one selection is being wrapped or unwrapped, and how.
+fn plan_block_comment(
+    buffer: &Buffer,
+    start: usize,
+    end: usize,
+    open: &str,
+    close: &str,
+) -> Planned {
+    let selected: String = buffer.text_in_range(Range::new(
+        buffer.char_to_position(start),
+        buffer.char_to_position(end),
+    ));
+    let trimmed = selected.trim();
+
+    // The selection contains the delimiters: `/* foo */` was selected whole.
+    if trimmed.len() >= open.len() + close.len()
+        && trimmed.starts_with(open)
+        && trimmed.ends_with(close)
+    {
+        let inner = trimmed[open.len()..trimmed.len() - close.len()].trim();
+        return Planned {
+            start,
+            end,
+            text: inner.to_owned(),
+            inner: 0..inner.chars().count(),
+        };
+    }
+
+    // The selection sits inside them, which is what a wrap leaves behind. The
+    // delimiters are swallowed along with one space each, since that is what the
+    // wrap inserted.
+    if let Some((outer_start, outer_end)) = surrounding_comment(buffer, start, end, open, close) {
+        return Planned {
+            start: outer_start,
+            end: outer_end,
+            text: selected.clone(),
+            inner: 0..selected.chars().count(),
+        };
+    }
+
+    // Otherwise wrap. `/* foo */`, and `/*  */` for an empty selection — with the
+    // caret between the spaces, which is where the comment gets typed.
+    let text = format!("{open} {selected} {close}");
+    let lead = open.chars().count() + 1;
+    Planned {
+        start,
+        end,
+        text,
+        inner: lead..lead + selected.chars().count(),
+    }
+}
+
+/// The range of a block comment that immediately surrounds `start..end`, if one
+/// does.
+///
+/// Allows one space on each side, because that is what a wrap inserts.
+fn surrounding_comment(
+    buffer: &Buffer,
+    start: usize,
+    end: usize,
+    open: &str,
+    close: &str,
+) -> Option<(usize, usize)> {
+    let read = |from: usize, to: usize| {
+        (from <= to && to <= buffer.len_chars()).then(|| {
+            buffer.text_in_range(Range::new(
+                buffer.char_to_position(from),
+                buffer.char_to_position(to),
+            ))
+        })
+    };
+
+    for space in [1usize, 0] {
+        let open_len = open.chars().count() + space;
+        let close_len = close.chars().count() + space;
+        let Some(before) = start.checked_sub(open_len).and_then(|s| read(s, start)) else {
+            continue;
+        };
+        let Some(after) = read(end, end + close_len) else {
+            continue;
+        };
+        let wanted_open = if space == 1 {
+            format!("{open} ")
+        } else {
+            open.to_owned()
+        };
+        let wanted_close = if space == 1 {
+            format!(" {close}")
+        } else {
+            close.to_owned()
+        };
+        if before == wanted_open && after == wanted_close {
+            return Some((start - open_len, end + close_len));
+        }
+    }
+    None
+}
+
 /// Which way [`line_comment`] should go.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CommentMode {
@@ -1303,6 +1493,114 @@ mod tests {
         fn cursor(&self) -> Position {
             self.view.selections.primary().active
         }
+    }
+
+    // ---- Block comment ----------------------------------------------------
+
+    #[test]
+    fn a_selection_is_wrapped_in_the_languages_block_delimiters() {
+        let mut h = Harness::with_language("let x = 1;\n", "rs").selecting((0, 8), (0, 9));
+        h.run("editor.action.blockComment");
+        assert_eq!(h.text(), "let x = /* 1 */;\n");
+    }
+
+    #[test]
+    fn pressing_it_twice_leaves_the_text_as_it_was() {
+        // Its own inverse, which needs the selection it leaves behind to be the
+        // text inside the delimiters.
+        let mut h = Harness::with_language("let x = 1;\n", "rs").selecting((0, 8), (0, 9));
+        h.run("editor.action.blockComment");
+        h.run("editor.action.blockComment");
+        assert_eq!(h.text(), "let x = 1;\n");
+    }
+
+    #[test]
+    fn selecting_a_whole_comment_removes_it() {
+        // The other shape a commented selection comes in: selected from outside
+        // rather than left behind by a wrap.
+        let mut h = Harness::with_language("let x = /* 1 */;\n", "rs").selecting((0, 8), (0, 15));
+        h.run("editor.action.blockComment");
+        assert_eq!(h.text(), "let x = 1;\n");
+    }
+
+    #[test]
+    fn an_empty_selection_opens_a_comment_with_the_caret_inside_it() {
+        let mut h = Harness::with_language("let x = 1;\n", "rs").at(0, 10);
+        h.run("editor.action.blockComment");
+        assert_eq!(h.text(), "let x = 1;/*  */\n");
+        // Between the spaces, which is where the comment gets typed.
+        assert_eq!(h.cursor(), Position::new(0, 13));
+    }
+
+    #[test]
+    fn a_multi_line_selection_is_wrapped_once_not_per_line() {
+        // The difference from a line comment, and the reason to have both.
+        let mut h = Harness::with_language("a();\nb();\n", "rs").selecting((0, 0), (1, 4));
+        h.run("editor.action.blockComment");
+        assert_eq!(h.text(), "/* a();\nb(); */\n");
+    }
+
+    #[test]
+    fn every_cursor_is_wrapped_in_one_undo_step() {
+        let mut h = Harness::with_language("a();\nb();\n", "rs");
+        h.view.selections = SelectionSet::from_vec(
+            vec![
+                Selection::new(Position::new(0, 0), Position::new(0, 1)),
+                Selection::new(Position::new(1, 0), Position::new(1, 1)),
+            ],
+            0,
+        );
+        h.run("editor.action.blockComment");
+        assert_eq!(h.text(), "/* a */();\n/* b */();\n");
+        h.run("undo");
+        assert_eq!(h.text(), "a();\nb();\n", "one step, not two");
+    }
+
+    #[test]
+    fn each_language_gets_its_own_delimiters() {
+        for (extension, expected) in [
+            ("rs", "/* x */\n"),
+            ("css", "/* x */\n"),
+            ("sql", "/* x */\n"),
+            ("html", "<!-- x -->\n"),
+            ("xml", "<!-- x -->\n"),
+            ("md", "<!-- x -->\n"),
+            ("lua", "--[[ x ]]\n"),
+            ("py", "\"\"\" x \"\"\"\n"),
+        ] {
+            let mut h = Harness::with_language("x\n", extension).selecting((0, 0), (0, 1));
+            h.run("editor.action.blockComment");
+            assert_eq!(h.text(), expected, "{extension}");
+        }
+    }
+
+    #[test]
+    fn a_language_with_no_block_comment_is_left_alone() {
+        // Shell, YAML, TOML and friends have none, and neither does VS Code claim
+        // one for them. Ruby's `=begin` must sit alone at the start of a line, so
+        // wrapping a selection with it would produce text Ruby cannot parse.
+        for extension in ["sh", "yaml", "toml", "rb", "json", "txt"] {
+            let mut h = Harness::with_language("x\n", extension).selecting((0, 0), (0, 1));
+            h.run("editor.action.blockComment");
+            assert_eq!(h.text(), "x\n", "{extension}");
+        }
+    }
+
+    #[test]
+    fn a_comment_wrapped_without_spaces_is_still_recognised() {
+        // Not what this command inserts, but what a person writes by hand.
+        let mut h = Harness::with_language("/*x*/\n", "rs").selecting((0, 0), (0, 5));
+        h.run("editor.action.blockComment");
+        assert_eq!(h.text(), "x\n");
+    }
+
+    #[test]
+    fn unwrapping_leaves_the_text_selected_so_it_can_be_wrapped_again() {
+        let mut h = Harness::with_language("let x = 1;\n", "rs").selecting((0, 8), (0, 9));
+        h.run("editor.action.blockComment");
+        h.run("editor.action.blockComment");
+        h.run("editor.action.blockComment");
+        assert_eq!(h.text(), "let x = /* 1 */;\n", "and back again");
     }
 
     #[test]
