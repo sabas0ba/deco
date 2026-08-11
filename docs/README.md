@@ -8,7 +8,7 @@ the honest place to look for what is **not** built yet.
 | --- | --- |
 | [Editing](editing.md) | Motion, selection, line operations, multiple cursors, undo |
 | [Tabs](tabs.md) | Several documents, one per tab; what a tab keeps |
-| [Syntax highlighting](highlighting.md) | Scopes, languages, and why not tree-sitter |
+| [Syntax highlighting](highlighting.md) | Scopes, languages, choosing one, and why not tree-sitter |
 | [Find and replace](find-and-replace.md) | `ctrl+f`, `ctrl+h`, `F3`, and the multi-cursor find keys |
 | [Running commands](commands.md) | The command palette, quick open, go to symbol, search in files, go to line |
 | [Language servers](language-servers.md) | Diagnostics, hover, definition, references, completion, symbols, semantic tokens, formatting |

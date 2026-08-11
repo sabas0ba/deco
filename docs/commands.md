@@ -87,6 +87,13 @@ surface be tested without one. `ctrl+p` therefore asks the frontend for the list
 and accepting a choice asks the frontend to read the file, exactly as saving asks
 it to write one.
 
+## Change language mode
+
+`ctrl+k m` says what language this document is, which decides the lexer, the
+`[language]` settings that apply, and which language server runs. It is documented
+with the highlighting it drives — see
+[Choosing the language yourself](highlighting.md#choosing-the-language-yourself).
+
 ## Go to symbol
 
 `ctrl+shift+o` lists the names the language server found in the file being edited
@@ -179,9 +186,9 @@ the palette: an entry there has to work when chosen, and one that only apologise
 is worse than a shorter list.
 
 What is on that list today: splits and editor groups, the side bar, panel,
-terminal and zen mode, zoom, save as, open file and open folder, the language-mode
-and colour-theme pickers, the settings and keyboard-shortcut editors, block
-comment, rename and quick fix, and the remote menu.
+terminal and zen mode, zoom, save as, open file and open folder, the colour-theme
+picker, the settings and keyboard-shortcut editors, block comment, rename and quick
+fix, and the remote menu.
 
 ## Not built yet
 

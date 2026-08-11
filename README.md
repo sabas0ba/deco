@@ -26,7 +26,7 @@ $ cargo run -p deco -- --print-config       # why isn't my setting applying?
 | --- | --- |
 | [Editing](docs/editing.md) | Motion, line operations, multiple cursors, undo |
 | [Tabs](docs/tabs.md) | Several documents, one per tab; what a tab keeps |
-| [Syntax highlighting](docs/highlighting.md) | Scopes, languages, and why not tree-sitter |
+| [Syntax highlighting](docs/highlighting.md) | Scopes, languages, choosing one, and why not tree-sitter |
 | [Find and replace](docs/find-and-replace.md) | `ctrl+f`, `ctrl+h`, `F3`, and the multi-cursor find keys |
 | [Running commands](docs/commands.md) | The command palette, quick open, go to symbol, search in files, go to line |
 | [Language servers](docs/language-servers.md) | Diagnostics, hover, definition, references, completion, symbols, semantic tokens, formatting |
@@ -198,7 +198,8 @@ does not:
   [Syntax highlighting](docs/highlighting.md). What a lexer cannot do is anything
   structural: a type told from a variable by its declaration, or a language
   embedded in another. Markdown, HTML and XML are deliberately left plain for that
-  reason. A language server's **semantic tokens** fill exactly that gap and are
+  reason, and `ctrl+k m` says which language a file is when its name does not. A
+  language server's **semantic tokens** fill exactly that gap and are
   drawn over the lexer's colouring where a server provides them. The GPU frontend
   draws one colour per line.
 - **The extension host is not connected.** The protocol, the capability broker,

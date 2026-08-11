@@ -46,6 +46,39 @@ them plain is the honest answer until there is something that understands them.
 Adding a language is a table in `crates/deco-syntax/src/languages.rs` and nothing
 else.
 
+## Choosing the language yourself
+
+The language is worked out from the file name — its extension, or the whole name
+for `Makefile`, `Dockerfile` and `Cargo.toml`. When that is wrong or when there is
+nothing to go on, `ctrl+k m` picks one.
+
+![Telling a .txt file that it is TOML](img/language-mode.svg)
+
+The right-hand column is the **identifier**, not a second name for the language: it
+is what `[toml]` in a `settings.json` refers to, what a language server is matched
+on, and what selects the lexer. The title is for finding the row; the identifier is
+the thing that acts.
+
+Choosing one rebuilds everything downstream of it: the lexer, the settings — so a
+`[toml]` block's `editor.tabSize` starts applying — and the `editorLangId` context
+key, so a `when` clause means what it says. The terminal frontend also re-attaches
+its language server, because a different language is a different server.
+
+**Auto Detect** is the first row and the way back. Its own right-hand column says
+what detection would decide, so choosing it is not a guess.
+
+The text is never touched. Nothing about a document's bytes depends on which
+language it is said to be, only on how it is read — so this is not an edit, and it
+is not undoable.
+
+| Key | Command |
+| --- | --- |
+| `ctrl+k m` | `workbench.action.editor.changeLanguageMode` |
+
+The picker offers every identifier deco knows, including the ones with no lexer
+(`markdown`, `html`, `xml`, `plaintext`) — they still select settings and a server,
+which is most of what a language identifier is for.
+
 ## It is a lexer, not a parser
 
 Worth stating plainly, because it bounds what you should expect.

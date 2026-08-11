@@ -122,6 +122,9 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
                 // may put a different document on screen, and the language
                 // server has to be told which file it is now looking at.
                 let path_before = session.document.path.clone();
+                // And the language, which `ctrl+k m` can change without the
+                // document changing — a different language is a different server.
+                let language_before = session.document.language().map(str::to_owned);
                 let was_backspace = chord.key
                     == deco_keymap::keys::Key::Named(deco_keymap::keys::NamedKey::Backspace)
                     && !chord.modifiers.ctrl
@@ -272,9 +275,13 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
                 // the same document costs a comparison; for a new one it sends
                 // didClose/didOpen or starts the right server, and the stored
                 // diagnostics for the returning document are collected.
-                if session.document.path != path_before {
+                if session.document.path != path_before
+                    || session.document.language().map(str::to_owned) != language_before
+                {
                     // A hover or completion list anchored in the old document
-                    // would describe text that is no longer on screen.
+                    // would describe text that is no longer on screen — or, after
+                    // a language change, would be the old server's answer about a
+                    // file it is no longer responsible for.
                     lsp.dismiss_hover();
                     lsp.dismiss_suggest();
                     lsp.attach(session);

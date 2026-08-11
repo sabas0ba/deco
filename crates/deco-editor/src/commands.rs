@@ -208,12 +208,6 @@ pub const PENDING: &[(&str, &str)] = &[
     // Needs a file dialog, or a path prompt standing in for one.
     ("workbench.action.files.openFile", "Open File"),
     ("workbench.action.files.openFolder", "Open Folder"),
-    // Needs a picker over the languages the lexer knows, and a per-document
-    // override of the language chosen from the file name.
-    (
-        "workbench.action.editor.changeLanguageMode",
-        "Change Language Mode",
-    ),
     // Needs a picker over the installed themes, and a reload that re-resolves
     // every colour already drawn.
     ("workbench.action.selectTheme", "Color Theme"),
@@ -275,6 +269,10 @@ pub const PALETTE: &[(&str, &str)] = &[
     ("editor.action.marker.prev", "Go to Previous Problem"),
     ("workbench.action.files.save", "Save"),
     ("workbench.action.files.saveAll", "Save All"),
+    (
+        "workbench.action.editor.changeLanguageMode",
+        "Change Language Mode",
+    ),
     ("workbench.action.quit", "Quit"),
     ("workbench.action.nextEditor", "Next Editor"),
     ("workbench.action.previousEditor", "Previous Editor"),

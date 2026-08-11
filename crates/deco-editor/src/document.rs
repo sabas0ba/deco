@@ -47,6 +47,60 @@ pub fn language_for_path(path: &Path) -> Option<&'static str> {
     })
 }
 
+/// Every language deco knows an identifier for, and what to call it.
+///
+/// # Why this is a list and not derived from [`language_for_path`]
+///
+/// Detection maps *file names* to identifiers, and several identifiers share one
+/// pattern while others have none — `plaintext` is nothing's extension. This is
+/// the other direction: what a user may choose, and what to show them for it.
+///
+/// The identifier is the part that matters and the part a title does not tell
+/// you: it is what `[rust]` in a `settings.json` refers to, what a language
+/// server is matched on, and what picks the lexer. So the picker shows both.
+///
+/// Written in the order the picker lists them — by title, ignoring case — so the
+/// source reads as the list a user sees.
+pub const LANGUAGES: &[(&str, &str)] = &[
+    ("c", "C"),
+    ("cpp", "C++"),
+    ("css", "CSS"),
+    ("dockerfile", "Dockerfile"),
+    ("go", "Go"),
+    ("html", "HTML"),
+    ("java", "Java"),
+    ("javascript", "JavaScript"),
+    ("javascriptreact", "JavaScript React"),
+    ("json", "JSON"),
+    ("jsonc", "JSON with Comments"),
+    ("lua", "Lua"),
+    ("makefile", "Makefile"),
+    ("markdown", "Markdown"),
+    ("plaintext", "Plain Text"),
+    ("python", "Python"),
+    ("ruby", "Ruby"),
+    ("rust", "Rust"),
+    ("shellscript", "Shell Script"),
+    ("sql", "SQL"),
+    ("toml", "TOML"),
+    ("typescript", "TypeScript"),
+    ("typescriptreact", "TypeScript React"),
+    ("xml", "XML"),
+    ("yaml", "YAML"),
+];
+
+/// What to call `language`, or the identifier itself if deco has no name for it.
+///
+/// An unknown identifier can arrive from a `settings.json` or a server, and
+/// showing it verbatim is more useful than showing nothing.
+pub fn language_title(language: &str) -> &str {
+    LANGUAGES
+        .iter()
+        .find(|(id, _)| *id == language)
+        .map(|(_, title)| *title)
+        .unwrap_or(language)
+}
+
 /// The token that starts a line comment in `language`, if it has one.
 pub fn line_comment_token(language: Option<&str>) -> Option<&'static str> {
     Some(match language? {
