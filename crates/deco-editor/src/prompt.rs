@@ -35,6 +35,8 @@ pub enum PromptKind {
     Symbols,
     /// `ctrl+k m`: which language this document is.
     Languages,
+    /// `ctrl+k ctrl+t`: which colour theme to use.
+    Themes,
 }
 
 impl PromptKind {
@@ -47,6 +49,7 @@ impl PromptKind {
             Self::SearchResults => "Result:",
             Self::Symbols => "Go to symbol:",
             Self::Languages => "Select language mode:",
+            Self::Themes => "Color theme:",
         }
     }
 
@@ -68,6 +71,8 @@ impl PromptKind {
             (Self::Symbols, _) => "symbols",
             (Self::Languages, 1) => "language",
             (Self::Languages, _) => "languages",
+            (Self::Themes, 1) => "theme",
+            (Self::Themes, _) => "themes",
         }
     }
 
@@ -80,7 +85,10 @@ impl PromptKind {
     /// either way. Where it is false, equal matches are ordered by title, so the
     /// list is stable rather than incidental.
     pub fn keeps_source_order(self) -> bool {
-        matches!(self, Self::Symbols)
+        // Themes as well as symbols: the built-in ones are listed first because
+        // they are the ones that always work, and a title sort would bury them
+        // under whatever is installed.
+        matches!(self, Self::Symbols | Self::Themes)
     }
 }
 

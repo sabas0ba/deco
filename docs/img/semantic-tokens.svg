@@ -13,6 +13,7 @@
 </style>
 <rect width="670" height="316" rx="6" fill="#1f1f1f"/>
 <g class="s s0">
+<rect width="670" height="316" rx="6" fill="#1f1f1f"/>
 <text x="12.0" y="26.0" font-size="14px" fill="#cccccc" textLength="34.0" lengthAdjust="spacingAndGlyphs">  1 </text>
 <text x="46.0" y="26.0" font-size="14px" fill="#c586c0" textLength="42.5" lengthAdjust="spacingAndGlyphs">const</text>
 <text x="97.0" y="26.0" font-size="14px" fill="#4ec9b0" textLength="42.5" lengthAdjust="spacingAndGlyphs">LIMIT</text>
@@ -56,6 +57,7 @@
 <text class="c" x="12.0" y="296.0">the lexer alone — LIMIT reads as a type</text>
 </g>
 <g class="s s1">
+<rect width="670" height="316" rx="6" fill="#1f1f1f"/>
 <text x="12.0" y="26.0" font-size="14px" fill="#cccccc" textLength="34.0" lengthAdjust="spacingAndGlyphs">  1 </text>
 <text x="46.0" y="26.0" font-size="14px" fill="#c586c0" textLength="42.5" lengthAdjust="spacingAndGlyphs">const</text>
 <text x="97.0" y="26.0" font-size="14px" fill="#4fc1ff" textLength="42.5" lengthAdjust="spacingAndGlyphs">LIMIT</text>
@@ -110,6 +112,7 @@
 <text class="c" x="12.0" y="296.0">the server: LIMIT is a constant, and names are bound</text>
 </g>
 <g class="s s2">
+<rect width="670" height="316" rx="6" fill="#1f1f1f"/>
 <text x="12.0" y="26.0" font-size="14px" fill="#cccccc" textLength="34.0" lengthAdjust="spacingAndGlyphs">  1 </text>
 <text x="46.0" y="26.0" font-size="14px" fill="#c586c0" textLength="42.5" lengthAdjust="spacingAndGlyphs">const</text>
 <text x="97.0" y="26.0" font-size="14px" fill="#4ec9b0" textLength="42.5" lengthAdjust="spacingAndGlyphs">LIMIT</text>

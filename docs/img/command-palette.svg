@@ -19,6 +19,7 @@
 </style>
 <rect width="670" height="316" rx="6" fill="#1f1f1f"/>
 <g class="s s0">
+<rect width="670" height="316" rx="6" fill="#1f1f1f"/>
 <text x="12.0" y="26.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  1 </text>
 <text x="46.0" y="26.0" font-size="14px" fill="#c586c0" textLength="17.0" lengthAdjust="spacingAndGlyphs">fn</text>
 <text x="71.5" y="26.0" font-size="14px" fill="#dcdcaa" textLength="34.0" lengthAdjust="spacingAndGlyphs">main</text>
@@ -46,6 +47,7 @@
 <text class="c" x="12.0" y="296.0">ctrl+shift+p lists every command</text>
 </g>
 <g class="s s1">
+<rect width="670" height="316" rx="6" fill="#1f1f1f"/>
 <text x="12.0" y="26.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  1 </text>
 <text x="46.0" y="26.0" font-size="14px" fill="#c586c0" textLength="17.0" lengthAdjust="spacingAndGlyphs">fn</text>
 <text x="71.5" y="26.0" font-size="14px" fill="#dcdcaa" textLength="34.0" lengthAdjust="spacingAndGlyphs">main</text>
@@ -73,21 +75,22 @@
 <rect x="12.0" y="145.0" width="646.0" height="19.0" fill="#181818"/>
 <text x="12.0" y="159.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs">  Close Editor                           workbench.action.closeActiveEditor </text>
 <rect x="12.0" y="164.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="178.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs">  Copy                                    editor.action.clipboardCopyAction </text>
+<text x="12.0" y="178.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs">  Color Theme                                  workbench.action.selectTheme </text>
 <rect x="12.0" y="183.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="197.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs">  Copy Line Down                          editor.action.copyLinesDownAction </text>
+<text x="12.0" y="197.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs">  Copy                                    editor.action.clipboardCopyAction </text>
 <rect x="12.0" y="202.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="216.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs">  Copy Line Up                              editor.action.copyLinesUpAction </text>
+<text x="12.0" y="216.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs">  Copy Line Down                          editor.action.copyLinesDownAction </text>
 <rect x="12.0" y="221.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="235.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs">  Cut                                      editor.action.clipboardCutAction </text>
+<text x="12.0" y="235.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs">  Copy Line Up                              editor.action.copyLinesUpAction </text>
 <rect x="12.0" y="240.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="254.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Command:                                                       47 commands </text>
+<text x="12.0" y="254.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Command:                                                       48 commands </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
 <text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                                  rust  Ln 2, Col 5 </text>
 <rect x="97.0" y="240.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">ctrl+shift+p</text>
 </g>
 <g class="s s2">
+<rect width="670" height="316" rx="6" fill="#1f1f1f"/>
 <text x="12.0" y="26.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  1 </text>
 <text x="46.0" y="26.0" font-size="14px" fill="#c586c0" textLength="17.0" lengthAdjust="spacingAndGlyphs">fn</text>
 <text x="71.5" y="26.0" font-size="14px" fill="#dcdcaa" textLength="34.0" lengthAdjust="spacingAndGlyphs">main</text>
@@ -123,6 +126,7 @@
 <text class="c" x="12.0" y="296.0">type “comment”</text>
 </g>
 <g class="s s3">
+<rect width="670" height="316" rx="6" fill="#1f1f1f"/>
 <text x="12.0" y="26.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  1 </text>
 <text x="46.0" y="26.0" font-size="14px" fill="#c586c0" textLength="17.0" lengthAdjust="spacingAndGlyphs">fn</text>
 <text x="71.5" y="26.0" font-size="14px" fill="#dcdcaa" textLength="34.0" lengthAdjust="spacingAndGlyphs">main</text>
@@ -158,6 +162,7 @@
 <text class="c" x="12.0" y="296.0">down</text>
 </g>
 <g class="s s4">
+<rect width="670" height="316" rx="6" fill="#1f1f1f"/>
 <text x="12.0" y="26.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  1 </text>
 <text x="46.0" y="26.0" font-size="14px" fill="#c586c0" textLength="17.0" lengthAdjust="spacingAndGlyphs">fn</text>
 <text x="71.5" y="26.0" font-size="14px" fill="#dcdcaa" textLength="34.0" lengthAdjust="spacingAndGlyphs">main</text>
@@ -193,6 +198,7 @@
 <text class="c" x="12.0" y="296.0">down</text>
 </g>
 <g class="s s5">
+<rect width="670" height="316" rx="6" fill="#1f1f1f"/>
 <text x="12.0" y="26.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  1 </text>
 <text x="46.0" y="26.0" font-size="14px" fill="#c586c0" textLength="17.0" lengthAdjust="spacingAndGlyphs">fn</text>
 <text x="71.5" y="26.0" font-size="14px" fill="#dcdcaa" textLength="34.0" lengthAdjust="spacingAndGlyphs">main</text>

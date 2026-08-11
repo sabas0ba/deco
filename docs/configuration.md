@@ -105,6 +105,30 @@ fix that typo.
 `Default Light Modern` — and a theme extension from the marketplace works as-is,
 because a theme is declarative and starts no host process.
 
+`ctrl+k ctrl+t` switches between them.
+
+![Switching from the dark theme to the light one](img/color-theme.svg)
+
+The right-hand column is `dark`, `light` or `high contrast`, from the
+contribution's `uiTheme`. It is the part of the choice a label often does not say,
+and it is what tells you whether the screen is about to go white.
+
+The list is the two built-in themes — first, because they are the ones that always
+work — followed by every `contributes.themes` entry of every extension under deco's
+extensions directory **and VS Code's**, so a theme you installed for VS Code is
+offered here without being copied. One label is offered once; the same extension
+installed under two versions is the usual reason for a duplicate. Nothing is read
+while listing: a picker over forty themes would otherwise parse forty files and
+thirty-nine of them for nothing.
+
+**The choice lasts the session.** Making it stick means putting
+`workbench.colorTheme` in your settings, which the status bar says when the theme
+changes. deco reads that file and never writes it — an editor that edits your
+configuration behind you is worse than one that tells you what to put in it.
+
+A theme that cannot be read reports why and leaves the current one alone, because
+the alternative is an editor with no colours.
+
 What is read from a theme file: `colors`, `tokenColors` (including TextMate scope
 matching), `semanticTokenColors`, and `include` chains for themes that build on
 another. Naming a theme deco cannot find falls back to the dark theme and says so

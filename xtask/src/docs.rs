@@ -143,6 +143,10 @@ fn demos() -> Vec<Demo> {
             build: language_mode,
         },
         Demo {
+            name: "color-theme",
+            build: color_theme,
+        },
+        Demo {
             name: "quick-open",
             build: quick_open,
         },
@@ -173,6 +177,12 @@ struct Take {
 struct Shot {
     frame: Frame,
     caption: String,
+    /// The editor background when this frame was captured.
+    ///
+    /// Per frame rather than per demonstration, because a theme can change
+    /// mid-scenario and a light frame drawn on a dark page is not what the editor
+    /// looked like.
+    bg: Rgba,
     /// How many time slots this frame occupies. A frame worth reading gets
     /// several; an intermediate keystroke gets one.
     hold: u32,
@@ -268,6 +278,7 @@ impl Take {
         self.shots.push(Shot {
             frame,
             caption: caption.to_owned(),
+            bg: self.background(),
             hold,
         });
         self
@@ -285,18 +296,22 @@ impl Take {
         self.shots.push(Shot {
             frame,
             caption: caption.to_owned(),
+            bg: self.background(),
             hold,
         });
         self
     }
 
-    fn finish(&self) -> String {
-        let bg = self
-            .session
+    /// The current theme's editor background.
+    fn background(&self) -> Rgba {
+        self.session
             .theme
             .color("editor.background")
-            .unwrap_or(Rgba::BLACK);
-        svg(&self.shots, COLUMNS, ROWS, bg)
+            .unwrap_or(Rgba::BLACK)
+    }
+
+    fn finish(&self) -> String {
+        svg(&self.shots, COLUMNS, ROWS)
     }
 }
 
@@ -644,6 +659,48 @@ fn save_all() -> String {
     take.finish()
 }
 
+fn color_theme() -> String {
+    let mut take = Take::new("main.rs", SAMPLE);
+    take.at(1, 8).capture("Default Dark Modern", 5);
+    take.press(&["ctrl+k"]);
+    take.press(&["ctrl+t"]);
+
+    // The list is the frontend's, since a contributed theme is a file in an
+    // extension directory. Handed in rather than walked, so the demonstration does
+    // not depend on what happens to be installed where it is generated — but
+    // through the real row builder, so the columns are the ones a reader will see.
+    let installed = [
+        ("Default Dark Modern", None, "dark"),
+        ("Default Light Modern", None, "light"),
+        ("Night Owl", Some("/ext/owl/themes/owl.json"), "dark"),
+        ("Paper", Some("/ext/paper/paper.json"), "light"),
+    ]
+    .map(|(label, path, kind)| deco_tui::themes::Available {
+        label: label.to_owned(),
+        path: path.map(PathBuf::from),
+        kind,
+    });
+    take.session
+        .offer_themes(deco_tui::themes::rows(&installed));
+    take.resize_for_chrome();
+    take.capture("dark or light is the second column", 6);
+    take.type_text("light");
+
+    // Exactly what the frontend does with `Outcome::LoadTheme`: the picker names a
+    // theme, and reading it belongs to the side with a filesystem. A built-in
+    // needs only its label.
+    take.session.prompt = None;
+    if let deco_editor::commands::Outcome::Message(report) = take.session.set_theme(
+        deco_theme::defaults::builtin("Default Light Modern")
+            .expect("the built-in light theme must parse"),
+    ) {
+        take.session.status = Some(report);
+    }
+    take.resize_for_chrome();
+    take.capture("enter — the same theme keys, resolved again", 6);
+    take.finish()
+}
+
 fn language_mode() -> String {
     // A `.txt` file that is really TOML. Nothing about the name says so, so the
     // lexer has nothing to go on until it is told.
@@ -819,7 +876,7 @@ const FONT: f32 = 14.0;
 const SLOT: f32 = 0.55;
 
 /// Renders a sequence of frames as one animated SVG.
-fn svg(shots: &[Shot], columns: usize, rows: usize, bg: Rgba) -> String {
+fn svg(shots: &[Shot], columns: usize, rows: usize) -> String {
     let width = PAD * 2.0 + columns as f32 * CELL;
     let height = PAD * 2.0 + rows as f32 * LINE + CAPTION;
     let slots: u32 = shots.iter().map(|shot| shot.hold).sum();
@@ -870,14 +927,23 @@ fn svg(shots: &[Shot], columns: usize, rows: usize, bg: Rgba) -> String {
     }
     out.push_str("</style>\n");
 
+    // The page, in the first frame's colours. It is what shows if the animation
+    // does not run, since every frame group starts hidden.
+    let page = shots.first().map(|shot| shot.bg).unwrap_or(Rgba::BLACK);
     out.push_str(&format!(
         "<rect width=\"{width:.0}\" height=\"{height:.0}\" rx=\"6\" fill=\"{}\"/>\n",
-        hex(bg)
+        hex(page)
     ));
 
     for (index, shot) in shots.iter().enumerate() {
         out.push_str(&format!("<g class=\"s s{index}\">\n"));
-        frame_body(&mut out, &shot.frame, bg);
+        // Repainted per frame so that a theme change is drawn to the edges rather
+        // than leaving the previous theme in the margin.
+        out.push_str(&format!(
+            "<rect width=\"{width:.0}\" height=\"{height:.0}\" rx=\"6\" fill=\"{}\"/>\n",
+            hex(shot.bg)
+        ));
+        frame_body(&mut out, &shot.frame, shot.bg);
         out.push_str(&format!(
             "<text class=\"c\" x=\"{:.1}\" y=\"{:.1}\">{}</text>\n",
             PAD,
@@ -1022,6 +1088,7 @@ mod tests {
                     cursor: None,
                 },
                 caption: "one".to_owned(),
+                bg: Rgba::BLACK,
                 hold: 1,
             },
             Shot {
@@ -1030,10 +1097,11 @@ mod tests {
                     cursor: None,
                 },
                 caption: "two".to_owned(),
+                bg: Rgba::BLACK,
                 hold: 3,
             },
         ];
-        let out = svg(&shots, 4, 1, Rgba::BLACK);
+        let out = svg(&shots, 4, 1);
         assert!(out.contains("@keyframes s0 { 0% { opacity: 1 } 25.000% { opacity: 0 } }"));
         assert!(out.contains("25.000% { opacity: 1 } 100.000% { opacity: 0 }"));
         // Two frames, four slots, so the loop is four slots long.
@@ -1071,9 +1139,10 @@ mod tests {
                 cursor: None,
             },
             caption: String::new(),
+            bg: Rgba::BLACK,
             hold: 1,
         }];
-        let out = svg(&shots, 2, 1, Rgba::BLACK);
+        let out = svg(&shots, 2, 1);
         assert!(out.contains("textLength=\"17.0\""), "{out}");
         assert!(out.contains("lengthAdjust=\"spacingAndGlyphs\""));
         // The background matched the page, so no rectangle was drawn for it.
@@ -1094,9 +1163,10 @@ mod tests {
                 cursor: None,
             },
             caption: String::new(),
+            bg: Rgba::BLACK,
             hold: 1,
         }];
-        let out = svg(&shots, 2, 1, Rgba::BLACK);
+        let out = svg(&shots, 2, 1);
         assert!(out.contains("fill=\"#010203\""), "{out}");
     }
 
@@ -1114,9 +1184,10 @@ mod tests {
                 cursor: None,
             },
             caption: String::new(),
+            bg: Rgba::BLACK,
             hold: 1,
         }];
-        let out = svg(&shots, 4, 1, Rgba::BLACK);
+        let out = svg(&shots, 4, 1);
         assert!(!out.contains("<text x="), "{out}");
     }
 
@@ -1128,9 +1199,10 @@ mod tests {
                 cursor: Some((2, 1)),
             },
             caption: String::new(),
+            bg: Rgba::BLACK,
             hold: 1,
         }];
-        let out = svg(&shots, 4, 2, Rgba::BLACK);
+        let out = svg(&shots, 4, 2);
         let x = PAD + 2.0 * CELL;
         let y = PAD + LINE;
         assert!(out.contains(&format!("x=\"{x:.1}\" y=\"{y:.1}\"")), "{out}");

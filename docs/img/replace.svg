@@ -21,6 +21,7 @@
 </style>
 <rect width="670" height="316" rx="6" fill="#1f1f1f"/>
 <g class="s s0">
+<rect width="670" height="316" rx="6" fill="#1f1f1f"/>
 <text x="12.0" y="26.0" font-size="14px" fill="#cccccc" textLength="34.0" lengthAdjust="spacingAndGlyphs">  1 </text>
 <text x="46.0" y="26.0" font-size="14px" fill="#c586c0" textLength="17.0" lengthAdjust="spacingAndGlyphs">fn</text>
 <text x="71.5" y="26.0" font-size="14px" fill="#dcdcaa" textLength="34.0" lengthAdjust="spacingAndGlyphs">main</text>
@@ -48,6 +49,7 @@
 <text class="c" x="12.0" y="296.0">press ctrl+h to replace</text>
 </g>
 <g class="s s1">
+<rect width="670" height="316" rx="6" fill="#1f1f1f"/>
 <text x="12.0" y="26.0" font-size="14px" fill="#cccccc" textLength="34.0" lengthAdjust="spacingAndGlyphs">  1 </text>
 <text x="46.0" y="26.0" font-size="14px" fill="#c586c0" textLength="17.0" lengthAdjust="spacingAndGlyphs">fn</text>
 <text x="71.5" y="26.0" font-size="14px" fill="#dcdcaa" textLength="34.0" lengthAdjust="spacingAndGlyphs">main</text>
@@ -79,6 +81,7 @@
 <text class="c" x="12.0" y="296.0">ctrl+h</text>
 </g>
 <g class="s s2">
+<rect width="670" height="316" rx="6" fill="#1f1f1f"/>
 <text x="12.0" y="26.0" font-size="14px" fill="#cccccc" textLength="34.0" lengthAdjust="spacingAndGlyphs">  1 </text>
 <text x="46.0" y="26.0" font-size="14px" fill="#c586c0" textLength="17.0" lengthAdjust="spacingAndGlyphs">fn</text>
 <text x="71.5" y="26.0" font-size="14px" fill="#dcdcaa" textLength="34.0" lengthAdjust="spacingAndGlyphs">main</text>
@@ -110,6 +113,7 @@
 <text class="c" x="12.0" y="296.0">type “sum”</text>
 </g>
 <g class="s s3">
+<rect width="670" height="316" rx="6" fill="#1f1f1f"/>
 <text x="12.0" y="26.0" font-size="14px" fill="#cccccc" textLength="34.0" lengthAdjust="spacingAndGlyphs">  1 </text>
 <text x="46.0" y="26.0" font-size="14px" fill="#c586c0" textLength="17.0" lengthAdjust="spacingAndGlyphs">fn</text>
 <text x="71.5" y="26.0" font-size="14px" fill="#dcdcaa" textLength="34.0" lengthAdjust="spacingAndGlyphs">main</text>
@@ -141,6 +145,7 @@
 <text class="c" x="12.0" y="296.0">shift+tab</text>
 </g>
 <g class="s s4">
+<rect width="670" height="316" rx="6" fill="#1f1f1f"/>
 <text x="12.0" y="26.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  1 </text>
 <text x="46.0" y="26.0" font-size="14px" fill="#c586c0" textLength="17.0" lengthAdjust="spacingAndGlyphs">fn</text>
 <text x="71.5" y="26.0" font-size="14px" fill="#dcdcaa" textLength="34.0" lengthAdjust="spacingAndGlyphs">main</text>
@@ -177,6 +182,7 @@
 <text class="c" x="12.0" y="296.0">type “total”</text>
 </g>
 <g class="s s5">
+<rect width="670" height="316" rx="6" fill="#1f1f1f"/>
 <text x="12.0" y="26.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  1 </text>
 <text x="46.0" y="26.0" font-size="14px" fill="#c586c0" textLength="17.0" lengthAdjust="spacingAndGlyphs">fn</text>
 <text x="71.5" y="26.0" font-size="14px" fill="#dcdcaa" textLength="34.0" lengthAdjust="spacingAndGlyphs">main</text>
@@ -213,6 +219,7 @@
 <text class="c" x="12.0" y="296.0">tab</text>
 </g>
 <g class="s s6">
+<rect width="670" height="316" rx="6" fill="#1f1f1f"/>
 <text x="12.0" y="26.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  1 </text>
 <text x="46.0" y="26.0" font-size="14px" fill="#c586c0" textLength="17.0" lengthAdjust="spacingAndGlyphs">fn</text>
 <text x="71.5" y="26.0" font-size="14px" fill="#dcdcaa" textLength="34.0" lengthAdjust="spacingAndGlyphs">main</text>
