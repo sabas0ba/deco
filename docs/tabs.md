@@ -24,12 +24,21 @@ state, and the **diagnostics** a language server has published for it. Switch
 away, switch back, and press `ctrl+z` — the edit you made there is undone, not
 one from another file.
 
-The find bar does not survive a switch, and that is a limit rather than a
-preference: there is **one find state per session**, so there is nowhere per-tab
-to keep a match list. Closing it is the safe thing to do with state that describes
-text no longer on screen — a stale highlight is worse than none — but a find bar
-per tab would be better than either, and it is what VS Code has. The query is
-kept, so `F3` still knows what to search for.
+The find bar belongs to the tab, so switching away **parks** it rather than
+throwing it away: switch back and it is where you left it, matches and all. Two
+tabs can be searching for different things at once.
+
+The **search string is shared** even though the bar is not, which is what VS Code
+does — opening find in another file shows the same query, and `F3` in a tab you
+have not searched yet looks for the last thing you looked for.
+
+A *different document* in the same tab still drops the matches, because there they
+really are stale.
+
+While the editor is split, both groups show the same tab and therefore the same
+find state, so moving between them closes the bar: its current match is where the
+*other* group's cursor is. A find bar per group needs a tab list per group, which
+is the other half of splitting.
 
 ## The rules, and why
 
