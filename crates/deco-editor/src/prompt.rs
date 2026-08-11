@@ -33,6 +33,8 @@ pub enum PromptKind {
     SearchResults,
     /// `ctrl+shift+o`: a name the language server found in this document.
     Symbols,
+    /// `ctrl+k m`: which language this document is.
+    Languages,
 }
 
 impl PromptKind {
@@ -44,6 +46,7 @@ impl PromptKind {
             Self::Files => "Open:",
             Self::SearchResults => "Result:",
             Self::Symbols => "Go to symbol:",
+            Self::Languages => "Select language mode:",
         }
     }
 
@@ -63,6 +66,8 @@ impl PromptKind {
             (Self::SearchResults, _) => "matches",
             (Self::Symbols, 1) => "symbol",
             (Self::Symbols, _) => "symbols",
+            (Self::Languages, 1) => "language",
+            (Self::Languages, _) => "languages",
         }
     }
 
@@ -77,6 +82,16 @@ impl PromptKind {
     pub fn keeps_source_order(self) -> bool {
         matches!(self, Self::Symbols)
     }
+}
+
+/// Compares two titles the way a reader scans a list: without regard to case.
+///
+/// Character by character rather than by lowercasing both first, which would
+/// allocate a pair of strings for every comparison in every sort.
+fn compare_titles(left: &str, right: &str) -> std::cmp::Ordering {
+    left.chars()
+        .flat_map(char::to_lowercase)
+        .cmp(right.chars().flat_map(char::to_lowercase))
 }
 
 /// An open prompt.
@@ -241,8 +256,16 @@ impl Prompt {
             scored.sort_by_key(|(rank, _)| *rank);
         } else {
             scored.sort_by(|a, b| {
+                let (left, right) = (&self.choices[a.1].title, &self.choices[b.1].title);
                 a.0.cmp(&b.0)
-                    .then_with(|| self.choices[a.1].title.cmp(&self.choices[b.1].title))
+                    // Case-insensitively, because byte order puts `JSON` before
+                    // `Java` — every capital sorts below every lowercase letter —
+                    // and a list nobody can predict the order of is one nobody can
+                    // scan. The byte comparison remains as the tie-break so the
+                    // order is still total, and so two titles differing only in
+                    // case do not swap between presses.
+                    .then_with(|| compare_titles(left, right))
+                    .then_with(|| left.cmp(right))
             });
         }
 

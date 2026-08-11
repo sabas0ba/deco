@@ -139,6 +139,10 @@ fn demos() -> Vec<Demo> {
             build: save_all,
         },
         Demo {
+            name: "language-mode",
+            build: language_mode,
+        },
+        Demo {
             name: "quick-open",
             build: quick_open,
         },
@@ -637,6 +641,22 @@ fn save_all() -> String {
     }
     take.resize_for_chrome();
     take.capture("ctrl+k s — both written, and it says how many", 6);
+    take.finish()
+}
+
+fn language_mode() -> String {
+    // A `.txt` file that is really TOML. Nothing about the name says so, so the
+    // lexer has nothing to go on until it is told.
+    let mut take = Take::new(
+        "notes.txt",
+        "# A manifest, in a file that does not say so.\n[package]\nname = \"deco\"\nedition = \"2021\"\n",
+    );
+    take.at(0, 0)
+        .capture("notes.txt — no language, so no colour", 5);
+    take.press(&["ctrl+k"]);
+    take.press_and_hold(&["m"], 5);
+    take.type_text("toml");
+    take.press_and_hold(&["enter"], 6);
     take.finish()
 }
 

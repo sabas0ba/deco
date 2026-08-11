@@ -69,6 +69,14 @@ pub struct TabLabel {
     pub active: bool,
 }
 
+/// The picker row that means "work it out from the file name" rather than naming
+/// a language.
+///
+/// deco's own namespace, because VS Code has no identifier for it: the choice is
+/// not a language, and giving it one would make `[deco.language.auto]` look like
+/// a settings key that does something.
+const AUTO_LANGUAGE: &str = "deco.language.auto";
+
 /// Exactly the bytes to write for `document`.
 ///
 /// Its *own* settings, not the session's: `files.insertFinalNewline` can differ
@@ -655,6 +663,7 @@ impl Session {
                 self.find.toggle_field();
                 Outcome::Handled
             }
+            "workbench.action.editor.changeLanguageMode" => self.offer_languages(),
             "editor.action.replaceOne" => self.replace_one(now_ms),
             "editor.action.replaceAll" => self.replace_all(now_ms),
             // Commands that need something the core has no concept of. Named
@@ -741,6 +750,64 @@ impl Session {
         self.refresh_context();
     }
 
+    /// Opens the language-mode picker.
+    ///
+    /// Owned by the core rather than a frontend: every language deco knows is
+    /// compiled in, so there is nothing to walk and nothing to read.
+    fn offer_languages(&mut self) -> Outcome {
+        let mut entries = vec![
+            // Detection rather than a choice, which is what VS Code offers first
+            // and the only way back once a language has been picked by hand. The
+            // detail says what it would decide, so the row is not a mystery.
+            crate::commands::PaletteEntry::new(AUTO_LANGUAGE, "Auto Detect").with_detail(
+                self.document
+                    .path
+                    .as_deref()
+                    .and_then(crate::document::language_for_path)
+                    .unwrap_or("no language"),
+            ),
+        ];
+        entries.extend(
+            crate::document::LANGUAGES
+                .iter()
+                .map(|(id, title)| crate::commands::PaletteEntry::new(id, title).with_detail(id)),
+        );
+        self.prompt = Some(Prompt::list(PromptKind::Languages, entries));
+        self.refresh_context();
+        Outcome::Handled
+    }
+
+    /// Makes this document `language`, or `None` to go back to detecting it.
+    ///
+    /// Everything downstream of the identifier is rebuilt: the lexer, and the
+    /// settings, which can be overridden per language. The context key follows
+    /// too, so a `when` clause on `editorLangId` means what it says.
+    ///
+    /// The text is untouched. Nothing about a document's bytes depends on which
+    /// language it is said to be — only on how it is read.
+    pub fn set_language(&mut self, language: Option<&str>) -> Outcome {
+        let resolved = match language {
+            Some(language) => Some(language.to_owned()),
+            None => self
+                .document
+                .path
+                .as_deref()
+                .and_then(crate::document::language_for_path)
+                .map(str::to_owned),
+        };
+        self.document.language_id = resolved;
+        self.document.syntax = deco_syntax::Syntax::new(self.document.language());
+        self.document.settings = EditorSettings::resolve(&self.settings, self.document.language());
+        self.refresh_context();
+
+        Outcome::Message(match self.document.language() {
+            Some(language) => {
+                format!("Language: {}", crate::document::language_title(language))
+            }
+            None => "Language: none — nothing matches this file name".to_owned(),
+        })
+    }
+
     /// Opens the go-to-symbol prompt over `symbols`.
     ///
     /// Each entry's `id` is the document's own path, so accepting one goes through
@@ -803,6 +870,14 @@ impl Session {
                 // Nothing matched what was typed. Closing without saying so would
                 // look like the command had run.
                 None => Outcome::Message(format!("no command matches `{}`", prompt.text())),
+            },
+            PromptKind::Languages => match prompt.selected() {
+                Some(entry) if entry.id == AUTO_LANGUAGE => self.set_language(None),
+                Some(entry) => {
+                    let id = entry.id.clone();
+                    self.set_language(Some(&id))
+                }
+                None => Outcome::Message(format!("no language matches `{}`", prompt.text())),
             },
             PromptKind::Files | PromptKind::SearchResults | PromptKind::Symbols => {
                 match prompt.selected() {
@@ -2732,6 +2807,188 @@ mod tests {
                 path: PathBuf::from("/w/a.rs"),
                 at: None,
             }
+        );
+    }
+
+    // ---- Change language mode ---------------------------------------------
+
+    #[test]
+    fn ctrl_k_m_offers_every_language_and_auto_detect() {
+        let mut s = searchable("x\n");
+        assert_eq!(press(&mut s, "ctrl+k"), Outcome::Handled);
+        assert_eq!(press(&mut s, "m"), Outcome::Handled);
+        let prompt = s.prompt.as_ref().expect("a picker should be open");
+        assert_eq!(prompt.kind(), crate::prompt::PromptKind::Languages);
+        assert_eq!(prompt.matches(), crate::document::LANGUAGES.len() + 1);
+        // Detection first, because it is the only way back once a language has
+        // been chosen by hand.
+        assert_eq!(
+            prompt
+                .selected()
+                .map(|entry| entry.title.clone())
+                .as_deref(),
+            Some("Auto Detect")
+        );
+    }
+
+    #[test]
+    fn choosing_a_language_relexes_and_reresolves_the_settings() {
+        // A `.txt` file that is really TOML: nothing about its name says so, so
+        // the lexer is idle until it is told.
+        let mut settings = deco_config::Settings::with_defaults();
+        settings
+            .load_layer(
+                Scope::User,
+                r#"{ "editor.tabSize": 4, "[toml]": { "editor.tabSize": 2 } }"#,
+            )
+            .unwrap();
+        let mut s = Session::new(settings, None, Platform::Linux);
+        s.resize(80, 10);
+        s.open(PathBuf::from("/w/notes.txt"), "name = \"deco\"\n");
+        assert_eq!(s.document.language(), None);
+        assert!(!s.document.syntax.is_active());
+        assert_eq!(s.document.settings.tab_size, 4);
+
+        assert_eq!(
+            s.set_language(Some("toml")),
+            Outcome::Message("Language: TOML".to_owned())
+        );
+        assert_eq!(s.document.language(), Some("toml"));
+        assert!(s.document.syntax.is_active(), "the lexer wakes up");
+        assert_eq!(
+            s.document.settings.tab_size, 2,
+            "and `[toml]` now applies to this document"
+        );
+        assert_eq!(s.context.get("editorLangId"), Some(&json!("toml")));
+    }
+
+    #[test]
+    fn auto_detect_goes_back_to_what_the_file_name_says() {
+        let mut s = searchable("x\n");
+        s.open(PathBuf::from("/w/main.rs"), "fn main() {}\n");
+        s.set_language(Some("python"));
+        assert_eq!(s.document.language(), Some("python"));
+
+        assert_eq!(
+            s.set_language(None),
+            Outcome::Message("Language: Rust".to_owned())
+        );
+        assert_eq!(s.document.language(), Some("rust"));
+    }
+
+    #[test]
+    fn auto_detect_on_a_file_nothing_matches_says_so() {
+        let mut s = searchable("x\n");
+        s.open(PathBuf::from("/w/notes.txt"), "text\n");
+        assert_eq!(
+            s.set_language(None),
+            Outcome::Message("Language: none — nothing matches this file name".to_owned())
+        );
+        assert_eq!(s.document.language(), None);
+        assert_eq!(s.context.get("editorLangId"), None);
+    }
+
+    #[test]
+    fn accepting_a_language_from_the_picker_applies_it() {
+        let mut s = searchable("x\n");
+        s.run("workbench.action.editor.changeLanguageMode", None, 0);
+        for key in ["r", "u", "s", "t"] {
+            press(&mut s, key);
+        }
+        assert_eq!(
+            press(&mut s, "enter"),
+            Outcome::Message("Language: Rust".to_owned())
+        );
+        assert_eq!(s.document.language(), Some("rust"));
+        assert!(s.prompt.is_none(), "the picker closes");
+    }
+
+    #[test]
+    fn changing_the_language_leaves_the_text_alone() {
+        // Nothing about a document's bytes depends on which language it is said
+        // to be, and an undo step here would be a lie.
+        let mut s = searchable("x\n");
+        s.open(PathBuf::from("/w/notes.txt"), "name = 1\n");
+        s.set_language(Some("toml"));
+        assert_eq!(s.document.buffer.text(), "name = 1\n");
+        assert!(!s.document.dirty, "and it is not an edit");
+    }
+
+    #[test]
+    fn a_language_deco_has_no_name_for_is_shown_as_its_identifier() {
+        // One can arrive from a settings file or a server. Showing the identifier
+        // is more useful than showing nothing.
+        assert_eq!(crate::document::language_title("rust"), "Rust");
+        assert_eq!(crate::document::language_title("brainfuck"), "brainfuck");
+    }
+
+    #[test]
+    fn every_language_the_file_name_can_detect_is_offerable() {
+        // Otherwise a document could be in a mode the picker cannot get back to.
+        for name in [
+            "a.rs",
+            "a.ts",
+            "a.tsx",
+            "a.js",
+            "a.jsx",
+            "a.py",
+            "a.go",
+            "a.c",
+            "a.cpp",
+            "a.java",
+            "a.rb",
+            "a.sh",
+            "a.json",
+            "a.jsonc",
+            "a.toml",
+            "a.yaml",
+            "a.md",
+            "a.html",
+            "a.css",
+            "a.sql",
+            "a.lua",
+            "a.xml",
+            "Makefile",
+            "Dockerfile",
+            "Cargo.toml",
+        ] {
+            let detected = crate::document::language_for_path(Path::new(name))
+                .unwrap_or_else(|| panic!("{name} should detect"));
+            assert!(
+                crate::document::LANGUAGES
+                    .iter()
+                    .any(|(id, _)| *id == detected),
+                "{detected} is detected from {name} but is not in LANGUAGES"
+            );
+        }
+    }
+
+    #[test]
+    fn the_picker_orders_titles_the_way_a_reader_scans_them() {
+        // Byte order would put every capital below every lowercase letter, so
+        // `JSON` would come before `Java` and the list would be unpredictable to
+        // scan. Asserted through the real picker rather than against a copy of the
+        // comparison.
+        let mut s = searchable("x\n");
+        s.run("workbench.action.editor.changeLanguageMode", None, 0);
+        press(&mut s, "j");
+        let titles: Vec<String> = s
+            .prompt
+            .as_ref()
+            .expect("open")
+            .visible()
+            .iter()
+            .map(|entry| entry.title.clone())
+            .collect();
+        assert_eq!(
+            titles,
+            [
+                "Java",
+                "JavaScript",
+                "JavaScript React",
+                "JSON",
+                "JSON with Comments"
+            ]
         );
     }
 
