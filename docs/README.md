@@ -8,7 +8,7 @@ yet.
 | Page | What it covers |
 | --- | --- |
 | [Editing](editing.md) | Motion, selection, line and block comments, multiple cursors, undo |
-| [Tabs](tabs.md) | Several documents, one per tab; what a tab keeps |
+| [Tabs](tabs.md) | Several documents, one per tab; splitting; what a tab keeps |
 | [Syntax highlighting](highlighting.md) | Scopes, languages, choosing one, and why not tree-sitter |
 | [Find and replace](find-and-replace.md) | `ctrl+f`, `ctrl+h`, `F3`, and the multi-cursor find keys |
 | [Running commands](commands.md) | The command palette, quick open, go to symbol, search in files, go to line |

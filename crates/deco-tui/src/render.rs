@@ -202,16 +202,27 @@ fn render_text(session: &Session, width: usize, height: usize) -> Frame {
         rows.push(tab_bar(session, &session.panes(), width, &palette));
     }
 
-    // One pane today; the loop is here so that a second one is a change of what
-    // `Session::panes` returns rather than a change of shape here.
     let panes = session.panes();
+    let widths = column_widths(width, panes.len());
     let mut cursor_cell = None;
-    for pane in &panes {
-        let drawn = pane_rows(session, pane, width, text_height, &palette);
-        if let Some((x, y)) = drawn.cursor {
-            cursor_cell = Some((x, y + top as u16));
+    let drawn: Vec<Frame> = panes
+        .iter()
+        .zip(&widths)
+        .map(|(pane, column)| pane_rows(session, pane, *column, text_height, &palette))
+        .collect();
+
+    // The caret belongs to one group, and its column is offset by everything to
+    // the left of that group — including the separators.
+    let mut left = 0usize;
+    for (index, frame) in drawn.iter().enumerate() {
+        if let Some((x, y)) = frame.cursor {
+            cursor_cell = Some((x + left as u16, y + top as u16));
         }
-        rows.extend(drawn.rows);
+        left += widths[index] + usize::from(index + 1 < widths.len());
+    }
+
+    for row_index in 0..text_height {
+        rows.push(stitch(&drawn, row_index, &palette));
     }
 
     // Between the text and the status bar, so that the bar the user is typing
@@ -257,6 +268,51 @@ fn render_text(session: &Session, width: usize, height: usize) -> Frame {
         rows,
         cursor: cursor_cell,
     }
+}
+
+/// How wide each group's column is, left to right.
+///
+/// The remainder goes to the leftmost columns, a cell each, so the widths differ
+/// by at most one and no column is left a cell short of the others for no reason.
+/// One separator column sits between each pair, which is why the divisor counts
+/// them out first.
+fn column_widths(width: usize, groups: usize) -> Vec<usize> {
+    if groups <= 1 {
+        return vec![width];
+    }
+    let separators = groups - 1;
+    let usable = width.saturating_sub(separators);
+    let each = usable / groups;
+    let extra = usable % groups;
+    (0..groups)
+        .map(|index| each + usize::from(index < extra))
+        .collect()
+}
+
+/// Joins one row of every group into the row that goes on screen.
+///
+/// The separator is a full-height rule in the gutter's colour: something has to
+/// mark where one file ends and the next begins, and a blank column reads as part
+/// of whichever file has short lines.
+fn stitch(frames: &[Frame], row_index: usize, palette: &Palette) -> Row {
+    let mut spans = Vec::new();
+    for (index, frame) in frames.iter().enumerate() {
+        if index > 0 {
+            spans.push(Span {
+                text: "│".to_owned(),
+                fg: palette.gutter_fg,
+                bg: palette.bg,
+            });
+        }
+        match frame.rows.get(row_index) {
+            Some(row) => spans.extend(row.spans.iter().cloned()),
+            // A group with fewer rows than another cannot happen — they are all
+            // asked for the same height — but leaving a hole would be worse than
+            // padding it.
+            None => spans.push(blank(0, palette.bg)),
+        }
+    }
+    Row { spans }
 }
 
 /// One group's rows, and where its caret is within them.
@@ -2754,6 +2810,69 @@ mod tests {
         let all: String = frame.rows.iter().map(Row::plain).collect();
         assert!(all.contains("Toggle"), "the title survives: {all:?}");
         assert!(!all.contains("editor.action.commentLine"));
+    }
+
+    #[test]
+    fn a_split_editor_draws_two_columns_with_a_rule_between() {
+        let mut session = session(&"line\n".repeat(40));
+        session.resize(80, 10);
+        session.run("workbench.action.splitEditor", None, 0);
+        let frame = render(&session, 80, 10);
+
+        let first = Row::plain(&frame.rows[0]);
+        assert_eq!(columns(&first), 80, "the row still fills the terminal");
+        assert_eq!(first.matches('│').count(), 1, "one rule: {first:?}");
+        // The same line drawn twice, once per group.
+        assert_eq!(first.matches("line").count(), 2, "{first:?}");
+    }
+
+    #[test]
+    fn the_caret_lands_in_the_group_that_has_the_keyboard() {
+        let mut session = session("abcdef\n");
+        session.resize(80, 10);
+        session.run("workbench.action.splitEditor", None, 0);
+        session.view.selections = SelectionSet::caret(Position::new(0, 3));
+
+        // The second group, so past the first column and its rule.
+        let right = render(&session, 80, 10).cursor.expect("a caret").0;
+        session.run("workbench.action.focusFirstEditorGroup", None, 0);
+        session.view.selections = SelectionSet::caret(Position::new(0, 3));
+        let left = render(&session, 80, 10).cursor.expect("a caret").0;
+        assert!(right > left, "left {left}, right {right}");
+        assert!(usize::from(left) < 80 / 2);
+    }
+
+    #[test]
+    fn column_widths_add_up_to_the_terminal() {
+        for width in [1usize, 2, 40, 79, 80, 81] {
+            for groups in 1..=3usize {
+                let widths = column_widths(width, groups);
+                assert_eq!(widths.len(), groups);
+                let separators = groups - 1;
+                assert_eq!(
+                    widths.iter().sum::<usize>() + separators,
+                    width.max(separators),
+                    "width {width}, groups {groups}"
+                );
+                // No column is left short of another for no reason.
+                let (min, max) = (
+                    widths.iter().min().copied().unwrap(),
+                    widths.iter().max().copied().unwrap(),
+                );
+                assert!(max - min <= 1, "{widths:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn each_column_gets_its_own_gutter() {
+        // Two groups can be showing very different line counts once each has its
+        // own file; today they share one, so this checks the gutter is drawn twice.
+        let mut session = session(&"line\n".repeat(40));
+        session.resize(80, 10);
+        session.run("workbench.action.splitEditor", None, 0);
+        let first = Row::plain(&render(&session, 80, 10).rows[0]);
+        assert_eq!(first.matches(" 1 ").count(), 2, "{first:?}");
     }
 
     #[test]

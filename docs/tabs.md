@@ -121,9 +121,43 @@ The path the prompt hands back is **exactly what was typed**; the frontend resol
 it, writes, and reports back the path it settled on. Resolving needs a home
 directory and a working directory, and the core has neither.
 
+## Splitting
+
+`ctrl+\` gives the file a second view beside the first, and `ctrl+1` / `ctrl+2`
+move the keyboard between them.
+
+![Splitting, scrolling one group, editing, and closing the split](img/split.svg)
+
+**One buffer, two views.** Two documents would be two divergent copies of one file
+and whichever was saved last would win — which is exactly what tabs refuse. So an
+edit in either group shows in both, and there is one undo history; what each group
+keeps of its own is the **scroll position and the cursor**, which is the point.
+Scroll the second group to the end of a function and the first stays at the top.
+
+The new group takes the keyboard, because you split in order to work in it.
+
+`ctrl+w` closes the second group before it closes any tab: having split, the first
+thing that key should do is put the screen back. Moving between groups closes the
+find bar, since its matches were found against the other view and its current match
+is where that group's cursor was.
+
+| Key | Command |
+| --- | --- |
+| `ctrl+\` | `workbench.action.splitEditor` |
+| `ctrl+1` / `ctrl+2` | `workbench.action.focusFirstEditorGroup` / `…Second…` |
+
+Each column is drawn with its own gutter, and the widths differ by at most one cell
+so neither is short of the other for no reason. A rule marks the boundary: a blank
+column reads as part of whichever file has short lines.
+
+**Two groups, and both show the same file.** A third group, and two groups holding
+*different* files, both need each group to keep its own tab list — today there is
+one list on the session and both groups draw from it. `ctrl+3` says there is no
+third group rather than doing nothing.
+
 ## Not built yet
 
-No splits and no mouse: tabs are switched from the keyboard. A bar wider than
+No mouse: tabs and groups are switched from the keyboard. A bar wider than
 the terminal truncates rather than scrolling — every tab is still reachable with
 `ctrl+tab`. The GPU frontend switches tabs but does not draw the bar, because it
-has no chrome to draw it in yet.
+has no chrome to draw it in yet, and it draws one group rather than two.

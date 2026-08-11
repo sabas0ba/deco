@@ -139,6 +139,10 @@ fn demos() -> Vec<Demo> {
             build: save_all,
         },
         Demo {
+            name: "split",
+            build: split,
+        },
+        Demo {
             name: "block-comment",
             build: block_comment,
         },
@@ -706,6 +710,33 @@ fn color_theme() -> String {
     }
     take.resize_for_chrome();
     take.capture("enter — the same theme keys, resolved again", 6);
+    take.finish()
+}
+
+fn split() -> String {
+    // Long enough that the two groups can be looking at different parts of it,
+    // which is the reason to split at all.
+    let mut text = String::from("fn main() {\n");
+    for n in 1..=40 {
+        text.push_str(&format!("    step_{n}();\n"));
+    }
+    text.push_str("}\n");
+
+    let mut take = Take::new("main.rs", &text);
+    take.at(1, 4).capture("one group, one file", 4);
+    take.press_and_hold(&["ctrl+\\"], 6);
+
+    // Scroll the new group to the end of the function while the first stays at
+    // the top: two places in one file, at once.
+    take.session.view.scroll_top = 28;
+    take.at(30, 4);
+    take.resize_for_chrome();
+    take.capture("the second group scrolls on its own", 6);
+
+    // An edit in the focused group shows in both, because there is one document.
+    take.type_text("// ");
+    take.press_and_hold(&["ctrl+1"], 5);
+    take.press_and_hold(&["ctrl+w"], 5);
     take.finish()
 }
 

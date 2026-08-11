@@ -209,9 +209,9 @@ a dead key cannot be added by accident. Nothing on the pending list is offered i
 the palette: an entry there has to work when chosen, and one that only apologises
 is worse than a shorter list.
 
-What is on that list today: splits and editor groups, the side bar, panel,
-terminal and zen mode, zoom, open folder, the settings and keyboard-shortcut
-editors, rename and quick fix, and the remote menu.
+What is on that list today: the side bar, panel, terminal and zen mode, zoom, open
+folder, the settings and keyboard-shortcut editors, rename and quick fix, and the
+remote menu.
 
 ## Not built yet
 
