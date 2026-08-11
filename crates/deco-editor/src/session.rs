@@ -58,6 +58,36 @@ struct Tab {
     semantic: Vec<deco_lsp::requests::SemanticSpan>,
 }
 
+/// One editor group, as something drawing it sees it.
+///
+/// # Why the renderer is given this rather than the session
+///
+/// A renderer that reaches into `session.document` can only ever draw the group
+/// with the keyboard, because that is the only one the session exposes directly.
+/// Naming what one group *is* — its document, its own view onto it, and the tabs
+/// it holds — is what lets a second group be drawn beside the first.
+///
+/// Borrowed rather than owned: this is a description of state the session keeps,
+/// built on demand, and it must not be a second copy that can disagree.
+pub struct Pane<'a> {
+    /// The document showing in this group.
+    pub document: &'a Document,
+    /// This group's own view onto it. Scroll position and cursor are per group,
+    /// which is the point of splitting.
+    pub view: &'a View,
+    /// The server's classification of that document, if any.
+    pub semantic: &'a [deco_lsp::requests::SemanticSpan],
+    /// The problems published for it.
+    pub diagnostics: &'a [deco_lsp::Diagnostic],
+    /// The tabs open in this group, in display order.
+    pub tabs: Vec<TabLabel>,
+    /// Whether this is the group with the keyboard.
+    ///
+    /// The renderer needs it for more than decoration: the caret, and the find
+    /// bar's match highlighting, belong to the group being typed into.
+    pub focused: bool,
+}
+
 /// What a tab bar needs to draw one tab.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TabLabel {
@@ -285,6 +315,21 @@ impl Session {
     }
 
     /// How many tabs are open. Never zero: the session always shows a document.
+    /// Every editor group, in the order they sit on screen.
+    ///
+    /// One today. The shape is here so that a renderer is written against groups
+    /// from the start rather than against the one the session happens to expose.
+    pub fn panes(&self) -> Vec<Pane<'_>> {
+        vec![Pane {
+            document: &self.document,
+            view: &self.view,
+            semantic: &self.semantic_tokens,
+            diagnostics: &self.diagnostics,
+            tabs: self.tab_labels(),
+            focused: true,
+        }]
+    }
+
     pub fn tab_count(&self) -> usize {
         self.left.len() + 1 + self.right.len()
     }
@@ -3061,6 +3106,33 @@ mod tests {
         assert_eq!(s.document.language(), Some("rust"));
         s.rename_to(PathBuf::from("/w/main.py"));
         assert_eq!(s.document.language(), Some("python"));
+    }
+
+    // ---- Panes ------------------------------------------------------------
+
+    #[test]
+    fn there_is_one_pane_and_it_describes_the_active_group() {
+        let mut s = searchable("one\ntwo\n");
+        s.open(PathBuf::from("/w/b.rs"), "fn main() {}\n");
+        s.view.selections = deco_core::SelectionSet::caret(Position::new(0, 3));
+
+        let panes = s.panes();
+        assert_eq!(panes.len(), 1);
+        let pane = &panes[0];
+        assert!(pane.focused, "the only group has the keyboard");
+        assert_eq!(pane.document.path.as_deref(), Some(Path::new("/w/b.rs")));
+        assert_eq!(pane.view.cursor(), Position::new(0, 3));
+        assert_eq!(pane.tabs.len(), 2, "both tabs belong to this group");
+        assert!(pane.tabs.iter().any(|tab| tab.active));
+    }
+
+    #[test]
+    fn a_pane_borrows_rather_than_copies() {
+        // A second copy of the document could disagree with the one being edited.
+        let mut s = searchable("x\n");
+        press(&mut s, "y");
+        let panes = s.panes();
+        assert_eq!(panes[0].document.buffer.text(), "yx\n");
     }
 
     // ---- Colour theme -----------------------------------------------------

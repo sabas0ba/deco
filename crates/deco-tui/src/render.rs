@@ -96,10 +96,18 @@ impl Palette {
 
 /// Number of columns the line-number gutter needs.
 pub fn gutter_width(session: &Session) -> usize {
-    if session.document.settings.line_numbers == LineNumbers::Off {
+    gutter_width_of(&session.document)
+}
+
+/// The gutter one document needs, which depends on how many lines it has.
+///
+/// Per document rather than per session: two groups side by side can be showing
+/// files of very different lengths, and each gutter has to fit its own.
+fn gutter_width_of(document: &deco_editor::Document) -> usize {
+    if document.settings.line_numbers == LineNumbers::Off {
         return 0;
     }
-    let digits = session.document.buffer.line_count().to_string().len();
+    let digits = document.buffer.line_count().to_string().len();
     // One space of padding on each side keeps the text off the numbers.
     digits.max(2) + 2
 }
@@ -166,7 +174,9 @@ pub fn chrome_height(session: &Session) -> usize {
 /// Hidden for a single tab so that opening one file looks exactly as it always
 /// did — the bar earns its row only once there is a choice to show.
 pub fn tab_bar_height(session: &Session) -> usize {
-    usize::from(session.tab_count() > 1)
+    // Any group showing more than one tab earns the row, and the row spans the
+    // window — so one group with two tabs makes the bar appear for all of them.
+    usize::from(session.panes().iter().any(|pane| pane.tabs.len() > 1))
 }
 
 /// Rows the quick-open prompt takes: its own, plus a row per offered choice.
@@ -183,65 +193,25 @@ fn prompt_height(session: &Session) -> usize {
 
 fn render_text(session: &Session, width: usize, height: usize) -> Frame {
     let palette = Palette::from(session);
-    let gutter = gutter_width(session);
     let text_height = height.saturating_sub(chrome_height(session));
-    let text_width = width.saturating_sub(gutter);
     // Screen rows the text area starts below: the tab bar, when it is showing.
     let top = tab_bar_height(session);
 
     let mut rows = Vec::with_capacity(height);
     if top > 0 {
-        rows.push(tab_bar(session, width, &palette));
+        rows.push(tab_bar(session, &session.panes(), width, &palette));
     }
-    let buffer = &session.document.buffer;
-    let tab_size = session.document.settings.tab_size;
-    let cursor_line = session.view.cursor().line as usize;
 
+    // One pane today; the loop is here so that a second one is a change of what
+    // `Session::panes` returns rather than a change of shape here.
+    let panes = session.panes();
     let mut cursor_cell = None;
-
-    for row_index in 0..text_height {
-        let line = session.view.scroll_top + row_index;
-        if line >= buffer.line_count() {
-            rows.push(Row {
-                spans: vec![blank(width, palette.bg)],
-            });
-            continue;
+    for pane in &panes {
+        let drawn = pane_rows(session, pane, width, text_height, &palette);
+        if let Some((x, y)) = drawn.cursor {
+            cursor_cell = Some((x, y + top as u16));
         }
-
-        let mut spans = Vec::new();
-        if gutter > 0 {
-            let label = match session.document.settings.line_numbers {
-                LineNumbers::Relative if line != cursor_line => (line as i64 - cursor_line as i64)
-                    .unsigned_abs()
-                    .to_string(),
-                _ => (line + 1).to_string(),
-            };
-            spans.push(Span {
-                text: format!("{label:>width$} ", width = gutter - 1),
-                fg: if line == cursor_line {
-                    palette.gutter_active_fg
-                } else {
-                    palette.gutter_fg
-                },
-                bg: palette.bg,
-            });
-        }
-
-        let text = buffer
-            .line_content(line)
-            .map(|s| s.to_string())
-            .unwrap_or_default();
-        spans.extend(line_spans(
-            session, &text, line, text_width, tab_size, &palette,
-        ));
-        rows.push(Row { spans });
-
-        if line == cursor_line {
-            let column = display_column(&text, session.view.cursor().character, tab_size);
-            if column < text_width {
-                cursor_cell = Some(((gutter + column) as u16, (top + row_index) as u16));
-            }
-        }
+        rows.extend(drawn.rows);
     }
 
     // Between the text and the status bar, so that the bar the user is typing
@@ -289,8 +259,81 @@ fn render_text(session: &Session, width: usize, height: usize) -> Frame {
     }
 }
 
+/// One group's rows, and where its caret is within them.
+///
+/// The caret's row is relative to the first text row rather than to the screen,
+/// since where the text area starts is the caller's business.
+fn pane_rows(
+    session: &Session,
+    pane: &deco_editor::Pane<'_>,
+    width: usize,
+    height: usize,
+    palette: &Palette,
+) -> Frame {
+    let gutter = gutter_width_of(pane.document);
+    let text_width = width.saturating_sub(gutter);
+    let buffer = &pane.document.buffer;
+    let tab_size = pane.document.settings.tab_size;
+    let cursor_line = pane.view.cursor().line as usize;
+
+    let mut rows = Vec::with_capacity(height);
+    let mut cursor = None;
+    for row_index in 0..height {
+        let line = pane.view.scroll_top + row_index;
+        if line >= buffer.line_count() {
+            rows.push(Row {
+                spans: vec![blank(width, palette.bg)],
+            });
+            continue;
+        }
+
+        let mut spans = Vec::new();
+        if gutter > 0 {
+            let label = match pane.document.settings.line_numbers {
+                LineNumbers::Relative if line != cursor_line => (line as i64 - cursor_line as i64)
+                    .unsigned_abs()
+                    .to_string(),
+                _ => (line + 1).to_string(),
+            };
+            spans.push(Span {
+                text: format!("{label:>width$} ", width = gutter - 1),
+                fg: if line == cursor_line {
+                    palette.gutter_active_fg
+                } else {
+                    palette.gutter_fg
+                },
+                bg: palette.bg,
+            });
+        }
+
+        let text = buffer
+            .line_content(line)
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        spans.extend(line_spans(
+            session, pane, &text, line, text_width, tab_size, palette,
+        ));
+        rows.push(Row { spans });
+
+        // Only the group with the keyboard draws one: two carets would be a lie
+        // about where typing goes.
+        if pane.focused && line == cursor_line {
+            let column = display_column(&text, pane.view.cursor().character, tab_size);
+            if column < text_width {
+                cursor = Some(((gutter + column) as u16, row_index as u16));
+            }
+        }
+    }
+    Frame { rows, cursor }
+}
+
 /// The tab bar: every open document, the active one set apart.
-fn tab_bar(session: &Session, width: usize, palette: &Palette) -> Row {
+fn tab_bar(
+    session: &Session,
+    panes: &[deco_editor::Pane<'_>],
+    width: usize,
+    palette: &Palette,
+) -> Row {
     let theme = &session.theme;
     let bar_bg = theme
         .color("editorGroupHeader.tabsBackground")
@@ -304,7 +347,7 @@ fn tab_bar(session: &Session, width: usize, palette: &Palette) -> Row {
 
     let mut spans = Vec::new();
     let mut used = 0usize;
-    for label in session.tab_labels() {
+    for label in panes.iter().flat_map(|pane| pane.tabs.iter()) {
         // The same marker the status bar uses for the active document, so the
         // two read as one vocabulary.
         let dirty = if label.dirty { "*" } else { "" };
@@ -554,6 +597,7 @@ fn blank(width: usize, bg: Rgba) -> Span {
 /// Builds the styled spans for one line of text.
 fn line_spans(
     session: &Session,
+    pane: &deco_editor::Pane<'_>,
     text: &str,
     line: usize,
     width: usize,
@@ -570,15 +614,11 @@ fn line_spans(
 
     // The scope stack the theme resolves against: the language's `source.*` scope,
     // then the token's own. Two elements, so the theme's parent selectors work.
-    let source = session.document.syntax.source_scope();
-    let highlights = session
-        .document
-        .syntax
-        .spans(&session.document.buffer, line);
+    let source = pane.document.syntax.source_scope();
+    let highlights = pane.document.syntax.spans(&pane.document.buffer, line);
 
     let selected_ranges = clipped_to_line(
-        session
-            .view
+        pane.view
             .selections
             .iter()
             .filter(|s| !s.is_empty())
@@ -586,8 +626,13 @@ fn line_spans(
         line,
     );
     // Empty whenever the find bar is closed, which is what makes this free for
-    // everyone not searching.
-    let match_ranges = clipped_to_line(session.find.matches().iter().copied(), line);
+    // everyone not searching — and empty for an unfocused group, whose document
+    // the query was never run against.
+    let match_ranges = if pane.focused {
+        clipped_to_line(session.find.matches().iter().copied(), line)
+    } else {
+        Vec::new()
+    };
 
     let covers = |ranges: &[(u32, u32)], utf16: u32| {
         ranges
@@ -611,8 +656,7 @@ fn line_spans(
     // disagree about where a run begins as often as they agree, and the finer
     // answer wins per cell rather than per run.
     let semantic: Vec<&deco_lsp::requests::SemanticSpan> = if semantic_highlighting(session) {
-        session
-            .semantic_tokens
+        pane.semantic
             .iter()
             .filter(|span| span.range.start.line == line as u32)
             .collect()
@@ -633,7 +677,7 @@ fn line_spans(
             let token = deco_theme::semantic::SemanticToken::new(
                 &span.token_type,
                 &modifiers,
-                session.document.language(),
+                pane.document.language(),
             );
             if let Some(colour) = session
                 .theme
@@ -2339,6 +2383,31 @@ mod tests {
     // ---- Syntax highlighting --------------------------------------------
 
     /// The foreground colour of every cell of row 0, one entry per column.
+    /// The same group, described as though it did not have the keyboard.
+    ///
+    /// Stands in for a second group until there is one, so the rules a split
+    /// depends on — one caret, and match highlighting only where the query ran —
+    /// are asserted before anything relies on them.
+    fn unfocused_copy<'a>(pane: &deco_editor::Pane<'a>) -> deco_editor::Pane<'a> {
+        deco_editor::Pane {
+            document: pane.document,
+            view: pane.view,
+            semantic: pane.semantic,
+            diagnostics: pane.diagnostics,
+            tabs: Vec::new(),
+            focused: false,
+        }
+    }
+
+    /// Every cell's background on the first row.
+    fn backgrounds(frame: &Frame) -> Vec<Rgba> {
+        frame.rows[0]
+            .spans
+            .iter()
+            .flat_map(|span| span.text.chars().map(move |_| span.bg))
+            .collect()
+    }
+
     fn foregrounds(frame: &Frame) -> Vec<Rgba> {
         frame.rows[0]
             .spans
@@ -2685,6 +2754,45 @@ mod tests {
         let all: String = frame.rows.iter().map(Row::plain).collect();
         assert!(all.contains("Toggle"), "the title survives: {all:?}");
         assert!(!all.contains("editor.action.commentLine"));
+    }
+
+    #[test]
+    fn an_unfocused_group_draws_no_caret() {
+        // Two carets would be a lie about where typing goes.
+        let session = session("hello\n");
+        let palette = Palette::from(&session);
+        let focused = &session.panes()[0];
+        assert!(
+            pane_rows(&session, focused, 40, 3, &palette)
+                .cursor
+                .is_some(),
+            "the focused group has one"
+        );
+
+        let unfocused = unfocused_copy(focused);
+        assert!(pane_rows(&session, &unfocused, 40, 3, &palette)
+            .cursor
+            .is_none());
+    }
+
+    #[test]
+    fn an_unfocused_group_does_not_highlight_the_find_matches() {
+        // The query was never run against its document, so marking text there
+        // would be marking what nothing had searched. Its *selection* is still
+        // drawn — that belongs to the group's own view, not to the search — so
+        // this counts the find colour specifically rather than anything coloured.
+        let session = searching("hello hello\n", "hello");
+        let palette = Palette::from(&session);
+        let focused = &session.panes()[0];
+        let marked = |pane: &deco_editor::Pane<'_>| {
+            let frame = pane_rows(&session, pane, 40, 2, &palette);
+            backgrounds(&frame)
+                .into_iter()
+                .filter(|bg| *bg == palette.find_highlight_bg || *bg == palette.find_match_bg)
+                .count()
+        };
+        assert!(marked(focused) > 0, "the focused group marks them");
+        assert_eq!(marked(&unfocused_copy(focused)), 0);
     }
 
     #[test]
