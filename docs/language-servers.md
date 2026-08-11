@@ -92,6 +92,51 @@ the list has to describe what you are looking at. Locations in a scheme deco
 cannot open (`jdt:`, `untitled:`) are left out rather than listed as rows that do
 nothing.
 
+## Go to symbol
+
+`ctrl+shift+o` asks for the names a document declares and offers them as the same
+list references and project search use — `enter` goes to one. The picker itself is
+documented with the other prompts, under
+[Go to symbol](commands.md#go-to-symbol); what belongs here is the protocol.
+
+| Key | Command |
+| --- | --- |
+| `ctrl+shift+o` | `workbench.action.gotoSymbol` |
+
+`textDocument/documentSymbol` has **two** result shapes, and which one arrives
+depends on the server:
+
+```jsonc
+// DocumentSymbol[]: a tree, with the nesting the file has
+[{ "name": "Counter", "kind": 23, "range": {…}, "selectionRange": {…},
+   "children": [{ "name": "bump", "kind": 6, … }] }]
+
+// SymbolInformation[]: flat, each with a whole location and a container name
+[{ "name": "bump", "kind": 6, "containerName": "Counter",
+   "location": { "uri": "file:///…", "range": {…} } }]
+```
+
+Both are read, and both flatten to one list in document order — a parent before
+its children — because that is the order a reader of the file expects. A nested
+symbol keeps its whole path, so a method three levels down reads as
+`outer.middle.leaf`.
+
+A symbol is positioned on `selectionRange`, which is the identifier, and not on
+`range`, which covers the whole definition and would land the cursor on a doc
+comment. `SymbolInformation`'s `location.uri` is deliberately **ignored**: the
+request named one document, so a server answering about another is out of spec, and
+trusting it would let a symbol list navigate somewhere unrelated.
+
+A symbol with no name or no position is dropped — there would be nothing to pick
+or nowhere to go — but an unrecognised `SymbolKind` is not: that is a newer
+specification than this client, and the name is the useful part.
+
+Accepting a symbol goes through the same open-a-file-at-a-position path a search
+result does. For the document already on screen that is a tab switch onto itself,
+so unsaved changes survive; and because each row carries the path that was asked
+about, an answer that arrives after you switched tabs still navigates the right
+file.
+
 ## Semantic tokens
 
 A server's semantic tokens say what a name *is* — a type told from a variable by

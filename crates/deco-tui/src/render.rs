@@ -273,7 +273,6 @@ fn render_text(session: &Session, width: usize, height: usize) -> Frame {
             rows.push(choice_row(
                 entry,
                 index == prompt.selected_row(),
-                prompt.kind().shows_ids(),
                 width,
                 &palette,
             ));
@@ -364,18 +363,16 @@ fn prompt_row(prompt: &deco_editor::Prompt, width: usize, palette: &Palette) -> 
 fn choice_row(
     entry: &deco_editor::commands::PaletteEntry,
     selected: bool,
-    show_id: bool,
     width: usize,
     palette: &Palette,
 ) -> Row {
     let left = format!("  {} ", entry.title);
-    // The identifier on the right, for the prompts whose identifiers say something
-    // their titles do not — see `PromptKind::shows_ids`. Repeating
-    // `/home/you/src/main.rs` beside `src/main.rs:2: …` would be noise.
-    let right = if show_id {
-        format!(" {} ", entry.id)
-    } else {
-        String::new()
+    // The second column, for the entries whose title does not say everything —
+    // see `PaletteEntry::detail`. An entry without one gets no column at all,
+    // rather than `/home/you/src/main.rs` repeated beside `src/main.rs:2: …`.
+    let right = match &entry.detail {
+        Some(detail) => format!(" {detail} "),
+        None => String::new(),
     };
     let room = width.saturating_sub(columns(&left));
     let right = if room >= columns(&right) + 2 {
@@ -2683,6 +2680,32 @@ mod tests {
         let all: String = frame.rows.iter().map(Row::plain).collect();
         assert!(all.contains("Toggle"), "the title survives: {all:?}");
         assert!(!all.contains("editor.action.commentLine"));
+    }
+
+    #[test]
+    fn the_symbol_prompt_shows_each_kind_in_a_second_column() {
+        let mut session = session("x\n");
+        session.offer_symbols(vec![
+            deco_editor::commands::PaletteEntry::at(
+                "/w/a.rs",
+                "Counter",
+                deco_core::Position::new(0, 11),
+            )
+            .with_detail("struct"),
+            deco_editor::commands::PaletteEntry::at(
+                "/w/a.rs",
+                "Counter.bump",
+                deco_core::Position::new(3, 11),
+            )
+            .with_detail("method"),
+        ]);
+        let frame = render(&session, 60, 14);
+        assert!(prompt_line(&frame).contains("Go to symbol:"));
+        let all: String = frame.rows.iter().map(Row::plain).collect();
+        assert!(all.contains("Counter.bump"), "{all:?}");
+        // The kind, not the path: the path would be the same on every row.
+        assert!(all.contains("method"), "{all:?}");
+        assert!(!all.contains("/w/a.rs"), "{all:?}");
     }
 
     #[test]

@@ -164,6 +164,7 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
                         "editor.action.showHover" => lsp.request_hover(session),
                         "editor.action.revealDefinition" => lsp.request_definition(session),
                         "editor.action.goToReferences" => lsp.request_references(session),
+                        "workbench.action.gotoSymbol" => lsp.request_document_symbols(session),
                         "closeHoverWidget" => lsp.dismiss_hover(),
                         "editor.action.triggerSuggest" => lsp.request_completion(
                             session,
@@ -303,6 +304,7 @@ pub fn frontend_commands() -> Vec<deco_editor::commands::PaletteEntry> {
         ("editor.action.showHover", "Show Hover"),
         ("editor.action.revealDefinition", "Go to Definition"),
         ("editor.action.goToReferences", "Go to References"),
+        ("workbench.action.gotoSymbol", "Go to Symbol in Editor"),
         ("editor.action.triggerSuggest", "Trigger Suggest"),
         ("editor.action.formatDocument", "Format Document"),
         ("editor.action.formatSelection", "Format Selection"),

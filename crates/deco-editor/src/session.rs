@@ -650,6 +650,7 @@ impl Session {
             "editor.action.showHover"
             | "editor.action.revealDefinition"
             | "editor.action.goToReferences"
+            | "workbench.action.gotoSymbol"
             | "editor.action.triggerSuggest"
             | "editor.action.formatDocument"
             | "editor.action.formatSelection"
@@ -712,6 +713,21 @@ impl Session {
         self.refresh_context();
     }
 
+    /// Opens the go-to-symbol prompt over `symbols`.
+    ///
+    /// Each entry's `id` is the document's own path, so accepting one goes through
+    /// the same open-a-file-at-a-position path a search result does — which is
+    /// what makes it land in the right tab even if the user switched tabs while
+    /// the server was still answering.
+    pub fn offer_symbols(&mut self, symbols: Vec<crate::commands::PaletteEntry>) {
+        if symbols.is_empty() {
+            self.status = Some("this server found no symbols in this file".to_owned());
+            return;
+        }
+        self.prompt = Some(Prompt::list(PromptKind::Symbols, symbols));
+        self.refresh_context();
+    }
+
     /// What a project-wide search should look for.
     ///
     /// The selection, the word under the cursor, or whatever the find bar was last
@@ -733,6 +749,11 @@ impl Session {
             .map(|(id, title)| crate::commands::PaletteEntry::new(id, title))
             .collect();
         entries.extend(self.frontend_commands.iter().cloned());
+        // The identifier is worth a column of its own here: it is what a
+        // `keybindings.json` refers to, and the title does not tell you it.
+        for entry in &mut entries {
+            entry.detail = Some(entry.id.clone());
+        }
         entries
     }
 
@@ -755,19 +776,22 @@ impl Session {
                 // look like the command had run.
                 None => Outcome::Message(format!("no command matches `{}`", prompt.text())),
             },
-            PromptKind::Files | PromptKind::SearchResults => match prompt.selected() {
-                // The frontend reads it: the core has no filesystem.
-                Some(entry) => Outcome::OpenFile {
-                    path: PathBuf::from(&entry.id),
-                    at: entry.at,
-                },
-                None => Outcome::Message(match prompt.kind() {
-                    PromptKind::SearchResults => {
-                        format!("no result matches `{}`", prompt.text())
-                    }
-                    _ => format!("no file matches `{}`", prompt.text()),
-                }),
-            },
+            PromptKind::Files | PromptKind::SearchResults | PromptKind::Symbols => {
+                match prompt.selected() {
+                    // The frontend reads it: the core has no filesystem.
+                    Some(entry) => Outcome::OpenFile {
+                        path: PathBuf::from(&entry.id),
+                        at: entry.at,
+                    },
+                    None => Outcome::Message(match prompt.kind() {
+                        PromptKind::SearchResults => {
+                            format!("no result matches `{}`", prompt.text())
+                        }
+                        PromptKind::Symbols => format!("no symbol matches `{}`", prompt.text()),
+                        _ => format!("no file matches `{}`", prompt.text()),
+                    }),
+                }
+            }
         }
     }
 
@@ -2571,6 +2595,114 @@ mod tests {
                 at: None,
             }
         );
+    }
+
+    // ---- Go to symbol -----------------------------------------------------
+
+    #[test]
+    fn symbols_open_a_prompt_that_counts_symbols() {
+        let mut s = searchable("x\n");
+        s.offer_symbols(vec![
+            commands::PaletteEntry::at("/w/a.txt", "Counter", Position::new(0, 11))
+                .with_detail("struct"),
+            commands::PaletteEntry::at("/w/a.txt", "Counter.bump", Position::new(3, 11))
+                .with_detail("method"),
+        ]);
+        let prompt = s.prompt.as_ref().expect("a prompt should be open");
+        assert_eq!(prompt.kind(), crate::prompt::PromptKind::Symbols);
+        assert_eq!(prompt.matches(), 2);
+        assert_eq!(prompt.kind().noun(2), "symbols");
+        assert_eq!(prompt.kind().noun(1), "symbol");
+    }
+
+    #[test]
+    fn accepting_a_symbol_asks_for_the_document_and_the_position() {
+        // Through the same path a search result takes, which for a document that
+        // is already open is a tab switch onto itself — so unsaved changes
+        // survive going to a symbol in the file being edited.
+        let mut s = searchable("x\n");
+        s.offer_symbols(vec![commands::PaletteEntry::at(
+            "/w/a.txt",
+            "Counter.bump",
+            Position::new(3, 11),
+        )
+        .with_detail("method")]);
+        assert_eq!(
+            press(&mut s, "enter"),
+            Outcome::OpenFile {
+                path: PathBuf::from("/w/a.txt"),
+                at: Some(Position::new(3, 11)),
+            }
+        );
+    }
+
+    #[test]
+    fn a_symbol_can_be_found_by_typing_part_of_its_name() {
+        let mut s = searchable("x\n");
+        s.offer_symbols(vec![
+            commands::PaletteEntry::at("/w/a.txt", "Counter.value", Position::new(1, 4)),
+            commands::PaletteEntry::at("/w/a.txt", "Counter.bump", Position::new(3, 11)),
+        ]);
+        for key in ["b", "u", "m", "p"] {
+            press(&mut s, key);
+        }
+        let prompt = s.prompt.as_ref().expect("still open");
+        assert_eq!(prompt.matches(), 1);
+        assert_eq!(
+            prompt
+                .selected()
+                .map(|entry| entry.title.clone())
+                .as_deref(),
+            Some("Counter.bump")
+        );
+    }
+
+    #[test]
+    fn nothing_matching_what_was_typed_says_so_rather_than_closing_silently() {
+        let mut s = searchable("x\n");
+        s.offer_symbols(vec![commands::PaletteEntry::at(
+            "/w/a.txt",
+            "Counter",
+            Position::new(0, 11),
+        )]);
+        for key in ["z", "z", "z"] {
+            press(&mut s, key);
+        }
+        assert_eq!(
+            press(&mut s, "enter"),
+            Outcome::Message("no symbol matches `zzz`".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_file_with_no_symbols_says_that_rather_than_opening_an_empty_prompt() {
+        let mut s = searchable("x\n");
+        s.offer_symbols(Vec::new());
+        assert!(s.prompt.is_none());
+        assert_eq!(
+            s.status.as_deref(),
+            Some("this server found no symbols in this file")
+        );
+    }
+
+    #[test]
+    fn go_to_symbol_is_the_frontends_command_since_it_needs_a_server() {
+        let mut s = searchable("x\n");
+        assert_eq!(
+            s.run("workbench.action.gotoSymbol", None, 0),
+            Outcome::Frontend("workbench.action.gotoSymbol".to_owned())
+        );
+    }
+
+    #[test]
+    fn the_palette_gives_every_command_its_identifier_as_a_second_column() {
+        // It is what a `keybindings.json` refers to, and the title does not say it.
+        let s = searchable("x\n");
+        let palette = s.palette();
+        assert!(!palette.is_empty());
+        assert!(palette
+            .iter()
+            .all(|entry| entry.detail.as_deref() == Some(entry.id.as_str())));
     }
 
     // ---- Tabs -------------------------------------------------------------

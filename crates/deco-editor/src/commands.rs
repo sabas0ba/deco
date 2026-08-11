@@ -91,6 +91,13 @@ pub struct PaletteEntry {
     /// `None` for a command and for quick open, which opens a file at wherever
     /// the cursor last was; `Some` for a search result, which is a position.
     pub at: Option<deco_core::position::Position>,
+    /// A second column, drawn right-aligned when there is room.
+    ///
+    /// For what the title does not say and the reader needs: a command's
+    /// identifier, which is what a `keybindings.json` refers to, or a symbol's
+    /// kind, which is what tells a field from a method of the same name. `None`
+    /// for a file or a search result, whose title already is the path.
+    pub detail: Option<String>,
 }
 
 impl PaletteEntry {
@@ -100,7 +107,14 @@ impl PaletteEntry {
             id: id.to_owned(),
             title: title.to_owned(),
             at: None,
+            detail: None,
         }
+    }
+
+    /// The same entry with a second column.
+    pub fn with_detail(mut self, detail: &str) -> Self {
+        self.detail = Some(detail.to_owned());
+        self
     }
 
     /// Builds an entry that names a position within a file.

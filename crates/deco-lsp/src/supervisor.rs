@@ -103,6 +103,14 @@ pub enum Update {
         /// Where the server pointed. Empty means it found nothing.
         locations: Vec<Location>,
     },
+    /// An answer to [`Supervisor::document_symbols`].
+    Symbols {
+        /// The request this answers.
+        id: RequestId,
+        /// The names found, flattened to document order. Empty means the server
+        /// found none, which is a successful answer.
+        symbols: Vec<crate::requests::DocumentSymbol>,
+    },
     /// An answer to [`Supervisor::semantic_tokens`].
     SemanticTokens {
         /// The request this answers.
@@ -597,6 +605,25 @@ impl Supervisor {
             .map(Some)
     }
 
+    /// Asks what names a document declares.
+    ///
+    /// The whole document, since that is the only shape the request has — there
+    /// is no positional variant, and the picker it feeds needs all of them.
+    pub fn document_symbols(&mut self, path: &Path) -> Result<Option<RequestId>, SupervisorError> {
+        if !self.client.capabilities().document_symbol {
+            return Ok(None);
+        }
+        let Some(uri) = self.uri_for(path) else {
+            return Ok(None);
+        };
+        if !self.sync.is_open(&uri) {
+            return Ok(None);
+        }
+        let params = serde_json::json!({ "textDocument": { "uri": uri } });
+        self.request("textDocument/documentSymbol", params)
+            .map(Some)
+    }
+
     /// Asks what refers to something.
     pub fn references(
         &mut self,
@@ -866,6 +893,10 @@ impl Supervisor {
                         locations: Location::list_from_json(&result),
                         id,
                         method,
+                    }),
+                    "textDocument/documentSymbol" => Some(Update::Symbols {
+                        id,
+                        symbols: crate::requests::DocumentSymbol::list_from_json(&result),
                     }),
                     "textDocument/semanticTokens/full" => {
                         // The legend is the server's, so a response cannot be read

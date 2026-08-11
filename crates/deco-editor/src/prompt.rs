@@ -31,6 +31,8 @@ pub enum PromptKind {
     Files,
     /// `ctrl+shift+f`: a place in the workspace where a term was found.
     SearchResults,
+    /// `ctrl+shift+o`: a name the language server found in this document.
+    Symbols,
 }
 
 impl PromptKind {
@@ -41,6 +43,7 @@ impl PromptKind {
             Self::Commands => "Command:",
             Self::Files => "Open:",
             Self::SearchResults => "Result:",
+            Self::Symbols => "Go to symbol:",
         }
     }
 
@@ -58,16 +61,21 @@ impl PromptKind {
             (Self::Files, _) => "files",
             (Self::SearchResults, 1) => "match",
             (Self::SearchResults, _) => "matches",
+            (Self::Symbols, 1) => "symbol",
+            (Self::Symbols, _) => "symbols",
         }
     }
 
-    /// Whether a choice's identifier is worth a column of its own.
+    /// Whether the order the choices arrived in carries meaning.
     ///
-    /// True for a command, whose identifier is what a `keybindings.json` refers to
-    /// and which the title does not tell you. False for a file or a search result,
-    /// whose title already *is* the path.
-    pub fn shows_ids(self) -> bool {
-        matches!(self, Self::Commands)
+    /// True for symbols, which arrive in document order — the order the file
+    /// reads in, and the order VS Code's own picker shows. False for a command,
+    /// whose order is however the registry happened to be written, and for a file
+    /// or a search result, whose title is a path and so sorts to the same place
+    /// either way. Where it is false, equal matches are ordered by title, so the
+    /// list is stable rather than incidental.
+    pub fn keeps_source_order(self) -> bool {
+        matches!(self, Self::Symbols)
     }
 }
 
@@ -226,12 +234,17 @@ impl Prompt {
             .enumerate()
             .filter_map(|(index, entry)| rank(entry, query).map(|rank| (rank, index)))
             .collect();
-        // By rank, then by title, so the order is stable rather than dependent on
-        // however the registry happened to be written.
-        scored.sort_by(|a, b| {
-            a.0.cmp(&b.0)
-                .then_with(|| self.choices[a.1].title.cmp(&self.choices[b.1].title))
-        });
+        // By rank first, always. The tie-break depends on whether the supplied
+        // order means anything — see `PromptKind::keeps_source_order`. The sort is
+        // stable, so leaving the comparison at the rank keeps that order.
+        if self.kind.keeps_source_order() {
+            scored.sort_by_key(|(rank, _)| *rank);
+        } else {
+            scored.sort_by(|a, b| {
+                a.0.cmp(&b.0)
+                    .then_with(|| self.choices[a.1].title.cmp(&self.choices[b.1].title))
+            });
+        }
 
         self.matching = scored.into_iter().map(|(_, index)| index).collect();
         self.selected = previous
@@ -491,5 +504,38 @@ mod tests {
         assert!(!is_subsequence("gotoline", "ltg"));
         assert!(is_subsequence("anything", ""));
         assert!(!is_subsequence("", "a"));
+    }
+    #[test]
+    fn symbols_keep_document_order_while_commands_sort_by_title() {
+        // A symbol list arrives in the order the file reads in, and re-sorting it
+        // alphabetically would put `bump` above `new` in a file where `new` comes
+        // first — an outline that does not match the outline.
+        let choices = vec![
+            PaletteEntry::at("/w/a.rs", "Counter", deco_core::Position::new(0, 7)),
+            PaletteEntry::at("/w/a.rs", "Counter.value", deco_core::Position::new(1, 4)),
+            PaletteEntry::at("/w/a.rs", "Counter.new", deco_core::Position::new(5, 7)),
+            PaletteEntry::at("/w/a.rs", "Counter.bump", deco_core::Position::new(9, 7)),
+        ];
+        let symbols = Prompt::list(PromptKind::Symbols, choices.clone());
+        assert_eq!(
+            titles(&symbols),
+            ["Counter", "Counter.value", "Counter.new", "Counter.bump"]
+        );
+
+        // The same list as commands sorts, because there the order is however the
+        // registry happened to be written.
+        let commands = Prompt::list(PromptKind::Commands, choices);
+        assert_eq!(
+            titles(&commands),
+            ["Counter", "Counter.bump", "Counter.new", "Counter.value"]
+        );
+    }
+
+    fn titles(prompt: &Prompt) -> Vec<String> {
+        prompt
+            .visible()
+            .iter()
+            .map(|entry| entry.title.clone())
+            .collect()
     }
 }

@@ -28,8 +28,8 @@ $ cargo run -p deco -- --print-config       # why isn't my setting applying?
 | [Tabs](docs/tabs.md) | Several documents, one per tab; what a tab keeps |
 | [Syntax highlighting](docs/highlighting.md) | Scopes, languages, and why not tree-sitter |
 | [Find and replace](docs/find-and-replace.md) | `ctrl+f`, `ctrl+h`, `F3`, and the multi-cursor find keys |
-| [Running commands](docs/commands.md) | The command palette, quick open, search in files, go to line |
-| [Language servers](docs/language-servers.md) | Diagnostics, hover, definition, references, completion, semantic tokens, formatting |
+| [Running commands](docs/commands.md) | The command palette, quick open, go to symbol, search in files, go to line |
+| [Language servers](docs/language-servers.md) | Diagnostics, hover, definition, references, completion, symbols, semantic tokens, formatting |
 | [Configuration](docs/configuration.md) | `settings.json`, `keybindings.json`, themes, and where they are read from |
 | [Extensions](docs/extensions.md) | The capability model, and why an extension gets less power here |
 | [Remote](docs/remote.md) | SSH, container and WSL authorities — and which half exists |
@@ -70,7 +70,7 @@ thin painter.
 | Theme extensions from the marketplace | Yes — declarative, no host process |
 | Code extensions (`main`) | Protocol and sandbox built; host not yet wired to the editor |
 | Remote SSH / containers / WSL | Authorities and transports built; server not yet |
-| Language servers (LSP) | Diagnostics, hover, go-to-definition, references, completion, semantic tokens, formatting |
+| Language servers (LSP) | Diagnostics, hover, go-to-definition, references, completion, symbols, semantic tokens, formatting |
 | Find and replace (`ctrl+f`, `ctrl+h`, `F3`, `ctrl+d`, `ctrl+shift+l`) | Literal search only — no regular expressions |
 | Search in files (`ctrl+shift+f`) | Yes — bounded and synchronous, and it says so |
 | Command palette (`ctrl+shift+p`), quick open (`ctrl+p`), go to line (`ctrl+g`) | Yes |
@@ -177,7 +177,8 @@ does not:
   `deco --server`, no provisioning it onto a remote, and no port forwarding.
 - **Rename and code actions are not wired.** Diagnostics, hover
   (`ctrl+k ctrl+i`), go-to-definition (`F12`), references (`shift+f12`),
-  completion (`ctrl+space`), semantic tokens and formatting (`ctrl+shift+i`) work. Applying a
+  document symbols (`ctrl+shift+o`), completion (`ctrl+space`), semantic tokens
+  and formatting (`ctrl+shift+i`) work. Applying a
   rename means editing files that are not open — possible now that there are
   tabs, but it needs a `WorkspaceEdit` applied across several documents as one
   undoable action, which does not exist yet. Those keys say the feature is not
@@ -321,9 +322,9 @@ and nothing more.
 
 What is wired up today: diagnostics (tallied in the status bar, walked with
 `F8` / `shift+F8`), hover (`ctrl+k ctrl+i`, dismissed with `escape`),
-go-to-definition (`F12`), references (`shift+f12`), completion — `ctrl+space` to
-ask, or automatically on a character the server nominates — semantic tokens drawn
-over the lexer's colouring, and formatting (`ctrl+shift+i` for the document,
+go-to-definition (`F12`), references (`shift+f12`), go to symbol (`ctrl+shift+o`),
+completion — `ctrl+space` to ask, or automatically on a character the server
+nominates — semantic tokens drawn over the lexer's colouring, and formatting (`ctrl+shift+i` for the document,
 `ctrl+k ctrl+f` for a selection).
 
 In the completion list, `up`/`down` move, `tab` or `enter` accepts, `escape`

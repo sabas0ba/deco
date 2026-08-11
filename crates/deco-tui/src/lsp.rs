@@ -69,6 +69,13 @@ pub struct Lsp {
     references_request: Option<RequestId>,
     /// The outstanding `semanticTokens/full` request, if any.
     semantic_request: Option<RequestId>,
+    /// The outstanding `documentSymbol` request, and which document asked.
+    ///
+    /// The path is kept because the answer names positions and not a file, and the
+    /// user may have switched tabs while the server was indexing — the list has to
+    /// navigate the document that was asked about, not whichever is on screen when
+    /// it arrives.
+    symbols_request: Option<(RequestId, PathBuf)>,
     /// A fingerprint of the text last sent to the server.
     sent: Option<u64>,
     /// The completion list on screen, if one is open.
@@ -215,6 +222,7 @@ impl Lsp {
             definition_request: None,
             references_request: None,
             semantic_request: None,
+            symbols_request: None,
             sent: None,
             suggest: None,
             completion_request: None,
@@ -385,6 +393,10 @@ impl Lsp {
         session
             .context
             .set("editorHasReferenceProvider", has(|c| c.references));
+        session.context.set(
+            "editorHasDocumentSymbolProvider",
+            has(|c| c.document_symbol),
+        );
         session
             .context
             .set("editorHasRenameProvider", has(|c| c.rename.is_some()));
@@ -504,6 +516,25 @@ impl Lsp {
             }
             Ok(None) => {
                 session.status = Some("this server does not offer references".to_owned());
+            }
+            Err(error) => self.report(session, error.to_string()),
+        }
+    }
+
+    /// Requests the names this document declares, for the go-to-symbol prompt.
+    pub fn request_document_symbols(&mut self, session: &mut Session) {
+        let (Some(path), Some(supervisor)) =
+            (session.document.path.clone(), self.supervisor.as_mut())
+        else {
+            return;
+        };
+        match supervisor.document_symbols(&path) {
+            Ok(Some(id)) => {
+                self.symbols_request = Some((id, path));
+                session.status = Some("Looking for symbols…".to_owned());
+            }
+            Ok(None) => {
+                session.status = Some("this server does not offer document symbols".to_owned());
             }
             Err(error) => self.report(session, error.to_string()),
         }
@@ -738,14 +769,24 @@ impl Lsp {
         if updates.is_empty() {
             return false;
         }
+        self.absorb(session, updates)
+    }
 
+    /// Applies updates already drained from a server.
+    ///
+    /// Split from [`Lsp::poll`] so that what an answer *does* can be asserted
+    /// without a language server installed: the alternative is a test suite that
+    /// passes or fails depending on what happens to be on the machine.
+    fn absorb(&mut self, session: &mut Session, updates: Vec<Update>) -> bool {
         let mut changed = false;
         // Collected first so `self` is free of the supervisor borrow.
-        let open_uri = session
-            .document
-            .path
-            .as_deref()
-            .and_then(|path| supervisor.uri_for(path));
+        let open_uri = self.supervisor.as_ref().and_then(|supervisor| {
+            session
+                .document
+                .path
+                .as_deref()
+                .and_then(|path| supervisor.uri_for(path))
+        });
 
         for update in updates {
             match update {
@@ -828,6 +869,19 @@ impl Lsp {
                     self.references_request = None;
                     self.semantic_request = None;
                     changed |= self.go_to(session, &method, &locations);
+                }
+                Update::Symbols { id, symbols } => {
+                    // Only the outstanding request: an answer to a superseded one
+                    // describes a file the prompt is no longer about.
+                    let Some((asked, path)) = self.symbols_request.take() else {
+                        continue;
+                    };
+                    if asked != id {
+                        self.symbols_request = Some((asked, path));
+                        continue;
+                    }
+                    self.offer_symbols(session, &path, &symbols);
+                    changed = true;
                 }
                 Update::SemanticTokens { id, spans } => {
                     // Only the outstanding request: an earlier classification
@@ -1052,6 +1106,46 @@ impl Lsp {
         ));
     }
 
+    /// Opens the go-to-symbol prompt over what the server found.
+    ///
+    /// Every entry carries `path`, so accepting one goes through the same
+    /// open-a-file-at-a-position path a search result does. For the document
+    /// already on screen that is a tab switch onto itself, which keeps unsaved
+    /// changes; for one the user has since navigated away from it comes back.
+    fn offer_symbols(
+        &mut self,
+        session: &mut Session,
+        path: &Path,
+        symbols: &[deco_lsp::requests::DocumentSymbol],
+    ) {
+        let id = path.to_string_lossy().into_owned();
+        let entries: Vec<deco_editor::commands::PaletteEntry> = symbols
+            .iter()
+            .map(|symbol| {
+                let entry = deco_editor::commands::PaletteEntry::at(
+                    &id,
+                    &symbol.qualified(),
+                    symbol.position,
+                );
+                // The kind in the second column, because it is what tells a field
+                // from a method of the same name.
+                match symbol.kind {
+                    Some(kind) => entry.with_detail(kind),
+                    None => entry,
+                }
+            })
+            .collect();
+
+        let count = entries.len();
+        session.offer_symbols(entries);
+        if count > 0 {
+            session.status = Some(format!(
+                "{count} {}",
+                if count == 1 { "symbol" } else { "symbols" }
+            ));
+        }
+    }
+
     /// Reloads the active document's diagnostics from the store.
     ///
     /// For a tab switch: the server has been publishing for every file it knows
@@ -1085,6 +1179,7 @@ impl Lsp {
         self.definition_request = None;
         self.references_request = None;
         self.semantic_request = None;
+        self.symbols_request = None;
         self.suggest = None;
         self.completion_request = None;
         self.format_request = None;
@@ -1613,6 +1708,116 @@ mod tests {
         lsp.sync_context(&mut s);
         assert_eq!(
             s.context.get("editorHasDocumentFormattingProvider"),
+            Some(&json!(false))
+        );
+    }
+
+    // ---- The symbol list --------------------------------------------------
+
+    fn symbol(
+        name: &str,
+        kind: Option<&'static str>,
+        line: u32,
+    ) -> deco_lsp::requests::DocumentSymbol {
+        deco_lsp::requests::DocumentSymbol {
+            name: name.to_owned(),
+            kind,
+            container: None,
+            position: Position::new(line, 4),
+        }
+    }
+
+    #[test]
+    fn symbols_are_offered_as_a_list_with_their_kind() {
+        let mut s = session(Settings::with_defaults());
+        s.open(PathBuf::from("/w/a.toml"), "one = 1\ntwo = 2\n");
+        let mut lsp = Lsp::new(&mut s, Some(PathBuf::from("/w")));
+
+        lsp.offer_symbols(
+            &mut s,
+            Path::new("/w/a.toml"),
+            &[symbol("one", Some("key"), 0), symbol("two", Some("key"), 1)],
+        );
+        let prompt = s.prompt.as_ref().expect("a list should be open");
+        assert_eq!(prompt.matches(), 2);
+        let first = prompt.selected().expect("a selection");
+        assert_eq!(first.title, "one");
+        // The kind, so a field and a method of the same name are told apart.
+        assert_eq!(first.detail.as_deref(), Some("key"));
+        // And the document, so accepting it navigates the file that was asked
+        // about rather than whichever is on screen.
+        assert_eq!(first.id, "/w/a.toml");
+        assert_eq!(s.status.as_deref(), Some("2 symbols"));
+    }
+
+    #[test]
+    fn a_symbol_with_no_recognised_kind_gets_no_second_column() {
+        let mut s = session(Settings::with_defaults());
+        s.open(PathBuf::from("/w/a.toml"), "one = 1\n");
+        let mut lsp = Lsp::new(&mut s, None);
+        lsp.offer_symbols(&mut s, Path::new("/w/a.toml"), &[symbol("one", None, 0)]);
+        let prompt = s.prompt.as_ref().expect("a list should be open");
+        assert_eq!(prompt.selected().unwrap().detail, None);
+    }
+
+    #[test]
+    fn an_empty_symbol_list_reports_rather_than_opening_a_prompt() {
+        let mut s = session(Settings::with_defaults());
+        s.open(PathBuf::from("/w/a.toml"), "one = 1\n");
+        let mut lsp = Lsp::new(&mut s, None);
+        lsp.offer_symbols(&mut s, Path::new("/w/a.toml"), &[]);
+        assert!(s.prompt.is_none());
+        assert_eq!(
+            s.status.as_deref(),
+            Some("this server found no symbols in this file")
+        );
+    }
+
+    #[test]
+    fn a_superseded_symbol_answer_is_ignored() {
+        // Two `ctrl+shift+o` presses in a row: the first answer describes a list
+        // the prompt is no longer about.
+        let mut s = session(Settings::with_defaults());
+        s.open(PathBuf::from("/w/a.toml"), "one = 1\n");
+        let mut lsp = Lsp::new(&mut s, None);
+        lsp.symbols_request = Some((deco_lsp::RequestId::Number(9), PathBuf::from("/w/a.toml")));
+
+        // An answer to an older request leaves the outstanding one in place.
+        let stale = Update::Symbols {
+            id: deco_lsp::RequestId::Number(8),
+            symbols: vec![symbol("stale", Some("key"), 0)],
+        };
+        lsp.absorb(&mut s, vec![stale]);
+        assert!(s.prompt.is_none());
+        assert!(lsp.symbols_request.is_some(), "still waiting for 9");
+
+        lsp.absorb(
+            &mut s,
+            vec![Update::Symbols {
+                id: deco_lsp::RequestId::Number(9),
+                symbols: vec![symbol("fresh", Some("key"), 0)],
+            }],
+        );
+        assert_eq!(
+            s.prompt
+                .as_ref()
+                .and_then(|p| p.selected())
+                .map(|e| e.title.clone())
+                .as_deref(),
+            Some("fresh")
+        );
+        assert!(lsp.symbols_request.is_none());
+    }
+
+    #[test]
+    fn the_symbol_provider_gates_its_key() {
+        // ctrl+shift+o is gated on it, so the key is dead until a server offers
+        // document symbols.
+        let mut s = session(Settings::with_defaults());
+        let lsp = Lsp::new(&mut s, None);
+        lsp.sync_context(&mut s);
+        assert_eq!(
+            s.context.get("editorHasDocumentSymbolProvider"),
             Some(&json!(false))
         );
     }

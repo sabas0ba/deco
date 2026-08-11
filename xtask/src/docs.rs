@@ -127,6 +127,10 @@ fn demos() -> Vec<Demo> {
             build: semantic_tokens,
         },
         Demo {
+            name: "go-to-symbol",
+            build: go_to_symbol,
+        },
+        Demo {
             name: "tabs",
             build: tabs,
         },
@@ -462,6 +466,55 @@ fn highlighting() -> String {
         take.capture(file, 5);
     }
     take.finish()
+}
+
+fn go_to_symbol() -> String {
+    const TEXT: &str = "struct Counter {\n    value: u32,\n}\n\nimpl Counter {\n    fn new() -> Self {\n        Self { value: 0 }\n    }\n\n    fn bump(&mut self) {\n        self.value += 1;\n    }\n}\n";
+
+    let mut take = Take::new("counter.rs", TEXT);
+    take.at(0, 0).capture("counter.rs", 4);
+
+    // Injected rather than fetched, as the diagnostics demonstration injects its
+    // own: building the documentation must not need rust-analyzer installed, and
+    // this is the list `textDocument/documentSymbol` decodes to.
+    take.session.offer_symbols(vec![
+        symbol_entry("Counter", "struct", 0, 7),
+        symbol_entry("Counter.value", "field", 1, 4),
+        symbol_entry("Counter.new", "method", 5, 7),
+        symbol_entry("Counter.bump", "method", 9, 7),
+    ]);
+    take.resize_for_chrome();
+    take.capture("ctrl+shift+o — the kind is the right-hand column", 6);
+
+    // Typing filters, and `bump` is reachable by its own name even though the
+    // list shows it qualified.
+    take.type_text("bump");
+
+    // What the frontend does with the `OpenFile` outcome `enter` produces. Spelled
+    // out here because the core has no filesystem: it names the file and the
+    // position, and the frontend is what goes there. For a document already open
+    // this is a tab switch onto itself, which is why unsaved changes survive.
+    take.session.prompt = None;
+    take.session.open(PathBuf::from("/demo/counter.rs"), TEXT);
+    take.at(9, 7);
+    take.resize_for_chrome();
+    take.capture("enter — the caret lands on the name", 6);
+    take.finish()
+}
+
+/// One row of a go-to-symbol list, in the shape the frontend builds.
+fn symbol_entry(
+    qualified: &str,
+    kind: &str,
+    line: u32,
+    character: u32,
+) -> deco_editor::commands::PaletteEntry {
+    deco_editor::commands::PaletteEntry::at(
+        "/demo/counter.rs",
+        qualified,
+        Position::new(line, character),
+    )
+    .with_detail(kind)
 }
 
 fn semantic_tokens() -> String {
