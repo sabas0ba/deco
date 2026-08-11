@@ -1,6 +1,6 @@
 //! One editor session: settings, keymap, theme, and the document being edited.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use deco_config::{EditorSettings, Scope, Settings};
 use deco_keymap::{
@@ -43,6 +43,31 @@ enum Direction {
     Prev,
 }
 
+/// One open document that is not on screen.
+///
+/// Everything that must survive a tab switch and come back intact: the text and
+/// its history, the cursor and scroll position, and the diagnostics a server has
+/// published for it. The find bar deliberately does not — it closes on a switch,
+/// exactly as it does when a file replaces the document, because its match list
+/// describes text that is no longer on screen.
+#[derive(Debug)]
+struct Tab {
+    document: Document,
+    view: View,
+    diagnostics: Vec<deco_lsp::Diagnostic>,
+}
+
+/// What a tab bar needs to draw one tab.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TabLabel {
+    /// The file name, or `Untitled`.
+    pub title: String,
+    /// Whether the buffer differs from disk.
+    pub dirty: bool,
+    /// Whether this is the tab on screen.
+    pub active: bool,
+}
+
 /// Everything one editor window needs.
 pub struct Session {
     /// Resolved configuration, layered.
@@ -51,10 +76,21 @@ pub struct Session {
     pub keymap: Keymap,
     /// The active colour theme.
     pub theme: ColorTheme,
-    /// The open document.
+    /// The active document.
     pub document: Document,
     /// The view onto it.
     pub view: View,
+    /// Tabs to the left of the active one, in display order.
+    ///
+    /// The active tab's state lives directly in [`Session::document`],
+    /// [`Session::view`] and [`Session::diagnostics`] — a zipper, not an indexed
+    /// list. That shape is what let tabs arrive without touching the hundreds of
+    /// places that already read `session.document`: the active tab is where it
+    /// always was, and switching moves whole structs rather than re-pointing
+    /// every reader through an index.
+    left: Vec<Tab>,
+    /// Tabs to the right of the active one, in display order.
+    right: Vec<Tab>,
     /// Context keys that `when` clauses read.
     pub context: ContextKeys,
     /// Where cut and copy put their text.
@@ -133,6 +169,8 @@ impl Session {
             prompt: None,
             frontend_commands: Vec::new(),
             diagnostics: Vec::new(),
+            left: Vec::new(),
+            right: Vec::new(),
             problems,
         };
         session.refresh_context();
@@ -146,14 +184,40 @@ impl Session {
 
     /// Replaces the open document.
     pub fn open(&mut self, path: PathBuf, text: &str) {
+        // A file already open in some tab is switched to, not opened twice: two
+        // tabs onto one file would be two divergent copies of it, and whichever
+        // was saved last would silently win.
+        if let Some(index) = self.tab_of(&path) {
+            self.switch_to(index);
+            self.refresh_context();
+            return;
+        }
+
         let language = crate::document::language_for_path(&path);
         let settings = EditorSettings::resolve(&self.settings, language);
-        self.document = Document::from_file(path, text, settings);
-        self.view = View {
+        let document = Document::from_file(path, text, settings);
+        let view = View {
             height: self.view.height,
             width: self.view.width,
             ..Default::default()
         };
+
+        // Into a fresh tab — unless the active tab is a pristine untitled
+        // document, which is replaced. That is VS Code's rule, and it is what
+        // keeps `deco file.rs` from starting with an empty tab beside the file.
+        if !self.is_pristine_untitled() {
+            let previous = Tab {
+                document: std::mem::replace(
+                    &mut self.document,
+                    Document::untitled(Default::default()),
+                ),
+                view: std::mem::take(&mut self.view),
+                diagnostics: std::mem::take(&mut self.diagnostics),
+            };
+            self.left.push(previous);
+        }
+        self.document = document;
+        self.view = view;
         // The previous document's diagnostics point at line numbers in a file
         // that is no longer on screen. Carrying them over would decorate the
         // new one with the old one's errors.
@@ -162,6 +226,165 @@ impl Session {
         // the next file for the same thing is a reasonable thing to want.
         self.find.close();
         self.refresh_context();
+    }
+
+    /// Whether the active tab is an untitled document nobody has typed into.
+    fn is_pristine_untitled(&self) -> bool {
+        self.document.path.is_none()
+            && !self.document.dirty
+            && self.document.buffer.text().is_empty()
+    }
+
+    /// The display index of the tab holding `path`, if any tab does.
+    fn tab_of(&self, path: &Path) -> Option<usize> {
+        let matches = |document: &Document| document.path.as_deref() == Some(path);
+        if let Some(index) = self.left.iter().position(|tab| matches(&tab.document)) {
+            return Some(index);
+        }
+        if matches(&self.document) {
+            return Some(self.left.len());
+        }
+        self.right
+            .iter()
+            .position(|tab| matches(&tab.document))
+            .map(|index| self.left.len() + 1 + index)
+    }
+
+    /// How many tabs are open. Never zero: the session always shows a document.
+    pub fn tab_count(&self) -> usize {
+        self.left.len() + 1 + self.right.len()
+    }
+
+    /// The display index of the active tab.
+    pub fn active_tab(&self) -> usize {
+        self.left.len()
+    }
+
+    /// One label per tab, in display order, for the tab bar.
+    pub fn tab_labels(&self) -> Vec<TabLabel> {
+        let label = |document: &Document, active: bool| TabLabel {
+            title: document.title(),
+            dirty: document.dirty,
+            active,
+        };
+        let mut labels: Vec<TabLabel> = self
+            .left
+            .iter()
+            .map(|tab| label(&tab.document, false))
+            .collect();
+        labels.push(label(&self.document, true));
+        labels.extend(self.right.iter().map(|tab| label(&tab.document, false)));
+        labels
+    }
+
+    /// Makes the tab at display index `index` active.
+    ///
+    /// The whole list is collected and re-split around the new index — O(n) in
+    /// the number of tabs, which is single digits, in exchange for one obviously
+    /// correct implementation instead of four rotation cases.
+    fn switch_to(&mut self, index: usize) {
+        if index == self.active_tab() {
+            return;
+        }
+        let sizes = (self.view.width, self.view.height);
+        let active = Tab {
+            document: std::mem::replace(&mut self.document, Document::untitled(Default::default())),
+            view: std::mem::take(&mut self.view),
+            diagnostics: std::mem::take(&mut self.diagnostics),
+        };
+        let mut all: Vec<Tab> = self.left.drain(..).collect();
+        all.push(active);
+        all.append(&mut self.right);
+
+        let index = index.min(all.len() - 1);
+        let mut chosen = all.remove(index);
+        // The terminal did not change size while the tab was in the background,
+        // but the background tab's view remembers the size it last had.
+        chosen.view.width = sizes.0;
+        chosen.view.height = sizes.1;
+
+        self.right = all.split_off(index);
+        self.left = all;
+        self.document = chosen.document;
+        self.view = chosen.view;
+        self.diagnostics = chosen.diagnostics;
+        // The match list describes text that is no longer on screen.
+        self.find.close();
+        self.view
+            .reveal_cursor(&self.document.buffer, &self.document.settings);
+    }
+
+    /// `ctrl+tab` / `ctrl+shift+tab`: the next or previous tab, wrapping.
+    fn cycle_tab(&mut self, direction: Direction) -> Outcome {
+        if self.tab_count() == 1 {
+            return Outcome::Handled;
+        }
+        let count = self.tab_count();
+        let target = match direction {
+            Direction::Next => (self.active_tab() + 1) % count,
+            Direction::Prev => (self.active_tab() + count - 1) % count,
+        };
+        self.switch_to(target);
+        self.refresh_context();
+        Outcome::Handled
+    }
+
+    /// `ctrl+w`: closes the active tab.
+    ///
+    /// A dirty document is refused rather than dropped — deco has no dialog to
+    /// ask with, and losing edits to a keystroke is the worst thing an editor
+    /// can do. Closing the last tab leaves an untitled document, because the
+    /// session always shows something.
+    fn close_active_tab(&mut self) -> Outcome {
+        if self.document.dirty {
+            return Outcome::Message(format!(
+                "{} has unsaved changes — save it first",
+                self.document.title()
+            ));
+        }
+
+        let sizes = (self.view.width, self.view.height);
+        let replacement = if let Some(tab) = if self.right.is_empty() {
+            self.left.pop()
+        } else {
+            Some(self.right.remove(0))
+        } {
+            tab
+        } else {
+            Tab {
+                document: Document::untitled(EditorSettings::resolve(&self.settings, None)),
+                view: View::default(),
+                diagnostics: Vec::new(),
+            }
+        };
+
+        self.document = replacement.document;
+        self.view = replacement.view;
+        self.view.width = sizes.0;
+        self.view.height = sizes.1;
+        self.diagnostics = replacement.diagnostics;
+        self.find.close();
+        self.refresh_context();
+        Outcome::Handled
+    }
+
+    /// `ctrl+n`: a fresh untitled document in a new tab, focused.
+    fn new_untitled_tab(&mut self) -> Outcome {
+        let sizes = (self.view.width, self.view.height);
+        let previous = Tab {
+            document: std::mem::replace(
+                &mut self.document,
+                Document::untitled(EditorSettings::resolve(&self.settings, None)),
+            ),
+            view: std::mem::take(&mut self.view),
+            diagnostics: std::mem::take(&mut self.diagnostics),
+        };
+        self.left.push(previous);
+        self.view.width = sizes.0;
+        self.view.height = sizes.1;
+        self.find.close();
+        self.refresh_context();
+        Outcome::Handled
     }
 
     /// Replaces the diagnostics for the open document.
@@ -386,6 +609,12 @@ impl Session {
                 Outcome::Handled
             }
             "workbench.action.acceptSelectedQuickOpenItem" => self.accept_prompt(now_ms),
+            // Tabs. Session-level because they move whole documents around,
+            // which a command in `commands` cannot see past.
+            "workbench.action.nextEditor" => self.cycle_tab(Direction::Next),
+            "workbench.action.previousEditor" => self.cycle_tab(Direction::Prev),
+            "workbench.action.closeActiveEditor" => self.close_active_tab(),
+            "workbench.action.files.newUntitledFile" => self.new_untitled_tab(),
             "deco.find.toggleField" => {
                 self.find.toggle_field();
                 Outcome::Handled
@@ -2070,6 +2299,226 @@ mod tests {
                 "the palette offers `{title}` ({id}), which nothing implements"
             );
         }
+    }
+
+    // ---- Tabs -------------------------------------------------------------
+
+    /// Titles in display order, with `*` marking the active tab.
+    fn tabs(s: &Session) -> Vec<String> {
+        s.tab_labels()
+            .iter()
+            .map(|label| {
+                if label.active {
+                    format!("*{}", label.title)
+                } else {
+                    label.title.clone()
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_session_starts_with_one_tab() {
+        let s = session();
+        assert_eq!(s.tab_count(), 1);
+        assert_eq!(tabs(&s), vec!["*Untitled"]);
+    }
+
+    #[test]
+    fn opening_a_file_replaces_a_pristine_untitled_tab() {
+        // `deco file.rs` must not start with an empty tab beside the file.
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "a\n");
+        assert_eq!(tabs(&s), vec!["*a.rs"]);
+    }
+
+    #[test]
+    fn opening_a_second_file_adds_a_tab_and_focuses_it() {
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "a\n");
+        s.open(PathBuf::from("/w/b.rs"), "b\n");
+        assert_eq!(tabs(&s), vec!["a.rs", "*b.rs"]);
+        assert_eq!(s.document.buffer.text(), "b\n");
+    }
+
+    #[test]
+    fn an_untitled_tab_with_typing_in_it_is_not_replaced() {
+        let mut s = session();
+        press(&mut s, "x");
+        s.open(PathBuf::from("/w/a.rs"), "a\n");
+        assert_eq!(tabs(&s), vec!["Untitled", "*a.rs"]);
+    }
+
+    #[test]
+    fn opening_an_already_open_file_switches_to_its_tab() {
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "a\n");
+        s.open(PathBuf::from("/w/b.rs"), "b\n");
+        s.open(PathBuf::from("/w/a.rs"), "a\n");
+        assert_eq!(s.tab_count(), 2, "no third tab for a file already open");
+        assert_eq!(tabs(&s), vec!["*a.rs", "b.rs"]);
+    }
+
+    #[test]
+    fn ctrl_tab_cycles_forward_and_wraps() {
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "a\n");
+        s.open(PathBuf::from("/w/b.rs"), "b\n");
+        s.open(PathBuf::from("/w/c.rs"), "c\n");
+        assert_eq!(tabs(&s), vec!["a.rs", "b.rs", "*c.rs"]);
+        press(&mut s, "ctrl+tab");
+        assert_eq!(
+            tabs(&s),
+            vec!["*a.rs", "b.rs", "c.rs"],
+            "wrapped to the first"
+        );
+        press(&mut s, "ctrl+tab");
+        assert_eq!(tabs(&s), vec!["a.rs", "*b.rs", "c.rs"]);
+        press(&mut s, "ctrl+shift+tab");
+        assert_eq!(tabs(&s), vec!["*a.rs", "b.rs", "c.rs"]);
+        press(&mut s, "ctrl+shift+tab");
+        assert_eq!(tabs(&s), vec!["a.rs", "b.rs", "*c.rs"], "wrapped backwards");
+    }
+
+    #[test]
+    fn each_tab_keeps_its_own_cursor_and_text() {
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "aaaa\n");
+        s.run("type", Some(&json!({ "text": "x" })), 0);
+        let cursor_in_a = s.view.selections.primary().active;
+        s.open(PathBuf::from("/w/b.rs"), "b\n");
+        assert_eq!(s.document.buffer.text(), "b\n");
+        press(&mut s, "ctrl+tab");
+        assert_eq!(s.document.buffer.text(), "xaaaa\n");
+        assert_eq!(s.view.selections.primary().active, cursor_in_a);
+    }
+
+    #[test]
+    fn each_tab_keeps_its_own_diagnostics() {
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "a\n");
+        s.set_diagnostics(vec![diagnostic(
+            0,
+            deco_lsp::Severity::Error,
+            "problem in a",
+        )]);
+        s.open(PathBuf::from("/w/b.rs"), "b\n");
+        assert!(s.diagnostics.is_empty(), "b has no problems");
+        press(&mut s, "ctrl+tab");
+        assert_eq!(s.diagnostics.len(), 1, "a's diagnostics came back with it");
+        assert_eq!(s.diagnostics[0].message, "problem in a");
+    }
+
+    #[test]
+    fn undo_history_survives_a_round_trip_through_the_background() {
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.txt"), "");
+        press_all(&mut s, &["h", "i"]);
+        s.open(PathBuf::from("/w/b.txt"), "b\n");
+        press(&mut s, "ctrl+tab");
+        s.run("undo", None, 0);
+        assert_eq!(s.document.buffer.text(), "", "a's history still works");
+    }
+
+    #[test]
+    fn switching_tabs_closes_the_find_bar() {
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.txt"), "foo\n");
+        s.open(PathBuf::from("/w/b.txt"), "foo\n");
+        press(&mut s, "ctrl+f");
+        press(&mut s, "f");
+        assert!(s.find.visible());
+        press(&mut s, "ctrl+tab");
+        assert!(!s.find.visible(), "its match list described the other tab");
+        assert_eq!(s.find.query(), "f", "but the query survives for F3");
+    }
+
+    #[test]
+    fn closing_a_tab_moves_to_its_neighbour() {
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "a\n");
+        s.open(PathBuf::from("/w/b.rs"), "b\n");
+        s.open(PathBuf::from("/w/c.rs"), "c\n");
+        press(&mut s, "ctrl+shift+tab");
+        assert_eq!(tabs(&s), vec!["a.rs", "*b.rs", "c.rs"]);
+        press(&mut s, "ctrl+w");
+        assert_eq!(
+            tabs(&s),
+            vec!["a.rs", "*c.rs"],
+            "the right neighbour takes over"
+        );
+        press(&mut s, "ctrl+w");
+        assert_eq!(
+            tabs(&s),
+            vec!["*a.rs"],
+            "no right neighbour, so the left one"
+        );
+    }
+
+    #[test]
+    fn closing_a_dirty_tab_is_refused_with_its_name() {
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "a\n");
+        press(&mut s, "x");
+        assert_eq!(
+            press(&mut s, "ctrl+w"),
+            Outcome::Message("a.rs has unsaved changes — save it first".to_owned())
+        );
+        assert_eq!(s.tab_count(), 1, "nothing was closed");
+        assert_eq!(s.document.buffer.text(), "xa\n", "nothing was lost");
+    }
+
+    #[test]
+    fn closing_the_last_tab_leaves_an_untitled_document() {
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "a\n");
+        press(&mut s, "ctrl+w");
+        assert_eq!(tabs(&s), vec!["*Untitled"]);
+        assert_eq!(s.document.buffer.text(), "");
+        assert_eq!(s.tab_count(), 1);
+    }
+
+    #[test]
+    fn ctrl_n_opens_a_new_untitled_tab() {
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "a\n");
+        press(&mut s, "ctrl+n");
+        assert_eq!(tabs(&s), vec!["a.rs", "*Untitled"]);
+        press_all(&mut s, &["h", "i"]);
+        assert_eq!(s.document.buffer.text(), "hi");
+        press(&mut s, "ctrl+tab");
+        assert_eq!(s.document.buffer.text(), "a\n", "the file is untouched");
+    }
+
+    #[test]
+    fn cycling_with_one_tab_does_nothing() {
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "a\n");
+        press(&mut s, "ctrl+tab");
+        assert_eq!(tabs(&s), vec!["*a.rs"]);
+    }
+
+    #[test]
+    fn a_background_tab_adopts_the_current_terminal_size_when_it_returns() {
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "a\n");
+        s.open(PathBuf::from("/w/b.rs"), "b\n");
+        // The terminal was resized while `a.rs` was in the background.
+        s.resize(120, 40);
+        press(&mut s, "ctrl+tab");
+        assert_eq!((s.view.width, s.view.height), (120, 40));
+    }
+
+    #[test]
+    fn tab_labels_carry_the_dirty_flag() {
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "a\n");
+        press(&mut s, "x");
+        s.run("workbench.action.files.newUntitledFile", None, 0);
+        let labels = s.tab_labels();
+        assert!(labels[0].dirty, "a.rs was edited");
+        assert!(!labels[1].dirty);
+        assert!(labels[1].active);
     }
 
     #[test]

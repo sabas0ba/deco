@@ -25,6 +25,7 @@ $ cargo run -p deco -- --print-config       # why isn't my setting applying?
 | | |
 | --- | --- |
 | [Editing](docs/editing.md) | Motion, line operations, multiple cursors, undo |
+| [Tabs](docs/tabs.md) | Several documents, one per tab; what a tab keeps |
 | [Syntax highlighting](docs/highlighting.md) | Scopes, languages, and why not tree-sitter |
 | [Find and replace](docs/find-and-replace.md) | `ctrl+f`, `ctrl+h`, `F3`, and the multi-cursor find keys |
 | [Running commands](docs/commands.md) | The command palette, and go to line |
@@ -185,11 +186,10 @@ does not:
   `snippetSupport: false` and several servers send them anyway, so `foo(${1:arg})`
   becomes `foo(arg)` and the status bar says so. There are no tab stops to jump
   between yet.
-- **Go-to-definition across files needs a saved buffer.** deco holds one
-  document, so jumping elsewhere replaces it. With unsaved changes it refuses
-  and says so rather than losing them, and when a server returns several results
-  it takes the first and says how many there were, because there is nowhere to
-  list the rest.
+- **Go-to-definition across files opens a new tab** (or switches to the tab
+  already holding the file), so unsaved work is never at risk. When a server
+  returns several results it takes the first and says how many there were,
+  because there is nowhere to list the rest.
 - **Syntax highlighting is lexical, and terminal-only.** 19 languages are
   coloured from a hand-written lexer emitting TextMate scopes, which the theme
   layer resolves exactly as it resolves a real grammar's — see
@@ -210,10 +210,11 @@ does not:
   escaping rules and its own error reporting for an invalid pattern — and
   find-in-files, which needs more than one document. Both say so when pressed
   rather than reporting an unknown command.
-- **One document at a time.** No tabs, splits, file tree, search-in-files or
-  quick open (`ctrl+p`) — the keybindings for them resolve to commands that are
-  not implemented yet. The command palette (`ctrl+shift+p`) and go to line
-  (`ctrl+g`) do work; see [Running commands](docs/commands.md).
+- **Tabs, but no splits, file tree, search-in-files or quick open (`ctrl+p`).**
+  Several documents open at once, one per tab (see [Tabs](docs/tabs.md)); the
+  rest of those keybindings resolve to commands that are not implemented yet.
+  The command palette (`ctrl+shift+p`) and go to line (`ctrl+g`) work; see
+  [Running commands](docs/commands.md).
 - **The GPU frontend draws text, a gutter and a caret.** Selection and
   current-line rectangles are computed and tested but not yet painted; there is
   no scrollbar, minimap or mouse input — and no chrome, so `ctrl+f` refuses there

@@ -834,22 +834,16 @@ impl Lsp {
 
         let same_file = session.document.path.as_deref() == Some(path.as_path());
         if !same_file {
-            // Unsaved work in the current document would be lost, and deco has
-            // no second buffer to put it in.
-            if session.document.dirty {
-                session.status = Some(format!(
-                    "{} has unsaved changes; save before jumping to {}",
-                    session.document.title(),
-                    path.display()
-                ));
-                return true;
-            }
+            // Into a new tab (or the tab already holding that file), so unsaved
+            // work in the current document is not at risk and no longer needs to
+            // block the jump.
             match std::fs::read_to_string(&path) {
                 Ok(text) => {
                     session.open(path.clone(), &text);
                     // The new document needs its own server, and the old one
                     // needs telling that the previous file is closed.
                     self.attach(session);
+                    self.refresh_diagnostics(session);
                 }
                 Err(error) => {
                     session.status = Some(format!("could not open {}: {error}", path.display()));
@@ -872,6 +866,27 @@ impl Lsp {
             session.status = Some(format!("{short}: line {}", clamped.line + 1));
         }
         true
+    }
+
+    /// Reloads the active document's diagnostics from the store.
+    ///
+    /// For a tab switch: the server has been publishing for every file it knows
+    /// about all along, but only the on-screen document's publications reach the
+    /// session — so a document coming back from the background has to collect
+    /// what it missed.
+    pub fn refresh_diagnostics(&self, session: &mut Session) {
+        let Some(supervisor) = self.supervisor.as_ref() else {
+            return;
+        };
+        let Some(uri) = session
+            .document
+            .path
+            .as_deref()
+            .and_then(|path| supervisor.uri_for(path))
+        else {
+            return;
+        };
+        session.set_diagnostics(supervisor.diagnostics(&uri).to_vec());
     }
 
     /// Stops the server, if one is running.

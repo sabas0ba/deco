@@ -138,6 +138,13 @@ pub const PALETTE: &[(&str, &str)] = &[
     ("editor.action.marker.prev", "Go to Previous Problem"),
     ("workbench.action.files.save", "Save"),
     ("workbench.action.quit", "Quit"),
+    ("workbench.action.nextEditor", "Next Editor"),
+    ("workbench.action.previousEditor", "Previous Editor"),
+    ("workbench.action.closeActiveEditor", "Close Editor"),
+    (
+        "workbench.action.files.newUntitledFile",
+        "New Untitled File",
+    ),
 ];
 
 /// Everything a command may touch.

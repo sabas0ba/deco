@@ -49,8 +49,8 @@ impl Frontend {
 /// A parsed command line.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Cli {
-    /// File to open. `None` starts on an empty buffer.
-    pub file: Option<PathBuf>,
+    /// Files to open, each in its own tab. Empty starts on an empty buffer.
+    pub files: Vec<PathBuf>,
     /// Which frontend to use.
     pub frontend: Frontend,
     /// Print the resolved configuration and exit.
@@ -91,8 +91,8 @@ pub enum CliError {
         /// The accepted values, comma separated.
         expected: &'static str,
     },
-    /// More than one file was given. deco opens one buffer.
-    ExtraArgument(String),
+    /// The same file was given twice, which would be a tab fighting itself.
+    DuplicateFile(String),
 }
 
 impl fmt::Display for CliError {
@@ -108,8 +108,8 @@ impl fmt::Display for CliError {
                 f,
                 "`{flag}` does not accept `{value}` (expected {expected})"
             ),
-            Self::ExtraArgument(arg) => {
-                write!(f, "unexpected argument `{arg}` — deco opens one file")
+            Self::DuplicateFile(arg) => {
+                write!(f, "`{arg}` was given more than once")
             }
         }
     }
@@ -121,10 +121,10 @@ impl std::error::Error for CliError {}
 pub const HELP: &str = "\
 A lightweight, VS Code-compatible editor.
 
-Usage: deco [OPTIONS] [FILE]
+Usage: deco [OPTIONS] [FILE]...
 
 Arguments:
-  [FILE]  File to open
+  [FILE]...  Files to open, each in its own tab
 
 Options:
       --frontend <FRONTEND>  Which frontend to use [default: tui] [possible values: tui, gui]
@@ -187,10 +187,14 @@ where
 }
 
 fn set_file(cli: &mut Cli, arg: &str) -> Result<(), CliError> {
-    if cli.file.is_some() {
-        return Err(CliError::ExtraArgument(arg.to_string()));
+    let path = PathBuf::from(arg);
+    // Refused rather than deduplicated silently: `deco a.rs a.rs` is nearly
+    // always a typo for two different files, and opening what looks like two
+    // tabs onto one buffer would be more confusing than an error.
+    if cli.files.contains(&path) {
+        return Err(CliError::DuplicateFile(arg.to_string()));
     }
-    cli.file = Some(PathBuf::from(arg));
+    cli.files.push(path);
     Ok(())
 }
 
@@ -211,16 +215,25 @@ mod tests {
     fn a_bare_invocation_opens_the_terminal_frontend() {
         let cli = run(&[]);
         assert_eq!(cli.frontend, Frontend::Tui);
-        assert!(cli.file.is_none());
+        assert!(cli.files.is_empty());
         assert!(!cli.clean);
         assert!(!cli.print_config);
     }
 
     #[test]
     fn a_file_argument_is_parsed() {
+        assert_eq!(run(&["src/main.rs"]).files, [PathBuf::from("src/main.rs")]);
+    }
+
+    #[test]
+    fn several_files_are_parsed_in_order() {
         assert_eq!(
-            run(&["src/main.rs"]).file,
-            Some(PathBuf::from("src/main.rs"))
+            run(&["a.rs", "b.rs", "c.rs"]).files,
+            [
+                PathBuf::from("a.rs"),
+                PathBuf::from("b.rs"),
+                PathBuf::from("c.rs")
+            ]
         );
     }
 
@@ -265,7 +278,7 @@ mod tests {
     #[test]
     fn flags_and_a_file_mix_in_any_order() {
         let expected = Cli {
-            file: Some(PathBuf::from("a.rs")),
+            files: vec![PathBuf::from("a.rs")],
             frontend: Frontend::Gui,
             print_config: false,
             clean: true,
@@ -299,7 +312,7 @@ mod tests {
     #[test]
     fn a_double_dash_makes_a_flag_shaped_name_reachable() {
         let cli = run(&["--", "--clean"]);
-        assert_eq!(cli.file, Some(PathBuf::from("--clean")));
+        assert_eq!(cli.files, [PathBuf::from("--clean")]);
         assert!(!cli.clean, "past `--` it is a path, not the flag");
     }
 
@@ -307,20 +320,20 @@ mod tests {
     fn a_double_dash_does_not_discard_earlier_flags() {
         let cli = run(&["--clean", "--", "-weird.rs"]);
         assert!(cli.clean);
-        assert_eq!(cli.file, Some(PathBuf::from("-weird.rs")));
+        assert_eq!(cli.files, [PathBuf::from("-weird.rs")]);
     }
 
     #[test]
-    fn a_second_file_is_rejected() {
+    fn the_same_file_twice_is_rejected() {
         assert_eq!(
-            parse(["a.rs", "b.rs"]),
-            Err(CliError::ExtraArgument("b.rs".into()))
+            parse(["a.rs", "b.rs", "a.rs"]),
+            Err(CliError::DuplicateFile("a.rs".into()))
         );
     }
 
     #[test]
     fn a_lone_dash_is_a_path_not_a_flag() {
-        assert_eq!(run(&["-"]).file, Some(PathBuf::from("-")));
+        assert_eq!(run(&["-"]).files, [PathBuf::from("-")]);
     }
 
     #[test]
@@ -333,7 +346,7 @@ mod tests {
                 value: "holograph".into(),
                 expected: "tui, gui",
             },
-            CliError::ExtraArgument("b.rs".into()),
+            CliError::DuplicateFile("b.rs".into()),
         ] {
             let rendered = error.to_string();
             assert!(!rendered.is_empty());

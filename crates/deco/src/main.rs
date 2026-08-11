@@ -34,7 +34,13 @@ fn main() -> Result<()> {
     };
 
     let env = Env::from_process();
-    let workspace = cli.file.as_deref().and_then(config::workspace_root_for);
+    // The first file names the workspace; a mixed invocation has to pick one,
+    // and the first is the one the user led with.
+    let workspace = cli
+        .files
+        .first()
+        .map(PathBuf::as_path)
+        .and_then(config::workspace_root_for);
     let loaded = if cli.clean {
         config::LoadedConfig {
             settings: deco_config::Settings::with_defaults(),
@@ -52,7 +58,7 @@ fn main() -> Result<()> {
     );
     session.problems.extend(loaded.problems);
 
-    if let Some(path) = &cli.file {
+    for path in &cli.files {
         // A path that does not exist yet is a new file, not an error — that is
         // how every editor is used to create one.
         let text = match std::fs::read_to_string(path) {
@@ -63,6 +69,13 @@ fn main() -> Result<()> {
             }
         };
         session.open(path.clone(), &text);
+    }
+    // Opening focuses each file in turn, so the last one ends up active. The
+    // first is what the user led with, so it is the one shown.
+    if cli.files.len() > 1 {
+        for _ in 0..cli.files.len() - 1 {
+            session.run("workbench.action.previousEditor", None, 0);
+        }
     }
 
     if cli.print_config {
@@ -77,8 +90,8 @@ fn main() -> Result<()> {
     }
 
     match cli.frontend {
-        Frontend::Tui => deco_tui::run(&mut session, cli.file),
-        Frontend::Gui => run_gui(&mut session, cli.file),
+        Frontend::Tui => deco_tui::run(&mut session, cli.files.first().cloned()),
+        Frontend::Gui => run_gui(&mut session, cli.files.first().cloned()),
     }
 }
 

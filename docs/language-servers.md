@@ -134,7 +134,7 @@ is not implemented rather than pretending. Changes are sent as full-document
 syncs; the incremental path exists in `deco-lsp` but the editor does not yet track
 applied ranges.
 
-Go-to-definition across files needs a saved buffer, because deco holds one
-document and jumping elsewhere replaces it. With unsaved changes it refuses and
-says so rather than losing them, and when a server returns several results it
-takes the first and says how many there were.
+Go-to-definition across files opens a new tab, or switches to the tab already
+holding the file — see [Tabs](tabs.md). When a server returns several results it
+takes the first and says how many there were, because nothing renders a list of
+locations yet.
