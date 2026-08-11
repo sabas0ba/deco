@@ -87,6 +87,29 @@ surface be tested without one. `ctrl+p` therefore asks the frontend for the list
 and accepting a choice asks the frontend to read the file, exactly as saving asks
 it to write one.
 
+## Go to symbol
+
+`ctrl+shift+o` lists the names the language server found in the file being edited
+and takes you to the one you pick.
+
+![Filtering a document's symbols and jumping to one](img/go-to-symbol.svg)
+
+Rows read `Counter.bump` rather than `bump`, so filtering can find a method by its
+class, and two `new`s in one file are told apart. The right-hand column is the
+symbol's **kind** — `struct`, `field`, `method` — which is what distinguishes a
+field from a method of the same name. A kind this client does not recognise leaves
+the column empty rather than dropping the symbol: a newer protocol than deco is no
+reason to hide a name.
+
+The list is in **document order**, not alphabetical: it is the order the file reads
+in, and it is what VS Code's own picker shows. Every other prompt breaks ties by
+title instead — a command list would otherwise be ordered by however the registry
+happened to be written.
+
+The key is gated on `editorHasDocumentSymbolProvider`, so it does not resolve at
+all without a server that can answer — a key that reports nothing rather than one
+that reports a failure. See [Language servers](language-servers.md#go-to-symbol).
+
 ## Search in files
 
 `ctrl+shift+f` searches every file under the workspace root and lists what it
@@ -143,11 +166,16 @@ built from the same one-line input:
 ## Not built yet
 
 The keyboard-shortcuts editor and the settings UI. Those keys report themselves
-as unimplemented rather than doing nothing. Quick open has no symbol mode
-(`ctrl+p` then `@`) and no recently-opened ordering — the list is alphabetical.
+as unimplemented rather than doing nothing. Quick open has no `@` mode — the
+symbols of a file are reachable with `ctrl+shift+o`, but typing `@` after `ctrl+p`
+does not switch a file list into a symbol one, which needs the prompt to re-source
+its choices mid-typing. Nor is there a recently-opened ordering: the list is
+alphabetical.
 Search in files has no query field, no replace-across-files, and no regular
 expressions.
 
 The GPU frontend has no chrome to draw a prompt in, so it refuses `ctrl+g`,
 `ctrl+shift+p` and `ctrl+p` and says so — an invisible widget holding the keyboard
-looks exactly like an editor that has stopped responding.
+looks exactly like an editor that has stopped responding. `ctrl+shift+o` does not
+arise there at all: it is gated on a language-server capability, and the GPU
+frontend has no client to report one.

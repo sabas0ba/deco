@@ -129,6 +129,7 @@ pub const DEFAULT_KEYBINDINGS_JSONC: &str = r#"[
     { "key": "ctrl+k ctrl+i", "mac": "cmd+k cmd+i", "command": "editor.action.showHover", "when": "editorTextFocus" },
     { "key": "f12",          "command": "editor.action.revealDefinition", "when": "editorHasDefinitionProvider && editorTextFocus" },
     { "key": "shift+f12",    "command": "editor.action.goToReferences",   "when": "editorHasReferenceProvider && editorTextFocus" },
+    { "key": "ctrl+shift+o", "mac": "cmd+shift+o", "command": "workbench.action.gotoSymbol", "when": "editorHasDocumentSymbolProvider && editorTextFocus" },
     { "key": "f2",           "command": "editor.action.rename",           "when": "editorHasRenameProvider && editorTextFocus && !editorReadonly" },
     { "key": "f8",           "command": "editor.action.marker.next",     "when": "editorFocus" },
     { "key": "shift+f8",     "command": "editor.action.marker.prev",     "when": "editorFocus" },
@@ -284,6 +285,33 @@ mod tests {
             second,
             Resolution::Match {
                 command: "editor.action.addCommentLine".into(),
+                args: None
+            }
+        );
+    }
+
+    #[test]
+    fn go_to_symbol_needs_a_server_that_offers_symbols() {
+        // Ungated, `ctrl+shift+o` would resolve to a command that can only report
+        // that the server cannot answer — a key that looks broken rather than
+        // one that is simply not available here.
+        let km = Keymap::from_rules(default_rules(Platform::Linux));
+        let mut ctx = ContextKeys::with_platform_defaults();
+        ctx.set("textInputFocus", true);
+        ctx.set("editorTextFocus", true);
+
+        let mut state = ChordState::new();
+        assert_eq!(
+            km.resolve(&mut state, Chord::parse("ctrl+shift+o").unwrap(), &ctx),
+            Resolution::NoMatch
+        );
+
+        ctx.set("editorHasDocumentSymbolProvider", true);
+        let mut state = ChordState::new();
+        assert_eq!(
+            km.resolve(&mut state, Chord::parse("ctrl+shift+o").unwrap(), &ctx),
+            Resolution::Match {
+                command: "workbench.action.gotoSymbol".into(),
                 args: None
             }
         );

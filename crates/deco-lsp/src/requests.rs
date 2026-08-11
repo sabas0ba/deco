@@ -724,6 +724,167 @@ pub fn semantic_spans_from_json(
     spans
 }
 
+/// A name the server found in a document.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentSymbol {
+    /// What it is called, as the server spelled it.
+    pub name: String,
+    /// What kind of thing it is — `function`, `struct`, `field` — resolved from
+    /// the protocol's `SymbolKind` integer. `None` for a number outside the
+    /// enumeration, which is a server ahead of this client rather than an error.
+    pub kind: Option<&'static str>,
+    /// What encloses it: the class for a method, the parent path for a nested
+    /// symbol. `None` at the top level.
+    pub container: Option<String>,
+    /// Where the *name* is, not where the definition starts.
+    pub position: Position,
+}
+
+impl DocumentSymbol {
+    /// How to refer to it: `Counter.bump` for a method, `bump` at the top level.
+    ///
+    /// Qualified rather than bare so that filtering can find a method by its
+    /// class, and so two `new`s in one file are told apart in the list.
+    pub fn qualified(&self) -> String {
+        match &self.container {
+            Some(container) => format!("{container}.{}", self.name),
+            None => self.name.clone(),
+        }
+    }
+
+    /// Reads a `textDocument/documentSymbol` result, in either of its shapes.
+    ///
+    /// The protocol has two, and which one arrives depends on the server:
+    ///
+    /// ```jsonc
+    /// // DocumentSymbol[]: a tree, with the nesting the file has
+    /// [{ "name": "Counter", "kind": 23, "range": {…}, "selectionRange": {…},
+    ///    "children": [{ "name": "bump", "kind": 6, … }] }]
+    ///
+    /// // SymbolInformation[]: flat, each with a whole location and a container name
+    /// [{ "name": "bump", "kind": 6, "containerName": "Counter",
+    ///    "location": { "uri": "file:///…", "range": {…} } }]
+    /// ```
+    ///
+    /// Both flatten to one list in document order — parent before its children —
+    /// because that is the order the picker shows and the order a reader of the
+    /// file expects.
+    ///
+    /// `SymbolInformation`'s `location.uri` is ignored: the request named one
+    /// document, so a server answering about another is out of spec, and trusting
+    /// it would let a symbol list navigate somewhere unrelated.
+    pub fn list_from_json(value: &serde_json::Value) -> Vec<Self> {
+        let mut out = Vec::new();
+        if let Some(items) = value.as_array() {
+            collect_symbols(items, None, &mut out);
+        }
+        out
+    }
+}
+
+/// Appends `items` and their children to `out`, depth first.
+fn collect_symbols(
+    items: &[serde_json::Value],
+    container: Option<&str>,
+    out: &mut Vec<DocumentSymbol>,
+) {
+    for item in items {
+        let Some(name) = item.get("name").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        // A symbol with no name is nothing a user could pick out of a list.
+        if name.is_empty() {
+            continue;
+        }
+
+        // `SymbolInformation` first: it is the shape with a `location`, and its
+        // `containerName` is a plain string rather than the nesting a
+        // `DocumentSymbol` expresses with `children`.
+        let flat = item.get("location");
+        let position = match flat {
+            Some(location) => location.get("range").and_then(read_range).map(|r| r.start),
+            // `selectionRange` is the name itself; `range` covers the whole
+            // definition and would land the cursor on a doc comment.
+            None => item
+                .get("selectionRange")
+                .or_else(|| item.get("range"))
+                .and_then(read_range)
+                .map(|r| r.start),
+        };
+        let Some(position) = position else {
+            // Without a position there is nowhere to go, and listing it would be
+            // a row that does nothing.
+            continue;
+        };
+
+        let container = match flat {
+            Some(_) => item
+                .get("containerName")
+                .and_then(|v| v.as_str())
+                .filter(|c| !c.is_empty())
+                .map(str::to_owned),
+            None => container.map(str::to_owned),
+        };
+
+        out.push(DocumentSymbol {
+            name: name.to_owned(),
+            kind: item
+                .get("kind")
+                .and_then(|v| v.as_u64())
+                .and_then(symbol_kind_name),
+            container,
+            position,
+        });
+
+        // Children inherit the qualified name of the symbol just pushed, so a
+        // method three levels down reads as the path to it.
+        if let Some(children) = item.get("children").and_then(|v| v.as_array()) {
+            let qualified = out
+                .last()
+                .map(DocumentSymbol::qualified)
+                .unwrap_or_default();
+            collect_symbols(children, Some(&qualified), out);
+        }
+    }
+}
+
+/// Names a `SymbolKind`.
+///
+/// The protocol numbers them, and the numbers are stable and additive: an
+/// unrecognised one is a newer specification than this client, which is worth
+/// listing the symbol without a kind rather than dropping it.
+fn symbol_kind_name(kind: u64) -> Option<&'static str> {
+    Some(match kind {
+        1 => "file",
+        2 => "module",
+        3 => "namespace",
+        4 => "package",
+        5 => "class",
+        6 => "method",
+        7 => "property",
+        8 => "field",
+        9 => "constructor",
+        10 => "enum",
+        11 => "interface",
+        12 => "function",
+        13 => "variable",
+        14 => "constant",
+        15 => "string",
+        16 => "number",
+        17 => "boolean",
+        18 => "array",
+        19 => "object",
+        20 => "key",
+        21 => "null",
+        22 => "enum member",
+        23 => "struct",
+        24 => "event",
+        25 => "operator",
+        26 => "type parameter",
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1443,5 +1604,173 @@ mod tests {
                 "{value}"
             );
         }
+    }
+    // ---- Document symbols ------------------------------------------------
+
+    #[test]
+    fn a_hierarchy_flattens_to_document_order() {
+        let symbols = DocumentSymbol::list_from_json(&json!([
+            {
+                "name": "Counter",
+                "kind": 23,
+                "range": range(0, 0, 8, 1),
+                "selectionRange": range(0, 11, 0, 18),
+                "children": [
+                    {
+                        "name": "value",
+                        "kind": 8,
+                        "range": range(1, 4, 1, 20),
+                        "selectionRange": range(1, 4, 1, 9),
+                    },
+                    {
+                        "name": "bump",
+                        "kind": 6,
+                        "range": range(3, 4, 6, 5),
+                        "selectionRange": range(3, 11, 3, 15),
+                    },
+                ],
+            },
+        ]));
+
+        let names: Vec<String> = symbols.iter().map(DocumentSymbol::qualified).collect();
+        assert_eq!(names, ["Counter", "Counter.value", "Counter.bump"]);
+        assert_eq!(
+            symbols.iter().map(|s| s.kind).collect::<Vec<_>>(),
+            [Some("struct"), Some("field"), Some("method")]
+        );
+    }
+
+    #[test]
+    fn nesting_deeper_than_one_level_keeps_the_whole_path() {
+        let symbols = DocumentSymbol::list_from_json(&json!([
+            {
+                "name": "outer",
+                "kind": 3,
+                "selectionRange": range(0, 0, 0, 5),
+                "children": [{
+                    "name": "middle",
+                    "kind": 5,
+                    "selectionRange": range(1, 0, 1, 6),
+                    "children": [{
+                        "name": "leaf",
+                        "kind": 6,
+                        "selectionRange": range(2, 0, 2, 4),
+                    }],
+                }],
+            },
+        ]));
+        assert_eq!(
+            symbols.last().map(DocumentSymbol::qualified).as_deref(),
+            Some("outer.middle.leaf")
+        );
+    }
+
+    #[test]
+    fn a_symbol_is_positioned_on_its_name_not_its_definition() {
+        // `range` covers the doc comment and the body; `selectionRange` is the
+        // identifier. Landing on the former puts the cursor on a comment.
+        let symbols = DocumentSymbol::list_from_json(&json!([{
+            "name": "scale",
+            "kind": 12,
+            "range": range(4, 0, 9, 1),
+            "selectionRange": range(6, 3, 6, 8),
+        }]));
+        assert_eq!(symbols[0].position, Position::new(6, 3));
+    }
+
+    #[test]
+    fn a_symbol_with_only_a_range_uses_it() {
+        // `selectionRange` is required by the specification, so this is a server
+        // being loose. The whole range still points at the right file region.
+        let symbols = DocumentSymbol::list_from_json(&json!([{
+            "name": "loose",
+            "kind": 12,
+            "range": range(2, 4, 3, 0),
+        }]));
+        assert_eq!(symbols[0].position, Position::new(2, 4));
+    }
+
+    #[test]
+    fn the_flat_shape_reads_its_location_and_container() {
+        let symbols = DocumentSymbol::list_from_json(&json!([
+            {
+                "name": "bump",
+                "kind": 6,
+                "containerName": "Counter",
+                "location": {
+                    "uri": "file:///w/counter.rs",
+                    "range": range(3, 11, 3, 15),
+                },
+            },
+            {
+                "name": "free",
+                "kind": 12,
+                "containerName": "",
+                "location": {
+                    "uri": "file:///w/counter.rs",
+                    "range": range(9, 3, 9, 7),
+                },
+            },
+        ]));
+        assert_eq!(
+            symbols
+                .iter()
+                .map(DocumentSymbol::qualified)
+                .collect::<Vec<_>>(),
+            ["Counter.bump", "free"],
+            "an empty containerName is no container, not a leading dot"
+        );
+        assert_eq!(symbols[0].position, Position::new(3, 11));
+    }
+
+    #[test]
+    fn a_symbol_with_no_position_is_dropped() {
+        // There would be nowhere to go, so the row would do nothing.
+        let symbols = DocumentSymbol::list_from_json(&json!([
+            { "name": "nowhere", "kind": 12 },
+            { "name": "somewhere", "kind": 12, "selectionRange": range(1, 0, 1, 9) },
+        ]));
+        assert_eq!(symbols.len(), 1);
+        assert_eq!(symbols[0].name, "somewhere");
+    }
+
+    #[test]
+    fn a_nameless_symbol_is_dropped() {
+        let symbols = DocumentSymbol::list_from_json(&json!([
+            { "name": "", "kind": 12, "selectionRange": range(0, 0, 0, 1) },
+            { "kind": 12, "selectionRange": range(1, 0, 1, 1) },
+        ]));
+        assert!(symbols.is_empty());
+    }
+
+    #[test]
+    fn an_unknown_kind_still_lists_the_symbol() {
+        // A newer specification than this client. The name is the useful part.
+        let symbols = DocumentSymbol::list_from_json(&json!([
+            { "name": "novel", "kind": 99, "selectionRange": range(0, 0, 0, 5) },
+            { "name": "kindless", "selectionRange": range(1, 0, 1, 8) },
+        ]));
+        assert_eq!(symbols.len(), 2);
+        assert!(symbols.iter().all(|s| s.kind.is_none()));
+    }
+
+    #[test]
+    fn no_symbols_is_an_answer_rather_than_an_error() {
+        for value in [json!(null), json!([]), json!({}), json!("nope")] {
+            assert!(DocumentSymbol::list_from_json(&value).is_empty(), "{value}");
+        }
+    }
+
+    /// A `{ start, end }` range, since every symbol test needs several.
+    fn range(
+        start_line: u32,
+        start_character: u32,
+        end_line: u32,
+        end_character: u32,
+    ) -> serde_json::Value {
+        json!({
+            "start": { "line": start_line, "character": start_character },
+            "end": { "line": end_line, "character": end_character },
+        })
     }
 }
