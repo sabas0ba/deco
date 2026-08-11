@@ -28,7 +28,7 @@ $ cargo run -p deco -- --print-config       # why isn't my setting applying?
 | [Tabs](docs/tabs.md) | Several documents, one per tab; what a tab keeps |
 | [Syntax highlighting](docs/highlighting.md) | Scopes, languages, and why not tree-sitter |
 | [Find and replace](docs/find-and-replace.md) | `ctrl+f`, `ctrl+h`, `F3`, and the multi-cursor find keys |
-| [Running commands](docs/commands.md) | The command palette, and go to line |
+| [Running commands](docs/commands.md) | The command palette, quick open, and go to line |
 | [Language servers](docs/language-servers.md) | Diagnostics, hover, go-to-definition, completion, formatting |
 | [Configuration](docs/configuration.md) | `settings.json`, `keybindings.json`, themes, and where they are read from |
 | [Extensions](docs/extensions.md) | The capability model, and why an extension gets less power here |
@@ -72,7 +72,7 @@ thin painter.
 | Remote SSH / containers / WSL | Authorities and transports built; server not yet |
 | Language servers (LSP) | Diagnostics, hover, go-to-definition, completion, formatting |
 | Find and replace (`ctrl+f`, `ctrl+h`, `F3`, `ctrl+d`, `ctrl+shift+l`) | Literal search only — no regex, no find-in-files |
-| Command palette (`ctrl+shift+p`), go to line (`ctrl+g`) | Yes, for implemented commands |
+| Command palette (`ctrl+shift+p`), quick open (`ctrl+p`), go to line (`ctrl+g`) | Yes |
 | `.tmTheme` (plist) themes, `-` scope exclusions | No |
 
 Settings are read from deco's own configuration directory, falling back to VS
@@ -210,10 +210,10 @@ does not:
   escaping rules and its own error reporting for an invalid pattern — and
   find-in-files, which needs more than one document. Both say so when pressed
   rather than reporting an unknown command.
-- **Tabs, but no splits, file tree, search-in-files or quick open (`ctrl+p`).**
-  Several documents open at once, one per tab (see [Tabs](docs/tabs.md)); the
-  rest of those keybindings resolve to commands that are not implemented yet.
-  The command palette (`ctrl+shift+p`) and go to line (`ctrl+g`) work; see
+- **Tabs and quick open, but no splits, file tree or search-in-files.** Several
+  documents open at once, one per tab (see [Tabs](docs/tabs.md)), and `ctrl+p`
+  opens any file in the workspace; the rest of those keybindings resolve to
+  commands that are not implemented yet. See
   [Running commands](docs/commands.md).
 - **The GPU frontend draws text, a gutter and a caret.** Selection and
   current-line rectangles are computed and tested but not yet painted; there is

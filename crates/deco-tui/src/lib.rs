@@ -10,6 +10,7 @@
 //! - [`app`] owns the event loop and is the only part that touches stdout.
 
 pub mod app;
+pub mod files;
 pub mod keys;
 pub mod lsp;
 pub mod render;

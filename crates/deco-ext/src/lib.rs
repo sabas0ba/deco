@@ -44,11 +44,9 @@
 //! - [`activation`] — when an extension is allowed to start at all.
 //! - [`host`] — the Node command line, built with a scrubbed environment and
 //!   Node's own permission model.
-//! - [`glob`] — the small glob dialect the above need.
 
 pub mod activation;
 pub mod capability;
-pub mod glob;
 pub mod host;
 pub mod manifest;
 pub mod protocol;

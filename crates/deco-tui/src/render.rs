@@ -340,9 +340,10 @@ fn prompt_row(prompt: &deco_editor::Prompt, width: usize, palette: &Palette) -> 
     // The match count, for a prompt that has a list to count. A go-to-line box
     // has nothing to say here.
     let right = if prompt.has_list() {
+        let noun = prompt.kind().noun();
         match prompt.matches() {
-            0 => "No commands ".to_owned(),
-            count => format!("{count} commands "),
+            0 => format!("No {noun} "),
+            count => format!("{count} {noun} "),
         }
     } else {
         String::new()
@@ -364,10 +365,16 @@ fn choice_row(
     width: usize,
     palette: &Palette,
 ) -> Row {
-    // The identifier on the right, not the title: two commands can read alike and
-    // the identifier is what a `keybindings.json` refers to.
     let left = format!("  {} ", entry.title);
-    let right = format!(" {} ", entry.id);
+    // The identifier on the right — but only when it says something the title does
+    // not. It is what a `keybindings.json` refers to, so it is worth a column for
+    // a command; for a file the title *is* the path's tail, and repeating
+    // `/home/you/src/main.rs` beside `src/main.rs` is noise.
+    let right = if entry.id.ends_with(&entry.title) {
+        String::new()
+    } else {
+        format!(" {} ", entry.id)
+    };
     let room = width.saturating_sub(columns(&left));
     let right = if room >= columns(&right) + 2 {
         truncate_to(&right, room)
@@ -2345,6 +2352,17 @@ mod tests {
     }
 
     #[test]
+    fn the_count_is_named_after_what_is_being_chosen() {
+        let mut session = session("x\n");
+        session.offer_files(vec![deco_editor::commands::PaletteEntry::new(
+            "/w/a.rs", "a.rs",
+        )]);
+        let line = prompt_line(&render(&session, 60, 14));
+        assert!(line.contains("1 files"), "{line:?}");
+        assert!(!line.contains("commands"), "{line:?}");
+    }
+
+    #[test]
     fn the_prompt_says_when_nothing_matches() {
         let session = palette("zzzzz");
         let frame = render(&session, 60, 14);
@@ -2411,6 +2429,26 @@ mod tests {
         assert!(!all.contains("Command:"));
         assert!(!all.contains("Toggle Line Comment"));
         assert_eq!(chrome_height(&session), 1);
+    }
+
+    #[test]
+    fn the_quick_open_prompt_lists_files_and_labels_itself() {
+        let mut session = session("x\n");
+        session.offer_files(vec![
+            deco_editor::commands::PaletteEntry::new("/w/src/main.rs", "src/main.rs"),
+            deco_editor::commands::PaletteEntry::new("/w/README.md", "README.md"),
+        ]);
+        let frame = render(&session, 60, 14);
+        assert!(
+            prompt_line(&frame).contains("Open:"),
+            "{:?}",
+            prompt_line(&frame)
+        );
+        let all: String = frame.rows.iter().map(Row::plain).collect();
+        assert!(all.contains("src/main.rs"), "{all:?}");
+        // The path is both the title and the identifier for a file, so the row
+        // shows it once rather than twice.
+        assert_eq!(all.matches("README.md").count(), 1, "{all:?}");
     }
 
     #[test]

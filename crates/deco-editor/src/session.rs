@@ -592,6 +592,9 @@ impl Session {
                 self.prompt = Some(Prompt::list(PromptKind::Commands, self.palette()));
                 Outcome::Handled
             }
+            // The list of files has to be walked from disk, which only a frontend
+            // can do; it calls `offer_files` when it has one.
+            "workbench.action.quickOpen" => Outcome::Frontend(command.to_owned()),
             "workbench.action.closeQuickOpen" => {
                 self.prompt = None;
                 Outcome::Handled
@@ -655,6 +658,21 @@ impl Session {
         outcome
     }
 
+    /// Opens the quick-open prompt over `files`.
+    ///
+    /// Called by the frontend once it has walked the workspace. Each entry's `id`
+    /// is the path to open and its `title` is what to show, so typing matches the
+    /// file name first and the rest of the path second — which is the order people
+    /// think in.
+    pub fn offer_files(&mut self, files: Vec<crate::commands::PaletteEntry>) {
+        if files.is_empty() {
+            self.status = Some("no files found here".to_owned());
+            return;
+        }
+        self.prompt = Some(Prompt::list(PromptKind::Files, files));
+        self.refresh_context();
+    }
+
     /// Everything the palette can offer: this crate's commands and the
     /// frontend's.
     fn palette(&self) -> Vec<crate::commands::PaletteEntry> {
@@ -684,6 +702,11 @@ impl Session {
                 // Nothing matched what was typed. Closing without saying so would
                 // look like the command had run.
                 None => Outcome::Message(format!("no command matches `{}`", prompt.text())),
+            },
+            PromptKind::Files => match prompt.selected() {
+                // The frontend reads it: the core has no filesystem.
+                Some(entry) => Outcome::OpenFile(PathBuf::from(&entry.id)),
+                None => Outcome::Message(format!("no file matches `{}`", prompt.text())),
             },
         }
     }
@@ -2299,6 +2322,95 @@ mod tests {
                 "the palette offers `{title}` ({id}), which nothing implements"
             );
         }
+    }
+
+    // ---- Quick open --------------------------------------------------------
+
+    fn file_entries(paths: &[&str]) -> Vec<commands::PaletteEntry> {
+        paths
+            .iter()
+            .map(|path| commands::PaletteEntry::new(&format!("/w/{path}"), path))
+            .collect()
+    }
+
+    #[test]
+    fn ctrl_p_asks_the_frontend_for_the_file_list() {
+        // The core has no filesystem, so it cannot build the list itself.
+        let mut s = searchable("x\n");
+        assert_eq!(
+            press(&mut s, "ctrl+p"),
+            Outcome::Frontend("workbench.action.quickOpen".to_owned())
+        );
+        assert!(s.prompt.is_none(), "the prompt waits for the list");
+    }
+
+    #[test]
+    fn offering_files_opens_a_filtered_prompt() {
+        let mut s = searchable("x\n");
+        s.offer_files(file_entries(&["src/main.rs", "src/lib.rs", "README.md"]));
+        let prompt = s.prompt.as_ref().expect("a prompt should be open");
+        assert_eq!(prompt.kind(), crate::prompt::PromptKind::Files);
+        assert_eq!(prompt.matches(), 3);
+        assert_eq!(s.context.get("inQuickOpen"), Some(&json!(true)));
+    }
+
+    #[test]
+    fn typing_narrows_the_file_list_by_name_then_by_path() {
+        let mut s = searchable("x\n");
+        s.offer_files(file_entries(&[
+            "src/main.rs",
+            "docs/main.md",
+            "src/other.rs",
+        ]));
+        for c in "main".chars() {
+            press(&mut s, &c.to_string());
+        }
+        assert_eq!(s.prompt.as_ref().unwrap().matches(), 2);
+    }
+
+    #[test]
+    fn accepting_a_file_asks_the_frontend_to_open_it() {
+        let mut s = searchable("x\n");
+        s.offer_files(file_entries(&["src/main.rs", "README.md"]));
+        for c in "readme".chars() {
+            press(&mut s, &c.to_string());
+        }
+        assert_eq!(
+            press(&mut s, "enter"),
+            Outcome::OpenFile(PathBuf::from("/w/README.md"))
+        );
+        assert!(s.prompt.is_none());
+    }
+
+    #[test]
+    fn accepting_nothing_says_so_rather_than_closing_quietly() {
+        let mut s = searchable("x\n");
+        s.offer_files(file_entries(&["src/main.rs"]));
+        for c in "zzzz".chars() {
+            press(&mut s, &c.to_string());
+        }
+        assert_eq!(
+            press(&mut s, "enter"),
+            Outcome::Message("no file matches `zzzz`".to_owned())
+        );
+    }
+
+    #[test]
+    fn an_empty_workspace_says_so_instead_of_opening_an_empty_list() {
+        let mut s = searchable("x\n");
+        s.offer_files(Vec::new());
+        assert!(s.prompt.is_none());
+        assert_eq!(s.status.as_deref(), Some("no files found here"));
+    }
+
+    #[test]
+    fn typing_in_the_file_prompt_never_reaches_the_document() {
+        let mut s = searchable("x\n");
+        s.offer_files(file_entries(&["a.rs"]));
+        for key in ["a", "backspace", "ctrl+z"] {
+            press(&mut s, key);
+        }
+        assert_eq!(s.document.buffer.text(), "x\n");
     }
 
     // ---- Tabs -------------------------------------------------------------

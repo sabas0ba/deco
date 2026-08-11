@@ -1,5 +1,9 @@
-//! The small glob dialect VS Code uses in `workspaceContains` and
-//! `files.exclude`.
+//! The small glob dialect VS Code uses in `files.exclude`, `files.watcherExclude`
+//! and an extension's `workspaceContains` activation event.
+//!
+//! Here rather than in `deco-ext` because `files.exclude` is a setting and this
+//! crate owns settings — and because the quick-open file walk needs the same
+//! dialect. One implementation, two callers.
 //!
 //! Supports `?`, `*` (within one path segment) and `**` (across segments).
 //! Brace alternation and character classes are not implemented.

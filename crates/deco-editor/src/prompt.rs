@@ -27,6 +27,8 @@ pub enum PromptKind {
     GoToLine,
     /// `ctrl+shift+p`: a command to run.
     Commands,
+    /// `ctrl+p`: a file in the workspace to open.
+    Files,
 }
 
 impl PromptKind {
@@ -35,6 +37,18 @@ impl PromptKind {
         match self {
             Self::GoToLine => "Go to line:",
             Self::Commands => "Command:",
+            Self::Files => "Open:",
+        }
+    }
+
+    /// What the choices are called, for the `3 commands` readout.
+    ///
+    /// Empty for a prompt with no list, which has nothing to count.
+    pub fn noun(self) -> &'static str {
+        match self {
+            Self::GoToLine => "",
+            Self::Commands => "commands",
+            Self::Files => "files",
         }
     }
 }
