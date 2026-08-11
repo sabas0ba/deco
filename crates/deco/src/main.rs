@@ -91,17 +91,17 @@ fn main() -> Result<()> {
 
     match cli.frontend {
         Frontend::Tui => deco_tui::run(&mut session, cli.files.first().cloned()),
-        Frontend::Gui => run_gui(&mut session, cli.files.first().cloned()),
+        Frontend::Gui => run_gui(&mut session),
     }
 }
 
 #[cfg(feature = "gui")]
-fn run_gui(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
-    deco_gui::run(session, path)
+fn run_gui(session: &mut Session) -> Result<()> {
+    deco_gui::run(session)
 }
 
 #[cfg(not(feature = "gui"))]
-fn run_gui(_session: &mut Session, _path: Option<PathBuf>) -> Result<()> {
+fn run_gui(_session: &mut Session) -> Result<()> {
     anyhow::bail!(
         "this build has no GPU frontend. Rebuild with `cargo build --features gui`, \
          or run `deco --frontend tui`."

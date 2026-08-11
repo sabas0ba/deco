@@ -134,7 +134,7 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
                 match session.handle_chord(chord, now_ms) {
                     Outcome::Quit => break,
                     Outcome::Save => {
-                        save(session, path.as_ref())?;
+                        save(session)?;
                         lsp.saved(session);
                     }
                     // The picker named a theme; reading it is this side's job.
@@ -502,20 +502,26 @@ fn write_file(path: &Path, contents: &str) -> std::result::Result<(), String> {
 }
 
 /// Writes the open document to disk.
-fn save(session: &mut Session, path: Option<&PathBuf>) -> Result<()> {
-    let target = session.document.path.clone().or_else(|| path.cloned());
-    match target {
-        Some(path) => {
-            std::fs::write(&path, session.save_contents())
-                .with_context(|| format!("could not write {}", path.display()))?;
-            session.mark_saved();
-            session.status = Some(format!("Saved {}", path.display()));
-        }
-        None => {
-            // Losing the user's work silently would be far worse than saying so.
-            session.status = Some("This document has no filename yet".to_owned());
-        }
-    }
+/// Writes the open document to disk.
+///
+/// **Only ever to its own path.** This used to fall back to the file deco was
+/// started with when the document had none, which was true of a session holding
+/// exactly one document and became a silent overwrite the moment tabs arrived: an
+/// untitled tab and the started-with file are two different documents. The
+/// parameter is gone rather than merely unused, so nothing can aim a write at the
+/// wrong file again.
+///
+/// A document with no path never reaches here — [`Session`] turns `ctrl+s` into the
+/// save-as prompt instead — but the arm stays as a guard rather than a `panic!`.
+fn save(session: &mut Session) -> Result<()> {
+    let Some(path) = session.document.path.clone() else {
+        session.status = Some("This document has no filename yet".to_owned());
+        return Ok(());
+    };
+    std::fs::write(&path, session.save_contents())
+        .with_context(|| format!("could not write {}", path.display()))?;
+    session.mark_saved();
+    session.status = Some(format!("Saved {}", path.display()));
     Ok(())
 }
 
@@ -536,6 +542,31 @@ mod tests {
             path.push(part);
         }
         path
+    }
+
+    #[test]
+    fn saving_an_untitled_document_writes_nothing() {
+        // The regression guard for a silent overwrite: `save` used to fall back to
+        // the file deco was started with, so `ctrl+n`, a keystroke and `ctrl+s`
+        // replaced an unrelated file and reported `Saved a.rs`.
+        let dir = std::env::temp_dir().join(format!("deco-save-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let started_with = dir.join("a.rs");
+        std::fs::write(&started_with, "fn main() {}\n").unwrap();
+
+        let mut session = Session::with_defaults();
+        session.resize(80, 10);
+        session.run("type", Some(&serde_json::json!({ "text": "scratch" })), 0);
+        assert!(session.document.path.is_none(), "an untitled document");
+
+        save(&mut session).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&started_with).unwrap(),
+            "fn main() {}\n",
+            "the file deco was started with must be untouched"
+        );
+        assert!(session.document.dirty, "and nothing was saved");
     }
 
     #[test]
@@ -629,7 +660,7 @@ mod tests {
     #[test]
     fn saving_an_untitled_document_says_so_instead_of_failing_silently() {
         let mut session = Session::with_defaults();
-        save(&mut session, None).unwrap();
+        save(&mut session).unwrap();
         assert!(session.status.as_deref().unwrap().contains("no filename"));
     }
 }

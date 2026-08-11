@@ -51,6 +51,28 @@ ignore = [
     # than something to fork for. Drop this entry when cosmic-text and
     # sctk-adwaita have both moved off it.
     { id = "RUSTSEC-2026-0192", reason = "unmaintained, GUI-only, no upgrade available upstream" },
+
+    # `lru` before 0.18.2 has an unsound `LruCache::pop()`: it is not
+    # panic-safe, so a stored key whose `Drop` panics leaves dangling pointers
+    # in the internal linked list, which a later eviction can dereference.
+    #
+    # Marked `informational = "unsound"` rather than a vulnerability, and it is
+    # unreachable here. The only path to it is inside the optional `gui`
+    # feature —
+    #
+    #   glyphon -> lru
+    #
+    # — where it caches glyph rasterisations under plain-data keys. Nothing in
+    # that cache has a `Drop` at all, let alone one that panics, so the failure
+    # this describes cannot be reached. `cargo tree -p deco -e normal` without
+    # `--features gui` has no lru node, so the shipped terminal build does not
+    # contain it.
+    #
+    # No upgrade exists: glyphon 0.12.0 is the latest release and requires
+    # `lru ^0.16.2`, so `cargo update -p lru --precise 0.18.2` is refused by
+    # the resolver. Drop this entry when a glyphon release accepts lru 0.18.2
+    # or newer.
+    { id = "RUSTSEC-2026-0253", reason = "unsound, GUI-only, unreachable, no upgrade available upstream" },
 ]
 
 [sources]

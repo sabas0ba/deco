@@ -810,6 +810,11 @@ impl Session {
                 Outcome::Handled
             }
             "workbench.action.editor.changeLanguageMode" => self.offer_languages(),
+            // Before `commands::execute` can answer `Outcome::Save`: a document
+            // with no path cannot be written, and VS Code's `ctrl+s` opens Save As
+            // rather than reporting a dead end. Saying "save it first" and then
+            // refusing to save is how an untitled tab became impossible to close.
+            "workbench.action.files.save" if self.document.path.is_none() => self.offer_save_as(),
             "workbench.action.files.saveAs" => self.offer_save_as(),
             "workbench.action.files.openFile" => self.offer_open_path(),
             "editor.action.replaceOne" => self.replace_one(now_ms),
@@ -1777,9 +1782,48 @@ mod tests {
 
     #[test]
     fn save_and_quit_reach_the_frontend() {
-        let mut s = session();
+        // A document with a name; a nameless one goes to the save-as prompt
+        // instead, which has its own test.
+        let mut s = searchable("x\n");
         assert_eq!(press(&mut s, "ctrl+s"), Outcome::Save);
         assert_eq!(press(&mut s, "ctrl+q"), Outcome::Quit);
+    }
+
+    #[test]
+    fn ctrl_s_on_an_untitled_document_asks_where_to_put_it() {
+        // It used to report "This document has no filename yet" — after having
+        // aimed the write at whatever file deco was started with. Neither is a
+        // save, and `ctrl+w` was meanwhile saying "save it first", so an untitled
+        // tab could be neither saved nor closed.
+        let mut s = session();
+        s.resize(80, 10);
+        press(&mut s, "y");
+        assert_eq!(press(&mut s, "ctrl+s"), Outcome::Handled);
+        let prompt = s
+            .prompt
+            .as_ref()
+            .expect("the save-as prompt should be open");
+        assert_eq!(prompt.kind(), crate::prompt::PromptKind::SaveAs);
+        assert_eq!(prompt.text(), "", "nothing to seed it with");
+    }
+
+    #[test]
+    fn an_untitled_document_can_be_closed_once_it_has_been_saved() {
+        // The route out of the trap, end to end.
+        let mut s = session();
+        s.resize(80, 10);
+        press(&mut s, "y");
+        press(&mut s, "ctrl+s");
+        for key in ["a", ".", "t", "x", "t"] {
+            press(&mut s, key);
+        }
+        assert_eq!(
+            press(&mut s, "enter"),
+            Outcome::SaveAs(PathBuf::from("a.txt"))
+        );
+        // The frontend writes and reports back, which is what clears `dirty`.
+        s.rename_to(PathBuf::from("/w/a.txt"));
+        assert_eq!(press(&mut s, "ctrl+w"), Outcome::Handled);
     }
 
     #[test]
@@ -1823,8 +1867,9 @@ mod tests {
         let user = r#"[{ "key": "ctrl+nonsense", "command": "x" }]"#;
         let mut s = Session::new(Settings::with_defaults(), Some(user), Platform::Linux);
         assert_eq!(s.problems.len(), 1);
-        // The defaults still work.
-        assert_eq!(press(&mut s, "ctrl+s"), Outcome::Save);
+        // The defaults still work. `ctrl+q` rather than `ctrl+s`, because an
+        // untitled document routes the save key to the save-as prompt.
+        assert_eq!(press(&mut s, "ctrl+q"), Outcome::Quit);
     }
 
     #[test]
