@@ -117,6 +117,10 @@ not when it was launched from anywhere else.
 | `ctrl+k s` | `workbench.action.files.saveAll` |
 | `ctrl+shift+s` | `workbench.action.files.saveAs` |
 
+**`ctrl+s` on an untitled document opens the save-as prompt**, as VS Code does.
+It has no filename and one is never invented for it — the save key makes saving
+possible instead of reporting that it is not.
+
 The path the prompt hands back is **exactly what was typed**; the frontend resolves
 it, writes, and reports back the path it settled on. Resolving needs a home
 directory and a working directory, and the core has neither.

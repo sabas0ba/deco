@@ -4,7 +4,6 @@
 //! [`mod@crate::layout`], which is testable without one, so a change to how the
 //! editor looks is normally a change over there rather than in here.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -266,7 +265,6 @@ fn srgb_to_linear(value: u8) -> f64 {
 
 struct App<'a> {
     session: &'a mut Session,
-    path: Option<PathBuf>,
     gpu: Option<Gpu>,
     modifiers: ModifiersState,
     started: Instant,
@@ -320,7 +318,7 @@ impl ApplicationHandler for App<'_> {
                 match self.session.handle_chord(chord, now_ms) {
                     Outcome::Quit => event_loop.exit(),
                     Outcome::Save => {
-                        if let Err(error) = save(self.session, self.path.as_ref()) {
+                        if let Err(error) = save(self.session) {
                             self.session.status = Some(error.to_string());
                         }
                     }
@@ -382,9 +380,12 @@ fn write_file(path: &std::path::Path, contents: &str) -> std::result::Result<(),
     std::fs::write(path, contents).map_err(|error| format!("{}: {error}", path.display()))
 }
 
-fn save(session: &mut Session, path: Option<&PathBuf>) -> Result<()> {
-    let target = session.document.path.clone().or_else(|| path.cloned());
-    match target {
+/// Writes the open document to disk, only ever to its own path.
+///
+/// See the terminal frontend's `save` for why there is no fallback to the file
+/// deco was started with.
+fn save(session: &mut Session) -> Result<()> {
+    match session.document.path.clone() {
         Some(path) => {
             std::fs::write(&path, session.save_contents())
                 .with_context(|| format!("could not write {}", path.display()))?;
@@ -397,14 +398,17 @@ fn save(session: &mut Session, path: Option<&PathBuf>) -> Result<()> {
 }
 
 /// Opens a window and runs the editor in it.
-pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
+///
+/// Takes no starting path. It used to, to fall back on when saving a document
+/// with none — which was a silent overwrite once tabs existed. This frontend has
+/// nothing else to do with it: no quick open to anchor and no workspace to walk.
+pub fn run(session: &mut Session) -> Result<()> {
     let event_loop = EventLoop::new().context("could not start the window event loop")?;
     // Wait for input rather than spinning: an editor at rest should use no CPU.
     event_loop.set_control_flow(ControlFlow::Wait);
 
     let mut app = App {
         session,
-        path,
         gpu: None,
         modifiers: ModifiersState::empty(),
         started: Instant::now(),
@@ -441,7 +445,7 @@ mod tests {
     #[test]
     fn saving_an_untitled_document_says_so_instead_of_failing_silently() {
         let mut session = Session::with_defaults();
-        save(&mut session, None).unwrap();
+        save(&mut session).unwrap();
         assert!(session.status.as_deref().unwrap().contains("no filename"));
     }
 
