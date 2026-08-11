@@ -7,11 +7,31 @@ name: CI
 # `@v4` means "whatever that repository decides to put there", which is write
 # access to this workflow. The trailing comment records which release each SHA
 # was, and .github/dependabot.yml keeps them moving.
+#
+# Platform coverage is deliberately uneven, because the runners are not priced
+# alike: a macOS minute bills at ten times a Linux one and a Windows minute at
+# two. A pull request is pushed to many times before it merges, so the macOS and
+# Windows jobs are held back from that loop and run where the answer is worth
+# what it costs:
+#
+#   * every push to a pull request  — Linux only
+#   * a pull request labelled `ci:full` — everything, on demand
+#   * a merge to main               — everything
+#   * `workflow_dispatch`           — everything
+#   * a release tag                 — everything, in release.yml
+#
+# So nothing reaches main, and no tag is ever cut, without every platform having
+# been built and tested; what a pull request loses is the per-push signal, which
+# the label brings back for the changes that need it.
 
 on:
   push:
     branches: [main]
+  # `labeled` is here so that adding `ci:full` starts the platform jobs without
+  # needing an empty commit to push. It fires for any label, but the run it
+  # starts is the cheap Linux one unless that is the label that was added.
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
 
 permissions:
@@ -65,12 +85,8 @@ jobs:
         run: cargo xtask docs --check
 
   test:
-    name: Test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+    name: Test (ubuntu-latest)
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
@@ -78,12 +94,34 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: Install GUI build dependencies
-        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libx11-dev libxkbcommon-dev
       # The GUI crate's tests cover key mapping and layout, neither of which
       # needs a display, so --all-features is safe on a headless runner.
+      - run: cargo xtask ci --test-only
+
+  # The same job on the runners that bill at a premium, held back to the events
+  # in the header comment. Kept separate rather than folded into the matrix
+  # above because a job's `if` cannot read the `matrix` context, so a matrix
+  # entry cannot exclude itself — and a job that starts only to skip its steps
+  # has already paid for the runner.
+  test-platforms:
+    name: Test (${{ matrix.os }})
+    if: >-
+      github.event_name != 'pull_request'
+      || contains(github.event.pull_request.labels.*.name, 'ci:full')
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - run: cargo xtask ci --test-only
 
   msrv:
@@ -149,14 +187,6 @@ jobs:
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             packages: musl-tools
-          - target: x86_64-apple-darwin
-            os: macos-latest
-          - target: aarch64-apple-darwin
-            os: macos-latest
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-          - target: aarch64-pc-windows-msvc
-            os: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
@@ -181,4 +211,38 @@ jobs:
       # path is caught here rather than during a release. Only the terminal
       # binary is cross-built: a cross toolchain has no target-side graphics
       # libraries for the GPU frontend.
+      - run: cargo xtask dist --target ${{ matrix.target }}
+
+  # The Apple and Windows halves of the release matrix, on the same schedule as
+  # test-platforms. `cargo xtask dist` is shared with release.yml, and the three
+  # Linux targets above exercise it on every pull request, so what is deferred
+  # here is the target-specific half of the packaging — which is also the half
+  # that a release tag rebuilds from scratch anyway.
+  cross-build-platforms:
+    name: Cross build ${{ matrix.target }}
+    if: >-
+      github.event_name != 'pull_request'
+      || contains(github.event.pull_request.labels.*.name, 'ci:full')
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: ${{ matrix.target }}
       - run: cargo xtask dist --target ${{ matrix.target }}
