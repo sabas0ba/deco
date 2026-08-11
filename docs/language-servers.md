@@ -92,6 +92,52 @@ the list has to describe what you are looking at. Locations in a scheme deco
 cannot open (`jdt:`, `untitled:`) are left out rather than listed as rows that do
 nothing.
 
+## Semantic tokens
+
+A server's semantic tokens say what a name *is* — a type told from a variable by
+its declaration, a shadowed binding, a macro apart from a function — which is
+precisely what [the lexer](highlighting.md) cannot know. deco asks for the whole
+document's tokens when the file opens and again after each edit, and colours what
+comes back from the theme's `semanticTokenColors`.
+
+![The same file coloured by the lexer, then by the server, then with the setting off](img/semantic-tokens.svg)
+
+In those frames `LIMIT` is teal to the lexer, which can only see that it is
+capitalised, and blue to the server, which knows it is a read-only binding.
+
+The lexer is not replaced. A token type the theme has no rule for falls back to
+the lexer's colour, and so does every character no token covers — punctuation,
+whitespace, comments most servers do not classify. The result is a document that
+is fully coloured whether or not a server is running, and more precisely coloured
+when one is.
+
+| Setting | Effect |
+| --- | --- |
+| `editor.semanticHighlighting.enabled: true` | Always draw them |
+| `editor.semanticHighlighting.enabled: false` | Never draw them |
+| absent, or `"configuredByTheme"` | The theme's own `semanticHighlighting` flag decides |
+
+Deferring to the theme is VS Code's default and the right one: a theme written
+without semantic rules looks *worse* with them applied, because the few types it
+does resolve overrule a lexer that was colouring everything consistently.
+
+The wire format is a flat list of integers, five per token, each token's position
+stated relative to the one before it — and `deltaStart` is relative to the
+previous token's column only when the two share a line, otherwise it is an
+absolute column. Tokens naming a type outside the legend the server announced at
+initialisation are dropped, but still advance the position, since a following
+token's coordinates are relative to the one deco could not name.
+
+A classification describes the text it was computed from, so an edit discards it
+rather than keeping it: a token list applied to shifted text colours the wrong
+words, which is worse than the lexer alone for the moment the answer takes.
+Keypresses that only move the cursor send nothing and keep the tokens, and a
+request is not made while one is already outstanding.
+
+The feature needs `full` document support and a non-empty legend. A server
+offering only ranges or delta updates is treated as not offering the feature at
+all, rather than half-colouring the file.
+
 ## Formatting
 
 `ctrl+shift+i` formats the document and `ctrl+k ctrl+f` the selection. Both keys
@@ -158,8 +204,9 @@ pretending.
 
 Changes are sent as full-document syncs; the incremental path exists in
 `deco-lsp` but the editor does not yet track applied ranges. Semantic tokens are
-parsed and the theme can style them, but nothing renders them yet — see
-[Syntax highlighting](highlighting.md).
+whole-document for the same reason: `textDocument/semanticTokens/full/delta` needs
+the previous result held and patched, and a full request after each edit is
+correct without it.
 
 Go-to-definition across files opens a new tab, or switches to the tab already
 holding the file — see [Tabs](tabs.md). When a server returns several results

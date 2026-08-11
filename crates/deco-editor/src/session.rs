@@ -55,6 +55,7 @@ struct Tab {
     document: Document,
     view: View,
     diagnostics: Vec<deco_lsp::Diagnostic>,
+    semantic: Vec<deco_lsp::requests::SemanticSpan>,
 }
 
 /// What a tab bar needs to draw one tab.
@@ -114,6 +115,14 @@ pub struct Session {
     /// Always present so that `F3` still has a query to search for after the bar
     /// is closed, which is how VS Code behaves.
     pub find: Find,
+    /// Semantic tokens for the open document, as the language server classified
+    /// them.
+    ///
+    /// Beside the diagnostics and for the same reason: the frontends need one
+    /// place to read from, whatever produced it. Empty when no server is running,
+    /// when the server does not offer them, or when the answer has not arrived —
+    /// and the lexer's own colouring stands in all three cases.
+    pub semantic_tokens: Vec<deco_lsp::requests::SemanticSpan>,
     /// Diagnostics for the open document, newest publication wins.
     ///
     /// Owned by the session rather than by the LSP client so that the frontends
@@ -169,6 +178,7 @@ impl Session {
             prompt: None,
             frontend_commands: Vec::new(),
             diagnostics: Vec::new(),
+            semantic_tokens: Vec::new(),
             left: Vec::new(),
             right: Vec::new(),
             problems,
@@ -213,6 +223,7 @@ impl Session {
                 ),
                 view: std::mem::take(&mut self.view),
                 diagnostics: std::mem::take(&mut self.diagnostics),
+                semantic: std::mem::take(&mut self.semantic_tokens),
             };
             self.left.push(previous);
         }
@@ -222,6 +233,8 @@ impl Session {
         // that is no longer on screen. Carrying them over would decorate the
         // new one with the old one's errors.
         self.diagnostics.clear();
+        // And the token list, which describes the other file's text.
+        self.semantic_tokens.clear();
         // Same reasoning for the match list. The query survives, since searching
         // the next file for the same thing is a reasonable thing to want.
         self.find.close();
@@ -291,6 +304,7 @@ impl Session {
             document: std::mem::replace(&mut self.document, Document::untitled(Default::default())),
             view: std::mem::take(&mut self.view),
             diagnostics: std::mem::take(&mut self.diagnostics),
+            semantic: std::mem::take(&mut self.semantic_tokens),
         };
         let mut all: Vec<Tab> = self.left.drain(..).collect();
         all.push(active);
@@ -308,6 +322,7 @@ impl Session {
         self.document = chosen.document;
         self.view = chosen.view;
         self.diagnostics = chosen.diagnostics;
+        self.semantic_tokens = chosen.semantic;
         // The match list describes text that is no longer on screen.
         self.find.close();
         self.view
@@ -355,6 +370,7 @@ impl Session {
                 document: Document::untitled(EditorSettings::resolve(&self.settings, None)),
                 view: View::default(),
                 diagnostics: Vec::new(),
+                semantic: Vec::new(),
             }
         };
 
@@ -363,6 +379,7 @@ impl Session {
         self.view.width = sizes.0;
         self.view.height = sizes.1;
         self.diagnostics = replacement.diagnostics;
+        self.semantic_tokens = replacement.semantic;
         self.find.close();
         self.refresh_context();
         Outcome::Handled
@@ -378,6 +395,7 @@ impl Session {
             ),
             view: std::mem::take(&mut self.view),
             diagnostics: std::mem::take(&mut self.diagnostics),
+            semantic: std::mem::take(&mut self.semantic_tokens),
         };
         self.left.push(previous);
         self.view.width = sizes.0;

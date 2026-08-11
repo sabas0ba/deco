@@ -29,7 +29,7 @@ $ cargo run -p deco -- --print-config       # why isn't my setting applying?
 | [Syntax highlighting](docs/highlighting.md) | Scopes, languages, and why not tree-sitter |
 | [Find and replace](docs/find-and-replace.md) | `ctrl+f`, `ctrl+h`, `F3`, and the multi-cursor find keys |
 | [Running commands](docs/commands.md) | The command palette, quick open, search in files, go to line |
-| [Language servers](docs/language-servers.md) | Diagnostics, hover, definition, references, completion, formatting |
+| [Language servers](docs/language-servers.md) | Diagnostics, hover, definition, references, completion, semantic tokens, formatting |
 | [Configuration](docs/configuration.md) | `settings.json`, `keybindings.json`, themes, and where they are read from |
 | [Extensions](docs/extensions.md) | The capability model, and why an extension gets less power here |
 | [Remote](docs/remote.md) | SSH, container and WSL authorities — and which half exists |
@@ -70,7 +70,7 @@ thin painter.
 | Theme extensions from the marketplace | Yes — declarative, no host process |
 | Code extensions (`main`) | Protocol and sandbox built; host not yet wired to the editor |
 | Remote SSH / containers / WSL | Authorities and transports built; server not yet |
-| Language servers (LSP) | Diagnostics, hover, go-to-definition, references, completion, formatting |
+| Language servers (LSP) | Diagnostics, hover, go-to-definition, references, completion, semantic tokens, formatting |
 | Find and replace (`ctrl+f`, `ctrl+h`, `F3`, `ctrl+d`, `ctrl+shift+l`) | Literal search only — no regular expressions |
 | Search in files (`ctrl+shift+f`) | Yes — bounded and synchronous, and it says so |
 | Command palette (`ctrl+shift+p`), quick open (`ctrl+p`), go to line (`ctrl+g`) | Yes |
@@ -149,7 +149,8 @@ crates/
   deco-config   JSONC reader; default < user < remote < workspace < folder
   deco-keymap   key parsing, when-clause engine, chord resolution, default keymap
   deco-lsp      LSP client: framing, lifecycle, capabilities, sync, diagnostics,
-                and the supervisor that runs a server and pumps its stdio
+                semantic tokens, and the supervisor that runs a server
+                and pumps its stdio
   deco-theme    colour themes: TextMate scopes, semantic tokens, include chains
   deco-editor   the command set and the editor session — no terminal, no window
   deco-ext      manifests, activation, and the capability model
@@ -176,7 +177,7 @@ does not:
   `deco --server`, no provisioning it onto a remote, and no port forwarding.
 - **Rename and code actions are not wired.** Diagnostics, hover
   (`ctrl+k ctrl+i`), go-to-definition (`F12`), references (`shift+f12`),
-  completion (`ctrl+space`) and formatting (`ctrl+shift+i`) work. Applying a
+  completion (`ctrl+space`), semantic tokens and formatting (`ctrl+shift+i`) work. Applying a
   rename means editing files that are not open — possible now that there are
   tabs, but it needs a `WorkspaceEdit` applied across several documents as one
   undoable action, which does not exist yet. Those keys say the feature is not
@@ -196,8 +197,9 @@ does not:
   [Syntax highlighting](docs/highlighting.md). What a lexer cannot do is anything
   structural: a type told from a variable by its declaration, or a language
   embedded in another. Markdown, HTML and XML are deliberately left plain for that
-  reason. Language-server semantic tokens are the intended refinement and are
-  parsed but not yet rendered. The GPU frontend draws one colour per line.
+  reason. A language server's **semantic tokens** fill exactly that gap and are
+  drawn over the lexer's colouring where a server provides them. The GPU frontend
+  draws one colour per line.
 - **The extension host is not connected.** The protocol, the capability broker,
   the sandbox and the `vscode` shim all exist and are tested against each other;
   the editor does not yet start a host or dispatch to one.
@@ -319,8 +321,9 @@ and nothing more.
 
 What is wired up today: diagnostics (tallied in the status bar, walked with
 `F8` / `shift+F8`), hover (`ctrl+k ctrl+i`, dismissed with `escape`),
-go-to-definition (`F12`), completion — `ctrl+space` to ask, or automatically on a
-character the server nominates — and formatting (`ctrl+shift+i` for the document,
+go-to-definition (`F12`), references (`shift+f12`), completion — `ctrl+space` to
+ask, or automatically on a character the server nominates — semantic tokens drawn
+over the lexer's colouring, and formatting (`ctrl+shift+i` for the document,
 `ctrl+k ctrl+f` for a selection).
 
 In the completion list, `up`/`down` move, `tab` or `enter` accepts, `escape`

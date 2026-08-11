@@ -11,7 +11,7 @@ the honest place to look for what is **not** built yet.
 | [Syntax highlighting](highlighting.md) | Scopes, languages, and why not tree-sitter |
 | [Find and replace](find-and-replace.md) | `ctrl+f`, `ctrl+h`, `F3`, and the multi-cursor find keys |
 | [Running commands](commands.md) | The command palette, quick open, search in files, go to line |
-| [Language servers](language-servers.md) | Diagnostics, hover, definition, references, completion, formatting |
+| [Language servers](language-servers.md) | Diagnostics, hover, definition, references, completion, semantic tokens, formatting |
 | [Configuration](configuration.md) | `settings.json`, `keybindings.json`, colour themes, and where they are read from |
 | [Extensions](extensions.md) | The capability model, and why an extension gets less power here than in VS Code |
 | [Remote](remote.md) | SSH, container and WSL authorities — and which half of it exists |

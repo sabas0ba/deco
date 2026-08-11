@@ -609,8 +609,47 @@ fn line_spans(
         (false, false) => Cell::Plain,
     };
 
+    // The server's classification of this line, when semantic highlighting is on.
+    // Kept separate from the lexer's spans rather than merged into them: the two
+    // disagree about where a run begins as often as they agree, and the finer
+    // answer wins per cell rather than per run.
+    let semantic: Vec<&deco_lsp::requests::SemanticSpan> = if semantic_highlighting(session) {
+        session
+            .semantic_tokens
+            .iter()
+            .filter(|span| span.range.start.line == line as u32)
+            .collect()
+    } else {
+        Vec::new()
+    };
+
     // Foreground colour per UTF-16 offset, from the highlighting.
     let colour_at = |utf16: u32| -> Rgba {
+        // The server first. It knows what a lexer cannot — that this `Foo` is a
+        // type and that one is a variable — and a theme that styles the token type
+        // has said which it prefers by styling it at all.
+        if let Some(span) = semantic
+            .iter()
+            .find(|span| utf16 >= span.range.start.character && utf16 < span.range.end.character)
+        {
+            let modifiers: Vec<&str> = span.modifiers.iter().map(String::as_str).collect();
+            let token = deco_theme::semantic::SemanticToken::new(
+                &span.token_type,
+                &modifiers,
+                session.document.language(),
+            );
+            if let Some(colour) = session
+                .theme
+                .style_for_semantic(&token)
+                .and_then(|style| style.foreground)
+            {
+                return colour;
+            }
+            // The theme has no rule for this token type, so fall through to the
+            // lexer rather than to the plain foreground: losing the keyword colour
+            // because a server also called it a keyword would be a regression.
+        }
+
         let Some(span) = highlights
             .iter()
             .find(|span| utf16 >= span.start && utf16 < span.end)
@@ -686,6 +725,26 @@ fn line_spans(
         }
     }
     spans
+}
+
+/// Whether the language server's classification is used.
+///
+/// `editor.semanticHighlighting.enabled` is VS Code's setting and takes three
+/// values: `true`, `false`, and `"configuredByTheme"` — the default — which defers
+/// to the theme's own `semanticHighlighting` flag. Deferring is the right default
+/// because a theme written without semantic rules looks *worse* with them applied:
+/// every token the theme has no rule for falls back inconsistently.
+fn semantic_highlighting(session: &Session) -> bool {
+    if let Some(enabled) = session
+        .settings
+        .get_bool("editor.semanticHighlighting.enabled", None)
+    {
+        return enabled;
+    }
+    // Absent, or any string — including `configuredByTheme`. A misspelled value
+    // therefore behaves as the default rather than as `false`, which is the kinder
+    // failure.
+    session.theme.semantic_highlighting()
 }
 
 /// What one cell of a rendered line is part of.
@@ -2012,6 +2071,148 @@ mod tests {
         let session = replacing("foo\n", "foo", "");
         let frame = render(&session, 40, 8);
         assert_eq!(find_row(&frame).trim(), "With:");
+    }
+
+    // ---- Semantic highlighting ---------------------------------------------
+
+    fn semantic(
+        token_type: &str,
+        line: u32,
+        from: u32,
+        to: u32,
+    ) -> deco_lsp::requests::SemanticSpan {
+        deco_lsp::requests::SemanticSpan {
+            range: deco_core::position::Range::new(
+                Position::new(line, from),
+                Position::new(line, to),
+            ),
+            token_type: token_type.to_owned(),
+            modifiers: Vec::new(),
+        }
+    }
+
+    /// The colour the default theme gives a semantic token type.
+    fn semantic_colour(session: &Session, token_type: &str) -> Option<Rgba> {
+        session
+            .theme
+            .style_for_semantic(&deco_theme::semantic::SemanticToken::new(
+                token_type,
+                &[],
+                session.document.language(),
+            ))
+            .and_then(|style| style.foreground)
+    }
+
+    #[test]
+    fn a_servers_classification_wins_over_the_lexers_guess() {
+        // The case the whole feature exists for: `Widget` is capitalised, so the
+        // lexer calls it a type; a server that says it is a variable is right.
+        let mut session = session("let Widget = 1;\n");
+        let Some(expected) = semantic_colour(&session, "variable") else {
+            // The bundled theme has no rule for this token type, so there is
+            // nothing to assert about precedence.
+            return;
+        };
+        session.semantic_tokens = vec![semantic("variable", 0, 4, 10)];
+        let gutter = gutter_width(&session);
+        let colours = foregrounds(&render(&session, 40, 5));
+        assert_eq!(colours[gutter + 4], expected);
+        assert_ne!(
+            colours[gutter + 4],
+            styled(&session, deco_syntax::scopes::TYPE),
+            "the lexer's answer should have been overruled"
+        );
+    }
+
+    #[test]
+    fn text_outside_a_token_keeps_the_lexers_colour() {
+        let mut session = session("let Widget = 1;\n");
+        session.semantic_tokens = vec![semantic("variable", 0, 4, 10)];
+        let gutter = gutter_width(&session);
+        let colours = foregrounds(&render(&session, 40, 5));
+        // `let` is still a keyword: the server classified only the name.
+        assert_eq!(
+            colours[gutter],
+            styled(&session, deco_syntax::scopes::KEYWORD)
+        );
+    }
+
+    #[test]
+    fn a_token_type_the_theme_does_not_style_falls_back_to_the_lexer() {
+        // Not to the plain foreground: losing the keyword colour because a server
+        // also had an opinion about it would be a regression.
+        let mut session = session("let x = 1;\n");
+        session.semantic_tokens = vec![semantic("nonsenseTokenType", 0, 0, 3)];
+        let gutter = gutter_width(&session);
+        let colours = foregrounds(&render(&session, 40, 5));
+        assert_eq!(
+            colours[gutter],
+            styled(&session, deco_syntax::scopes::KEYWORD)
+        );
+    }
+
+    #[test]
+    fn tokens_on_other_lines_do_not_colour_this_one() {
+        let mut session = session("let a = 1;\nlet b = 2;\n");
+        session.semantic_tokens = vec![semantic("variable", 1, 4, 5)];
+        let gutter = gutter_width(&session);
+        let frame = render(&session, 40, 6);
+        let first: Vec<Rgba> = frame.rows[0]
+            .spans
+            .iter()
+            .flat_map(|span| span.text.chars().map(move |_| span.fg))
+            .collect();
+        let palette = Palette::from(&session);
+        assert_eq!(first[gutter + 4], palette.fg, "line 0 has no token");
+    }
+
+    #[test]
+    fn the_setting_can_turn_semantic_highlighting_off() {
+        let mut session = session("let Widget = 1;\n");
+        if semantic_colour(&session, "variable").is_none() {
+            return;
+        }
+        session.semantic_tokens = vec![semantic("variable", 0, 4, 10)];
+        session
+            .settings
+            .load_layer(
+                deco_config::Scope::User,
+                r#"{ "editor.semanticHighlighting.enabled": false }"#,
+            )
+            .unwrap();
+        let gutter = gutter_width(&session);
+        let colours = foregrounds(&render(&session, 40, 5));
+        assert_eq!(
+            colours[gutter + 4],
+            styled(&session, deco_syntax::scopes::TYPE),
+            "the lexer's answer should stand when the setting is off"
+        );
+    }
+
+    #[test]
+    fn an_unrecognised_setting_value_behaves_as_the_default() {
+        // A misspelling should not silently disable a feature.
+        let mut session = session("let x = 1;\n");
+        session
+            .settings
+            .load_layer(
+                deco_config::Scope::User,
+                r#"{ "editor.semanticHighlighting.enabled": "configuredByThyme" }"#,
+            )
+            .unwrap();
+        assert_eq!(
+            semantic_highlighting(&session),
+            session.theme.semantic_highlighting()
+        );
+    }
+
+    #[test]
+    fn the_setting_defers_to_the_theme_when_absent() {
+        let session = session("let x = 1;\n");
+        assert_eq!(
+            semantic_highlighting(&session),
+            session.theme.semantic_highlighting()
+        );
     }
 
     // ---- The tab bar ------------------------------------------------------

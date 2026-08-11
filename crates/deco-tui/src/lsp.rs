@@ -67,6 +67,10 @@ pub struct Lsp {
     definition_request: Option<RequestId>,
     /// The outstanding `textDocument/references` request, if any.
     references_request: Option<RequestId>,
+    /// The outstanding `semanticTokens/full` request, if any.
+    semantic_request: Option<RequestId>,
+    /// A fingerprint of the text last sent to the server.
+    sent: Option<u64>,
     /// The completion list on screen, if one is open.
     suggest: Option<Suggest>,
     /// The completion request in flight.
@@ -106,6 +110,19 @@ impl ShownHover {
 
 /// Where the word under the cursor begins.
 ///
+/// A cheap fingerprint of a document's text.
+///
+/// Only ever compared with another fingerprint of the same document, so a
+/// collision would have to be between two states of one file — and the cost of
+/// one is a redundant `didChange`, not a wrong result. `DefaultHasher` rather
+/// than a real digest because this is a change detector, not a checksum.
+fn fingerprint(text: &str) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
+}
+
 /// `path` relative to `root` when it is inside it, and whole otherwise.
 ///
 /// A references list is mostly locations in the workspace, and
@@ -197,6 +214,8 @@ impl Lsp {
             hover_request: None,
             definition_request: None,
             references_request: None,
+            semantic_request: None,
+            sent: None,
             suggest: None,
             completion_request: None,
             format_request: None,
@@ -447,6 +466,29 @@ impl Lsp {
         }
     }
 
+    /// Asks the server to classify the whole document.
+    ///
+    /// Skipped while an answer is outstanding: a request per keystroke would queue
+    /// classifications of text that has already changed, and the newest answer is
+    /// the only one worth having. The lexer's colouring stands in the meantime,
+    /// which is why the delay is not visible as an absence of colour.
+    pub fn request_semantic_tokens(&mut self, session: &mut Session) {
+        if self.semantic_request.is_some() {
+            return;
+        }
+        let (Some(path), Some(supervisor)) =
+            (session.document.path.clone(), self.supervisor.as_mut())
+        else {
+            return;
+        };
+        // Silent: this is a refinement nobody asked for by pressing a key, so a
+        // status line about it would be noise, and a server that does not offer it
+        // is not a problem to report.
+        if let Ok(Some(id)) = supervisor.semantic_tokens(&path) {
+            self.semantic_request = Some(id);
+        }
+    }
+
     /// Requests everything that refers to whatever is under the cursor.
     pub fn request_references(&mut self, session: &mut Session) {
         let (Some(path), Some(supervisor)) =
@@ -620,7 +662,11 @@ impl Lsp {
         }
         let text = session.document.buffer.text();
         match supervisor.did_open(path, language, &text) {
-            Ok(()) => self.open = Some(path.to_owned()),
+            Ok(()) => {
+                self.open = Some(path.to_owned());
+                self.sent = Some(fingerprint(&text));
+                self.request_semantic_tokens(session);
+            }
             Err(error) => self.report(session, error.to_string()),
         }
     }
@@ -643,9 +689,28 @@ impl Lsp {
             return;
         }
         let text = session.document.buffer.text();
+
+        // The event loop calls this after every keypress, most of which move the
+        // cursor without touching the text. A fingerprint tells the two apart, so
+        // an arrow key no longer sends the whole document — and, more visibly, no
+        // longer throws away a classification that is still correct.
+        let fingerprint = fingerprint(&text);
+        if self.sent == Some(fingerprint) {
+            return;
+        }
+        self.sent = Some(fingerprint);
+
+        // The old classification described the text before this edit. Dropped
+        // rather than kept until the answer arrives: a token list applied to
+        // shifted text colours the wrong words, which is worse than the lexer's
+        // colouring alone for the moment it takes to answer.
+        session.semantic_tokens.clear();
+
         if let Err(error) = supervisor.did_change(&path, &[], &text) {
             self.report(session, error.to_string());
+            return;
         }
+        self.request_semantic_tokens(session);
     }
 
     /// Tells the server the document was saved.
@@ -714,6 +779,7 @@ impl Lsp {
                     self.hover_request = None;
                     self.definition_request = None;
                     self.references_request = None;
+                    self.semantic_request = None;
                     self.suggest = None;
                     self.completion_request = None;
                     self.format_request = None;
@@ -750,6 +816,7 @@ impl Lsp {
                 } => {
                     if self.references_request.as_ref() == Some(&id) {
                         self.references_request = None;
+                        self.semantic_request = None;
                         self.offer_locations(session, &locations);
                         changed = true;
                         continue;
@@ -759,7 +826,18 @@ impl Lsp {
                     }
                     self.definition_request = None;
                     self.references_request = None;
+                    self.semantic_request = None;
                     changed |= self.go_to(session, &method, &locations);
+                }
+                Update::SemanticTokens { id, spans } => {
+                    // Only the outstanding request: an earlier classification
+                    // describes text the user has since edited.
+                    if self.semantic_request.as_ref() != Some(&id) {
+                        continue;
+                    }
+                    self.semantic_request = None;
+                    session.semantic_tokens = spans;
+                    changed = true;
                 }
                 Update::Completion {
                     id,
@@ -1006,6 +1084,7 @@ impl Lsp {
         self.hover_request = None;
         self.definition_request = None;
         self.references_request = None;
+        self.semantic_request = None;
         self.suggest = None;
         self.completion_request = None;
         self.format_request = None;

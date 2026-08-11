@@ -635,6 +635,95 @@ impl TextEdit {
     }
 }
 
+/// One semantically classified run of text.
+///
+/// Positions are already absolute and in the negotiated encoding, so a caller
+/// compares one against a cursor without knowing anything about the wire format.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticSpan {
+    /// Where the run is. A token never spans lines, per the specification.
+    pub range: Range,
+    /// The token type, resolved through the server's legend — `variable`,
+    /// `function`, `namespace`.
+    pub token_type: String,
+    /// The modifiers, resolved through the legend — `readonly`, `declaration`.
+    pub modifiers: Vec<String>,
+}
+
+/// Parameters for `textDocument/semanticTokens/full`.
+pub fn semantic_tokens_params(uri: &crate::uri::Uri) -> serde_json::Value {
+    serde_json::json!({ "textDocument": { "uri": uri.as_str() } })
+}
+
+/// Reads a `SemanticTokens` result into absolute spans.
+///
+/// # The encoding, and why this is worth testing carefully
+///
+/// The wire format is one flat array of integers in groups of five:
+/// `deltaLine`, `deltaStart`, `length`, `tokenType`, `tokenModifiers`. Every
+/// number is relative to the token before it — `deltaStart` counts from the
+/// previous token's start *when they share a line*, and from the start of the
+/// line otherwise. Losing that distinction shifts every token after the first on
+/// each line, which colours the wrong words rather than failing visibly.
+///
+/// `tokenModifiers` is a bitset over the legend's modifier list, not an index.
+///
+/// A group whose type index is not in the legend is dropped: colouring by index
+/// would mean colouring by whatever position that server happened to use.
+pub fn semantic_spans_from_json(
+    value: &serde_json::Value,
+    legend: &crate::capabilities::SemanticTokensOptions,
+) -> Vec<SemanticSpan> {
+    let Some(data) = value.get("data").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+
+    let mut spans = Vec::new();
+    let mut line = 0u32;
+    let mut start = 0u32;
+    // `chunks_exact` rather than `chunks`: a trailing partial group is a broken
+    // response, and guessing at its missing fields would invent a token.
+    for group in data.chunks_exact(5) {
+        let numbers: Vec<u32> = group
+            .iter()
+            .map(|n| n.as_u64().unwrap_or(0) as u32)
+            .collect();
+        let (delta_line, delta_start, length, kind, modifiers) =
+            (numbers[0], numbers[1], numbers[2], numbers[3], numbers[4]);
+
+        line += delta_line;
+        start = if delta_line == 0 {
+            start + delta_start
+        } else {
+            delta_start
+        };
+
+        let Some(token_type) = legend.token_types.get(kind as usize) else {
+            continue;
+        };
+        // A zero-length token has nothing to colour, and a range whose end equals
+        // its start would be dropped by the renderer anyway.
+        if length == 0 {
+            continue;
+        }
+        spans.push(SemanticSpan {
+            range: Range::new(
+                Position::new(line, start),
+                Position::new(line, start + length),
+            ),
+            token_type: token_type.clone(),
+            modifiers: legend
+                .token_modifiers
+                .iter()
+                .enumerate()
+                .filter(|(bit, _)| modifiers & (1 << bit) != 0)
+                .map(|(_, name)| name.clone())
+                .collect(),
+        });
+    }
+    spans
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1224,6 +1313,135 @@ mod tests {
     fn a_non_array_formatting_result_is_no_edits_rather_than_a_panic() {
         for value in [json!({}), json!("nonsense"), json!(7)] {
             assert!(TextEdit::list_from_json(&value).is_empty(), "{value}");
+        }
+    }
+
+    // ---- Semantic tokens --------------------------------------------------
+
+    fn legend() -> crate::capabilities::SemanticTokensOptions {
+        crate::capabilities::SemanticTokensOptions {
+            token_types: vec![
+                "namespace".to_owned(),
+                "function".to_owned(),
+                "variable".to_owned(),
+            ],
+            token_modifiers: vec![
+                "declaration".to_owned(),
+                "readonly".to_owned(),
+                "static".to_owned(),
+            ],
+        }
+    }
+
+    #[test]
+    fn a_single_token_decodes_to_an_absolute_range() {
+        let spans = semantic_spans_from_json(&json!({ "data": [2, 4, 6, 1, 0] }), &legend());
+        assert_eq!(
+            spans,
+            vec![SemanticSpan {
+                range: Range::new(Position::new(2, 4), Position::new(2, 10)),
+                token_type: "function".to_owned(),
+                modifiers: Vec::new(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_second_token_on_the_same_line_counts_from_the_first() {
+        // The distinction that matters: `deltaStart` is relative to the previous
+        // token when they share a line. Reading it as relative to the line start
+        // would put this token at column 3 instead of 8.
+        let spans = semantic_spans_from_json(
+            &json!({ "data": [0, 5, 2, 2, 0, 0, 3, 4, 2, 0] }),
+            &legend(),
+        );
+        assert_eq!(spans[0].range.start, Position::new(0, 5));
+        assert_eq!(spans[1].range.start, Position::new(0, 8));
+        assert_eq!(spans[1].range.end, Position::new(0, 12));
+    }
+
+    #[test]
+    fn a_token_on_a_later_line_counts_from_the_line_start() {
+        let spans = semantic_spans_from_json(
+            &json!({ "data": [0, 9, 2, 2, 0, 1, 3, 2, 2, 0] }),
+            &legend(),
+        );
+        assert_eq!(spans[0].range.start, Position::new(0, 9));
+        // Not 12: a new line resets the column origin.
+        assert_eq!(spans[1].range.start, Position::new(1, 3));
+    }
+
+    #[test]
+    fn lines_accumulate_across_tokens() {
+        let spans = semantic_spans_from_json(
+            &json!({ "data": [1, 0, 1, 2, 0, 2, 0, 1, 2, 0, 3, 0, 1, 2, 0] }),
+            &legend(),
+        );
+        let lines: Vec<u32> = spans.iter().map(|s| s.range.start.line).collect();
+        assert_eq!(lines, vec![1, 3, 6]);
+    }
+
+    #[test]
+    fn modifiers_are_read_as_a_bitset_not_an_index() {
+        // `5` is bits 0 and 2 — `declaration` and `static` — and emphatically not
+        // the legend's fifth entry, which does not exist.
+        let spans = semantic_spans_from_json(&json!({ "data": [0, 0, 3, 2, 5] }), &legend());
+        assert_eq!(spans[0].modifiers, vec!["declaration", "static"]);
+    }
+
+    #[test]
+    fn no_modifier_bits_means_no_modifiers() {
+        let spans = semantic_spans_from_json(&json!({ "data": [0, 0, 3, 2, 0] }), &legend());
+        assert!(spans[0].modifiers.is_empty());
+    }
+
+    #[test]
+    fn a_modifier_bit_with_no_name_is_ignored() {
+        // Bit 7 is beyond this legend. Inventing a name for it would be worse than
+        // dropping it, and the token itself is still usable.
+        let spans = semantic_spans_from_json(&json!({ "data": [0, 0, 3, 2, 128] }), &legend());
+        assert!(spans[0].modifiers.is_empty());
+        assert_eq!(spans[0].token_type, "variable");
+    }
+
+    #[test]
+    fn a_type_outside_the_legend_is_dropped_rather_than_guessed() {
+        let spans = semantic_spans_from_json(&json!({ "data": [0, 0, 3, 99, 0] }), &legend());
+        assert!(spans.is_empty());
+    }
+
+    #[test]
+    fn a_dropped_token_still_advances_the_position() {
+        // The deltas are relative to the previous *group*, not the previous
+        // accepted span, so skipping one must not shift the next.
+        let spans = semantic_spans_from_json(
+            &json!({ "data": [0, 2, 3, 99, 0, 0, 4, 3, 2, 0] }),
+            &legend(),
+        );
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].range.start, Position::new(0, 6));
+    }
+
+    #[test]
+    fn a_zero_length_token_is_dropped() {
+        let spans = semantic_spans_from_json(&json!({ "data": [0, 4, 0, 2, 0] }), &legend());
+        assert!(spans.is_empty());
+    }
+
+    #[test]
+    fn a_trailing_partial_group_is_ignored() {
+        // A broken response. Guessing at the missing fields would invent a token.
+        let spans = semantic_spans_from_json(&json!({ "data": [0, 0, 3, 2, 0, 0, 4] }), &legend());
+        assert_eq!(spans.len(), 1);
+    }
+
+    #[test]
+    fn an_answer_with_no_data_is_empty_rather_than_an_error() {
+        for value in [json!({}), json!({ "data": [] }), json!(null), json!("no")] {
+            assert!(
+                semantic_spans_from_json(&value, &legend()).is_empty(),
+                "{value}"
+            );
         }
     }
 }
