@@ -19,4 +19,4 @@ pub use commands::{Clipboard, Context, MemoryClipboard, Outcome};
 pub use document::{Document, View};
 pub use find::Find;
 pub use prompt::{Prompt, PromptKind};
-pub use session::Session;
+pub use session::{Pane, Session};
