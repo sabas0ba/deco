@@ -19,6 +19,7 @@
 </style>
 <rect width="670" height="316" rx="6" fill="#1f1f1f"/>
 <g class="s s0">
+<rect width="670" height="316" rx="6" fill="#1f1f1f"/>
 <rect x="12.0" y="12.0" width="76.5" height="19.0" fill="#181818"/>
 <text x="12.0" y="26.0" font-size="14px" fill="#cccccc" textLength="76.5" lengthAdjust="spacingAndGlyphs"> main.rs </text>
 <text x="88.5" y="26.0" font-size="14px" fill="#cccccc" textLength="68.0" lengthAdjust="spacingAndGlyphs"> lib.rs </text>
@@ -49,6 +50,7 @@
 <text class="c" x="12.0" y="296.0">two files open, neither edited</text>
 </g>
 <g class="s s1">
+<rect width="670" height="316" rx="6" fill="#1f1f1f"/>
 <rect x="12.0" y="12.0" width="76.5" height="19.0" fill="#181818"/>
 <text x="12.0" y="26.0" font-size="14px" fill="#cccccc" textLength="76.5" lengthAdjust="spacingAndGlyphs"> main.rs </text>
 <text x="88.5" y="26.0" font-size="14px" fill="#cccccc" textLength="76.5" lengthAdjust="spacingAndGlyphs"> lib.rs* </text>
@@ -80,6 +82,7 @@
 <text class="c" x="12.0" y="296.0">type “ // three”</text>
 </g>
 <g class="s s2">
+<rect width="670" height="316" rx="6" fill="#1f1f1f"/>
 <text x="12.0" y="26.0" font-size="14px" fill="#cccccc" textLength="76.5" lengthAdjust="spacingAndGlyphs"> main.rs </text>
 <rect x="88.5" y="12.0" width="76.5" height="19.0" fill="#181818"/>
 <text x="88.5" y="26.0" font-size="14px" fill="#cccccc" textLength="76.5" lengthAdjust="spacingAndGlyphs"> lib.rs* </text>
@@ -108,6 +111,7 @@
 <text class="c" x="12.0" y="296.0">ctrl+tab</text>
 </g>
 <g class="s s3">
+<rect width="670" height="316" rx="6" fill="#1f1f1f"/>
 <text x="12.0" y="26.0" font-size="14px" fill="#cccccc" textLength="85.0" lengthAdjust="spacingAndGlyphs"> main.rs* </text>
 <rect x="97.0" y="12.0" width="76.5" height="19.0" fill="#181818"/>
 <text x="97.0" y="26.0" font-size="14px" fill="#cccccc" textLength="76.5" lengthAdjust="spacingAndGlyphs"> lib.rs* </text>
@@ -137,6 +141,7 @@
 <text class="c" x="12.0" y="296.0">type “mut ”</text>
 </g>
 <g class="s s4">
+<rect width="670" height="316" rx="6" fill="#1f1f1f"/>
 <text x="12.0" y="26.0" font-size="14px" fill="#cccccc" textLength="85.0" lengthAdjust="spacingAndGlyphs"> main.rs* </text>
 <rect x="97.0" y="12.0" width="76.5" height="19.0" fill="#181818"/>
 <text x="97.0" y="26.0" font-size="14px" fill="#cccccc" textLength="76.5" lengthAdjust="spacingAndGlyphs"> lib.rs* </text>
@@ -166,6 +171,7 @@
 <text class="c" x="12.0" y="296.0">two tabs edited — the bar marks both</text>
 </g>
 <g class="s s5">
+<rect width="670" height="316" rx="6" fill="#1f1f1f"/>
 <text x="12.0" y="26.0" font-size="14px" fill="#cccccc" textLength="76.5" lengthAdjust="spacingAndGlyphs"> main.rs </text>
 <rect x="88.5" y="12.0" width="68.0" height="19.0" fill="#181818"/>
 <text x="88.5" y="26.0" font-size="14px" fill="#cccccc" textLength="68.0" lengthAdjust="spacingAndGlyphs"> lib.rs </text>

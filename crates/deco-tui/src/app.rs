@@ -137,6 +137,20 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
                         save(session, path.as_ref())?;
                         lsp.saved(session);
                     }
+                    // The picker named a theme; reading it is this side's job.
+                    Outcome::LoadTheme { label, path } => {
+                        match load_theme(&label, path.as_deref()) {
+                            Ok(theme) => {
+                                if let Outcome::Message(report) = session.set_theme(theme) {
+                                    session.status = Some(report);
+                                }
+                            }
+                            Err(error) => {
+                                session.status = Some(error.clone());
+                                session.problems.push(error);
+                            }
+                        }
+                    }
                     Outcome::SaveAll => {
                         // The loop and the reporting are the core's; only the
                         // write is this side's, because only this side has a
@@ -178,6 +192,12 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
                         "editor.action.revealDefinition" => lsp.request_definition(session),
                         "editor.action.goToReferences" => lsp.request_references(session),
                         "workbench.action.gotoSymbol" => lsp.request_document_symbols(session),
+                        // The extension directories have to be walked from here,
+                        // for the same reason the file list is.
+                        "workbench.action.selectTheme" => {
+                            let available = crate::themes::list(&extension_roots());
+                            session.offer_themes(crate::themes::rows(&available));
+                        }
                         "closeHoverWidget" => lsp.dismiss_hover(),
                         "editor.action.triggerSuggest" => lsp.request_completion(
                             session,
@@ -322,6 +342,7 @@ pub fn frontend_commands() -> Vec<deco_editor::commands::PaletteEntry> {
         ("editor.action.revealDefinition", "Go to Definition"),
         ("editor.action.goToReferences", "Go to References"),
         ("workbench.action.gotoSymbol", "Go to Symbol in Editor"),
+        ("workbench.action.selectTheme", "Color Theme"),
         ("editor.action.triggerSuggest", "Trigger Suggest"),
         ("editor.action.formatDocument", "Format Document"),
         ("editor.action.formatSelection", "Format Selection"),
@@ -385,6 +406,39 @@ fn workspace_root(path: Option<&Path>) -> Option<PathBuf> {
         std::env::current_dir().ok()?.join(path)
     };
     absolute.parent().map(Path::to_path_buf)
+}
+
+/// Every directory that may hold installed extensions.
+///
+/// deco's own and VS Code's, so a theme installed for VS Code is offered here
+/// without being copied — the same one-way borrowing that applies to settings.
+fn extension_roots() -> Vec<PathBuf> {
+    let env = deco_config::paths::Env::from_process();
+    let layout = deco_config::paths::Layout::host();
+    [
+        deco_config::paths::ConfigPaths::deco(&env, layout),
+        deco_config::paths::ConfigPaths::vscode(&env, layout),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|paths| paths.extensions)
+    .collect()
+}
+
+/// Loads the theme a picker chose, built-in or from a file.
+///
+/// The label is enough for a built-in; a contributed theme needs its file, whose
+/// `include` chain `deco-theme` follows.
+fn load_theme(
+    label: &str,
+    path: Option<&Path>,
+) -> std::result::Result<deco_theme::ColorTheme, String> {
+    match path {
+        Some(path) => deco_theme::ColorTheme::load_from_file(path)
+            .map_err(|error| format!("could not load `{label}`: {error}")),
+        None => deco_theme::defaults::builtin(label)
+            .ok_or_else(|| format!("`{label}` is not a theme deco ships with")),
+    }
 }
 
 /// Writes `contents` to `path`, describing the failure in a form fit to show.

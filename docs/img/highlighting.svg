@@ -17,6 +17,7 @@
 </style>
 <rect width="670" height="316" rx="6" fill="#1f1f1f"/>
 <g class="s s0">
+<rect width="670" height="316" rx="6" fill="#1f1f1f"/>
 <text x="12.0" y="26.0" font-size="14px" fill="#cccccc" textLength="34.0" lengthAdjust="spacingAndGlyphs">  1 </text>
 <text x="46.0" y="26.0" font-size="14px" fill="#6a9955" textLength="144.5" lengthAdjust="spacingAndGlyphs">// A Rust sample.</text>
 <text x="12.0" y="45.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  2 </text>
@@ -53,6 +54,7 @@
 <text class="c" x="12.0" y="296.0">main.rs — colours come from the theme</text>
 </g>
 <g class="s s1">
+<rect width="670" height="316" rx="6" fill="#1f1f1f"/>
 <rect x="12.0" y="12.0" width="76.5" height="19.0" fill="#181818"/>
 <text x="12.0" y="26.0" font-size="14px" fill="#cccccc" textLength="76.5" lengthAdjust="spacingAndGlyphs"> main.rs </text>
 <text x="88.5" y="26.0" font-size="14px" fill="#cccccc" textLength="68.0" lengthAdjust="spacingAndGlyphs"> app.ts </text>
@@ -90,6 +92,7 @@
 <text class="c" x="12.0" y="296.0">app.ts</text>
 </g>
 <g class="s s2">
+<rect width="670" height="316" rx="6" fill="#1f1f1f"/>
 <rect x="12.0" y="12.0" width="76.5" height="19.0" fill="#181818"/>
 <text x="12.0" y="26.0" font-size="14px" fill="#cccccc" textLength="76.5" lengthAdjust="spacingAndGlyphs"> main.rs </text>
 <rect x="88.5" y="12.0" width="68.0" height="19.0" fill="#181818"/>
@@ -137,6 +140,7 @@
 <text class="c" x="12.0" y="296.0">script.py</text>
 </g>
 <g class="s s3">
+<rect width="670" height="316" rx="6" fill="#1f1f1f"/>
 <rect x="12.0" y="12.0" width="76.5" height="19.0" fill="#181818"/>
 <text x="12.0" y="26.0" font-size="14px" fill="#cccccc" textLength="76.5" lengthAdjust="spacingAndGlyphs"> main.rs </text>
 <rect x="88.5" y="12.0" width="68.0" height="19.0" fill="#181818"/>
@@ -171,6 +175,7 @@
 <text class="c" x="12.0" y="296.0">config.toml</text>
 </g>
 <g class="s s4">
+<rect width="670" height="316" rx="6" fill="#1f1f1f"/>
 <rect x="12.0" y="12.0" width="76.5" height="19.0" fill="#181818"/>
 <text x="12.0" y="26.0" font-size="14px" fill="#cccccc" textLength="76.5" lengthAdjust="spacingAndGlyphs"> main.rs </text>
 <rect x="88.5" y="12.0" width="68.0" height="19.0" fill="#181818"/>

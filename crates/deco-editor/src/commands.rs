@@ -59,6 +59,18 @@ pub enum Outcome {
     Frontend(String),
     /// The document should be written to disk.
     Save,
+    /// The frontend should load this colour theme and hand it back with
+    /// [`Session::set_theme`](crate::Session::set_theme).
+    ///
+    /// Named rather than loaded here for the usual reason: a theme that lives in
+    /// an extension directory is a file, and the core has no filesystem.
+    LoadTheme {
+        /// What it is called, for reporting and for the `workbench.colorTheme`
+        /// setting that would make the choice stick.
+        label: String,
+        /// The file to read, or `None` for a theme compiled in.
+        path: Option<std::path::PathBuf>,
+    },
     /// Every unsaved document should be written to disk.
     ///
     /// Names no paths and no bytes, for the same reason [`Outcome::Save`] does not:
@@ -208,9 +220,6 @@ pub const PENDING: &[(&str, &str)] = &[
     // Needs a file dialog, or a path prompt standing in for one.
     ("workbench.action.files.openFile", "Open File"),
     ("workbench.action.files.openFolder", "Open Folder"),
-    // Needs a picker over the installed themes, and a reload that re-resolves
-    // every colour already drawn.
-    ("workbench.action.selectTheme", "Color Theme"),
     // Needs an editor for a file deco reads but never writes.
     ("workbench.action.openSettings", "Open Settings"),
     (

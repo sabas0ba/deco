@@ -4,29 +4,27 @@
   text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "DejaVu Sans Mono", monospace; white-space: pre }
   .s { opacity: 0 }
   .c { font-size: 13px; fill: #8a8a8a }
-  .s0 { animation: s0 10.45s step-end infinite }
-  @keyframes s0 { 0% { opacity: 1 } 10.526% { opacity: 0 } }
-  .s1 { animation: s1 10.45s step-end infinite }
-  @keyframes s1 { 0% { opacity: 0 } 10.526% { opacity: 1 } 15.789% { opacity: 0 } }
-  .s2 { animation: s2 10.45s step-end infinite }
-  @keyframes s2 { 0% { opacity: 0 } 15.789% { opacity: 1 } 31.579% { opacity: 0 } }
-  .s3 { animation: s3 10.45s step-end infinite }
-  @keyframes s3 { 0% { opacity: 0 } 31.579% { opacity: 1 } 47.368% { opacity: 0 } }
-  .s4 { animation: s4 10.45s step-end infinite }
-  @keyframes s4 { 0% { opacity: 0 } 47.368% { opacity: 1 } 63.158% { opacity: 0 } }
-  .s5 { animation: s5 10.45s step-end infinite }
-  @keyframes s5 { 0% { opacity: 0 } 63.158% { opacity: 1 } 84.211% { opacity: 0 } }
-  .s6 { animation: s6 10.45s step-end infinite }
-  @keyframes s6 { 0% { opacity: 0 } 84.211% { opacity: 1 } 100.000% { opacity: 0 } }
+  .s0 { animation: s0 12.10s step-end infinite }
+  @keyframes s0 { 0% { opacity: 1 } 22.727% { opacity: 0 } }
+  .s1 { animation: s1 12.10s step-end infinite }
+  @keyframes s1 { 0% { opacity: 0 } 22.727% { opacity: 1 } 27.273% { opacity: 0 } }
+  .s2 { animation: s2 12.10s step-end infinite }
+  @keyframes s2 { 0% { opacity: 0 } 27.273% { opacity: 1 } 31.818% { opacity: 0 } }
+  .s3 { animation: s3 12.10s step-end infinite }
+  @keyframes s3 { 0% { opacity: 0 } 31.818% { opacity: 1 } 59.091% { opacity: 0 } }
+  .s4 { animation: s4 12.10s step-end infinite }
+  @keyframes s4 { 0% { opacity: 0 } 59.091% { opacity: 1 } 72.727% { opacity: 0 } }
+  .s5 { animation: s5 12.10s step-end infinite }
+  @keyframes s5 { 0% { opacity: 0 } 72.727% { opacity: 1 } 100.000% { opacity: 0 } }
 </style>
 <rect width="670" height="316" rx="6" fill="#1f1f1f"/>
 <g class="s s0">
 <rect width="670" height="316" rx="6" fill="#1f1f1f"/>
-<text x="12.0" y="26.0" font-size="14px" fill="#cccccc" textLength="34.0" lengthAdjust="spacingAndGlyphs">  1 </text>
+<text x="12.0" y="26.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  1 </text>
 <text x="46.0" y="26.0" font-size="14px" fill="#c586c0" textLength="17.0" lengthAdjust="spacingAndGlyphs">fn</text>
 <text x="71.5" y="26.0" font-size="14px" fill="#dcdcaa" textLength="34.0" lengthAdjust="spacingAndGlyphs">main</text>
 <text x="105.5" y="26.0" font-size="14px" fill="#cccccc" textLength="552.5" lengthAdjust="spacingAndGlyphs">() {                                                             </text>
-<text x="12.0" y="45.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  2 </text>
+<text x="12.0" y="45.0" font-size="14px" fill="#cccccc" textLength="34.0" lengthAdjust="spacingAndGlyphs">  2 </text>
 <text x="80.0" y="45.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
 <text x="105.5" y="45.0" font-size="14px" fill="#cccccc" textLength="76.5" lengthAdjust="spacingAndGlyphs"> total = </text>
 <text x="182.0" y="45.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">1</text>
@@ -44,17 +42,17 @@
 <text x="46.0" y="102.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">}                                                                       </text>
 <text x="12.0" y="121.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  6 </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                                  rust  Ln 1, Col 1 </text>
-<rect x="46.0" y="12.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
-<text class="c" x="12.0" y="296.0">press ctrl+f to search the open file</text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                                  rust  Ln 2, Col 9 </text>
+<rect x="114.0" y="31.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
+<text class="c" x="12.0" y="296.0">Default Dark Modern</text>
 </g>
 <g class="s s1">
 <rect width="670" height="316" rx="6" fill="#1f1f1f"/>
-<text x="12.0" y="26.0" font-size="14px" fill="#cccccc" textLength="34.0" lengthAdjust="spacingAndGlyphs">  1 </text>
+<text x="12.0" y="26.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  1 </text>
 <text x="46.0" y="26.0" font-size="14px" fill="#c586c0" textLength="17.0" lengthAdjust="spacingAndGlyphs">fn</text>
 <text x="71.5" y="26.0" font-size="14px" fill="#dcdcaa" textLength="34.0" lengthAdjust="spacingAndGlyphs">main</text>
 <text x="105.5" y="26.0" font-size="14px" fill="#cccccc" textLength="552.5" lengthAdjust="spacingAndGlyphs">() {                                                             </text>
-<text x="12.0" y="45.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  2 </text>
+<text x="12.0" y="45.0" font-size="14px" fill="#cccccc" textLength="34.0" lengthAdjust="spacingAndGlyphs">  2 </text>
 <text x="80.0" y="45.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
 <text x="105.5" y="45.0" font-size="14px" fill="#cccccc" textLength="76.5" lengthAdjust="spacingAndGlyphs"> total = </text>
 <text x="182.0" y="45.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">1</text>
@@ -71,12 +69,10 @@
 <text x="12.0" y="102.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  5 </text>
 <text x="46.0" y="102.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">}                                                                       </text>
 <text x="12.0" y="121.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  6 </text>
-<rect x="12.0" y="240.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="254.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Find:                                                              [aa ww] </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                                  rust  Ln 1, Col 1 </text>
-<rect x="71.5" y="240.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
-<text class="c" x="12.0" y="296.0">ctrl+f</text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> ctrl+k was pressed. Waiting for the second key…          rust  Ln 2, Col 9 </text>
+<rect x="114.0" y="31.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
+<text class="c" x="12.0" y="296.0">ctrl+k</text>
 </g>
 <g class="s s2">
 <rect width="670" height="316" rx="6" fill="#1f1f1f"/>
@@ -85,13 +81,11 @@
 <text x="71.5" y="26.0" font-size="14px" fill="#dcdcaa" textLength="34.0" lengthAdjust="spacingAndGlyphs">main</text>
 <text x="105.5" y="26.0" font-size="14px" fill="#cccccc" textLength="552.5" lengthAdjust="spacingAndGlyphs">() {                                                             </text>
 <text x="12.0" y="45.0" font-size="14px" fill="#cccccc" textLength="34.0" lengthAdjust="spacingAndGlyphs">  2 </text>
-<rect x="80.0" y="31.0" width="25.5" height="19.0" fill="#9e6a03"/>
 <text x="80.0" y="45.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
 <text x="105.5" y="45.0" font-size="14px" fill="#cccccc" textLength="76.5" lengthAdjust="spacingAndGlyphs"> total = </text>
 <text x="182.0" y="45.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">1</text>
 <text x="190.5" y="45.0" font-size="14px" fill="#cccccc" textLength="467.5" lengthAdjust="spacingAndGlyphs">;                                                      </text>
 <text x="12.0" y="64.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  3 </text>
-<rect x="80.0" y="50.0" width="25.5" height="19.0" fill="#623314"/>
 <text x="80.0" y="64.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
 <text x="105.5" y="64.0" font-size="14px" fill="#cccccc" textLength="76.5" lengthAdjust="spacingAndGlyphs"> count = </text>
 <text x="182.0" y="64.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">2</text>
@@ -103,12 +97,10 @@
 <text x="12.0" y="102.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  5 </text>
 <text x="46.0" y="102.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">}                                                                       </text>
 <text x="12.0" y="121.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  6 </text>
-<rect x="12.0" y="240.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="254.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Find: let                                                   1 of 2 [aa ww] </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                                  rust  Ln 2, Col 8 </text>
-<rect x="97.0" y="240.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
-<text class="c" x="12.0" y="296.0">type “let”</text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                                  rust  Ln 2, Col 9 </text>
+<rect x="114.0" y="31.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
+<text class="c" x="12.0" y="296.0">ctrl+t</text>
 </g>
 <g class="s s3">
 <rect width="670" height="316" rx="6" fill="#1f1f1f"/>
@@ -116,14 +108,12 @@
 <text x="46.0" y="26.0" font-size="14px" fill="#c586c0" textLength="17.0" lengthAdjust="spacingAndGlyphs">fn</text>
 <text x="71.5" y="26.0" font-size="14px" fill="#dcdcaa" textLength="34.0" lengthAdjust="spacingAndGlyphs">main</text>
 <text x="105.5" y="26.0" font-size="14px" fill="#cccccc" textLength="552.5" lengthAdjust="spacingAndGlyphs">() {                                                             </text>
-<text x="12.0" y="45.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  2 </text>
-<rect x="80.0" y="31.0" width="25.5" height="19.0" fill="#623314"/>
+<text x="12.0" y="45.0" font-size="14px" fill="#cccccc" textLength="34.0" lengthAdjust="spacingAndGlyphs">  2 </text>
 <text x="80.0" y="45.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
 <text x="105.5" y="45.0" font-size="14px" fill="#cccccc" textLength="76.5" lengthAdjust="spacingAndGlyphs"> total = </text>
 <text x="182.0" y="45.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">1</text>
 <text x="190.5" y="45.0" font-size="14px" fill="#cccccc" textLength="467.5" lengthAdjust="spacingAndGlyphs">;                                                      </text>
-<text x="12.0" y="64.0" font-size="14px" fill="#cccccc" textLength="34.0" lengthAdjust="spacingAndGlyphs">  3 </text>
-<rect x="80.0" y="50.0" width="25.5" height="19.0" fill="#9e6a03"/>
+<text x="12.0" y="64.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  3 </text>
 <text x="80.0" y="64.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
 <text x="105.5" y="64.0" font-size="14px" fill="#cccccc" textLength="76.5" lengthAdjust="spacingAndGlyphs"> count = </text>
 <text x="182.0" y="64.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">2</text>
@@ -135,12 +125,20 @@
 <text x="12.0" y="102.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  5 </text>
 <text x="46.0" y="102.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">}                                                                       </text>
 <text x="12.0" y="121.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  6 </text>
+<rect x="12.0" y="164.0" width="646.0" height="19.0" fill="#cccccc"/>
+<text x="12.0" y="178.0" font-size="14px" fill="#1f1f1f" textLength="646.0" lengthAdjust="spacingAndGlyphs">  Default Dark Modern                                                  dark </text>
+<rect x="12.0" y="183.0" width="646.0" height="19.0" fill="#181818"/>
+<text x="12.0" y="197.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs">  Default Light Modern                                                light </text>
+<rect x="12.0" y="202.0" width="646.0" height="19.0" fill="#181818"/>
+<text x="12.0" y="216.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs">  Night Owl                                                            dark </text>
+<rect x="12.0" y="221.0" width="646.0" height="19.0" fill="#181818"/>
+<text x="12.0" y="235.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs">  Paper                                                               light </text>
 <rect x="12.0" y="240.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="254.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Find: let                                                   2 of 2 [aa ww] </text>
+<text x="12.0" y="254.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Color theme:                                                      4 themes </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                                  rust  Ln 3, Col 8 </text>
-<rect x="97.0" y="240.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
-<text class="c" x="12.0" y="296.0">enter</text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                                  rust  Ln 2, Col 9 </text>
+<rect x="131.0" y="240.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
+<text class="c" x="12.0" y="296.0">dark or light is the second column</text>
 </g>
 <g class="s s4">
 <rect width="670" height="316" rx="6" fill="#1f1f1f"/>
@@ -149,13 +147,11 @@
 <text x="71.5" y="26.0" font-size="14px" fill="#dcdcaa" textLength="34.0" lengthAdjust="spacingAndGlyphs">main</text>
 <text x="105.5" y="26.0" font-size="14px" fill="#cccccc" textLength="552.5" lengthAdjust="spacingAndGlyphs">() {                                                             </text>
 <text x="12.0" y="45.0" font-size="14px" fill="#cccccc" textLength="34.0" lengthAdjust="spacingAndGlyphs">  2 </text>
-<rect x="80.0" y="31.0" width="25.5" height="19.0" fill="#9e6a03"/>
 <text x="80.0" y="45.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
 <text x="105.5" y="45.0" font-size="14px" fill="#cccccc" textLength="76.5" lengthAdjust="spacingAndGlyphs"> total = </text>
 <text x="182.0" y="45.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">1</text>
 <text x="190.5" y="45.0" font-size="14px" fill="#cccccc" textLength="467.5" lengthAdjust="spacingAndGlyphs">;                                                      </text>
 <text x="12.0" y="64.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  3 </text>
-<rect x="80.0" y="50.0" width="25.5" height="19.0" fill="#623314"/>
 <text x="80.0" y="64.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
 <text x="105.5" y="64.0" font-size="14px" fill="#cccccc" textLength="76.5" lengthAdjust="spacingAndGlyphs"> count = </text>
 <text x="182.0" y="64.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">2</text>
@@ -167,72 +163,41 @@
 <text x="12.0" y="102.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  5 </text>
 <text x="46.0" y="102.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">}                                                                       </text>
 <text x="12.0" y="121.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  6 </text>
+<rect x="12.0" y="221.0" width="646.0" height="19.0" fill="#cccccc"/>
+<text x="12.0" y="235.0" font-size="14px" fill="#1f1f1f" textLength="646.0" lengthAdjust="spacingAndGlyphs">  Default Light Modern                                                light </text>
 <rect x="12.0" y="240.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="254.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Find: let                                                   1 of 2 [aa ww] </text>
+<text x="12.0" y="254.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Color theme: light                                                 1 theme </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                                  rust  Ln 2, Col 8 </text>
-<rect x="97.0" y="240.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
-<text class="c" x="12.0" y="296.0">enter</text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                                  rust  Ln 2, Col 9 </text>
+<rect x="173.5" y="240.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
+<text class="c" x="12.0" y="296.0">type “light”</text>
 </g>
 <g class="s s5">
-<rect width="670" height="316" rx="6" fill="#1f1f1f"/>
+<rect width="670" height="316" rx="6" fill="#ffffff"/>
 <text x="12.0" y="26.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  1 </text>
-<text x="46.0" y="26.0" font-size="14px" fill="#c586c0" textLength="17.0" lengthAdjust="spacingAndGlyphs">fn</text>
-<text x="71.5" y="26.0" font-size="14px" fill="#dcdcaa" textLength="34.0" lengthAdjust="spacingAndGlyphs">main</text>
-<text x="105.5" y="26.0" font-size="14px" fill="#cccccc" textLength="552.5" lengthAdjust="spacingAndGlyphs">() {                                                             </text>
-<text x="12.0" y="45.0" font-size="14px" fill="#cccccc" textLength="34.0" lengthAdjust="spacingAndGlyphs">  2 </text>
-<rect x="80.0" y="31.0" width="25.5" height="19.0" fill="#9e6a03"/>
-<text x="80.0" y="45.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
-<text x="105.5" y="45.0" font-size="14px" fill="#cccccc" textLength="76.5" lengthAdjust="spacingAndGlyphs"> total = </text>
-<text x="182.0" y="45.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">1</text>
-<text x="190.5" y="45.0" font-size="14px" fill="#cccccc" textLength="467.5" lengthAdjust="spacingAndGlyphs">;                                                      </text>
+<text x="46.0" y="26.0" font-size="14px" fill="#af00db" textLength="17.0" lengthAdjust="spacingAndGlyphs">fn</text>
+<text x="71.5" y="26.0" font-size="14px" fill="#795e26" textLength="34.0" lengthAdjust="spacingAndGlyphs">main</text>
+<text x="105.5" y="26.0" font-size="14px" fill="#3b3b3b" textLength="552.5" lengthAdjust="spacingAndGlyphs">() {                                                             </text>
+<text x="12.0" y="45.0" font-size="14px" fill="#171184" textLength="34.0" lengthAdjust="spacingAndGlyphs">  2 </text>
+<text x="80.0" y="45.0" font-size="14px" fill="#af00db" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
+<text x="105.5" y="45.0" font-size="14px" fill="#3b3b3b" textLength="76.5" lengthAdjust="spacingAndGlyphs"> total = </text>
+<text x="182.0" y="45.0" font-size="14px" fill="#098658" textLength="8.5" lengthAdjust="spacingAndGlyphs">1</text>
+<text x="190.5" y="45.0" font-size="14px" fill="#3b3b3b" textLength="467.5" lengthAdjust="spacingAndGlyphs">;                                                      </text>
 <text x="12.0" y="64.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  3 </text>
-<rect x="80.0" y="50.0" width="25.5" height="19.0" fill="#623314"/>
-<text x="80.0" y="64.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
-<text x="105.5" y="64.0" font-size="14px" fill="#cccccc" textLength="76.5" lengthAdjust="spacingAndGlyphs"> count = </text>
-<text x="182.0" y="64.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">2</text>
-<text x="190.5" y="64.0" font-size="14px" fill="#cccccc" textLength="467.5" lengthAdjust="spacingAndGlyphs">;                                                      </text>
+<text x="80.0" y="64.0" font-size="14px" fill="#af00db" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
+<text x="105.5" y="64.0" font-size="14px" fill="#3b3b3b" textLength="76.5" lengthAdjust="spacingAndGlyphs"> count = </text>
+<text x="182.0" y="64.0" font-size="14px" fill="#098658" textLength="8.5" lengthAdjust="spacingAndGlyphs">2</text>
+<text x="190.5" y="64.0" font-size="14px" fill="#3b3b3b" textLength="467.5" lengthAdjust="spacingAndGlyphs">;                                                      </text>
 <text x="12.0" y="83.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  4 </text>
-<text x="46.0" y="83.0" font-size="14px" fill="#cccccc" textLength="110.5" lengthAdjust="spacingAndGlyphs">    println!(</text>
-<text x="156.5" y="83.0" font-size="14px" fill="#ce9178" textLength="76.5" lengthAdjust="spacingAndGlyphs">&quot;{total}&quot;</text>
-<text x="233.0" y="83.0" font-size="14px" fill="#cccccc" textLength="425.0" lengthAdjust="spacingAndGlyphs">);                                                </text>
+<text x="46.0" y="83.0" font-size="14px" fill="#3b3b3b" textLength="110.5" lengthAdjust="spacingAndGlyphs">    println!(</text>
+<text x="156.5" y="83.0" font-size="14px" fill="#a31515" textLength="76.5" lengthAdjust="spacingAndGlyphs">&quot;{total}&quot;</text>
+<text x="233.0" y="83.0" font-size="14px" fill="#3b3b3b" textLength="425.0" lengthAdjust="spacingAndGlyphs">);                                                </text>
 <text x="12.0" y="102.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  5 </text>
-<text x="46.0" y="102.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">}                                                                       </text>
+<text x="46.0" y="102.0" font-size="14px" fill="#3b3b3b" textLength="612.0" lengthAdjust="spacingAndGlyphs">}                                                                       </text>
 <text x="12.0" y="121.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  6 </text>
-<rect x="12.0" y="240.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="254.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Find: let                                                   1 of 2 [aa Ww] </text>
-<rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                                  rust  Ln 2, Col 8 </text>
-<rect x="97.0" y="240.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
-<text class="c" x="12.0" y="296.0">alt+w</text>
-</g>
-<g class="s s6">
-<rect width="670" height="316" rx="6" fill="#1f1f1f"/>
-<text x="12.0" y="26.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  1 </text>
-<text x="46.0" y="26.0" font-size="14px" fill="#c586c0" textLength="17.0" lengthAdjust="spacingAndGlyphs">fn</text>
-<text x="71.5" y="26.0" font-size="14px" fill="#dcdcaa" textLength="34.0" lengthAdjust="spacingAndGlyphs">main</text>
-<text x="105.5" y="26.0" font-size="14px" fill="#cccccc" textLength="552.5" lengthAdjust="spacingAndGlyphs">() {                                                             </text>
-<text x="12.0" y="45.0" font-size="14px" fill="#cccccc" textLength="34.0" lengthAdjust="spacingAndGlyphs">  2 </text>
-<rect x="80.0" y="31.0" width="25.5" height="19.0" fill="#264f78"/>
-<text x="80.0" y="45.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
-<text x="105.5" y="45.0" font-size="14px" fill="#cccccc" textLength="76.5" lengthAdjust="spacingAndGlyphs"> total = </text>
-<text x="182.0" y="45.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">1</text>
-<text x="190.5" y="45.0" font-size="14px" fill="#cccccc" textLength="467.5" lengthAdjust="spacingAndGlyphs">;                                                      </text>
-<text x="12.0" y="64.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  3 </text>
-<text x="80.0" y="64.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
-<text x="105.5" y="64.0" font-size="14px" fill="#cccccc" textLength="76.5" lengthAdjust="spacingAndGlyphs"> count = </text>
-<text x="182.0" y="64.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">2</text>
-<text x="190.5" y="64.0" font-size="14px" fill="#cccccc" textLength="467.5" lengthAdjust="spacingAndGlyphs">;                                                      </text>
-<text x="12.0" y="83.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  4 </text>
-<text x="46.0" y="83.0" font-size="14px" fill="#cccccc" textLength="110.5" lengthAdjust="spacingAndGlyphs">    println!(</text>
-<text x="156.5" y="83.0" font-size="14px" fill="#ce9178" textLength="76.5" lengthAdjust="spacingAndGlyphs">&quot;{total}&quot;</text>
-<text x="233.0" y="83.0" font-size="14px" fill="#cccccc" textLength="425.0" lengthAdjust="spacingAndGlyphs">);                                                </text>
-<text x="12.0" y="102.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  5 </text>
-<text x="46.0" y="102.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">}                                                                       </text>
-<text x="12.0" y="121.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  6 </text>
-<rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                                  rust  Ln 2, Col 8 </text>
-<rect x="105.5" y="31.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
-<text class="c" x="12.0" y="296.0">escape</text>
+<rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#f8f8f8"/>
+<text x="12.0" y="273.0" font-size="14px" fill="#3b3b3b" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Theme: Default Light Modern — set `workbench.colorTheme` to keep it  rust  </text>
+<rect x="114.0" y="31.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
+<text class="c" x="12.0" y="296.0">enter — the same theme keys, resolved again</text>
 </g>
 </svg>

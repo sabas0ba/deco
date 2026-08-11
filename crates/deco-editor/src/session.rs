@@ -673,6 +673,7 @@ impl Session {
             | "editor.action.revealDefinition"
             | "editor.action.goToReferences"
             | "workbench.action.gotoSymbol"
+            | "workbench.action.selectTheme"
             | "editor.action.triggerSuggest"
             | "editor.action.formatDocument"
             | "editor.action.formatSelection"
@@ -777,6 +778,38 @@ impl Session {
         Outcome::Handled
     }
 
+    /// Opens the colour-theme picker over `themes`.
+    ///
+    /// Called by the frontend once it has found what is installed: the built-in
+    /// themes are compiled in, but a marketplace theme is a file in an extension
+    /// directory and the core has no filesystem.
+    pub fn offer_themes(&mut self, themes: Vec<crate::commands::PaletteEntry>) {
+        if themes.is_empty() {
+            self.status = Some("no themes found".to_owned());
+            return;
+        }
+        self.prompt = Some(Prompt::list(PromptKind::Themes, themes));
+        self.refresh_context();
+    }
+
+    /// Uses `theme` from now on.
+    ///
+    /// Everything drawn is a function of the theme at render time, so there is
+    /// nothing to invalidate — the next frame is already in the new colours.
+    ///
+    /// The choice lasts the session. Making it stick means `workbench.colorTheme`
+    /// in your settings, which deco reads and never writes: an editor that edits
+    /// your configuration behind you is worse than one that tells you what to put
+    /// in it.
+    pub fn set_theme(&mut self, theme: ColorTheme) -> Outcome {
+        let report = format!(
+            "Theme: {} — set `workbench.colorTheme` to keep it",
+            theme.name
+        );
+        self.theme = theme;
+        Outcome::Message(report)
+    }
+
     /// Makes this document `language`, or `None` to go back to detecting it.
     ///
     /// Everything downstream of the identifier is rebuilt: the lexer, and the
@@ -870,6 +903,14 @@ impl Session {
                 // Nothing matched what was typed. Closing without saying so would
                 // look like the command had run.
                 None => Outcome::Message(format!("no command matches `{}`", prompt.text())),
+            },
+            PromptKind::Themes => match prompt.selected() {
+                // The identifier is the file to read, empty for one compiled in.
+                Some(entry) => Outcome::LoadTheme {
+                    label: entry.title.clone(),
+                    path: (!entry.id.is_empty()).then(|| PathBuf::from(&entry.id)),
+                },
+                None => Outcome::Message(format!("no theme matches `{}`", prompt.text())),
             },
             PromptKind::Languages => match prompt.selected() {
                 Some(entry) if entry.id == AUTO_LANGUAGE => self.set_language(None),
@@ -2808,6 +2849,120 @@ mod tests {
                 at: None,
             }
         );
+    }
+
+    // ---- Colour theme -----------------------------------------------------
+
+    #[test]
+    fn ctrl_k_ctrl_t_asks_the_frontend_for_the_installed_themes() {
+        // The frontend's, because a marketplace theme is a file in an extension
+        // directory and the core has no filesystem.
+        let mut s = searchable("x\n");
+        assert_eq!(press(&mut s, "ctrl+k"), Outcome::Handled);
+        assert_eq!(
+            press(&mut s, "ctrl+t"),
+            Outcome::Frontend("workbench.action.selectTheme".to_owned())
+        );
+    }
+
+    #[test]
+    fn choosing_a_theme_names_the_file_to_read() {
+        let mut s = searchable("x\n");
+        s.offer_themes(vec![
+            commands::PaletteEntry::new("", "Default Dark Modern").with_detail("dark"),
+            commands::PaletteEntry::new("/ext/owl.json", "Night Owl").with_detail("dark"),
+        ]);
+        let prompt = s.prompt.as_ref().expect("a picker should be open");
+        assert_eq!(prompt.kind(), crate::prompt::PromptKind::Themes);
+        assert_eq!(prompt.matches(), 2);
+
+        for key in ["o", "w", "l"] {
+            press(&mut s, key);
+        }
+        assert_eq!(
+            press(&mut s, "enter"),
+            Outcome::LoadTheme {
+                label: "Night Owl".to_owned(),
+                path: Some(PathBuf::from("/ext/owl.json")),
+            }
+        );
+    }
+
+    #[test]
+    fn a_builtin_theme_names_no_file() {
+        let mut s = searchable("x\n");
+        s.offer_themes(vec![commands::PaletteEntry::new(
+            "",
+            "Default Light Modern",
+        )]);
+        assert_eq!(
+            press(&mut s, "enter"),
+            Outcome::LoadTheme {
+                label: "Default Light Modern".to_owned(),
+                path: None,
+            }
+        );
+    }
+
+    #[test]
+    fn the_theme_list_keeps_the_order_it_was_given() {
+        // The built-ins are the ones that always work, so they stay at the top
+        // rather than being buried by whatever is installed.
+        let mut s = searchable("x\n");
+        s.offer_themes(vec![
+            commands::PaletteEntry::new("", "Default Dark Modern"),
+            commands::PaletteEntry::new("", "Default Light Modern"),
+            commands::PaletteEntry::new("/ext/a.json", "Aardvark"),
+        ]);
+        let titles: Vec<String> = s
+            .prompt
+            .as_ref()
+            .unwrap()
+            .visible()
+            .iter()
+            .map(|entry| entry.title.clone())
+            .collect();
+        assert_eq!(
+            titles,
+            ["Default Dark Modern", "Default Light Modern", "Aardvark"]
+        );
+    }
+
+    #[test]
+    fn setting_a_theme_says_how_to_keep_it() {
+        // deco reads `workbench.colorTheme` and never writes it: an editor that
+        // edits your configuration behind you is worse than one that tells you
+        // what to put in it.
+        let mut s = searchable("x\n");
+        let light = deco_theme::defaults::builtin("Default Light Modern").unwrap();
+        assert_eq!(
+            s.set_theme(light),
+            Outcome::Message(
+                "Theme: Default Light Modern — set `workbench.colorTheme` to keep it".to_owned()
+            )
+        );
+        assert_eq!(s.theme.name, "Default Light Modern");
+    }
+
+    #[test]
+    fn nothing_matching_what_was_typed_in_the_theme_picker_says_so() {
+        let mut s = searchable("x\n");
+        s.offer_themes(vec![commands::PaletteEntry::new("", "Default Dark Modern")]);
+        for key in ["z", "z"] {
+            press(&mut s, key);
+        }
+        assert_eq!(
+            press(&mut s, "enter"),
+            Outcome::Message("no theme matches `zz`".to_owned())
+        );
+    }
+
+    #[test]
+    fn an_empty_theme_list_reports_rather_than_opening_a_picker() {
+        let mut s = searchable("x\n");
+        s.offer_themes(Vec::new());
+        assert!(s.prompt.is_none());
+        assert_eq!(s.status.as_deref(), Some("no themes found"));
     }
 
     // ---- Change language mode ---------------------------------------------

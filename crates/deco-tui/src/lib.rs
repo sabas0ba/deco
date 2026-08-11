@@ -15,6 +15,7 @@ pub mod keys;
 pub mod lsp;
 pub mod render;
 pub mod suggest;
+pub mod themes;
 
 pub use app::run;
 pub use render::{render, Frame, Row, Span};

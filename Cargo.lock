@@ -687,6 +687,7 @@ dependencies = [
  "deco-config",
  "deco-core",
  "deco-editor",
+ "deco-ext",
  "deco-keymap",
  "deco-lsp",
  "deco-syntax",
