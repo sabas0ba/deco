@@ -82,7 +82,10 @@ thin painter.
 
 Settings are read from deco's own configuration directory, falling back to VS
 Code's (`Code/User/settings.json`) so an existing setup works without being
-copied. Nothing is ever written back to VS Code's directory.
+copied. **deco does not write settings files at all** — not VS Code's, not its own.
+Your configuration is a file you own; the cost is that a theme picked with
+`ctrl+k ctrl+t` has to be written down by hand to survive, and the status bar says
+which line to add.
 
 ## Extensions, and why they are not like VS Code's
 

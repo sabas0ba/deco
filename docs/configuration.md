@@ -126,12 +126,21 @@ thirty-nine of them for nothing.
 `workbench.colorTheme` in your settings, which the status bar says when the theme
 changes.
 
-deco has **no way to write a settings file at all** — not a policy about this
-setting, but a capability it does not have. There is a good argument for keeping it
-that way, since an editor that edits your configuration behind you is worse than
-one that tells you what to put in it; there is also VS Code, which writes the
-setting and is not thought rude for it. Either way the sentence above is the state
-of the code, not a decision that has been made.
+**deco does not write settings files, and that is the decision rather than a gap.**
+It reads them and never writes them, so your `settings.json` is a file you own: what
+is in it is what you put there, comments and formatting included, and nothing
+appears in it because of a key you pressed.
+
+The cost is real and worth stating. VS Code writes `workbench.colorTheme` when you
+pick a theme and is not thought rude for it, so this is a divergence you may not
+want: a theme chosen with `ctrl+k ctrl+t` has to be written down by hand to
+survive. The status bar says which line to add, and that is the whole of the
+mechanism.
+
+The same answer settles a question it is easy to reach from the other direction:
+there is no per-workspace "I trust this repository" for
+[a workspace-defined language server](language-servers.md#configuring-a-server),
+because remembering that answer would mean writing it somewhere.
 
 A theme that cannot be read reports why and leaves the current one alone, because
 the alternative is an editor with no colours.
