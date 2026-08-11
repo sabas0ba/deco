@@ -245,6 +245,12 @@ in it. The editor says which server it declined and why, and falls back to the
 next candidate for that language — so a repository cannot disable the feature by
 defining a server you then decline.
 
+There is **no "I trust this repository" to say once.** VS Code has Workspace Trust;
+deco would have to remember the answer somewhere, and it
+[does not write configuration files](configuration.md#colour-themes) by design. So
+the way to run a repository's own server is to copy the definition into your user
+settings, having read it — which is the step Workspace Trust makes it easy to skip.
+
 ## Not built yet
 
 Rename and code actions are parsed but not wired. Applying a rename means editing
