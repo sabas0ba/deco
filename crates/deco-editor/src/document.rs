@@ -112,6 +112,36 @@ pub fn line_comment_token(language: Option<&str>) -> Option<&'static str> {
     })
 }
 
+/// The tokens that open and close a block comment in `language`.
+///
+/// # What is deliberately absent
+///
+/// - **Shell, YAML, TOML, Makefile, Dockerfile.** They have no block comment,
+///   and neither does VS Code claim one for them.
+/// - **Ruby**, whose `=begin` / `=end` must each sit alone at the start of a
+///   line. VS Code offers them anyway; wrapping a selection in the middle of a
+///   line with them produces text Ruby will not parse, so deco says the language
+///   has none rather than corrupting the file.
+/// - **JSON**, which has no comments at all. `jsonc` does.
+///
+/// **Python's `"""` is a string, not a comment.** It is what VS Code inserts and
+/// what a Python programmer means by commenting a block out, and it does disable
+/// the code — but as an expression statement, so it is only sound where a
+/// statement is allowed. Matching VS Code here beats inventing a different answer.
+///
+/// HTML, XML and Markdown appear even though [`crate::document`] has no lexer for
+/// them: wrapping a selection needs the delimiters, not a grammar.
+pub fn block_comment_tokens(language: Option<&str>) -> Option<(&'static str, &'static str)> {
+    Some(match language? {
+        "rust" | "typescript" | "typescriptreact" | "javascript" | "javascriptreact" | "go"
+        | "c" | "cpp" | "java" | "css" | "jsonc" | "sql" => ("/*", "*/"),
+        "html" | "xml" | "markdown" => ("<!--", "-->"),
+        "lua" => ("--[[", "]]"),
+        "python" => ("\"\"\"", "\"\"\""),
+        _ => return None,
+    })
+}
+
 /// An open document.
 #[derive(Debug)]
 pub struct Document {

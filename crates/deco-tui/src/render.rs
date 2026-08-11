@@ -2547,8 +2547,13 @@ mod tests {
 
     #[test]
     fn the_prompt_counts_the_matching_commands() {
+        // Counted from the session rather than written in, so adding a command
+        // whose title happens to contain "comment" does not fail a test that is
+        // about the readout's wording.
         let session = palette("comment");
-        assert!(prompt_line(&render(&session, 60, 14)).contains("3 commands"));
+        let matches = session.prompt.as_ref().expect("open").matches();
+        assert!(matches > 1, "several commands should match");
+        assert!(prompt_line(&render(&session, 60, 14)).contains(&format!("{matches} commands")));
     }
 
     #[test]
