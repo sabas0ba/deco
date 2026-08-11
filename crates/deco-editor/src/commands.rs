@@ -1294,12 +1294,28 @@ fn search_term(ctx: &mut Context<'_>) -> Option<(String, Selection)> {
     let word = deco_core::search::word_at(&ctx.document.buffer, primary.active)?;
     let text = ctx.document.buffer.text_in_range(word);
     let selection = Selection::new(word.start, word.end);
-    // Only the primary cursor is expanded. The others are left alone: they were
-    // placed deliberately, and throwing them away to answer a question about the
-    // word under one of them would lose more than it gains.
+
+    // Every caret expands to its own word, which is what VS Code does. Cursors are
+    // placed deliberately and expanding each of them keeps that placement —
+    // discarding them would not, but discarding them was never the alternative.
+    // A caret with no word under it stays a caret rather than selecting the
+    // whitespace it sits in, and a selection that is already a selection is left
+    // as the user made it.
     let index = ctx.view.selections.primary_index();
-    let mut selections = ctx.view.selections.as_slice().to_vec();
-    selections[index] = selection;
+    let selections: Vec<Selection> = ctx
+        .view
+        .selections
+        .iter()
+        .map(|existing| {
+            if !existing.is_empty() {
+                return *existing;
+            }
+            match deco_core::search::word_at(&ctx.document.buffer, existing.active) {
+                Some(word) => Selection::new(word.start, word.end),
+                None => *existing,
+            }
+        })
+        .collect();
     ctx.view.selections = SelectionSet::from_vec(selections, index);
     Some((text, selection))
 }
@@ -2215,7 +2231,7 @@ mod tests {
     }
 
     #[test]
-    fn add_next_match_leaves_the_other_cursors_alone_when_expanding_a_caret() {
+    fn expanding_a_caret_leaves_an_existing_selection_as_the_user_made_it() {
         let mut h = Harness::new(THREE_FOOS);
         h.view.selections = SelectionSet::from_vec(
             vec![
@@ -2226,6 +2242,38 @@ mod tests {
         );
         h.run("editor.action.addSelectionToNextFindMatch");
         assert_eq!(spans(&h), vec![((0, 0), (0, 3)), ((1, 4), (1, 7))]);
+    }
+
+    #[test]
+    fn every_caret_expands_to_its_own_word() {
+        // What VS Code does. The cursors were placed deliberately and expanding
+        // each of them keeps that placement; the alternative the old comment
+        // argued against — discarding them — was never on the table.
+        let mut h = Harness::new(THREE_FOOS);
+        h.view.selections = SelectionSet::from_vec(
+            vec![
+                Selection::caret(Position::new(0, 1)),
+                Selection::caret(Position::new(1, 1)),
+            ],
+            0,
+        );
+        h.run("editor.action.addSelectionToNextFindMatch");
+        assert_eq!(spans(&h), vec![((0, 0), (0, 3)), ((1, 0), (1, 3))]);
+    }
+
+    #[test]
+    fn a_caret_with_no_word_under_it_stays_a_caret() {
+        // Selecting the whitespace it sits in would be worse than leaving it.
+        let mut h = Harness::new("foo\n   \n");
+        h.view.selections = SelectionSet::from_vec(
+            vec![
+                Selection::caret(Position::new(0, 1)),
+                Selection::caret(Position::new(1, 1)),
+            ],
+            0,
+        );
+        h.run("editor.action.addSelectionToNextFindMatch");
+        assert_eq!(spans(&h), vec![((0, 0), (0, 3)), ((1, 1), (1, 1))]);
     }
 
     #[test]

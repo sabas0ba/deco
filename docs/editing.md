@@ -96,9 +96,10 @@ is a different string. (The find bar is the opposite way round — see
 `ctrl+shift+l` makes the **last** occurrence primary, so the view scrolls to the
 end of the file and you can see how far the change reaches before you type.
 
-Expanding a bare caret leaves any other cursors where they are. They were placed
-deliberately, and discarding them to answer a question about the word under one
-of them would lose more than it gains.
+Expanding a bare caret expands **every** caret to its own word, as VS Code does.
+The cursors were placed deliberately and expanding each of them keeps that
+placement. A caret with no word under it stays a caret rather than selecting the
+whitespace it sits in, and a selection you already made is left as you made it.
 
 ## Positions are UTF-16 code units
 
