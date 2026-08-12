@@ -102,14 +102,33 @@ because it is a command that knows it is making a line. `enter` is bound to `typ
 with a newline in it — a plain insertion — so it went to column zero, and the same
 editor indented on one key and not the other.
 
-### What is not there
+### An indent you press past is taken back
 
-**`editor.trimAutoWhitespace`.** VS Code removes an auto-inserted indent when you
-leave the line without typing into it, so pressing enter twice does not leave a line
-of trailing spaces behind. deco keeps the whitespace. Implementing it needs the
-document to remember that a line's indentation was *inserted* rather than typed, and
-an answer for which undo step the removal belongs to — neither of which is a detail.
-`files.trimTrailingWhitespace` covers it on format in the meantime.
+`editor.trimAutoWhitespace` (default true) removes an auto-inserted indent from a line
+you abandon, so one press of enter too many does not leave four spaces behind for a
+diff to find.
+
+![Pressing enter twice, and the abandoned line coming back empty](img/trim-auto-whitespace.svg)
+
+Only an indent **deco inserted** is trimmable. Whitespace you typed is yours, and an
+indent stops being trimmable the moment you type anything else on that line — at which
+point it is that line's indentation rather than a leftover.
+
+Two things make it safe:
+
+- The line is checked **against the buffer** before anything is deleted. Only a line
+  that still holds exactly the whitespace that was put there and nothing else is
+  trimmed, so the record of what was inserted is a record rather than an authority: a
+  stale entry does nothing instead of costing you text.
+- The trim goes into **the same transaction** as the edit that abandoned the line, so
+  one `ctrl+z` takes back one action. Its own undo step would mean pressing `ctrl+z`
+  twice for one press of enter.
+
+It happens on the next **edit**, not on the next cursor movement. VS Code trims when
+the caret leaves the line; deco waits until something is typed, which is when there is
+a transaction to fold the trim into. Between the two the whitespace is invisible, and
+the file on disk is the same either way — unless you save in between, which VS Code
+would also do.
 
 ## Auto-closing brackets
 

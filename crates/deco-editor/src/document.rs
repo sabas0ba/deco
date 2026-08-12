@@ -213,6 +213,17 @@ pub struct Document {
     /// Here for the same reason: the keyboard said it, so re-resolving the settings
     /// must not un-say it.
     pub wrap_override: Option<deco_config::WordWrap>,
+    /// Lines whose leading whitespace was inserted by an auto-indent and not typed.
+    ///
+    /// `editor.trimAutoWhitespace` removes it rather than letting one press of enter
+    /// too many leave a line of trailing spaces in a diff. Each entry is a line and
+    /// how many UTF-16 units of whitespace were put there.
+    ///
+    /// A record, not an authority: before anything is deleted the line is checked
+    /// against the buffer, and only a line that still holds exactly that whitespace
+    /// and nothing else is trimmed. So a stale entry cannot cost anybody their text —
+    /// the worst it can do is nothing.
+    pub auto_whitespace: Vec<(u32, u32)>,
     /// Whether the file's indentation differed from the settings, and won.
     ///
     /// Not merely "was something detected": a two-space file read as two-space when
@@ -239,6 +250,7 @@ impl Document {
             indentation: deco_config::indent::Guess::default(),
             wrap_override: None,
             indentation_overridden: false,
+            auto_whitespace: Vec::new(),
             dirty: false,
             syntax: Syntax::new(None),
         }
@@ -264,6 +276,7 @@ impl Document {
             indentation: deco_config::indent::guess(text),
             wrap_override: None,
             indentation_overridden: false,
+            auto_whitespace: Vec::new(),
             dirty: false,
         };
         document.apply_overrides();

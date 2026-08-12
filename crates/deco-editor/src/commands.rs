@@ -683,7 +683,10 @@ fn edit_at_selections(
     let before = ctx.view.selections.clone();
     let buffer = &ctx.document.buffer;
 
-    let mut planned: Vec<(usize, usize, String)> = Vec::new();
+    // `false` for a caret, `true` for a trim: only the edits that came from a
+    // selection leave a cursor behind, but both have to be in the transaction and
+    // both shift what follows them.
+    let mut planned: Vec<(usize, usize, String, bool)> = Vec::new();
     for selection in before.iter() {
         let Some((range, text)) = plan(buffer, selection) else {
             continue;
@@ -693,16 +696,38 @@ fn edit_at_selections(
             buffer.position_to_char(range.start),
             buffer.position_to_char(range.end),
             text,
+            false,
         ));
     }
     if planned.is_empty() {
         return;
     }
-    planned.sort_by_key(|(start, end, _)| (*start, *end));
+    // `editor.trimAutoWhitespace`, folded into this edit rather than applied as one
+    // of its own: an auto-indent left behind and the keystroke that left it behind
+    // are one action, so `ctrl+z` should take back one thing.
+    let kept: Vec<(Position, Position, bool)> = planned
+        .iter()
+        .map(|(start, end, text, _)| {
+            (
+                buffer.char_to_position(*start),
+                buffer.char_to_position(*end),
+                text.starts_with('\n'),
+            )
+        })
+        .collect();
+    for range in trimmable_whitespace(ctx.document, &kept) {
+        planned.push((
+            buffer.position_to_char(range.start),
+            buffer.position_to_char(range.end),
+            String::new(),
+            true,
+        ));
+    }
+    planned.sort_by_key(|(start, end, _, _)| (*start, *end));
 
     let changes: Vec<Change> = planned
         .iter()
-        .map(|(start, end, text)| {
+        .map(|(start, end, text, _)| {
             Change::replace(
                 Range::new(
                     buffer.char_to_position(*start),
@@ -723,15 +748,23 @@ fn edit_at_selections(
 
     let mut carets = Vec::with_capacity(planned.len());
     let mut delta: isize = 0;
-    for (start, end, text) in &planned {
+    for (start, end, text, trimmed) in &planned {
         let inserted = text.chars().count();
         let new_start = (*start as isize + delta) as usize;
-        carets.push(Selection::caret(
-            ctx.document.buffer.char_to_position(new_start + inserted),
-        ));
+        // A trim is nobody's cursor. It still counts towards the delta, which is what
+        // keeps the cursors after it in the right place.
+        if !trimmed {
+            carets.push(Selection::caret(
+                ctx.document.buffer.char_to_position(new_start + inserted),
+            ));
+        }
         delta += inserted as isize - (*end - *start) as isize;
     }
 
+    // Every edit invalidates the record: whitespace on a line that has just been
+    // edited is that line's indentation now, and whitespace this call has trimmed is
+    // gone. `insert_newline` writes the new record after it returns.
+    ctx.document.auto_whitespace.clear();
     let after = SelectionSet::from_vec(carets, 0);
     ctx.view.selections = after.clone();
     ctx.document
@@ -741,6 +774,45 @@ fn edit_at_selections(
 }
 
 /// Replaces each selection with `text`.
+/// The auto-indents an edit may take back with it.
+///
+/// `changes` is what the edit is about to do, as `(start, end, starts with a newline)`
+/// per change. Two conditions, and both are about not deleting anything anybody wants:
+///
+/// - The line must *still* hold exactly the whitespace that was put there and nothing
+///   else, checked against the buffer rather than trusted from the record. A stale
+///   entry then costs nothing instead of costing somebody their text.
+/// - No change may leave content on the line. A change that inserts a newline at or
+///   past the whitespace is the one exception, and the case the feature exists for:
+///   pressing enter on a freshly indented line is how the line gets abandoned, and
+///   what stays behind is exactly the whitespace to take back.
+fn trimmable_whitespace(document: &Document, changes: &[(Position, Position, bool)]) -> Vec<Range> {
+    if !document.settings.trim_auto_whitespace {
+        return Vec::new();
+    }
+    document
+        .auto_whitespace
+        .iter()
+        .filter(|(line, columns)| {
+            let leaves_content = changes.iter().any(|(start, end, newline)| {
+                if start.line > *line || end.line < *line {
+                    return false;
+                }
+                // Anything spanning the line, or landing inside its whitespace, or
+                // putting text other than a line break on it.
+                !(*newline && start.line == *line && end == start && start.character >= *columns)
+            });
+            if leaves_content {
+                return false;
+            }
+            let text = line_text(&document.buffer, *line);
+            let width: u32 = text.chars().map(|c| c.len_utf16() as u32).sum();
+            width == *columns && width > 0 && text.chars().all(char::is_whitespace)
+        })
+        .map(|(line, columns)| Range::new(Position::new(*line, 0), Position::new(*line, *columns)))
+        .collect()
+}
+
 /// `editor.autoIndent`: starts the new line where the old one started.
 ///
 /// `None` when the setting is off or there is nothing to indent, so the caller falls
@@ -830,6 +902,16 @@ fn insert_newline(ctx: &mut Context<'_>) -> Option<Outcome> {
         Some((selection.range(), text))
     });
 
+    // Recorded after the edit: each caret sits just past the indent this call put
+    // there, so its column *is* how much whitespace to take back.
+    let recorded: Vec<(u32, u32)> = ctx
+        .view
+        .selections
+        .iter()
+        .filter(|s| s.active.character > 0)
+        .map(|s| (s.active.line, s.active.character))
+        .collect();
+
     if between_pair {
         // The caret is after the closer's indent on the last inserted line; it belongs
         // at the end of the one above. Read off the buffer rather than counted back,
@@ -840,6 +922,7 @@ fn insert_newline(ctx: &mut Context<'_>) -> Option<Outcome> {
             s.moved_to(end)
         });
     }
+    ctx.document.auto_whitespace = recorded;
     ctx.view
         .reveal_cursor(&ctx.document.buffer, &ctx.document.settings);
     Some(Outcome::Handled)
@@ -2002,6 +2085,116 @@ mod tests {
         assert_eq!(h.text(), "fn main() {\n    \n}\n");
         h.run("undo");
         assert_eq!(h.text(), "fn main() {}\n", "all three lines back to one");
+    }
+
+    // ---- Trimming an auto-indent ------------------------------------------
+
+    #[test]
+    fn one_enter_too_many_leaves_no_trailing_whitespace() {
+        // The mess `editor.autoIndent` makes and this cleans up: without it the line
+        // you pressed past keeps four spaces, and a diff shows it.
+        let mut h = Harness::with_language("fn main() {\n    let x = 1;\n}\n", "rs").at(1, 14);
+        enter(&mut h);
+        assert_eq!(h.text(), "fn main() {\n    let x = 1;\n    \n}\n");
+        enter(&mut h);
+        assert_eq!(
+            h.text(),
+            "fn main() {\n    let x = 1;\n\n    \n}\n",
+            "the abandoned line is empty, not four spaces"
+        );
+    }
+
+    #[test]
+    fn the_trim_is_part_of_the_same_undo_step() {
+        // The whitespace and the keystroke that abandoned it are one action, so one
+        // `ctrl+z` should take back one thing.
+        let mut h = Harness::with_language("    a\n", "rs").at(0, 5);
+        enter(&mut h);
+        enter(&mut h);
+        assert_eq!(h.text(), "    a\n\n    \n");
+        h.run("undo");
+        assert_eq!(h.text(), "    a\n    \n", "one press, one step");
+    }
+
+    #[test]
+    fn whitespace_that_was_typed_is_not_touched() {
+        // Only an indent deco inserted is trimmable. This one was typed.
+        let mut h = Harness::new("a\n").at(0, 1);
+        enter(&mut h);
+        h.type_text("    ");
+        assert_eq!(h.text(), "a\n    \n");
+        enter(&mut h);
+        assert_eq!(h.text(), "a\n    \n    \n", "both lines keep their spaces");
+    }
+
+    #[test]
+    fn typing_on_the_line_makes_the_indent_its_own() {
+        let mut h = Harness::with_language("    a\n", "rs").at(0, 5);
+        enter(&mut h);
+        h.type_text("b");
+        enter(&mut h);
+        assert_eq!(h.text(), "    a\n    b\n    \n", "`    b` keeps its indent");
+    }
+
+    #[test]
+    fn an_edit_elsewhere_trims_the_line_that_was_left() {
+        // Not only the next `enter`: any edit is the moment the abandoned line stops
+        // being where the caret is.
+        let mut h = Harness::with_language("    a\nb\n", "rs").at(0, 5);
+        enter(&mut h);
+        assert_eq!(h.text(), "    a\n    \nb\n");
+        h.view.selections = SelectionSet::caret(Position::new(2, 1));
+        h.type_text("!");
+        assert_eq!(h.text(), "    a\n\nb!\n");
+    }
+
+    #[test]
+    fn the_setting_turns_it_off() {
+        let mut h = Harness::with_language("    a\n", "rs").at(0, 5);
+        h.document.settings.trim_auto_whitespace = false;
+        enter(&mut h);
+        enter(&mut h);
+        assert_eq!(h.text(), "    a\n    \n    \n");
+    }
+
+    #[test]
+    fn a_line_that_gained_text_some_other_way_is_left_alone() {
+        // The record is a record, not an authority: the line is checked against the
+        // buffer, so a stale entry does nothing rather than deleting somebody's text.
+        let mut h = Harness::with_language("    a\n", "rs").at(0, 5);
+        enter(&mut h);
+        // Put text on the tracked line without going through an edit that clears the
+        // record, which is what a stale entry looks like.
+        let end = h.document.buffer.end_position();
+        let transaction =
+            Transaction::single(Change::insert(Position::new(1, 4), "kept".to_owned()));
+        h.document.apply(&transaction);
+        assert_eq!(h.document.buffer.text(), "    a\n    kept\n");
+        assert_eq!(end.line, 2, "the fixture is the shape this test assumes");
+
+        h.view.selections = SelectionSet::caret(Position::new(0, 5));
+        h.type_text("!");
+        assert_eq!(
+            h.document.buffer.text(),
+            "    a!\n    kept\n",
+            "nothing was trimmed"
+        );
+    }
+
+    #[test]
+    fn every_caret_that_left_an_indent_has_it_trimmed() {
+        let mut h = Harness::new("  a\n  b\n");
+        h.view.selections = SelectionSet::from_vec(
+            vec![
+                Selection::new(Position::new(0, 3), Position::new(0, 3)),
+                Selection::new(Position::new(1, 3), Position::new(1, 3)),
+            ],
+            0,
+        );
+        enter(&mut h);
+        assert_eq!(h.text(), "  a\n  \n  b\n  \n");
+        enter(&mut h);
+        assert_eq!(h.text(), "  a\n\n  \n  b\n\n  \n", "both trimmed");
     }
 
     // ---- Auto-closing brackets --------------------------------------------
