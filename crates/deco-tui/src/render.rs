@@ -908,6 +908,30 @@ fn problem_summary(session: &Session) -> String {
     format!("×{} ⚠{}  ", counts.errors, counts.warnings)
 }
 
+/// What the status bar says about indentation.
+///
+/// VS Code shows `Spaces: 4` here, and it earns its place for the same reason: what
+/// one press of `tab` inserts is not visible from the text, and it is what decides
+/// whether a diff is one line or forty.
+///
+/// `(detected)` is added only when the file's own indentation **differed** from the
+/// settings and won. A two-space file read as two-space where `editor.tabSize`
+/// already said two overrode nothing, and marking that would be a permanent note
+/// about a case with nothing to disclose.
+fn indentation(session: &Session) -> String {
+    let settings = &session.document.settings;
+    let unit = if settings.insert_spaces {
+        format!("Spaces: {}", settings.tab_size)
+    } else {
+        format!("Tab: {}", settings.tab_size)
+    };
+    if session.document.indentation_overridden {
+        format!("{unit} (detected)")
+    } else {
+        unit
+    }
+}
+
 fn status_bar(session: &Session, width: usize, palette: &Palette) -> Row {
     let cursor = session.view.cursor();
     let dirty = if session.document.dirty { "*" } else { "" };
@@ -921,9 +945,10 @@ fn status_bar(session: &Session, width: usize, palette: &Palette) -> Row {
         },
     };
     let right = format!(
-        " {}{}  Ln {}, Col {} ",
+        " {}{}  {}  Ln {}, Col {} ",
         problem_summary(session),
         language,
+        indentation(session),
         cursor.line + 1,
         cursor.character + 1
     );
@@ -2956,6 +2981,41 @@ mod tests {
         let all: String = frame.rows.iter().map(Row::plain).collect();
         assert!(!all.contains("With:"));
         assert!(!all.contains("Find:"));
+    }
+
+    // ---- The indentation readout ------------------------------------------
+
+    #[test]
+    fn the_status_bar_says_what_one_tab_inserts() {
+        // Not visible from the text, and it is what decides whether a diff is one
+        // line or forty.
+        let frame = render(&session("fn a() {\n    b();\n}\n"), 60, 8);
+        let bar = frame.rows.last().unwrap().plain();
+        assert!(bar.contains("Spaces: 4"), "{bar:?}");
+    }
+
+    #[test]
+    fn tabs_are_named_as_tabs() {
+        let frame = render(&session("fn a() {\n\tb();\n}\n"), 60, 8);
+        let bar = frame.rows.last().unwrap().plain();
+        assert!(bar.contains("Tab: 4"), "{bar:?}");
+    }
+
+    #[test]
+    fn a_file_that_overrode_the_setting_says_so() {
+        // Two-space text where `editor.tabSize` says four. Without the marker a guess
+        // is indistinguishable from the setting being wrong.
+        let frame = render(&session("const a = {\n  b: 1,\n};\n"), 60, 8);
+        let bar = frame.rows.last().unwrap().plain();
+        assert!(bar.contains("Spaces: 2 (detected)"), "{bar:?}");
+    }
+
+    #[test]
+    fn a_file_that_agrees_with_the_setting_says_nothing_extra() {
+        // Which is most files, and a permanent note about nothing is noise.
+        let frame = render(&session("fn a() {\n    b();\n}\n"), 60, 8);
+        let bar = frame.rows.last().unwrap().plain();
+        assert!(!bar.contains("detected"), "{bar:?}");
     }
 
     // ---- Word wrap --------------------------------------------------------

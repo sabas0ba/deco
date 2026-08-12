@@ -44,7 +44,7 @@
 <text x="46.0" y="102.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">}                                                                       </text>
 <text x="12.0" y="121.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  6 </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                                  rust  Ln 1, Col 1 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                       rust  Spaces: 4  Ln 1, Col 1 </text>
 <rect x="46.0" y="12.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">press ctrl+f to search the open file</text>
 </g>
@@ -74,7 +74,7 @@
 <rect x="12.0" y="240.0" width="646.0" height="19.0" fill="#181818"/>
 <text x="12.0" y="254.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Find:                                                              [aa ww] </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                                  rust  Ln 1, Col 1 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                       rust  Spaces: 4  Ln 1, Col 1 </text>
 <rect x="71.5" y="240.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">ctrl+f</text>
 </g>
@@ -106,7 +106,7 @@
 <rect x="12.0" y="240.0" width="646.0" height="19.0" fill="#181818"/>
 <text x="12.0" y="254.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Find: let                                                   1 of 2 [aa ww] </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                                  rust  Ln 2, Col 8 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                       rust  Spaces: 4  Ln 2, Col 8 </text>
 <rect x="97.0" y="240.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">type “let”</text>
 </g>
@@ -138,7 +138,7 @@
 <rect x="12.0" y="240.0" width="646.0" height="19.0" fill="#181818"/>
 <text x="12.0" y="254.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Find: let                                                   2 of 2 [aa ww] </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                                  rust  Ln 3, Col 8 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                       rust  Spaces: 4  Ln 3, Col 8 </text>
 <rect x="97.0" y="240.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">enter</text>
 </g>
@@ -170,7 +170,7 @@
 <rect x="12.0" y="240.0" width="646.0" height="19.0" fill="#181818"/>
 <text x="12.0" y="254.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Find: let                                                   1 of 2 [aa ww] </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                                  rust  Ln 2, Col 8 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                       rust  Spaces: 4  Ln 2, Col 8 </text>
 <rect x="97.0" y="240.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">enter</text>
 </g>
@@ -202,7 +202,7 @@
 <rect x="12.0" y="240.0" width="646.0" height="19.0" fill="#181818"/>
 <text x="12.0" y="254.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Find: let                                                   1 of 2 [aa Ww] </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                                  rust  Ln 2, Col 8 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                       rust  Spaces: 4  Ln 2, Col 8 </text>
 <rect x="97.0" y="240.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">alt+w</text>
 </g>
@@ -231,7 +231,7 @@
 <text x="46.0" y="102.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">}                                                                       </text>
 <text x="12.0" y="121.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  6 </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                                  rust  Ln 2, Col 8 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                       rust  Spaces: 4  Ln 2, Col 8 </text>
 <rect x="105.5" y="31.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">escape</text>
 </g>

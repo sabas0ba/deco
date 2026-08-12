@@ -1568,7 +1568,14 @@ mod tests {
             let document = Document::from_file(
                 PathBuf::from(format!("/w/file.{extension}")),
                 text,
-                EditorSettings::default(),
+                EditorSettings {
+                    // Off, so a test's indentation is the one it set rather than one
+                    // read out of its own fixture. `editor.detectIndentation` has its
+                    // own tests in `deco_config::indent`, and its effect on `tab` and
+                    // `outdent` is asserted through a whole session.
+                    detect_indentation: false,
+                    ..EditorSettings::default()
+                },
             );
             Self {
                 document,

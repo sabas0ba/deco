@@ -18,6 +18,7 @@
 pub mod defaults;
 pub mod editor;
 pub mod glob;
+pub mod indent;
 pub mod jsonc;
 pub mod paths;
 pub mod settings;

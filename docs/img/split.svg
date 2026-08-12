@@ -61,7 +61,7 @@
 <text x="80.0" y="254.0" font-size="14px" fill="#dcdcaa" textLength="59.5" lengthAdjust="spacingAndGlyphs">step_12</text>
 <text x="139.5" y="254.0" font-size="14px" fill="#cccccc" textLength="518.5" lengthAdjust="spacingAndGlyphs">();                                                          </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                                  rust  Ln 2, Col 5 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                       rust  Spaces: 4  Ln 2, Col 5 </text>
 <rect x="80.0" y="31.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">one group, one file</text>
 </g>
@@ -161,7 +161,7 @@
 <text x="411.5" y="254.0" font-size="14px" fill="#dcdcaa" textLength="59.5" lengthAdjust="spacingAndGlyphs">step_12</text>
 <text x="471.0" y="254.0" font-size="14px" fill="#cccccc" textLength="187.0" lengthAdjust="spacingAndGlyphs">();                   </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Split editor — ctrl+1 and ctrl+2 move between them       rust  Ln 2, Col 5 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Split editor — ctrl+1 and ctrl+2 move between them  rust  Spaces: 4  Ln 2, </text>
 <rect x="411.5" y="31.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">ctrl+\</text>
 </g>
@@ -260,7 +260,7 @@
 <text x="411.5" y="254.0" font-size="14px" fill="#dcdcaa" textLength="59.5" lengthAdjust="spacingAndGlyphs">step_40</text>
 <text x="471.0" y="254.0" font-size="14px" fill="#cccccc" textLength="187.0" lengthAdjust="spacingAndGlyphs">();                   </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Split editor — ctrl+1 and ctrl+2 move between them      rust  Ln 31, Col 5 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Split editor — ctrl+1 and ctrl+2 move between them  rust  Spaces: 4  Ln 31,</text>
 <rect x="411.5" y="50.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">the second group scrolls on its own</text>
 </g>
@@ -358,7 +358,7 @@
 <text x="411.5" y="254.0" font-size="14px" fill="#dcdcaa" textLength="59.5" lengthAdjust="spacingAndGlyphs">step_40</text>
 <text x="471.0" y="254.0" font-size="14px" fill="#cccccc" textLength="187.0" lengthAdjust="spacingAndGlyphs">();                   </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Split editor — ctrl+1 and ctrl+2 move between them      rust  Ln 31, Col 8 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Split editor — ctrl+1 and ctrl+2 move between them  rust  Spaces: 4  Ln 31,</text>
 <rect x="437.0" y="50.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">type “// ”</text>
 </g>
@@ -456,7 +456,7 @@
 <text x="411.5" y="254.0" font-size="14px" fill="#dcdcaa" textLength="59.5" lengthAdjust="spacingAndGlyphs">step_40</text>
 <text x="471.0" y="254.0" font-size="14px" fill="#cccccc" textLength="187.0" lengthAdjust="spacingAndGlyphs">();                   </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Split editor — ctrl+1 and ctrl+2 move between them       rust  Ln 2, Col 5 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Split editor — ctrl+1 and ctrl+2 move between them  rust  Spaces: 4  Ln 2, </text>
 <rect x="80.0" y="31.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">ctrl+1</text>
 </g>
@@ -503,7 +503,7 @@
 <text x="80.0" y="254.0" font-size="14px" fill="#dcdcaa" textLength="59.5" lengthAdjust="spacingAndGlyphs">step_12</text>
 <text x="139.5" y="254.0" font-size="14px" fill="#cccccc" textLength="518.5" lengthAdjust="spacingAndGlyphs">();                                                          </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Closed the second group                                  rust  Ln 2, Col 5 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Closed the second group                       rust  Spaces: 4  Ln 2, Col 5 </text>
 <rect x="80.0" y="31.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">ctrl+w</text>
 </g>
