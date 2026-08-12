@@ -1534,12 +1534,17 @@ mod tests {
     }
 
     #[test]
-    fn cancelling_a_request_on_a_stopped_server_is_not_an_error() {
-        // The editor cancels on every cursor move; a dead server must not turn
-        // that into an error path.
+    fn cancelling_a_request_on_a_stopped_server_is_a_named_error() {
+        // The editor cancels on every cursor move, and both call sites in
+        // deco-tui discard the result — so what has to hold is that a dead
+        // server answers at all rather than panicking, and that when it does it
+        // is the same named error every other write to a stopped server gives.
         let (mut s, _) = with_open_document(json!({"hoverProvider": true}));
         let (id, _) = s.client.request("textDocument/hover", json!({})).unwrap();
         s.stop_with("gone".into());
-        assert!(s.cancel(&id).is_err() || true, "must not panic");
+        assert!(matches!(
+            s.cancel(&id),
+            Err(SupervisorError::NotRunning { .. })
+        ));
     }
 }
