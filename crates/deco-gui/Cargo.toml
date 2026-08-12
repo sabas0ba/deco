@@ -20,4 +20,4 @@ anyhow.workspace = true
 glyphon = "0.12"
 wgpu = "30"
 winit = "0.30"
-pollster = "0.4"
+pollster = "1.0"
