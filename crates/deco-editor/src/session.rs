@@ -817,7 +817,20 @@ impl Session {
             self.problems.push(format!("workspace settings: {error}"));
             return;
         }
+        self.resolve_document_settings();
+    }
+
+    /// Resolves the open document's settings again, keeping what the file and the
+    /// keyboard have said about it.
+    ///
+    /// Three things re-resolve: a workspace layer arriving, a rename, and a language
+    /// change. Each replaces the whole `EditorSettings`, and two of the values in
+    /// there did not come from `settings.json` — the indentation read from the file,
+    /// and `alt+z`. Re-applied here rather than at each call site, because a fourth
+    /// caller would otherwise silently lose them again.
+    fn resolve_document_settings(&mut self) {
         self.document.settings = EditorSettings::resolve(&self.settings, self.document.language());
+        self.document.apply_overrides();
     }
 
     /// Recomputes the context keys `when` clauses read.
@@ -1241,7 +1254,7 @@ impl Session {
         if !chosen_by_hand {
             self.set_language(None);
         }
-        self.document.settings = EditorSettings::resolve(&self.settings, self.document.language());
+        self.resolve_document_settings();
         self.mark_saved();
         Outcome::Message(format!("Saved {}", path.display()))
     }
@@ -1298,7 +1311,7 @@ impl Session {
         };
         self.document.language_id = resolved;
         self.document.syntax = deco_syntax::Syntax::new(self.document.language());
-        self.document.settings = EditorSettings::resolve(&self.settings, self.document.language());
+        self.resolve_document_settings();
         self.refresh_context();
 
         Outcome::Message(match self.document.language() {
@@ -1340,13 +1353,17 @@ impl Session {
         let wrapping = self.view.wrap_column(&self.document.settings) > 0;
         let configured =
             EditorSettings::resolve(&self.settings, self.document.language()).word_wrap;
-        self.document.settings.word_wrap = if wrapping {
+        let wanted = if wrapping {
             deco_config::WordWrap::Off
         } else if configured == deco_config::WordWrap::Off {
             deco_config::WordWrap::On
         } else {
             configured
         };
+        // Recorded on the document as well as applied, so that changing the language
+        // — which resolves these settings from scratch — does not un-press the key.
+        self.document.wrap_override = Some(wanted);
+        self.document.settings.word_wrap = wanted;
 
         // The anchor and the caret both mean something different now: the rows a
         // window holds have changed under it.
@@ -3403,6 +3420,128 @@ mod tests {
             press(&mut s, key);
         }
         assert_eq!(s.document.buffer.text(), "x\n");
+    }
+
+    // ---- Detected indentation ----------------------------------------------
+
+    #[test]
+    fn opening_a_two_space_file_indents_by_two_whatever_the_setting_says() {
+        // `editor.detectIndentation` is on by default, and this is the whole point
+        // of it: the first `tab` in somebody else's project must not reindent it.
+        let mut settings = Settings::with_defaults();
+        settings.set(Scope::User, "editor.tabSize", json!(4));
+        let mut s = Session::new(settings, None, Platform::Linux);
+        s.open(
+            PathBuf::from("/w/a.ts"),
+            "const a = {\n  b: {\n    c: 1,\n  },\n};\n",
+        );
+
+        assert_eq!(s.document.settings.tab_size, 2);
+        assert!(s.document.indentation_overridden, "and it says so");
+
+        s.view.selections = deco_core::SelectionSet::caret(Position::new(4, 0));
+        press(&mut s, "tab");
+        assert_eq!(
+            s.document.buffer.line_content(4).unwrap().to_string(),
+            "  };",
+            "two, not four"
+        );
+    }
+
+    #[test]
+    fn a_file_that_agrees_with_the_setting_overrides_nothing() {
+        // So the status bar has nothing to disclose, which is most files.
+        let mut settings = Settings::with_defaults();
+        settings.set(Scope::User, "editor.tabSize", json!(2));
+        let mut s = Session::new(settings, None, Platform::Linux);
+        s.open(PathBuf::from("/w/a.ts"), "a\n  b\n    c\n");
+        assert_eq!(s.document.settings.tab_size, 2);
+        assert!(!s.document.indentation_overridden);
+    }
+
+    #[test]
+    fn a_tab_indented_file_switches_to_tabs_and_keeps_the_settings_width() {
+        // How wide a tab is drawn is `editor.tabSize`'s business; the file only says
+        // that it uses one.
+        let mut settings = Settings::with_defaults();
+        settings
+            .load_layer(
+                Scope::User,
+                r#"{"editor.tabSize": 8, "editor.insertSpaces": true}"#,
+            )
+            .unwrap();
+        let mut s = Session::new(settings, None, Platform::Linux);
+        s.open(PathBuf::from("/w/a.go"), "func a() {\n\tb()\n}\n");
+
+        assert!(!s.document.settings.insert_spaces);
+        assert_eq!(s.document.settings.tab_size, 8);
+
+        s.view.selections = deco_core::SelectionSet::caret(Position::new(2, 0));
+        press(&mut s, "tab");
+        assert_eq!(
+            s.document.buffer.line_content(2).unwrap().to_string(),
+            "\t}",
+            "a tab, not eight spaces"
+        );
+    }
+
+    #[test]
+    fn detect_indentation_off_leaves_the_setting_alone() {
+        let mut settings = Settings::with_defaults();
+        settings
+            .load_layer(
+                Scope::User,
+                r#"{"editor.tabSize": 4, "editor.detectIndentation": false}"#,
+            )
+            .unwrap();
+        let mut s = Session::new(settings, None, Platform::Linux);
+        s.open(PathBuf::from("/w/a.ts"), "a\n  b\n    c\n");
+        assert_eq!(s.document.settings.tab_size, 4);
+        assert!(!s.document.indentation_overridden);
+    }
+
+    #[test]
+    fn a_language_change_does_not_lose_what_the_file_said() {
+        // `ctrl+k m` resolves the settings from scratch. The file's indentation did
+        // not change because the language did.
+        let mut settings = Settings::with_defaults();
+        settings.set(Scope::User, "editor.tabSize", json!(4));
+        let mut s = Session::new(settings, None, Platform::Linux);
+        s.open(PathBuf::from("/w/a.txt"), "a\n  b\n    c\n");
+        assert_eq!(s.document.settings.tab_size, 2);
+
+        s.set_language(Some("markdown"));
+        assert_eq!(s.document.settings.tab_size, 2, "still the file's answer");
+    }
+
+    #[test]
+    fn a_language_change_does_not_un_press_alt_z() {
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.txt"), "x\n");
+        s.resize(40, 8);
+        press(&mut s, "alt+z");
+        assert!(s.view.wrap_column(&s.document.settings) > 0);
+
+        s.set_language(Some("markdown"));
+        assert!(
+            s.view.wrap_column(&s.document.settings) > 0,
+            "the keyboard said so, and re-resolving must not un-say it"
+        );
+    }
+
+    #[test]
+    fn workspace_settings_can_turn_the_detection_off_after_the_fact() {
+        // The flag is read from the freshly resolved settings, so a workspace layer
+        // arriving takes effect without the file being reopened.
+        let mut settings = Settings::with_defaults();
+        settings.set(Scope::User, "editor.tabSize", json!(4));
+        let mut s = Session::new(settings, None, Platform::Linux);
+        s.open(PathBuf::from("/w/a.ts"), "a\n  b\n    c\n");
+        assert_eq!(s.document.settings.tab_size, 2);
+
+        s.set_workspace_settings(r#"{"editor.detectIndentation": false}"#);
+        assert_eq!(s.document.settings.tab_size, 4, "back to the setting");
+        assert!(!s.document.indentation_overridden);
     }
 
     // ---- Word wrap ---------------------------------------------------------

@@ -44,7 +44,7 @@
 <text x="46.0" y="102.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">}                                                                       </text>
 <text x="12.0" y="121.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  6 </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                                 rust  Ln 2, Col 10 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                      rust  Spaces: 4  Ln 2, Col 10 </text>
 <rect x="122.5" y="31.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">the caret is on `total`</text>
 </g>
@@ -74,7 +74,7 @@
 <rect x="12.0" y="240.0" width="646.0" height="19.0" fill="#181818"/>
 <text x="12.0" y="254.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Search: total                                                              </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                                 rust  Ln 2, Col 10 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                      rust  Spaces: 4  Ln 2, Col 10 </text>
 <rect x="131.0" y="240.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">ctrl+shift+f</text>
 </g>
@@ -104,7 +104,7 @@
 <rect x="12.0" y="240.0" width="646.0" height="19.0" fill="#181818"/>
 <text x="12.0" y="254.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Search:                                                                    </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                                 rust  Ln 2, Col 10 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                      rust  Spaces: 4  Ln 2, Col 10 </text>
 <rect x="88.5" y="240.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">ctrl+x</text>
 </g>
@@ -134,7 +134,7 @@
 <rect x="12.0" y="240.0" width="646.0" height="19.0" fill="#181818"/>
 <text x="12.0" y="254.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Search: amount                                                             </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                                 rust  Ln 2, Col 10 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                      rust  Spaces: 4  Ln 2, Col 10 </text>
 <rect x="139.5" y="240.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">type “amount”</text>
 </g>
@@ -164,7 +164,7 @@
 <rect x="12.0" y="240.0" width="646.0" height="19.0" fill="#181818"/>
 <text x="12.0" y="254.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Search: amount                                                             </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Search: case on, whole word off                         rust  Ln 2, Col 10 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Search: case on, whole word off              rust  Spaces: 4  Ln 2, Col 10 </text>
 <rect x="139.5" y="240.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">alt+c</text>
 </g>
@@ -200,7 +200,7 @@
 <rect x="12.0" y="240.0" width="646.0" height="19.0" fill="#181818"/>
 <text x="12.0" y="254.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Result:                                                          3 matches </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Search: case on, whole word off                         rust  Ln 2, Col 10 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Search: case on, whole word off              rust  Spaces: 4  Ln 2, Col 10 </text>
 <rect x="88.5" y="240.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">enter — three matches, listed</text>
 </g>
@@ -249,7 +249,7 @@
 <text x="46.0" y="216.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">}                                                                       </text>
 <text x="12.0" y="235.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs"> 11 </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Search: case on, whole word off                         rust  Ln 7, Col 27 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Search: case on, whole word off              rust  Spaces: 4  Ln 7, Col 27 </text>
 <rect x="267.0" y="145.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">enter again — the file opens at the match</text>
 </g>

@@ -44,7 +44,7 @@
 <text x="46.0" y="102.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">}                                                                       </text>
 <text x="12.0" y="121.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  6 </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                                  rust  Ln 1, Col 1 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                       rust  Spaces: 4  Ln 1, Col 1 </text>
 <rect x="46.0" y="12.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">press ctrl+h to replace</text>
 </g>
@@ -76,7 +76,7 @@
 <rect x="12.0" y="240.0" width="646.0" height="19.0" fill="#181818"/>
 <text x="12.0" y="254.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> With:                                                                      </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                                  rust  Ln 1, Col 1 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                       rust  Spaces: 4  Ln 1, Col 1 </text>
 <rect x="71.5" y="240.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">ctrl+h</text>
 </g>
@@ -108,7 +108,7 @@
 <rect x="12.0" y="240.0" width="646.0" height="19.0" fill="#181818"/>
 <text x="12.0" y="254.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> With: sum                                                                  </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                                  rust  Ln 1, Col 1 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                       rust  Spaces: 4  Ln 1, Col 1 </text>
 <rect x="97.0" y="240.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">type “sum”</text>
 </g>
@@ -140,7 +140,7 @@
 <rect x="12.0" y="240.0" width="646.0" height="19.0" fill="#181818"/>
 <text x="12.0" y="254.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> With: sum                                                                  </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                                  rust  Ln 1, Col 1 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                       rust  Spaces: 4  Ln 1, Col 1 </text>
 <rect x="71.5" y="221.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">shift+tab</text>
 </g>
@@ -177,7 +177,7 @@
 <rect x="12.0" y="240.0" width="646.0" height="19.0" fill="#181818"/>
 <text x="12.0" y="254.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> With: sum                                                                  </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                                 rust  Ln 2, Col 14 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                      rust  Spaces: 4  Ln 2, Col 14 </text>
 <rect x="114.0" y="221.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">type “total”</text>
 </g>
@@ -214,7 +214,7 @@
 <rect x="12.0" y="240.0" width="646.0" height="19.0" fill="#181818"/>
 <text x="12.0" y="254.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> With: sum                                                                  </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                                 rust  Ln 2, Col 14 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                      rust  Spaces: 4  Ln 2, Col 14 </text>
 <rect x="97.0" y="240.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">tab</text>
 </g>
@@ -246,7 +246,7 @@
 <rect x="12.0" y="240.0" width="646.0" height="19.0" fill="#181818"/>
 <text x="12.0" y="254.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> With: sum                                                                  </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> replaced 2 occurrences                                  rust  Ln 2, Col 14 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> replaced 2 occurrences                       rust  Spaces: 4  Ln 2, Col 14 </text>
 <rect x="97.0" y="240.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">ctrl+alt+enter</text>
 </g>

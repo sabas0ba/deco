@@ -31,7 +31,7 @@
 <text x="46.0" y="83.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">short line                                                              </text>
 <text x="12.0" y="102.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  5 </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> notes.md                                             markdown  Ln 3, Col 1 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> notes.md                                  markdown  Spaces: 4  Ln 3, Col 1 </text>
 <rect x="46.0" y="50.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">line 3 runs off the edge — the rest is not on screen</text>
 </g>
@@ -48,7 +48,7 @@
 <text x="46.0" y="121.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">short line                                                              </text>
 <text x="12.0" y="140.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  5 </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Word wrap on, at column 72                           markdown  Ln 3, Col 1 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Word wrap on, at column 72                markdown  Spaces: 4  Ln 3, Col 1 </text>
 <rect x="46.0" y="50.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">alt+z</text>
 </g>
@@ -65,7 +65,7 @@
 <text x="46.0" y="121.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">short line                                                              </text>
 <text x="12.0" y="140.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  5 </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Word wrap on, at column 72                          markdown  Ln 3, Col 72 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Word wrap on, at column 72               markdown  Spaces: 4  Ln 3, Col 72 </text>
 <rect x="46.0" y="69.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">down</text>
 </g>
@@ -82,7 +82,7 @@
 <text x="46.0" y="121.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">short line                                                              </text>
 <text x="12.0" y="140.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  5 </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Word wrap on, at column 72                         markdown  Ln 3, Col 144 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Word wrap on, at column 72              markdown  Spaces: 4  Ln 3, Col 144 </text>
 <rect x="46.0" y="88.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">down</text>
 </g>
@@ -99,7 +99,7 @@
 <text x="46.0" y="121.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">short line                                                              </text>
 <text x="12.0" y="140.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  5 </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Word wrap on, at column 72                           markdown  Ln 4, Col 1 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Word wrap on, at column 72                markdown  Spaces: 4  Ln 4, Col 1 </text>
 <rect x="46.0" y="107.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">down</text>
 </g>
@@ -116,7 +116,7 @@
 <text x="46.0" y="121.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">short line                                                              </text>
 <text x="12.0" y="140.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  5 </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Word wrap on, at column 72                          markdown  Ln 4, Col 11 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Word wrap on, at column 72               markdown  Spaces: 4  Ln 4, Col 11 </text>
 <rect x="131.0" y="107.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">end</text>
 </g>
@@ -131,7 +131,7 @@
 <text x="46.0" y="83.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">short line                                                              </text>
 <text x="12.0" y="102.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  5 </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Word wrap off                                       markdown  Ln 4, Col 11 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Word wrap off                            markdown  Spaces: 4  Ln 4, Col 11 </text>
 <rect x="131.0" y="69.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">alt+z</text>
 </g>

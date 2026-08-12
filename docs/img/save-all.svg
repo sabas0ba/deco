@@ -45,7 +45,7 @@
 <text x="46.0" y="83.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">}                                                                       </text>
 <text x="12.0" y="102.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  4 </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> lib.rs                                                  rust  Ln 2, Col 18 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> lib.rs                                       rust  Spaces: 4  Ln 2, Col 18 </text>
 <rect x="190.5" y="50.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">two files open, neither edited</text>
 </g>
@@ -77,7 +77,7 @@
 <text x="46.0" y="83.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">}                                                                       </text>
 <text x="12.0" y="102.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  4 </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> lib.rs*                                                 rust  Ln 2, Col 27 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> lib.rs*                                      rust  Spaces: 4  Ln 2, Col 27 </text>
 <rect x="267.0" y="50.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">type “ // three”</text>
 </g>
@@ -106,7 +106,7 @@
 <text x="46.0" y="102.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">}                                                                       </text>
 <text x="12.0" y="121.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  5 </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                                  rust  Ln 1, Col 1 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                       rust  Spaces: 4  Ln 1, Col 1 </text>
 <rect x="46.0" y="31.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">ctrl+tab</text>
 </g>
@@ -136,7 +136,7 @@
 <text x="46.0" y="102.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">}                                                                       </text>
 <text x="12.0" y="121.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  5 </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs*                                                rust  Ln 2, Col 13 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs*                                     rust  Spaces: 4  Ln 2, Col 13 </text>
 <rect x="148.0" y="50.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">type “mut ”</text>
 </g>
@@ -166,7 +166,7 @@
 <text x="46.0" y="102.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">}                                                                       </text>
 <text x="12.0" y="121.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  5 </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs*                                                rust  Ln 2, Col 13 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs*                                     rust  Spaces: 4  Ln 2, Col 13 </text>
 <rect x="148.0" y="50.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">two tabs edited — the bar marks both</text>
 </g>
@@ -196,7 +196,7 @@
 <text x="46.0" y="102.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">}                                                                       </text>
 <text x="12.0" y="121.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  5 </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Saved 2 files                                           rust  Ln 2, Col 13 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Saved 2 files                                rust  Spaces: 4  Ln 2, Col 13 </text>
 <rect x="148.0" y="50.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">ctrl+k s — both written, and it says how many</text>
 </g>

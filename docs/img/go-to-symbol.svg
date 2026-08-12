@@ -62,7 +62,7 @@
 <text x="12.0" y="254.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs"> 13 </text>
 <text x="46.0" y="254.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">}                                                                       </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> counter.rs                                               rust  Ln 1, Col 1 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> counter.rs                                    rust  Spaces: 4  Ln 1, Col 1 </text>
 <rect x="46.0" y="12.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">counter.rs</text>
 </g>
@@ -107,7 +107,7 @@
 <rect x="12.0" y="240.0" width="646.0" height="19.0" fill="#181818"/>
 <text x="12.0" y="254.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Go to symbol:                                                    4 symbols </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> counter.rs                                               rust  Ln 1, Col 1 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> counter.rs                                    rust  Spaces: 4  Ln 1, Col 1 </text>
 <rect x="139.5" y="240.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">ctrl+shift+o — the kind is the right-hand column</text>
 </g>
@@ -159,7 +159,7 @@
 <rect x="12.0" y="240.0" width="646.0" height="19.0" fill="#181818"/>
 <text x="12.0" y="254.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Go to symbol: bump                                                1 symbol </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> counter.rs                                               rust  Ln 1, Col 1 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> counter.rs                                    rust  Spaces: 4  Ln 1, Col 1 </text>
 <rect x="173.5" y="240.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">type “bump”</text>
 </g>
@@ -211,7 +211,7 @@
 <text x="12.0" y="254.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs"> 13 </text>
 <text x="46.0" y="254.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">}                                                                       </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> counter.rs                                              rust  Ln 10, Col 8 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> counter.rs                                   rust  Spaces: 4  Ln 10, Col 8 </text>
 <rect x="105.5" y="183.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">enter — the caret lands on the name</text>
 </g>

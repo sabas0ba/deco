@@ -151,6 +151,10 @@ fn demos() -> Vec<Demo> {
             build: word_wrap,
         },
         Demo {
+            name: "detect-indentation",
+            build: detect_indentation,
+        },
+        Demo {
             name: "save-as",
             build: save_as,
         },
@@ -785,6 +789,35 @@ fn word_wrap() -> String {
     take.press_and_hold(&["down"], 4);
     take.press_and_hold(&["end"], 5);
     take.press_and_hold(&["alt+z"], 5);
+    take.finish()
+}
+
+fn detect_indentation() -> String {
+    // Two-space TypeScript, opened by an editor whose `editor.tabSize` is four.
+    let mut take = Take::new(
+        "config.ts",
+        "export const config = {\n  retries: 3,\n  timeout: 500,\n};\n",
+    );
+    // At the start of the closing line, where one press of `tab` inserts exactly
+    // one level and the width of that level is the thing being demonstrated.
+    take.at(3, 0).capture(
+        "two-space TypeScript — the status bar says the file overruled the setting",
+        6,
+    );
+    // One press of `tab` in somebody else's project must not reindent it.
+    take.press_and_hold(&["tab"], 6);
+
+    // The same key in a file that indents by four, for contrast.
+    take.session.open(
+        PathBuf::from("/demo/main.rs"),
+        "fn main() {\n    let total = 1;\n}\n",
+    );
+    take.at(2, 0).resize_for_chrome();
+    take.capture(
+        "four-space Rust — the file agrees with the setting, so nothing is said",
+        5,
+    );
+    take.press_and_hold(&["tab"], 6);
     take.finish()
 }
 

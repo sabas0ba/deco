@@ -37,7 +37,7 @@
 <rect x="12.0" y="145.0" width="161.5" height="19.0" fill="#181818"/>
 <text x="12.0" y="159.0" font-size="14px" fill="#cccccc" textLength="161.5" lengthAdjust="spacingAndGlyphs"> v total  i32      </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                                  rust  Ln 3, Col 5 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                       rust  Spaces: 4  Ln 3, Col 5 </text>
 <rect x="80.0" y="50.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">ctrl+space</text>
 </g>
@@ -59,7 +59,7 @@
 <rect x="12.0" y="88.0" width="161.5" height="19.0" fill="#181818"/>
 <text x="12.0" y="102.0" font-size="14px" fill="#cccccc" textLength="161.5" lengthAdjust="spacingAndGlyphs"> s println!  macro </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs*                                                 rust  Ln 3, Col 7 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs*                                      rust  Spaces: 4  Ln 3, Col 7 </text>
 <rect x="97.0" y="50.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">type “pr”</text>
 </g>
@@ -81,7 +81,7 @@
 <rect x="12.0" y="88.0" width="161.5" height="19.0" fill="#cccccc"/>
 <text x="12.0" y="102.0" font-size="14px" fill="#181818" textLength="161.5" lengthAdjust="spacingAndGlyphs"> s println!  macro </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs*                                                 rust  Ln 3, Col 7 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs*                                      rust  Spaces: 4  Ln 3, Col 7 </text>
 <rect x="97.0" y="50.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">down</text>
 </g>
@@ -102,7 +102,7 @@
 <text x="46.0" y="83.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">}                                                                       </text>
 <text x="12.0" y="102.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  5 </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs*                                                rust  Ln 3, Col 13 </text>
+<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs*                                     rust  Spaces: 4  Ln 3, Col 13 </text>
 <rect x="148.0" y="50.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">enter</text>
 </g>

@@ -63,16 +63,55 @@ Settings deco resolves into an open document's behaviour: `editor.tabSize`,
 `files.insertFinalNewline`, plus `extensions.*` for the host and deco's own
 `deco.lsp.*` (see [Language servers](language-servers.md)).
 
-Not every one of those has a visible effect in every frontend yet — the terminal
-has no font size, and the GPU frontend does not wrap. `editor.wordWrap` and
-`editor.wordWrapColumn` are applied to the terminal layout; see
-[Word wrap](editing.md#word-wrap). The
-[top-level README](https://github.com/sabas0ba/deco#readme) is the place that
-tracks what is unbuilt.
+Three of those are resolved and **not yet read by anything**:
+`editor.renderWhitespace`, `editor.rulers` and `editor.cursorStyle`. Named here
+rather than left to be discovered, because a setting that parses and does nothing is
+worse than one that is rejected. `editor.fontFamily`, `editor.fontSize` and
+`editor.lineHeight` are the GPU frontend's alone — a terminal has no font size — and
+the GPU frontend does not wrap, so `editor.wordWrap` is the terminal's alone in the
+other direction. The
+[top-level README](https://github.com/sabas0ba/deco#readme) tracks what is unbuilt.
 
 Unknown keys are kept rather than rejected. A settings file written for VS Code
 contains a great many of them, and failing on the first one would make the file
 unusable.
+
+### The file outranks your indentation setting
+
+`editor.detectIndentation` is **on** by default, in VS Code and here. It is why
+opening somebody else's two-space project and pressing `tab` does not reindent it
+to four: your `editor.tabSize` is a preference for files that have no answer of
+their own, and a file that has one outranks it.
+
+![tab in a two-space file, then in a four-space one](img/detect-indentation.svg)
+
+The status bar says what one `tab` inserts, because nothing in the text does, and
+it is what decides whether a diff is one line or forty. `(detected)` is added only
+when the file's indentation **differed** from your settings and won — a two-space
+file read as two-space where `editor.tabSize` already said two overrode nothing,
+and a permanent note about that would be noise on most files.
+
+Two halves, guessed separately:
+
+- **Tabs or spaces** is a vote: how many indented lines begin with a tab against
+  how many begin with a space. An even split says nothing and the setting stands,
+  because a mixed file is usually one halfway through being converted and guessing
+  would finish the conversion in whichever direction the coin landed.
+- **How wide** comes from the *differences* between consecutive lines' indents, not
+  from the indents themselves. A file indented by four has lines starting at 0, 4,
+  8 and 12 columns, and every one of those is a multiple of two — counting
+  multiples would call it a two-space file. The differences are all four. Ties go
+  to the smaller width, in VS Code's own order.
+
+A tab-indented file settles *tabs or spaces* and says nothing about how wide to
+draw a tab, so `editor.tabSize` still decides that. Only the first
+10,000 lines are examined, which is VS Code's limit too: a file's indentation is
+evident long before that, and a generated file of half a million lines is not worth
+scanning to be told the same thing.
+
+Set `"editor.detectIndentation": false` to have your settings win outright. It can
+arrive in workspace settings after the file is open and still takes effect — the
+file's answer is remembered rather than re-read, so nothing is copied to apply it.
 
 ## keybindings.json
 

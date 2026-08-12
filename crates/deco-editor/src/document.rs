@@ -163,10 +163,36 @@ pub struct Document {
     /// line is a property of the text, not of a screen — and because both
     /// frontends would otherwise keep their own copy of it.
     pub syntax: Syntax,
+    /// What the file's own text said about its indentation, if anything.
+    ///
+    /// Read once, when the file is opened, and re-applied by
+    /// [`Document::apply_overrides`] every time the settings are resolved again. Its
+    /// own field rather than folded straight into [`Document::settings`] for two
+    /// reasons: a language change re-resolves those from scratch and would throw the
+    /// answer away, and re-reading it would mean copying the whole file to be told
+    /// what it already said.
+    pub indentation: deco_config::indent::Guess,
+    /// `alt+z`'s answer for this document, or `None` to follow `editor.wordWrap`.
+    ///
+    /// Here for the same reason: the keyboard said it, so re-resolving the settings
+    /// must not un-say it.
+    pub wrap_override: Option<deco_config::WordWrap>,
+    /// Whether the file's indentation differed from the settings, and won.
+    ///
+    /// Not merely "was something detected": a two-space file read as two-space when
+    /// `editor.tabSize` already said two overrode nothing, and saying so would put a
+    /// permanent note in the status bar for the case where there is nothing to
+    /// disclose. Set by [`Document::apply_overrides`], which is the only place that
+    /// can see both answers at once.
+    pub indentation_overridden: bool,
 }
 
 impl Document {
     /// A new, empty, untitled document.
+    ///
+    /// Nothing to detect: an empty buffer has no indentation to read, so the
+    /// settings stand until something is typed. VS Code does not re-guess as you
+    /// type either — the guess is about a file that already exists.
     pub fn untitled(settings: EditorSettings) -> Self {
         Self {
             buffer: Buffer::new(),
@@ -174,6 +200,9 @@ impl Document {
             path: None,
             language_id: None,
             settings,
+            indentation: deco_config::indent::Guess::default(),
+            wrap_override: None,
+            indentation_overridden: false,
             dirty: false,
             syntax: Syntax::new(None),
         }
@@ -189,14 +218,49 @@ impl Document {
             // `auto` keeps whatever the file already used.
             deco_config::EolSetting::Auto => {}
         }
-        Self {
+        let mut document = Self {
             buffer,
             history: History::default(),
             path: Some(path),
             syntax: Syntax::new(language_id.as_deref()),
             language_id,
             settings,
+            indentation: deco_config::indent::guess(text),
+            wrap_override: None,
+            indentation_overridden: false,
             dirty: false,
+        };
+        document.apply_overrides();
+        document
+    }
+
+    /// Re-applies what the file and the keyboard have said, over the settings.
+    ///
+    /// [`crate::Session`] calls this after every re-resolution — a workspace layer
+    /// arriving, a rename, a language change — because each of those replaces the
+    /// whole [`EditorSettings`] and would otherwise discard two answers that did not
+    /// come from `settings.json`.
+    ///
+    /// `editor.detectIndentation` is read from the freshly resolved settings, so
+    /// turning it off in workspace settings takes effect here rather than needing the
+    /// file to be reopened.
+    pub fn apply_overrides(&mut self) {
+        let configured = (self.settings.insert_spaces, self.settings.tab_size);
+        if self.settings.detect_indentation {
+            // The two halves are independent. A tab-indented file settles
+            // `insertSpaces` and says nothing about how wide to draw a tab, so
+            // `editor.tabSize` still decides that — which is what VS Code does.
+            if let Some(spaces) = self.indentation.insert_spaces {
+                self.settings.insert_spaces = spaces;
+            }
+            if let Some(size) = self.indentation.tab_size {
+                self.settings.tab_size = size;
+            }
+        }
+        self.indentation_overridden =
+            (self.settings.insert_spaces, self.settings.tab_size) != configured;
+        if let Some(wrap) = self.wrap_override {
+            self.settings.word_wrap = wrap;
         }
     }
 
