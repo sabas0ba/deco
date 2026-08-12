@@ -167,6 +167,10 @@ fn demos() -> Vec<Demo> {
             build: auto_closing_brackets,
         },
         Demo {
+            name: "auto-indent",
+            build: auto_indent,
+        },
+        Demo {
             name: "save-as",
             build: save_as,
         },
@@ -934,6 +938,22 @@ fn auto_closing_brackets() -> String {
     take.press_and_hold(&["\""], 5);
     take.press_and_hold(&[")"], 6);
     take.press_and_hold(&[";"], 5);
+    take.finish()
+}
+
+fn auto_indent() -> String {
+    let mut take = Take::new("main.rs", "fn main() {\n    if ready \n}\n");
+    take.at(1, 14)
+        .capture("the caret after `if ready`, one level in", 4);
+    // `{` closes itself, and `enter` opens the pair into a block.
+    take.press_and_hold(&["{"], 5);
+    take.press_and_hold(&["enter"], 7);
+    take.press(&["r", "u", "n"]);
+    take.press_and_hold(&["("], 4);
+    take.press_and_hold(&[")"], 4);
+    take.press_and_hold(&[";"], 6);
+    // And a second `enter`, which keeps the indentation it is on.
+    take.press_and_hold(&["enter"], 6);
     take.finish()
 }
 

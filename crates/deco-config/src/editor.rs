@@ -52,6 +52,26 @@ impl WrappingIndent {
     }
 }
 
+/// `editor.autoIndent`.
+///
+/// deco reads three of VS Code's five values and treats the top two as the third,
+/// because the difference between them is a *language configuration* — the
+/// `indentationRules` an extension contributes — and deco has none to read. Saying so
+/// beats a setting that silently means something narrower than its name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AutoIndent {
+    /// A new line starts at column zero.
+    None,
+    /// A new line keeps the previous line's indentation.
+    Keep,
+    /// And goes one level deeper after an opening bracket.
+    ///
+    /// `advanced` and `full` resolve here: both mean this plus rules from a language
+    /// configuration, and there is no language configuration.
+    #[default]
+    Brackets,
+}
+
 /// `editor.autoClosingBrackets`.
 ///
 /// Each value is a rule about *where* a bracket closes itself, not whether the
@@ -175,6 +195,8 @@ pub struct EditorSettings {
     pub wrapping_indent: WrappingIndent,
     /// `editor.autoClosingBrackets`.
     pub auto_closing_brackets: AutoClosingBrackets,
+    /// `editor.autoIndent`.
+    pub auto_indent: AutoIndent,
     /// `editor.lineNumbers`.
     pub line_numbers: LineNumbers,
     /// `editor.renderWhitespace`.
@@ -233,6 +255,12 @@ impl EditorSettings {
                 _ => WordWrap::Off,
             },
             word_wrap_column: s.get_u64("editor.wordWrapColumn", l).unwrap_or(80).max(1) as usize,
+            auto_indent: match s.get_str("editor.autoIndent", l) {
+                Some("none") => AutoIndent::None,
+                Some("keep") => AutoIndent::Keep,
+                // `brackets`, `advanced`, `full`, and anything unrecognised.
+                _ => AutoIndent::Brackets,
+            },
             auto_closing_brackets: match s.get_str("editor.autoClosingBrackets", l) {
                 Some("always") => AutoClosingBrackets::Always,
                 Some("beforeWhitespace") => AutoClosingBrackets::BeforeWhitespace,
