@@ -262,6 +262,8 @@ reproduced locally with the command CI itself uses:
 ```console
 $ cargo xtask ci              # fmt, clippy, rustdoc and the tests
 $ cargo xtask ci --lint-only  # …or just the checks
+$ cargo xtask cross           # the Windows and macOS targets, from Linux
+$ cargo xtask cross --check-only  # …without the Wine half
 $ cargo xtask host-test       # the extension host's own tests
 $ cargo xtask docs            # regenerate the animations in docs/img
 $ cargo xtask docs --check    # …or check they still match the code
@@ -273,13 +275,48 @@ $ cargo xtask dist --target aarch64-apple-darwin
 be rehearsed without pushing a tag. It writes the archive and its `.sha256` to
 `dist/`.
 
-A pull request is checked on Linux. macOS and Windows — whose runner minutes
-bill at ten and two times a Linux one — are checked on every merge to `main`, on
-`workflow_dispatch`, and on a release tag, so nothing lands or ships unbuilt on
-them; a pull request only gives up the per-push signal. Label a pull request
-`ci:full` to get that signal back for a change that needs it, which is worth
-doing before merging anything platform-specific: a path, a terminal or process
-API, a `#[cfg]`, or a dependency with per-platform code.
+## What CI runs where
+
+Everything routine runs on Linux. macOS and Windows runner minutes bill at ten
+and two times a Linux one, so the real macOS and Windows runners are reserved
+for a release tag, for `workflow_dispatch`, and for a pull request labelled
+`ci:full` — nothing is ever *shipped* unbuilt or untested on the platform it
+ships to.
+
+Between tags, `cargo xtask cross` stands in for them from a Linux runner:
+
+- **A type check of all four shipped Apple and Windows triples.** `cargo check`
+  stops before the link step, so it needs no MSVC toolchain and no Apple SDK —
+  only the prebuilt `std` rustup hands out. It compiles what a Linux build never
+  sees: the `%APPDATA%` branch of the config paths, the `cmd`-rather-than-`ctrl`
+  branch of the keymap, and, since it runs `--all-features`, the GPU frontend's
+  per-platform windowing.
+- **The test suite as Windows binaries, under Wine.** Built for
+  `x86_64-pc-windows-gnu` with MinGW and run through cargo's target runner, so
+  the `#[cfg(windows)]` paths actually execute — process spawning included. Two
+  tests sit out: crossterm on Windows sends its commands to the console rather
+  than to the writer it was given, and a runner gives Wine no terminal to make a
+  console out of. A real Windows runner has one and covers them at the tag.
+
+That is a substitute, not an equal. macOS gets a compile check and no runtime
+check at all; Wine runs the GNU ABI rather than MSVC, and where Wine's Win32
+differs from Microsoft's a test can pass here and fail there. A regression
+confined to those can reach `main` and surface only at the tag. Label a pull
+request `ci:full` to buy the real runners early, which is worth doing for
+anything platform-specific: a path, a terminal or process API, a `#[cfg]`, or a
+dependency with per-platform code.
+
+Running the substitute locally needs the targets and the Windows toolchain:
+
+```console
+$ rustup target add x86_64-pc-windows-msvc aarch64-pc-windows-msvc \
+    x86_64-apple-darwin aarch64-apple-darwin x86_64-pc-windows-gnu
+$ sudo apt-get install -y mingw-w64 wine64
+$ cargo xtask cross
+```
+
+`--check-only` skips the Wine half if you would rather not install it, and
+`--wine-only` skips the type checks.
 
 ## Commit messages
 

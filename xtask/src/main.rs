@@ -8,12 +8,14 @@
 //!
 //! ```console
 //! $ cargo xtask ci                                  # everything the CI checks run
+//! $ cargo xtask cross                               # the Windows and macOS targets, from Linux
 //! $ cargo xtask dist                                # package for this machine
 //! $ cargo xtask dist --target aarch64-apple-darwin  # …or for another target
 //! $ cargo xtask docs                                # regenerate the docs images
 //! ```
 
 mod commitlint;
+mod cross;
 mod dist;
 mod docs;
 
@@ -40,6 +42,20 @@ enum Command {
         /// Only run the tests.
         #[arg(long)]
         test_only: bool,
+    },
+    /// Exercise the Windows and macOS targets from a Linux host.
+    ///
+    /// Type-checks every triple the release matrix ships, then builds the
+    /// tests for the Windows target and runs them under Wine. Needs
+    /// `mingw-w64` and `wine64` for the second half; see `xtask/src/cross.rs`
+    /// for what this does and does not stand in for.
+    Cross {
+        /// Only type-check, skipping the Wine run.
+        #[arg(long)]
+        check_only: bool,
+        /// Only run the tests under Wine.
+        #[arg(long)]
+        wine_only: bool,
     },
     /// Build and package a release artifact.
     Dist {
@@ -90,6 +106,10 @@ fn main() -> Result<()> {
             lint_only,
             test_only,
         } => ci(&root, lint_only, test_only),
+        Command::Cross {
+            check_only,
+            wine_only,
+        } => cross::run(&root, check_only, wine_only),
         Command::Dist {
             target,
             out,
@@ -342,6 +362,31 @@ mod tests {
                 test_only,
             } => assert!(!lint_only && test_only),
             other => panic!("expected ci, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cross_can_be_narrowed_to_either_half() {
+        match Cli::parse_from(["xtask", "cross"]).command {
+            Command::Cross {
+                check_only,
+                wine_only,
+            } => assert!(!check_only && !wine_only),
+            other => panic!("expected cross, got {other:?}"),
+        }
+        match Cli::parse_from(["xtask", "cross", "--check-only"]).command {
+            Command::Cross {
+                check_only,
+                wine_only,
+            } => assert!(check_only && !wine_only),
+            other => panic!("expected cross, got {other:?}"),
+        }
+        match Cli::parse_from(["xtask", "cross", "--wine-only"]).command {
+            Command::Cross {
+                check_only,
+                wine_only,
+            } => assert!(!check_only && wine_only),
+            other => panic!("expected cross, got {other:?}"),
         }
     }
 

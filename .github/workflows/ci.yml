@@ -10,23 +10,38 @@ name: CI
 #
 # Platform coverage is deliberately uneven, because the runners are not priced
 # alike: a macOS minute bills at ten times a Linux one and a Windows minute at
-# two. A pull request is pushed to many times before it merges, so the macOS and
-# Windows jobs are held back from that loop and run where the answer is worth
-# what it costs:
+# two. The premium runners are reserved for the moment their answer is worth
+# what it costs — which is the moment something ships:
 #
-#   * every push to a pull request  — Linux only
-#   * a pull request labelled `ci:full` — everything, on demand
-#   * a merge to main               — everything
-#   * `workflow_dispatch`           — everything
-#   * a release tag                 — everything, in release.yml
+#   * every push to a pull request  — Linux, and the Windows and macOS targets
+#                                     as `cross-check` and `wine-test` can
+#                                     reach them from a Linux runner
+#   * a merge to main               — the same
+#   * a pull request labelled `ci:full` — real macOS and Windows runners, on demand
+#   * `workflow_dispatch`           — the same
+#   * a release tag                 — the same, here and in release.yml
 #
-# So nothing reaches main, and no tag is ever cut, without every platform having
-# been built and tested; what a pull request loses is the per-push signal, which
-# the label brings back for the changes that need it.
+# So no tag is ever cut without every platform having been built and tested on
+# its own hardware. Between tags the substitute is `cargo xtask cross`: a
+# `cargo check` for all four shipped Apple and Windows triples, which needs no
+# SDK because it stops before the link step, and the test suite built for
+# `x86_64-pc-windows-gnu` and run under Wine — real Windows binaries executing
+# the `#[cfg(windows)]` paths, process spawning included.
+#
+# What that substitute does not reach is macOS at runtime, the MSVC ABI, and
+# anywhere Wine's Win32 differs from Microsoft's; `xtask/src/cross.rs` says so
+# in full. A regression confined to those can now land on main and wait until a
+# tag to surface, which is the cost this trade accepts. Label a pull request
+# `ci:full` to pay for the real thing early — worth doing for anything
+# platform-specific.
 
 on:
   push:
     branches: [main]
+    # The premium half of the matrix runs here rather than on every merge, so a
+    # tag is still built and tested on every platform before release.yml
+    # packages it.
+    tags: ['v*']
   # `labeled` is here so that adding `ci:full` starts the platform jobs without
   # needing an empty commit to push. It fires for any label, but the run it
   # starts is the cheap Linux one unless that is the label that was added.
@@ -106,10 +121,16 @@ jobs:
   # above because a job's `if` cannot read the `matrix` context, so a matrix
   # entry cannot exclude itself — and a job that starts only to skip its steps
   # has already paid for the runner.
+  #
+  # The condition is repeated verbatim on cross-build-platforms below. There is
+  # no way to share it: YAML anchors are not expanded by Actions, `env` is not
+  # readable from a job-level `if`, and a gate job to carry it as an output
+  # would be a third runner started to compute one boolean.
   test-platforms:
     name: Test (${{ matrix.os }})
     if: >-
-      github.event_name != 'pull_request'
+      github.event_name == 'workflow_dispatch'
+      || startsWith(github.ref, 'refs/tags/v')
       || contains(github.event.pull_request.labels.*.name, 'ci:full')
     runs-on: ${{ matrix.os }}
     strategy:
@@ -123,6 +144,69 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - run: cargo xtask ci --test-only
+
+  # What a Linux runner can say about the platforms it is not. `cargo check`
+  # never invokes a linker, so all four shipped Apple and Windows triples can be
+  # compiled here with nothing installed but their prebuilt `std` — no MSVC, no
+  # Xcode, at Linux prices. It covers the code a Linux build never sees at all:
+  # the `%APPDATA%` branch of the config paths, the `cmd`-not-`ctrl` branch of
+  # the keymap, and the frontend's per-platform windowing, which is why this
+  # runs --all-features.
+  cross-check:
+    name: Check Windows and macOS targets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: stable
+          # The same four triples as cross-build-platforms, and as the release
+          # matrix. cross.rs keeps its own list; a target added there and not
+          # here fails on the missing `std` with the `rustup target add` to run.
+          targets: >-
+            x86_64-pc-windows-msvc,
+            aarch64-pc-windows-msvc,
+            x86_64-apple-darwin,
+            aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: cross-check
+      - run: cargo xtask cross --check-only
+
+  # The other half: the test suite as actual Windows binaries. Built for the GNU
+  # target with MinGW — the one a Linux host can link — and executed through
+  # Wine by way of cargo's target runner, so `#[cfg(windows)]` code really runs,
+  # child processes included. Two tests are skipped because they paint through
+  # crossterm, which on Windows needs the process to own a console whether or
+  # not it was handed a writer, and a runner gives Wine no terminal to make one
+  # out of; `cargo xtask cross` names them and says so.
+  #
+  # Wine is not Windows and the GNU ABI is not MSVC, so this does not replace
+  # the tagged run on a real runner; what it replaces is having no runtime
+  # signal at all between tags. See xtask/src/cross.rs for the full list of what
+  # it does not cover.
+  wine-test:
+    name: Test the Windows target under Wine
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: stable
+          targets: x86_64-pc-windows-gnu
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: wine
+      # `wine64` rather than `wine`: the metapackage depends on the 32-bit
+      # stack, which means enabling the i386 architecture and downloading a
+      # second Wine for binaries this repository does not build. It installs to
+      # /usr/lib/wine/wine64 without touching PATH, which is where cross.rs
+      # looks last.
+      - name: Install the MinGW toolchain and Wine
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mingw-w64 wine64
+      - run: cargo xtask cross --wine-only
 
   msrv:
     name: Minimum supported Rust version
@@ -217,11 +301,14 @@ jobs:
   # test-platforms. `cargo xtask dist` is shared with release.yml, and the three
   # Linux targets above exercise it on every pull request, so what is deferred
   # here is the target-specific half of the packaging — which is also the half
-  # that a release tag rebuilds from scratch anyway.
+  # that a release tag rebuilds from scratch anyway. Compiling these four
+  # targets, as opposed to linking and packaging them, is what cross-check does
+  # on every push.
   cross-build-platforms:
     name: Cross build ${{ matrix.target }}
     if: >-
-      github.event_name != 'pull_request'
+      github.event_name == 'workflow_dispatch'
+      || startsWith(github.ref, 'refs/tags/v')
       || contains(github.event.pull_request.labels.*.name, 'ci:full')
     runs-on: ${{ matrix.os }}
     strategy:
