@@ -119,7 +119,10 @@ impl PromptKind {
         // Themes as well as symbols: the built-in ones are listed first because
         // they are the ones that always work, and a title sort would bury them
         // under whatever is installed.
-        matches!(self, Self::Symbols | Self::Themes)
+        //
+        // And files, whose supplied order puts the ones you have had open first —
+        // which a sort by name would throw away, taking the whole point of it.
+        matches!(self, Self::Symbols | Self::Themes | Self::Files)
     }
 }
 

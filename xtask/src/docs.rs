@@ -992,6 +992,20 @@ fn quick_open() -> String {
     );
     take.resize_for_chrome();
     take.capture("enter — opened in a new tab", 5);
+
+    // And again, now that two files have been on screen: they come first, most
+    // recently first, which is most of what makes the key fast.
+    take.session.offer_files(
+        files
+            .iter()
+            .map(|path| deco_editor::commands::PaletteEntry::new(&format!("/demo/{path}"), path))
+            .collect(),
+    );
+    take.resize_for_chrome();
+    take.capture(
+        "ctrl+p again — the two files that have been open are at the top",
+        7,
+    );
     take.finish()
 }
 

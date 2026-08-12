@@ -106,6 +106,13 @@ pub struct TabLabel {
     pub active: bool,
 }
 
+/// How many paths the recency list keeps.
+///
+/// Enough that every file of an ordinary session's worth of work is in it. Past that
+/// the tail of the list falls back to the alphabetical order the walk produced, which
+/// is what quick open did for every file before this existed.
+const MAX_RECENT: usize = 64;
+
 /// The picker row that means "work it out from the file name" rather than naming
 /// a language.
 ///
@@ -204,6 +211,15 @@ pub struct Session {
     /// Only meaningful while split. Kept so that the panes can be listed in the
     /// order they sit on screen while `view` stays the active one.
     split_focused: bool,
+    /// Paths that have been on screen, most recently first.
+    ///
+    /// What makes `ctrl+p` fast: the file you want is usually one you just had open,
+    /// and an alphabetical list buries it. VS Code orders quick open the same way.
+    ///
+    /// **This session only.** VS Code keeps its history in workspace storage; deco
+    /// [writes no files](../../../docs/configuration.md), so the list starts empty
+    /// each time rather than being persisted somewhere the user did not ask for.
+    recent: Vec<PathBuf>,
     /// Tabs to the left of the active one, in display order.
     ///
     /// The active tab's state lives directly in [`Session::document`],
@@ -320,6 +336,7 @@ impl Session {
             semantic_tokens: Vec::new(),
             left: Vec::new(),
             right: Vec::new(),
+            recent: Vec::new(),
             problems,
         };
         session.refresh_context();
@@ -839,6 +856,7 @@ impl Session {
     /// that a binding gated on `editorHasSelection` becomes active in the same
     /// frame the selection appears.
     pub fn refresh_context(&mut self) {
+        self.note_active_document();
         let selections = &self.view.selections;
         // VS Code's own distinction, and the find bar depends on it:
         // `editorTextFocus` is the text area, `textInputFocus` is any text input
@@ -1139,13 +1157,38 @@ impl Session {
     /// is the path to open and its `title` is what to show, so typing matches the
     /// file name first and the rest of the path second — which is the order people
     /// think in.
-    pub fn offer_files(&mut self, files: Vec<crate::commands::PaletteEntry>) {
+    pub fn offer_files(&mut self, mut files: Vec<crate::commands::PaletteEntry>) {
         if files.is_empty() {
             self.status = Some("no files found here".to_owned());
             return;
         }
+        self.order_by_recency(&mut files);
         self.prompt = Some(Prompt::list(PromptKind::Files, files));
         self.refresh_context();
+    }
+
+    /// Puts the files that have been on screen first, most recent first.
+    ///
+    /// The rest keep the order the frontend supplied, which is alphabetical. Stable,
+    /// so a file the session has never seen sits exactly where it did before — the
+    /// list only ever gains a preferred prefix.
+    fn order_by_recency(&mut self, files: &mut [crate::commands::PaletteEntry]) {
+        if self.recent.is_empty() {
+            return;
+        }
+        // Compared lexically rather than as strings, because the walk and `ctrl+o`
+        // spell a path differently — `src/main.rs` against `./src/main.rs` — and a
+        // recent file the list failed to recognise would silently sink back into the
+        // alphabet.
+        let recent: Vec<PathBuf> = self.recent.iter().map(|path| normalise(path)).collect();
+        // Cached, so a path is normalised once per row and not once per comparison.
+        files.sort_by_cached_key(|entry| {
+            let path = normalise(Path::new(&entry.id));
+            recent
+                .iter()
+                .position(|seen| *seen == path)
+                .unwrap_or(usize::MAX)
+        });
     }
 
     /// Opens the search-results prompt over `results`.
@@ -2101,6 +2144,28 @@ impl Session {
             // when they can differ this reads each pane's own.
             other.text_width = other_width;
         }
+    }
+
+    /// Moves the open document to the front of the recency list.
+    ///
+    /// Called from [`Session::refresh_context`], which runs after everything that
+    /// changes what is on screen — so there is no set of call sites to keep in step,
+    /// which is what a list like this usually goes wrong by. The guard makes the
+    /// common case one comparison: on an ordinary keystroke the document is already
+    /// at the front.
+    fn note_active_document(&mut self) {
+        let Some(path) = self.document.path.as_deref() else {
+            // An untitled document has nothing to remember it by, and it is already
+            // on screen.
+            return;
+        };
+        if self.recent.first().is_some_and(|first| first == path) {
+            return;
+        }
+        let path = path.to_owned();
+        self.recent.retain(|seen| seen != &path);
+        self.recent.insert(0, path);
+        self.recent.truncate(MAX_RECENT);
     }
 
     /// Recomputes each group's text width for the size the session was last given.
@@ -3372,6 +3437,110 @@ mod tests {
             press(&mut s, &c.to_string());
         }
         assert_eq!(s.prompt.as_ref().unwrap().matches(), 2);
+    }
+
+    #[test]
+    fn the_files_you_have_had_open_come_first() {
+        // What makes `ctrl+p` fast: the file you want is usually one you just had
+        // open, and an alphabetical list buries it.
+        let mut s = session();
+        s.open(PathBuf::from("/w/zebra.rs"), "z\n");
+        s.open(PathBuf::from("/w/apple.rs"), "a\n");
+
+        s.offer_files(file_entries(&[
+            "aardvark.rs",
+            "apple.rs",
+            "middle.rs",
+            "zebra.rs",
+        ]));
+        assert_eq!(
+            titles(&s),
+            ["apple.rs", "zebra.rs", "aardvark.rs", "middle.rs"],
+            "the two that were open, most recent first, then the alphabet"
+        );
+    }
+
+    #[test]
+    fn a_tab_switch_moves_a_file_back_to_the_front() {
+        let mut s = session();
+        s.open(PathBuf::from("/w/one.rs"), "1\n");
+        s.open(PathBuf::from("/w/two.rs"), "2\n");
+        s.run("workbench.action.previousEditor", None, 0);
+        assert_eq!(s.document.title(), "one.rs");
+
+        s.offer_files(file_entries(&["one.rs", "two.rs"]));
+        assert_eq!(titles(&s), ["one.rs", "two.rs"]);
+    }
+
+    #[test]
+    fn a_file_that_was_closed_is_still_remembered() {
+        // VS Code remembers it too, and it is exactly the file you are most likely to
+        // want back.
+        let mut s = session();
+        s.open(PathBuf::from("/w/gone.rs"), "g\n");
+        s.open(PathBuf::from("/w/here.rs"), "h\n");
+        s.run("workbench.action.previousEditor", None, 0);
+        s.run("workbench.action.closeActiveEditor", None, 0);
+        assert_eq!(s.document.title(), "here.rs");
+
+        s.offer_files(file_entries(&["aaa.rs", "gone.rs", "here.rs"]));
+        assert_eq!(titles(&s), ["here.rs", "gone.rs", "aaa.rs"]);
+    }
+
+    #[test]
+    fn a_session_that_has_opened_nothing_lists_alphabetically() {
+        // Which is what quick open did for every file before recency existed, and is
+        // still the right answer with nothing to prefer.
+        let mut s = session();
+        s.offer_files(file_entries(&["aaa.rs", "bbb.rs", "ccc.rs"]));
+        assert_eq!(titles(&s), ["aaa.rs", "bbb.rs", "ccc.rs"]);
+    }
+
+    #[test]
+    fn a_path_spelled_differently_is_still_the_same_file() {
+        // `ctrl+o` resolves what was typed; the walk joins onto the workspace root.
+        // The two disagree about `./`, and a string comparison would sink the file
+        // back into the alphabet.
+        let mut s = session();
+        s.open(PathBuf::from("/w/./src/../src/main.rs"), "m\n");
+        s.offer_files(file_entries(&["aaa.rs", "src/main.rs"]));
+        assert_eq!(titles(&s), ["src/main.rs", "aaa.rs"]);
+    }
+
+    #[test]
+    fn recency_orders_equal_matches_and_no_more_than_that() {
+        // Two rows that match `main` equally well: recency decides between them.
+        let mut s = session();
+        s.open(PathBuf::from("/w/main.md"), "d\n");
+        s.offer_files(file_entries(&["main.rs", "main.md"]));
+        for c in "main".chars() {
+            press(&mut s, &c.to_string());
+        }
+        assert_eq!(titles(&s), ["main.md", "main.rs"], "the recent one first");
+    }
+
+    #[test]
+    fn a_better_match_still_beats_a_recent_one() {
+        // Recency orders equals; it does not outrank how well a row matches. Here
+        // `main.rs` matches `main` as a prefix and `domain.rs` only contains it, and
+        // `domain.rs` is the file that was open.
+        let mut s = session();
+        s.open(PathBuf::from("/w/domain.rs"), "d\n");
+        s.offer_files(file_entries(&["main.rs", "domain.rs"]));
+        for c in "main".chars() {
+            press(&mut s, &c.to_string());
+        }
+        assert_eq!(titles(&s), ["main.rs", "domain.rs"]);
+    }
+
+    /// The titles the open prompt is offering, in order.
+    fn titles(s: &Session) -> Vec<String> {
+        let prompt = s.prompt.as_ref().expect("a prompt should be open");
+        prompt
+            .visible()
+            .iter()
+            .map(|entry| entry.title.clone())
+            .collect()
     }
 
     #[test]
