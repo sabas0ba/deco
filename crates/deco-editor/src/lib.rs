@@ -12,6 +12,7 @@ pub mod commands;
 pub mod document;
 pub mod find;
 pub mod input;
+pub mod layout;
 pub mod prompt;
 pub mod session;
 

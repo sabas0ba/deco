@@ -233,6 +233,16 @@ pub struct Session {
     /// somebody downstream will handle it is how a palette comes to offer what
     /// the editor cannot do.
     pub frontend_commands: Vec<crate::commands::PaletteEntry>,
+    /// Whether the frontend can draw a line broken across several rows.
+    ///
+    /// Declared by the frontend for the same reason [`Session::frontend_commands`]
+    /// is: the core cannot know what the thing drawing it is capable of. The GPU
+    /// frontend lays out one document line per row, and a session that wrapped
+    /// anyway would scroll and move the caret by rows that frontend never draws —
+    /// putting the caret in one place and the text it is on in another.
+    ///
+    /// True by default, which is the terminal frontend and every test.
+    pub frontend_wraps: bool,
     /// The find bar, open or not.
     ///
     /// Always present so that `F3` still has a query to search for after the bar
@@ -305,6 +315,7 @@ impl Session {
             find: Find::new(),
             prompt: None,
             frontend_commands: Vec::new(),
+            frontend_wraps: true,
             diagnostics: Vec::new(),
             semantic_tokens: Vec::new(),
             left: Vec::new(),
@@ -374,6 +385,8 @@ impl Session {
         if !carried_query.is_empty() {
             self.find.set_query(carried_query);
         }
+        // A different file is a different gutter, so a different width for text.
+        self.relayout();
         self.refresh_context();
     }
 
@@ -503,6 +516,8 @@ impl Session {
         // but the background tab's view remembers the size it last had.
         chosen.view.width = sizes.0;
         chosen.view.height = sizes.1;
+        // Its text width is not carried across: the gutter belongs to whichever
+        // document is on screen, so `relayout` below asks again once this one is.
 
         self.right = all.split_off(index);
         self.left = all;
@@ -517,6 +532,8 @@ impl Session {
         if self.find.query().is_empty() && !carried_query.is_empty() {
             self.find.set_query(carried_query);
         }
+        // This document's gutter, then this document's caret.
+        self.relayout();
         self.view
             .reveal_cursor(&self.document.buffer, &self.document.settings);
     }
@@ -556,6 +573,9 @@ impl Session {
         }
         self.split_view = Some(self.view.clone());
         self.split_focused = true;
+        // Two columns where there was one, so both are narrower and a wrapped line
+        // breaks sooner in each.
+        self.relayout();
         self.refresh_context();
         Outcome::Message("Split editor — ctrl+1 and ctrl+2 move between them".to_owned())
     }
@@ -582,6 +602,9 @@ impl Session {
             // group's cursor is. A find bar per group needs a tab list per group,
             // which is the other half of splitting.
             self.find.close();
+            // The two columns can differ by a cell, so the view that just took the
+            // keyboard needs the width of the column it is now in.
+            self.relayout();
         }
         self.refresh_context();
         Outcome::Handled
@@ -681,6 +704,7 @@ impl Session {
         if self.split_view.is_some() {
             self.split_view = None;
             self.split_focused = false;
+            self.relayout();
             self.refresh_context();
             return Outcome::Message("Closed the second group".to_owned());
         }
@@ -719,6 +743,7 @@ impl Session {
         self.diagnostics = replacement.diagnostics;
         self.semantic_tokens = replacement.semantic;
         self.find = replacement.find;
+        self.relayout();
         self.refresh_context();
         Outcome::Handled
     }
@@ -742,6 +767,7 @@ impl Session {
         // A new tab has no matches to show, and the parked one belongs to the tab
         // it was parked with.
         self.find = Find::new();
+        self.relayout();
         self.refresh_context();
         Outcome::Handled
     }
@@ -931,6 +957,9 @@ impl Session {
             "editor.action.marker.prev" | "editor.action.marker.prevInFiles" => {
                 self.goto_marker(Direction::Prev)
             }
+            // Needs the view as well as the document: whether the editor is
+            // wrapping depends on how wide the window is, which is the view's.
+            "editor.action.toggleWordWrap" => self.toggle_word_wrap(),
             // The find bar, for the same reason: it needs the whole document and
             // its own state, neither of which a command in `commands` can see.
             "actions.find" => self.open_find(false),
@@ -1293,6 +1322,45 @@ impl Session {
         }
         self.prompt = Some(Prompt::list(PromptKind::Symbols, symbols));
         self.refresh_context();
+    }
+
+    /// `alt+z`: wraps this document's long lines, or stops.
+    ///
+    /// Per document, because that is where the resolved settings live — so it is
+    /// also per tab, and turning it on to read one Markdown file leaves the code in
+    /// the next tab alone. It is not written anywhere: deco
+    /// [does not write settings files](../../../docs/configuration.md), and a
+    /// keystroke that silently edited one would be the wrong way to find that out.
+    ///
+    /// Turning it back on restores whatever `editor.wordWrap` says — including a
+    /// `[language]` override of it — rather than assuming `"on"`. Somebody who
+    /// configured `"bounded"` and pressed the key twice asked to get back what they
+    /// had, not the viewport width.
+    fn toggle_word_wrap(&mut self) -> Outcome {
+        let wrapping = self.view.wrap_column(&self.document.settings) > 0;
+        let configured =
+            EditorSettings::resolve(&self.settings, self.document.language()).word_wrap;
+        self.document.settings.word_wrap = if wrapping {
+            deco_config::WordWrap::Off
+        } else if configured == deco_config::WordWrap::Off {
+            deco_config::WordWrap::On
+        } else {
+            configured
+        };
+
+        // The anchor and the caret both mean something different now: the rows a
+        // window holds have changed under it.
+        self.view
+            .reveal_cursor(&self.document.buffer, &self.document.settings);
+        if let Some(mut other) = self.split_view.take() {
+            other.reveal_cursor(&self.document.buffer, &self.document.settings);
+            self.split_view = Some(other);
+        }
+
+        match self.view.wrap_column(&self.document.settings) {
+            0 => Outcome::Message("Word wrap off".to_owned()),
+            column => Outcome::Message(format!("Word wrap on, at column {column}")),
+        }
     }
 
     /// Whether the search prompt is what has the keyboard.
@@ -1967,11 +2035,70 @@ impl Session {
     }
 
     /// Tells the session how large the text area is.
+    ///
+    /// `width` is the whole area, gutters and separators included; the session
+    /// works out from [`crate::layout`] how many columns each group leaves for
+    /// text, because that is what decides where a wrapped line breaks. Doing the
+    /// arithmetic here rather than in the frontend is what keeps the wrap and the
+    /// drawing from disagreeing about the width.
     pub fn resize(&mut self, width: usize, height: usize) {
-        self.view.width = width;
-        self.view.height = height;
+        self.lay_out(width, height);
+        // A window that is a different shape may no longer hold the caret.
         self.view
             .reveal_cursor(&self.document.buffer, &self.document.settings);
+        if let Some(mut other) = self.split_view.take() {
+            other.reveal_cursor(&self.document.buffer, &self.document.settings);
+            self.split_view = Some(other);
+        }
+    }
+
+    /// Gives every group its size and the columns it leaves for text, without
+    /// moving any window.
+    fn lay_out(&mut self, width: usize, height: usize) {
+        let columns = crate::layout::column_widths(width, self.group_count());
+        let gutter = crate::layout::gutter_width(&self.document);
+        // The active group is the second one on screen while the split has the
+        // keyboard — the same order `panes` reports.
+        let active = usize::from(self.split_focused);
+        // Zero for a frontend that does not wrap, which is what tells the view
+        // there is nowhere to break.
+        let text_width = |index: usize| {
+            if !self.frontend_wraps {
+                return 0;
+            }
+            columns
+                .get(index)
+                .copied()
+                .unwrap_or(width)
+                .saturating_sub(gutter)
+        };
+
+        self.view.width = width;
+        self.view.height = height;
+        self.view.text_width = text_width(active);
+        let other_width = text_width(1 - active);
+        if let Some(other) = self.split_view.as_mut() {
+            other.width = width;
+            other.height = height;
+            // Both groups show the same document today, so one gutter serves both;
+            // when they can differ this reads each pane's own.
+            other.text_width = other_width;
+        }
+    }
+
+    /// Recomputes each group's text width for the size the session was last given.
+    ///
+    /// How many columns are left for text depends on the document's gutter and on
+    /// how many groups share the screen, so anything that changes either — a tab
+    /// switch, a split, a group closing — has to ask again. A stale width wraps the
+    /// file on screen at the width of the one that used to be.
+    ///
+    /// Deliberately not a `resize`: nothing here scrolls. Focusing a group that was
+    /// scrolled away from its own caret must leave it where it was, and re-laying
+    /// out the same size is not a reason to move any window.
+    fn relayout(&mut self) {
+        let (width, height) = (self.view.width, self.view.height);
+        self.lay_out(width, height);
     }
 }
 
@@ -3276,6 +3403,185 @@ mod tests {
             press(&mut s, key);
         }
         assert_eq!(s.document.buffer.text(), "x\n");
+    }
+
+    // ---- Word wrap ---------------------------------------------------------
+
+    #[test]
+    fn alt_z_wraps_the_document_and_says_where() {
+        // The column is worth saying: it is the one thing about wrapping that is
+        // not visible from the text, and it is what the setting controls.
+        let mut s = session();
+        s.open(
+            PathBuf::from("/w/a.md"),
+            &format!("{}\n", "word ".repeat(30)),
+        );
+        s.resize(24, 8);
+        assert_eq!(
+            press(&mut s, "alt+z"),
+            Outcome::Message("Word wrap on, at column 20".to_owned()),
+            "24 columns less a four-column gutter"
+        );
+        assert_eq!(
+            press(&mut s, "alt+z"),
+            Outcome::Message("Word wrap off".to_owned())
+        );
+    }
+
+    #[test]
+    fn wrapping_changes_how_many_rows_a_line_takes() {
+        let mut s = session();
+        s.open(
+            PathBuf::from("/w/a.md"),
+            &format!("{}\n", "word ".repeat(30)),
+        );
+        s.resize(24, 8);
+        let rows = |s: &Session| {
+            s.view
+                .visible_rows(&s.document.buffer, &s.document.settings)
+                .len()
+        };
+        assert_eq!(rows(&s), 2, "one long line and the empty last one");
+        press(&mut s, "alt+z");
+        assert_eq!(rows(&s), 8, "the window fills with rows of one line");
+    }
+
+    #[test]
+    fn toggling_back_on_restores_what_the_setting_asked_for() {
+        // Somebody who configured `bounded` and pressed the key twice asked to get
+        // back what they had, not the width of the window.
+        let mut settings = Settings::with_defaults();
+        settings
+            .load_layer(
+                Scope::User,
+                r#"{"editor.wordWrap": "bounded", "editor.wordWrapColumn": 12}"#,
+            )
+            .unwrap();
+        let mut s = Session::new(settings, None, Platform::Linux);
+        s.open(PathBuf::from("/w/a.md"), "x\n");
+        s.resize(80, 8);
+
+        assert_eq!(
+            s.document.settings.word_wrap,
+            deco_config::WordWrap::Bounded
+        );
+        press(&mut s, "alt+z");
+        assert_eq!(s.document.settings.word_wrap, deco_config::WordWrap::Off);
+        press(&mut s, "alt+z");
+        assert_eq!(
+            s.document.settings.word_wrap,
+            deco_config::WordWrap::Bounded,
+            "not `on`"
+        );
+        assert_eq!(s.view.wrap_column(&s.document.settings), 12);
+    }
+
+    #[test]
+    fn a_language_override_of_word_wrap_is_what_the_toggle_restores() {
+        let mut settings = Settings::with_defaults();
+        settings
+            .load_layer(Scope::User, r#"{"[markdown]": {"editor.wordWrap": "on"}}"#)
+            .unwrap();
+        let mut s = Session::new(settings, None, Platform::Linux);
+        s.open(PathBuf::from("/w/a.md"), "x\n");
+        s.resize(40, 8);
+        assert!(
+            s.view.wrap_column(&s.document.settings) > 0,
+            "on for markdown"
+        );
+        press(&mut s, "alt+z");
+        press(&mut s, "alt+z");
+        assert_eq!(s.document.settings.word_wrap, deco_config::WordWrap::On);
+    }
+
+    #[test]
+    fn word_wrap_is_per_tab() {
+        // The settings are per document, so turning it on to read one file leaves
+        // the code in the next tab alone — which is what makes the key worth having
+        // rather than a setting to edit.
+        let mut s = session();
+        s.open(PathBuf::from("/w/prose.md"), "x\n");
+        s.open(PathBuf::from("/w/main.rs"), "y\n");
+        s.resize(40, 8);
+
+        s.run("workbench.action.previousEditor", None, 0);
+        assert_eq!(s.document.title(), "prose.md");
+        press(&mut s, "alt+z");
+        assert!(s.view.wrap_column(&s.document.settings) > 0);
+
+        s.run("workbench.action.nextEditor", None, 0);
+        assert_eq!(s.document.title(), "main.rs");
+        assert_eq!(
+            s.view.wrap_column(&s.document.settings),
+            0,
+            "the other tab is untouched"
+        );
+
+        s.run("workbench.action.previousEditor", None, 0);
+        assert!(
+            s.view.wrap_column(&s.document.settings) > 0,
+            "and coming back finds it still on"
+        );
+    }
+
+    #[test]
+    fn a_split_group_wraps_at_its_own_narrower_width() {
+        // Two groups share the width, so the same line wraps sooner in each. A
+        // group left with the whole width's wrap column would draw past its column.
+        let mut s = session();
+        s.open(
+            PathBuf::from("/w/a.md"),
+            &format!("{}\n", "word ".repeat(30)),
+        );
+        s.resize(80, 8);
+        press(&mut s, "alt+z");
+        let single = s.view.wrap_column(&s.document.settings);
+
+        s.run("workbench.action.splitEditor", None, 0);
+        s.resize(80, 8);
+        let split = s.view.wrap_column(&s.document.settings);
+        assert!(split < single, "{split} should be narrower than {single}");
+        let other = s.split_view.as_ref().unwrap().text_width;
+        assert!(
+            other.abs_diff(s.view.text_width) <= 1,
+            "both groups get their own, within the cell the remainder goes to: \
+             {other} and {}",
+            s.view.text_width
+        );
+    }
+
+    #[test]
+    fn a_frontend_that_does_not_wrap_makes_the_setting_inert() {
+        // The GPU frontend lays out one line per row. A session that wrapped anyway
+        // would scroll and move the caret by rows nothing draws, putting the caret
+        // in one place and the text it is on in another.
+        let mut settings = Settings::with_defaults();
+        settings
+            .load_layer(
+                Scope::User,
+                r#"{"editor.wordWrap": "wordWrapColumn", "editor.wordWrapColumn": 20}"#,
+            )
+            .unwrap();
+        let mut s = Session::new(settings, None, Platform::Linux);
+        s.frontend_wraps = false;
+        s.open(
+            PathBuf::from("/w/a.md"),
+            &format!("{}\n", "word ".repeat(30)),
+        );
+        s.resize(80, 8);
+
+        assert_eq!(
+            s.view.wrap_column(&s.document.settings),
+            0,
+            "not even `wordWrapColumn`, which ignores the window"
+        );
+        assert_eq!(
+            s.view
+                .visible_rows(&s.document.buffer, &s.document.settings)
+                .len(),
+            2,
+            "one row for the long line and one for the empty last one"
+        );
     }
 
     // ---- Search in files ---------------------------------------------------

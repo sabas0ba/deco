@@ -147,6 +147,10 @@ fn demos() -> Vec<Demo> {
             build: block_comment,
         },
         Demo {
+            name: "word-wrap",
+            build: word_wrap,
+        },
+        Demo {
             name: "save-as",
             build: save_as,
         },
@@ -758,6 +762,29 @@ fn block_comment() -> String {
     take.at(3, 23);
     take.press_and_hold(&["ctrl+shift+a"], 5);
     take.type_text("why");
+    take.finish()
+}
+
+fn word_wrap() -> String {
+    // Prose rather than code, because that is where the long line comes from, and
+    // where moving by row rather than by line is the visible difference.
+    let mut take = Take::new(
+        "notes.md",
+        "# Word wrap\n\nA paragraph long enough to run several rows past the right edge \
+         of the window, which is what wrapping is for and what the arrow keys then have \
+         to walk one row at a time.\nshort line\n",
+    );
+    take.at(2, 0)
+        .capture("line 3 runs off the edge — the rest is not on screen", 5)
+        .press_and_hold(&["alt+z"], 6);
+
+    // Down the wrapped rows. Each press moves one row and not one line, which the
+    // status bar's column reports and a still image cannot show.
+    take.press(&["down"]);
+    take.press(&["down"]);
+    take.press_and_hold(&["down"], 4);
+    take.press_and_hold(&["end"], 5);
+    take.press_and_hold(&["alt+z"], 5);
     take.finish()
 }
 

@@ -419,6 +419,12 @@ fn save(session: &mut Session) -> Result<()> {
 /// with none — which was a silent overwrite once tabs existed. This frontend has
 /// nothing else to do with it: no quick open to anchor and no workspace to walk.
 pub fn run(session: &mut Session) -> Result<()> {
+    // This frontend lays out one document line per row, so the session must not
+    // wrap: it would scroll and move the caret by rows nothing here draws. Said
+    // once, rather than by refusing `alt+z` — `editor.wordWrap` is a setting, and a
+    // setting has to be inert where it cannot be honoured.
+    session.frontend_wraps = false;
+
     let event_loop = EventLoop::new().context("could not start the window event loop")?;
     // Wait for input rather than spinning: an editor at rest should use no CPU.
     event_loop.set_control_flow(ControlFlow::Wait);
