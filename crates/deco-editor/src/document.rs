@@ -142,6 +142,42 @@ pub fn block_comment_tokens(language: Option<&str>) -> Option<(&'static str, &'s
     })
 }
 
+/// The bracket and quote pairs `editor.autoClosingBrackets` closes in `language`.
+///
+/// # Why a table and not one list
+///
+/// The pairs are a property of the language, which is what VS Code's
+/// `languageDefined` means — and two of them matter enough to be worth the table:
+///
+/// - **Rust's `'` is a lifetime**, not a quote. `&'a str` is ordinary, and closing it
+///   would put `&''a str` on the screen every time somebody wrote one. rust-analyzer's
+///   own language configuration leaves it out for the same reason.
+/// - **Markdown, HTML and XML have no `'` pair** either: an apostrophe in prose is
+///   far more common there than a quoted string, and `don''t` is worse than nothing.
+///
+/// A language deco has no entry for gets the brackets and the double quote, which are
+/// the pairs every language in the table shares.
+pub fn bracket_pairs(language: Option<&str>) -> &'static [(char, char)] {
+    const BRACKETS: &[(char, char)] = &[('(', ')'), ('[', ']'), ('{', '}'), ('"', '"')];
+    const WITH_APOSTROPHE: &[(char, char)] =
+        &[('(', ')'), ('[', ']'), ('{', '}'), ('"', '"'), ('\'', '\'')];
+    const BACKTICK: &[(char, char)] = &[
+        ('(', ')'),
+        ('[', ']'),
+        ('{', '}'),
+        ('"', '"'),
+        ('\'', '\''),
+        ('`', '`'),
+    ];
+    match language {
+        // A template literal is a quote in these, and the pair is worth having.
+        Some("typescript" | "typescriptreact" | "javascript" | "javascriptreact") => BACKTICK,
+        // The apostrophe is a lifetime, an apostrophe, or a tag delimiter.
+        Some("rust" | "markdown" | "html" | "xml") => BRACKETS,
+        Some(_) | None => WITH_APOSTROPHE,
+    }
+}
+
 /// An open document.
 #[derive(Debug)]
 pub struct Document {

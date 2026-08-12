@@ -344,6 +344,9 @@ pub fn execute(ctx: &mut Context<'_>, command: &str, args: Option<&Value>) -> Ou
             if text.is_empty() {
                 return Outcome::Handled;
             }
+            if let Some(outcome) = auto_close(ctx, text) {
+                return outcome;
+            }
             insert_text(ctx, text);
             Outcome::Handled
         }
@@ -733,6 +736,99 @@ fn edit_at_selections(
 }
 
 /// Replaces each selection with `text`.
+/// `editor.autoClosingBrackets`: closes a bracket the caret has just opened, and
+/// steps over one it has already closed.
+///
+/// `None` when this keystroke is an ordinary insertion, so the caller carries on.
+///
+/// # What it deliberately does not do
+///
+/// - **Surround a selection.** Typing `(` with text selected replaces it, as it
+///   always has. Wrapping instead is `editor.autoSurround`, a separate setting deco
+///   does not read — and closing a bracket *around* a replacement while leaving the
+///   replacement out would be neither behaviour.
+/// - **Remember which closers it inserted.** Typing `)` in front of any `)` steps
+///   over it. VS Code tracks the ones it added and only steps over those; the state
+///   that needs is a per-document list invalidated by every other edit, and the two
+///   answers differ only where somebody typed both halves of a pair by hand and then
+///   typed a third closer.
+fn auto_close(ctx: &mut Context<'_>, text: &str) -> Option<Outcome> {
+    let mode = ctx.document.settings.auto_closing_brackets;
+    if mode == deco_config::AutoClosingBrackets::Never {
+        return None;
+    }
+    // One character, typed: a paste or a multi-character insertion is not somebody
+    // reaching for a bracket.
+    let mut chars = text.chars();
+    let typed = chars.next()?;
+    if chars.next().is_some() {
+        return None;
+    }
+    // A selection is replaced, so there is no caret to put a closer after.
+    if ctx.view.selections.iter().any(|s| !s.is_empty()) {
+        return None;
+    }
+
+    let pairs = crate::document::bracket_pairs(ctx.document.language());
+    let after = |ctx: &Context<'_>, at: Position| next_char(&ctx.document.buffer, at);
+
+    // Stepping over a closer comes first: `"` both opens and closes, and in front of
+    // one the useful answer is to move past it rather than to open another.
+    if pairs.iter().any(|(_, close)| *close == typed)
+        && ctx
+            .view
+            .selections
+            .iter()
+            .all(|s| after(ctx, s.active) == Some(typed))
+    {
+        ctx.view.selections.map(|s| {
+            let over = deco_core::movement::grapheme_right(&ctx.document.buffer, s.active);
+            s.moved_to(over)
+        });
+        ctx.document.history.break_group();
+        return Some(Outcome::Handled);
+    }
+
+    let (_, closer) = pairs.iter().find(|(open, _)| *open == typed)?;
+    // Every caret has to agree, or one keystroke would insert a pair in some places
+    // and a bare bracket in others.
+    if !ctx
+        .view
+        .selections
+        .iter()
+        .all(|s| mode.closes_before(after(ctx, s.active)))
+    {
+        return None;
+    }
+
+    let closer = *closer;
+    let pair = format!("{typed}{closer}");
+    edit_at_selections(ctx, EditKind::Insert, |_, selection| {
+        Some((selection.range(), pair.clone()))
+    });
+    // Back between the two, which is the point. One column: every character in a
+    // pair here is ASCII, so one UTF-16 unit.
+    ctx.view.selections.map(|s| {
+        let at = s.active;
+        s.moved_to(Position::new(at.line, at.character.saturating_sub(1)))
+    });
+    Some(Outcome::Handled)
+}
+
+/// The character after `at`, or `None` at the end of a line.
+fn next_char(buffer: &Buffer, at: Position) -> Option<char> {
+    let at = buffer.clamp_position(at);
+    let line = line_text(buffer, at.line);
+    let mut column = 0u32;
+    for c in line.chars() {
+        if column == at.character {
+            return Some(c);
+        }
+        column += c.len_utf16() as u32;
+    }
+    None
+}
+
 fn insert_text(ctx: &mut Context<'_>, text: &str) {
     edit_at_selections(ctx, EditKind::Insert, |_, selection| {
         Some((selection.range(), text.to_owned()))
@@ -1629,6 +1725,147 @@ mod tests {
         fn cursor(&self) -> Position {
             self.view.selections.primary().active
         }
+    }
+
+    // ---- Auto-closing brackets --------------------------------------------
+
+    #[test]
+    fn typing_an_opening_bracket_closes_it_and_stays_inside() {
+        let mut h = Harness::with_language("fn main() {\n\n}\n", "rs").at(1, 0);
+        h.type_text("foo");
+        h.type_text("(");
+        assert_eq!(h.text(), "fn main() {\nfoo()\n}\n");
+        assert_eq!(h.cursor(), Position::new(1, 4), "between the two");
+    }
+
+    #[test]
+    fn typing_the_closer_steps_over_it_rather_than_doubling_it() {
+        let mut h = Harness::with_language("fn main() {\n\n}\n", "rs").at(1, 0);
+        for text in ["foo", "(", "1", ")"] {
+            h.type_text(text);
+        }
+        assert_eq!(h.text(), "fn main() {\nfoo(1)\n}\n", "one closer, not two");
+        assert_eq!(h.cursor(), Position::new(1, 6), "and past it");
+    }
+
+    #[test]
+    fn a_quote_both_opens_and_closes() {
+        // Which is why stepping over is tried before opening: in front of a `"` the
+        // useful answer is to move past it, not to open another pair.
+        let mut h = Harness::with_language("let x = ;\n", "rs").at(0, 8);
+        h.type_text("\"");
+        assert_eq!(h.text(), "let x = \"\";\n");
+        h.type_text("hi");
+        h.type_text("\"");
+        assert_eq!(h.text(), "let x = \"hi\";\n");
+        assert_eq!(h.cursor(), Position::new(0, 12), "past the closing quote");
+    }
+
+    #[test]
+    fn nothing_closes_in_the_middle_of_a_word() {
+        // `languageDefined`, the default. Closing here would turn `word` into
+        // `wo(r)rd`, which is the reason the default is conditional.
+        let mut h = Harness::new("word\n").at(0, 2);
+        h.type_text("(");
+        assert_eq!(h.text(), "wo(rd\n");
+    }
+
+    #[test]
+    fn always_closes_in_the_middle_of_a_word() {
+        let mut h = Harness::new("word\n").at(0, 2);
+        h.document.settings.auto_closing_brackets = deco_config::AutoClosingBrackets::Always;
+        h.type_text("(");
+        assert_eq!(h.text(), "wo()rd\n");
+    }
+
+    #[test]
+    fn before_whitespace_refuses_what_language_defined_allows() {
+        // `languageDefined` closes in front of `)`; `beforeWhitespace` does not.
+        let mut h = Harness::new("()\n").at(0, 1);
+        h.document.settings.auto_closing_brackets =
+            deco_config::AutoClosingBrackets::BeforeWhitespace;
+        h.type_text("[");
+        assert_eq!(h.text(), "([)\n");
+    }
+
+    #[test]
+    fn never_leaves_typing_exactly_as_it_was() {
+        let mut h = Harness::new("\n").at(0, 0);
+        h.document.settings.auto_closing_brackets = deco_config::AutoClosingBrackets::Never;
+        h.type_text("(");
+        h.type_text(")");
+        assert_eq!(h.text(), "()\n", "both typed, neither inserted");
+        assert_eq!(h.cursor(), Position::new(0, 2));
+    }
+
+    #[test]
+    fn a_rust_apostrophe_is_a_lifetime_and_does_not_close() {
+        // `&'a str` is ordinary Rust, and `&''a str` is what closing it would write.
+        let mut h = Harness::with_language("let a = b;\n", "rs").at(0, 9);
+        h.type_text("'");
+        assert_eq!(h.text(), "let a = b';\n");
+    }
+
+    #[test]
+    fn an_apostrophe_does_close_in_a_language_that_quotes_with_it() {
+        let mut h = Harness::with_language("x = ;\n", "py").at(0, 4);
+        h.type_text("'");
+        assert_eq!(h.text(), "x = '';\n");
+    }
+
+    #[test]
+    fn a_backtick_closes_in_typescript_and_not_elsewhere() {
+        let mut h = Harness::with_language("const x = ;\n", "ts").at(0, 10);
+        h.type_text("`");
+        assert_eq!(h.text(), "const x = ``;\n");
+
+        let mut other = Harness::with_language("let x = ;\n", "rs").at(0, 8);
+        other.type_text("`");
+        assert_eq!(other.text(), "let x = `;\n");
+    }
+
+    #[test]
+    fn a_selection_is_replaced_rather_than_surrounded() {
+        // Wrapping instead is `editor.autoSurround`, which deco does not read.
+        // Closing a bracket *around* a replacement while leaving the replacement out
+        // would be neither behaviour.
+        let mut h = Harness::new("hello world\n").selecting((0, 0), (0, 5));
+        h.type_text("(");
+        assert_eq!(h.text(), "( world\n");
+    }
+
+    #[test]
+    fn a_pasted_pair_is_not_reopened() {
+        // More than one character is not somebody reaching for a bracket.
+        let mut h = Harness::new("\n").at(0, 0);
+        h.type_text("foo()");
+        assert_eq!(h.text(), "foo()\n");
+    }
+
+    #[test]
+    fn every_caret_closes_or_none_of_them_does() {
+        // One keystroke inserting a pair in some places and a bare bracket in others
+        // is the sort of multi-cursor edit nobody can undo by looking at it.
+        let mut h = Harness::new("aa\nbb\n");
+        h.view.selections = SelectionSet::from_vec(
+            vec![
+                Selection::new(Position::new(0, 2), Position::new(0, 2)),
+                // Mid-word on the second line, where `languageDefined` refuses.
+                Selection::new(Position::new(1, 1), Position::new(1, 1)),
+            ],
+            0,
+        );
+        h.type_text("(");
+        assert_eq!(h.text(), "aa(\nb(b\n", "neither closed");
+    }
+
+    #[test]
+    fn a_closed_pair_is_one_undo_step() {
+        let mut h = Harness::new("\n").at(0, 0);
+        h.type_text("(");
+        assert_eq!(h.text(), "()\n");
+        h.run("undo");
+        assert_eq!(h.text(), "\n", "both halves, since one keystroke made them");
     }
 
     // ---- Motion through a wrapped line ------------------------------------
