@@ -52,6 +52,24 @@ impl WrappingIndent {
     }
 }
 
+/// `files.autoSave`.
+///
+/// deco honours `off` and `afterDelay`. The two focus-driven values are recognised
+/// and **reported** rather than silently doing nothing: see
+/// [`EditorSettings::unsupported`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AutoSave {
+    /// Only when asked.
+    #[default]
+    Off,
+    /// `files.autoSaveDelay` milliseconds after the last edit.
+    AfterDelay,
+    /// When the editor loses focus. Not honoured.
+    OnFocusChange,
+    /// When the window loses focus. Not honoured.
+    OnWindowChange,
+}
+
 /// `editor.autoIndent`.
 ///
 /// deco reads three of VS Code's five values and treats the top two as the third,
@@ -199,6 +217,10 @@ pub struct EditorSettings {
     pub auto_indent: AutoIndent,
     /// `editor.trimAutoWhitespace`.
     pub trim_auto_whitespace: bool,
+    /// `files.autoSave`.
+    pub auto_save: AutoSave,
+    /// `files.autoSaveDelay`, in milliseconds.
+    pub auto_save_delay: u64,
     /// `editor.lineNumbers`.
     pub line_numbers: LineNumbers,
     /// `editor.renderWhitespace`.
@@ -257,6 +279,15 @@ impl EditorSettings {
                 _ => WordWrap::Off,
             },
             word_wrap_column: s.get_u64("editor.wordWrapColumn", l).unwrap_or(80).max(1) as usize,
+            auto_save: match s.get_str("files.autoSave", l) {
+                Some("afterDelay") => AutoSave::AfterDelay,
+                Some("onFocusChange") => AutoSave::OnFocusChange,
+                Some("onWindowChange") => AutoSave::OnWindowChange,
+                _ => AutoSave::Off,
+            },
+            // VS Code's own default. Clamped away from zero, which would mean saving
+            // on every keystroke — and a save per character is a write per character.
+            auto_save_delay: s.get_u64("files.autoSaveDelay", l).unwrap_or(1000).max(100),
             trim_auto_whitespace: s.get_bool("editor.trimAutoWhitespace", l).unwrap_or(true),
             auto_indent: match s.get_str("editor.autoIndent", l) {
                 Some("none") => AutoIndent::None,
@@ -348,6 +379,24 @@ impl EditorSettings {
         } else {
             prefix
         }
+    }
+
+    /// What these settings ask for that deco does not do, if anything.
+    ///
+    /// Reported through [`crate::Settings`]'s reader rather than ignored, because a
+    /// setting that silently does nothing is the one thing worse than one that is
+    /// refused: nothing tells you it did nothing. An unknown colour theme is already
+    /// reported this way.
+    pub fn unsupported(&self) -> Option<String> {
+        let value = match self.auto_save {
+            AutoSave::OnFocusChange => "onFocusChange",
+            AutoSave::OnWindowChange => "onWindowChange",
+            _ => return None,
+        };
+        Some(format!(
+            "`files.autoSave: \"{value}\"` is not honoured; deco does `off` and \
+             `afterDelay`, so nothing is saved automatically"
+        ))
     }
 
     /// The string one indent level inserts.

@@ -24,8 +24,8 @@ pub mod paths;
 pub mod settings;
 
 pub use editor::{
-    AutoClosingBrackets, AutoIndent, CursorStyle, EditorSettings, EolSetting, LineNumbers,
-    RenderWhitespace, WordWrap, WrappingIndent,
+    AutoClosingBrackets, AutoIndent, AutoSave, CursorStyle, EditorSettings, EolSetting,
+    LineNumbers, RenderWhitespace, WordWrap, WrappingIndent,
 };
 pub use jsonc::{parse as parse_jsonc, JsoncError};
 pub use settings::{Scope, Settings, SettingsError};

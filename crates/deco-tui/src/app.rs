@@ -116,6 +116,22 @@ fn paint(out: &mut impl Write, frame: &Frame, style: Option<cursor::SetCursorSty
     Ok(())
 }
 
+/// Whether `files.autoSave: "afterDelay"` is due.
+///
+/// A pure function of the three facts that decide it, so the rule is testable without
+/// a terminal and without waiting a second for one.
+///
+/// The clock is this side's: `deco-editor` is handed `now_ms` per keystroke and owns
+/// no timer, which is what keeps every command deterministic under test. An idle timer
+/// therefore lives in the event loop, where the idle already happens — the poll that
+/// lets a language server's diagnostics arrive is the same poll that notices the delay
+/// has passed.
+fn auto_save_due(settings: &deco_config::EditorSettings, idle_ms: u64, dirty: bool) -> bool {
+    dirty
+        && settings.auto_save == deco_config::AutoSave::AfterDelay
+        && idle_ms >= settings.auto_save_delay
+}
+
 /// Runs the editor until the user quits.
 pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
     let _guard = TerminalGuard::enter()?;
@@ -130,6 +146,9 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
     session.frontend_commands = frontend_commands();
 
     let mut dirty = true;
+    // When the document last changed, for `files.autoSave: "afterDelay"`. `None` while
+    // there is nothing to save.
+    let mut edited_at: Option<u64> = None;
     loop {
         if dirty {
             // The find bar costs a row, so the text area's height depends on
@@ -152,6 +171,21 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
         // spinning.
         if !event::poll(LSP_POLL_INTERVAL)? {
             dirty |= lsp.poll(session);
+            // Checked on the idle path only. A save while keys are still arriving
+            // would be a write per keystroke, which is the thing the delay exists to
+            // avoid.
+            if let Some(at) = edited_at {
+                let idle = started.elapsed().as_millis() as u64 - at;
+                if auto_save_due(&session.document.settings, idle, session.document.dirty) {
+                    save(session)?;
+                    lsp.saved(session);
+                    edited_at = None;
+                    dirty = true;
+                } else if !session.document.dirty {
+                    // Saved by hand in the meantime.
+                    edited_at = None;
+                }
+            }
             continue;
         }
         dirty |= lsp.poll(session);
@@ -173,6 +207,7 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
                 // may put a different document on screen, and the language
                 // server has to be told which file it is now looking at.
                 let path_before = session.document.path.clone();
+                let was_dirty = session.document.dirty;
                 // And the language, which `ctrl+k m` can change without the
                 // document changing — a different language is a different server.
                 let language_before = session.document.language().map(str::to_owned);
@@ -400,6 +435,16 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
                 lsp.changed(session);
                 // A hover describing where the cursor was is worse than none.
                 dirty |= lsp.cursor_moved(session);
+
+                // The auto-save clock restarts on every edit, so a delay measured
+                // from the *first* keystroke of a paragraph cannot fire in the middle
+                // of typing it. Cleared when the document is clean again, whether
+                // this keystroke saved it or undid its way back.
+                if session.document.dirty {
+                    edited_at = Some(started.elapsed().as_millis() as u64);
+                } else if was_dirty {
+                    edited_at = None;
+                }
             }
             Event::Resize(new_width, new_height) => {
                 width = new_width;
@@ -616,6 +661,77 @@ mod tests {
         let mut session = Session::new(settings, None, deco_keymap::binding::Platform::Linux);
         session.open(PathBuf::from("/w/a.rs"), "fn main() {}\n");
         session
+    }
+
+    // ---- files.autoSave ---------------------------------------------------
+
+    /// Settings with `files.autoSave` set to `value`.
+    fn auto_save(value: &str) -> deco_config::EditorSettings {
+        let mut settings = deco_config::Settings::with_defaults();
+        settings
+            .load_layer(
+                deco_config::Scope::User,
+                &format!(r#"{{"files.autoSave": "{value}", "files.autoSaveDelay": 500}}"#),
+            )
+            .expect("valid settings");
+        deco_config::EditorSettings::resolve(&settings, None)
+    }
+
+    #[test]
+    fn off_never_saves_however_long_the_idle() {
+        let settings = auto_save("off");
+        assert!(!auto_save_due(&settings, 60_000, true));
+    }
+
+    #[test]
+    fn after_delay_saves_once_the_delay_has_passed() {
+        let settings = auto_save("afterDelay");
+        assert!(!auto_save_due(&settings, 499, true), "not yet");
+        assert!(auto_save_due(&settings, 500, true), "on the boundary");
+        assert!(auto_save_due(&settings, 5_000, true));
+    }
+
+    #[test]
+    fn a_clean_document_is_never_saved() {
+        // Otherwise an idle editor would rewrite the same bytes every second, and a
+        // file's modification time is something other tools watch.
+        let settings = auto_save("afterDelay");
+        assert!(!auto_save_due(&settings, 60_000, false));
+    }
+
+    #[test]
+    fn the_delay_cannot_be_set_to_zero() {
+        // Zero would mean a write per keystroke, which is what the delay exists to
+        // avoid.
+        let mut settings = deco_config::Settings::with_defaults();
+        settings
+            .load_layer(
+                deco_config::Scope::User,
+                r#"{"files.autoSave": "afterDelay", "files.autoSaveDelay": 0}"#,
+            )
+            .unwrap();
+        let resolved = deco_config::EditorSettings::resolve(&settings, None);
+        assert!(
+            resolved.auto_save_delay >= 100,
+            "{}",
+            resolved.auto_save_delay
+        );
+    }
+
+    #[test]
+    fn the_focus_values_are_reported_rather_than_silently_ignored() {
+        // A setting that does nothing and says nothing is worse than one that is
+        // refused, so this goes in the session's problem list — where an unknown
+        // colour theme already goes.
+        for value in ["onFocusChange", "onWindowChange"] {
+            let problem = auto_save(value)
+                .unsupported()
+                .unwrap_or_else(|| panic!("{value} should report"));
+            assert!(problem.contains(value), "{problem}");
+            assert!(problem.contains("not honoured"), "{problem}");
+        }
+        assert_eq!(auto_save("afterDelay").unsupported(), None);
+        assert_eq!(auto_save("off").unsupported(), None);
     }
 
     #[test]
