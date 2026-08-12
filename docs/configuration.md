@@ -57,7 +57,7 @@ Settings deco resolves into an open document's behaviour: `editor.tabSize`,
 `editor.insertSpaces`, `editor.detectIndentation`, `editor.wordSeparators`,
 `editor.wordWrap`, `editor.wordWrapColumn`, `editor.wrappingIndent`,
 `editor.autoClosingBrackets`, `editor.autoIndent`, `editor.trimAutoWhitespace`,
-`editor.lineNumbers`,
+`files.autoSave`, `files.autoSaveDelay`, `editor.lineNumbers`,
 `editor.renderWhitespace`, `editor.cursorStyle`,
 `editor.cursorSurroundingLines`, `editor.scrollBeyondLastLine`,
 `editor.rulers`, `editor.fontFamily`, `editor.fontSize`, `editor.lineHeight`,
@@ -65,10 +65,10 @@ Settings deco resolves into an open document's behaviour: `editor.tabSize`,
 `files.insertFinalNewline`, plus `extensions.*` for the host and deco's own
 `deco.lsp.*` (see [Language servers](language-servers.md)).
 
-Seven keys deco ships a **default** for are still read by nothing:
+Five keys deco ships a **default** for are still read by nothing:
 `editor.renderControlCharacters`, `editor.tabCompletion`,
-`editor.largeFileOptimizations`, `files.autoSave`, `files.autoSaveDelay`,
-`files.encoding` and `workbench.editor.enablePreview`. Naming
+`editor.largeFileOptimizations`, `files.encoding` and
+`workbench.editor.enablePreview`. Naming
 them here because shipping a default *is* a claim: an unknown key deco never
 mentioned is one thing, and one in deco's own default settings file is another.
 
@@ -163,6 +163,29 @@ not be deco's business. Two details:
 
 `editor.cursorBlinking` is not read, and the caret blinks: that is VS Code's default
 for it, and with the setting unread there is one answer rather than a choice.
+
+### Saving on a delay
+
+`files.autoSave: "afterDelay"` writes the file `files.autoSaveDelay` milliseconds
+after the last edit. It is **off by default**, in VS Code and here: an editor that
+writes without being asked is a decision, not a convenience, so it stays one you make.
+
+The clock restarts on every edit, so a delay measured from the first keystroke of a
+paragraph cannot fire in the middle of typing it. The save happens on an *idle* poll —
+the same one that lets a language server's diagnostics arrive — so keys still coming in
+postpone it rather than racing it. A clean document is never written: an idle editor
+rewriting the same bytes every second would keep touching a modification time other
+tools watch.
+
+`files.autoSaveDelay` is clamped to at least 100 ms. Zero would be a write per
+keystroke, which is the thing the delay exists to avoid.
+
+**`onFocusChange` and `onWindowChange` are not honoured**, and deco *says so* rather
+than doing nothing: setting either puts a line in the problem list the editor shows at
+startup, where an unknown colour theme already goes. Both need a focus event — an
+editor losing focus is a tab switch, a window losing it is a terminal event not every
+terminal sends — and a save that silently never happens is the worst way to find that
+out.
 
 ## keybindings.json
 

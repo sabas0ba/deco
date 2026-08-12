@@ -339,6 +339,7 @@ impl Session {
             recent: Vec::new(),
             problems,
         };
+        session.report_unsupported();
         session.refresh_context();
         session
     }
@@ -848,6 +849,19 @@ impl Session {
     fn resolve_document_settings(&mut self) {
         self.document.settings = EditorSettings::resolve(&self.settings, self.document.language());
         self.document.apply_overrides();
+        self.report_unsupported();
+    }
+
+    /// Adds anything the resolved settings ask for that deco does not do.
+    ///
+    /// Once each: re-resolving the same settings must not fill the problem list with
+    /// copies of one complaint, and the frontend shows every entry.
+    fn report_unsupported(&mut self) {
+        if let Some(problem) = self.document.settings.unsupported() {
+            if !self.problems.contains(&problem) {
+                self.problems.push(problem);
+            }
+        }
     }
 
     /// Recomputes the context keys `when` clauses read.
@@ -3711,6 +3725,38 @@ mod tests {
         s.set_workspace_settings(r#"{"editor.detectIndentation": false}"#);
         assert_eq!(s.document.settings.tab_size, 4, "back to the setting");
         assert!(!s.document.indentation_overridden);
+    }
+
+    #[test]
+    fn an_unsupported_auto_save_value_reaches_the_problem_list() {
+        // The frontend shows every entry, which is how a setting that does nothing
+        // manages to say so.
+        let mut settings = Settings::with_defaults();
+        settings.set(Scope::User, "files.autoSave", json!("onFocusChange"));
+        let s = Session::new(settings, None, Platform::Linux);
+        assert_eq!(s.problems.len(), 1, "{:?}", s.problems);
+        assert!(s.problems[0].contains("onFocusChange"), "{:?}", s.problems);
+    }
+
+    #[test]
+    fn the_same_complaint_is_not_made_twice() {
+        // The settings are re-resolved on a language change, a rename and a workspace
+        // layer arriving; a problem list of copies is a problem list nobody reads.
+        let mut settings = Settings::with_defaults();
+        settings.set(Scope::User, "files.autoSave", json!("onWindowChange"));
+        let mut s = Session::new(settings, None, Platform::Linux);
+        s.open(PathBuf::from("/w/a.rs"), "x\n");
+        s.set_language(Some("markdown"));
+        s.set_workspace_settings("{}");
+        assert_eq!(s.problems.len(), 1, "{:?}", s.problems);
+    }
+
+    #[test]
+    fn a_supported_auto_save_value_says_nothing() {
+        let mut settings = Settings::with_defaults();
+        settings.set(Scope::User, "files.autoSave", json!("afterDelay"));
+        let s = Session::new(settings, None, Platform::Linux);
+        assert!(s.problems.is_empty(), "{:?}", s.problems);
     }
 
     // ---- Word wrap ---------------------------------------------------------
