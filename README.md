@@ -80,6 +80,7 @@ thin painter.
 | Command palette (`ctrl+shift+p`), quick open (`ctrl+p`), go to line (`ctrl+g`) | Yes |
 | Word wrap (`editor.wordWrap`, `editor.wrappingIndent`, `alt+z`) | Yes in the terminal |
 | Detected indentation (`editor.detectIndentation`) | Yes — the status bar says when a file overruled the setting |
+| Auto-closing brackets (`editor.autoClosingBrackets`) | Yes — no `autoSurround`, no `autoClosingDelete` |
 | `renderWhitespace`, `rulers`, `lineNumbers`, `cursorStyle` | Yes in the terminal — `cursorStyle`'s thin and hollow shapes collapse |
 | `.tmTheme` (plist) themes, `-` scope exclusions | No |
 
@@ -240,6 +241,12 @@ does not:
   whitespace markers or rulers, so `editor.wordWrap`, `editor.renderWhitespace` and
   `editor.rulers` have no effect there — and no chrome, so `ctrl+f` refuses
   rather than opening a find bar the frontend cannot show.
+- **Eight settings deco ships defaults for are read by nothing yet:**
+  `editor.renderControlCharacters`, `editor.tabCompletion`,
+  `editor.trimAutoWhitespace`, `editor.largeFileOptimizations`, `files.autoSave`,
+  `files.autoSaveDelay`, `files.encoding` and `workbench.editor.enablePreview`.
+  Shipping a default for a key is a claim about it, so they are named here rather
+  than left to be discovered. (`extensions.host.*` is the unwired host's, below.)
 - **Word wrap breaks at whitespace rather than by Unicode UAX #14.** Which does
   not know that a closing bracket may not begin a row; the table that does would be
   the first dependency added for cosmetics — see

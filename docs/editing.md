@@ -69,6 +69,57 @@ Python programmer means by commenting a block out, and it does stop the code run
 — but as an expression statement, so it is only sound where a statement is allowed.
 Matching VS Code beats inventing a third answer.
 
+## Auto-closing brackets
+
+`editor.autoClosingBrackets` closes a bracket or a quote as you open it, and steps
+over a closer you have already got.
+
+![Typing a bracket, a quote, and typing the closers back over them](img/auto-closing-brackets.svg)
+
+| `editor.autoClosingBrackets` | Where a bracket closes itself |
+| --- | --- |
+| `never` | Nowhere |
+| `languageDefined` (default) | Before whitespace, the end of a line, or one of `;:.,=}])>` |
+| `beforeWhitespace` | Only before whitespace or the end of a line |
+| `always` | Wherever the caret is |
+
+Each value is a rule about *where*, not about whether. Closing in the middle of a
+word turns `word` into `wo(r)rd`, which is why VS Code's default — and deco's — is
+conditional.
+
+The pairs are the language's, which is what `languageDefined` means. Two entries in
+that table are worth stating:
+
+- **Rust's `'` is a lifetime.** `&'a str` is ordinary code and `&''a str` is what
+  closing it would write, so Rust has no apostrophe pair. rust-analyzer's own language
+  configuration leaves it out for the same reason.
+- **Markdown, HTML and XML have no apostrophe pair either.** An apostrophe in prose is
+  far more common there than a quoted string, and `don''t` is worse than nothing.
+
+TypeScript and JavaScript add a backtick, since a template literal is a quote there.
+Everything else gets `()`, `[]`, `{}`, `""` and `''`.
+
+A quote both opens and closes, so **stepping over is tried first**: in front of a `"`
+the useful answer is to move past it rather than to open another pair.
+
+One keystroke is one undo step — `ctrl+z` after `(` takes back both halves, because
+one keystroke wrote them. And with several cursors, either all of them close or none
+do: a keystroke that inserted a pair in some places and a bare bracket in others is
+not an edit anybody can undo by looking at it.
+
+### What it deliberately does not do
+
+- **Surround a selection.** Typing `(` with text selected replaces it, as it always
+  has. Wrapping instead is `editor.autoSurround`, a separate setting deco does not
+  read — and closing a bracket *around* a replacement while leaving the replacement
+  out would be neither behaviour. `ctrl+shift+a` does surround, for comments.
+- **Remember which closers it inserted.** Typing `)` in front of any `)` steps over
+  it. VS Code tracks the ones it added and steps over only those; the state that needs
+  is a per-document list invalidated by every other edit, and the two answers differ
+  only where somebody typed both halves by hand and then typed a third closer.
+- **Delete both halves on backspace.** That is `editor.autoClosingDelete`, also
+  unread.
+
 ## Multiple cursors
 
 `ctrl+d` is two behaviours behind one key, as it is in VS Code. The first press

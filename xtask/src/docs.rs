@@ -163,6 +163,10 @@ fn demos() -> Vec<Demo> {
             build: wrapping_indent,
         },
         Demo {
+            name: "auto-closing-brackets",
+            build: auto_closing_brackets,
+        },
+        Demo {
             name: "save-as",
             build: save_as,
         },
@@ -916,6 +920,22 @@ fn view_settings() -> String {
 /// about; one tab-indented line, so an arrow has somewhere to go; and enough lines
 /// that `lineNumbers: "interval"` reaches its first tenth.
 const RULED: &str = "fn main() {\n    let total = 1;\n    let long = total + 2 + 3 + 4;\n\tlet tabbed = 5;\n    let a = 1;\n    let b = 2;\n    let c = 3;\n    let d = 4;\n    let e = 5;\n    let f = 6;\n    println!(\"{total}\");\n}\n";
+
+fn auto_closing_brackets() -> String {
+    let mut take = Take::new("main.rs", "fn main() {\n    \n}\n");
+    take.at(1, 4).capture("an empty line, ready for a call", 4);
+    // Every keystroke captured: the pair appearing and the caret staying inside it
+    // is the whole feature, and it happens one character at a time.
+    take.press(&["p", "r", "i", "n", "t"]);
+    take.press_and_hold(&["("], 6);
+    take.press_and_hold(&["\""], 6);
+    take.press(&["h", "i"]);
+    // And back out over both closers, typing them rather than moving past them.
+    take.press_and_hold(&["\""], 5);
+    take.press_and_hold(&[")"], 6);
+    take.press_and_hold(&[";"], 5);
+    take.finish()
+}
 
 fn save_as() -> String {
     let mut take = Take::new("notes.txt", "name = \"deco\"\nedition = \"2021\"\n");

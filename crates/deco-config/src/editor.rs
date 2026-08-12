@@ -52,6 +52,50 @@ impl WrappingIndent {
     }
 }
 
+/// `editor.autoClosingBrackets`.
+///
+/// Each value is a rule about *where* a bracket closes itself, not whether the
+/// feature exists: closing one in the middle of a word turns `foo` into `f(o)oo`,
+/// which is why the default is conditional rather than `always`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AutoClosingBrackets {
+    /// Wherever the caret is.
+    Always,
+    /// Before whitespace, the end of a line, or one of the characters a bracket
+    /// naturally precedes.
+    #[default]
+    LanguageDefined,
+    /// Only before whitespace or the end of a line.
+    BeforeWhitespace,
+    /// Never.
+    Never,
+}
+
+/// The characters `languageDefined` will close a bracket in front of.
+///
+/// VS Code's own `autoCloseBefore` default, less the whitespace it also allows —
+/// which is handled separately because the end of a line counts as whitespace here
+/// and is not a character at all.
+const AUTO_CLOSE_BEFORE: &str = ";:.,=}])>";
+
+impl AutoClosingBrackets {
+    /// Whether a bracket typed before `next` should close itself.
+    ///
+    /// `next` is the character the caret is in front of, or `None` at the end of a
+    /// line — where every setting but `never` closes, because there is nothing for
+    /// the closer to be in the middle of.
+    pub fn closes_before(self, next: Option<char>) -> bool {
+        match self {
+            Self::Never => false,
+            Self::Always => true,
+            Self::BeforeWhitespace => next.is_none_or(char::is_whitespace),
+            Self::LanguageDefined => {
+                next.is_none_or(|c| c.is_whitespace() || AUTO_CLOSE_BEFORE.contains(c))
+            }
+        }
+    }
+}
+
 /// `editor.lineNumbers`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LineNumbers {
@@ -129,6 +173,8 @@ pub struct EditorSettings {
     pub word_wrap_column: usize,
     /// `editor.wrappingIndent`.
     pub wrapping_indent: WrappingIndent,
+    /// `editor.autoClosingBrackets`.
+    pub auto_closing_brackets: AutoClosingBrackets,
     /// `editor.lineNumbers`.
     pub line_numbers: LineNumbers,
     /// `editor.renderWhitespace`.
@@ -187,6 +233,12 @@ impl EditorSettings {
                 _ => WordWrap::Off,
             },
             word_wrap_column: s.get_u64("editor.wordWrapColumn", l).unwrap_or(80).max(1) as usize,
+            auto_closing_brackets: match s.get_str("editor.autoClosingBrackets", l) {
+                Some("always") => AutoClosingBrackets::Always,
+                Some("beforeWhitespace") => AutoClosingBrackets::BeforeWhitespace,
+                Some("never") => AutoClosingBrackets::Never,
+                _ => AutoClosingBrackets::LanguageDefined,
+            },
             wrapping_indent: match s.get_str("editor.wrappingIndent", l) {
                 Some("none") => WrappingIndent::None,
                 Some("indent") => WrappingIndent::Indent,
@@ -291,6 +343,36 @@ impl EditorSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn language_defined_closes_before_whitespace_and_punctuation() {
+        let mode = AutoClosingBrackets::LanguageDefined;
+        assert!(mode.closes_before(None), "the end of a line");
+        assert!(mode.closes_before(Some(' ')));
+        assert!(mode.closes_before(Some(')')), "inside another bracket");
+        assert!(mode.closes_before(Some(';')));
+        assert!(
+            !mode.closes_before(Some('o')),
+            "in the middle of a word, `foo` would become `f(o)oo`"
+        );
+    }
+
+    #[test]
+    fn before_whitespace_is_stricter_than_language_defined() {
+        let mode = AutoClosingBrackets::BeforeWhitespace;
+        assert!(mode.closes_before(None));
+        assert!(mode.closes_before(Some('\t')));
+        assert!(
+            !mode.closes_before(Some(')')),
+            "which languageDefined allows"
+        );
+    }
+
+    #[test]
+    fn always_and_never_ignore_what_follows() {
+        assert!(AutoClosingBrackets::Always.closes_before(Some('o')));
+        assert!(!AutoClosingBrackets::Never.closes_before(None));
+    }
     use crate::settings::Scope;
 
     fn resolve(user_json: &str, language: Option<&str>) -> EditorSettings {

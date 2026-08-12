@@ -56,13 +56,20 @@ the open document's language:
 Settings deco resolves into an open document's behaviour: `editor.tabSize`,
 `editor.insertSpaces`, `editor.detectIndentation`, `editor.wordSeparators`,
 `editor.wordWrap`, `editor.wordWrapColumn`, `editor.wrappingIndent`,
-`editor.lineNumbers`,
+`editor.autoClosingBrackets`, `editor.lineNumbers`,
 `editor.renderWhitespace`, `editor.cursorStyle`,
 `editor.cursorSurroundingLines`, `editor.scrollBeyondLastLine`,
 `editor.rulers`, `editor.fontFamily`, `editor.fontSize`, `editor.lineHeight`,
 `workbench.colorTheme`, `files.eol`, `files.trimTrailingWhitespace`,
 `files.insertFinalNewline`, plus `extensions.*` for the host and deco's own
 `deco.lsp.*` (see [Language servers](language-servers.md)).
+
+Eight keys deco ships a **default** for are still read by nothing:
+`editor.renderControlCharacters`, `editor.tabCompletion`,
+`editor.trimAutoWhitespace`, `editor.largeFileOptimizations`, `files.autoSave`,
+`files.autoSaveDelay`, `files.encoding` and `workbench.editor.enablePreview`. Naming
+them here because shipping a default *is* a claim: an unknown key deco never
+mentioned is one thing, and one in deco's own default settings file is another.
 
 `editor.fontFamily`, `editor.fontSize` and `editor.lineHeight` are the GPU
 frontend's alone — a terminal has no font size — and the GPU frontend does not wrap
