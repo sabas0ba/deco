@@ -257,7 +257,7 @@ does not:
 
 ## Building
 
-Rust 1.82 or newer.
+Rust 1.85 or newer.
 
 Everything CI runs is a `cargo xtask` subcommand, so any CI step can be
 reproduced locally with the command CI itself uses:
