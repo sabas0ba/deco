@@ -197,6 +197,8 @@ pub struct EditorSettings {
     pub auto_closing_brackets: AutoClosingBrackets,
     /// `editor.autoIndent`.
     pub auto_indent: AutoIndent,
+    /// `editor.trimAutoWhitespace`.
+    pub trim_auto_whitespace: bool,
     /// `editor.lineNumbers`.
     pub line_numbers: LineNumbers,
     /// `editor.renderWhitespace`.
@@ -255,6 +257,7 @@ impl EditorSettings {
                 _ => WordWrap::Off,
             },
             word_wrap_column: s.get_u64("editor.wordWrapColumn", l).unwrap_or(80).max(1) as usize,
+            trim_auto_whitespace: s.get_bool("editor.trimAutoWhitespace", l).unwrap_or(true),
             auto_indent: match s.get_str("editor.autoIndent", l) {
                 Some("none") => AutoIndent::None,
                 Some("keep") => AutoIndent::Keep,

@@ -171,6 +171,10 @@ fn demos() -> Vec<Demo> {
             build: auto_indent,
         },
         Demo {
+            name: "trim-auto-whitespace",
+            build: trim_auto_whitespace,
+        },
+        Demo {
             name: "save-as",
             build: save_as,
         },
@@ -954,6 +958,24 @@ fn auto_indent() -> String {
     take.press_and_hold(&[";"], 6);
     // And a second `enter`, which keeps the indentation it is on.
     take.press_and_hold(&["enter"], 6);
+    take.finish()
+}
+
+fn trim_auto_whitespace() -> String {
+    // Whitespace is invisible, so the demonstration turns it on: with
+    // `renderWhitespace: "all"` the indent that is taken back can be seen going.
+    let mut take = Take::new("main.rs", "fn main() {\n    let total = 1;\n}\n");
+    take.append(
+        r#"{"editor.renderWhitespace": "all"}"#,
+        "whitespace shown, so the indent can be watched",
+        4,
+    );
+    take.shots.remove(0);
+    take.session.view.selections = SelectionSet::caret(Position::new(1, 18));
+    take.resize_for_chrome();
+    take.capture("the caret at the end of an indented line", 4);
+    take.press_and_hold(&["enter"], 6);
+    take.press_and_hold(&["enter"], 7);
     take.finish()
 }
 
