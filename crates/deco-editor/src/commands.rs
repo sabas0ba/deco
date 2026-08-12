@@ -1755,6 +1755,60 @@ mod tests {
     }
 
     #[test]
+    fn the_goal_column_is_a_column_of_the_screen_and_not_of_the_row() {
+        // `editor.wrappingIndent` pushes a continuation row in, so the same offset
+        // into two rows is two different places on screen. The caret keeps the
+        // screen column: what looks like straight down has to be straight down.
+        let mut h = Harness::new("  aaaaa bbbbb ccccc\n");
+        h.document.settings.word_wrap = deco_config::WordWrap::On;
+        h.document.settings.wrapping_indent = deco_config::WrappingIndent::Same;
+        h.document.settings.tab_size = 2;
+        h.view.text_width = 10;
+
+        let starts = h
+            .view
+            .row_starts(&h.document.buffer, &h.document.settings, 0);
+        assert!(starts.len() > 1, "the line wraps: {starts:?}");
+
+        // Two columns into row 0's text is screen column 2; row 1 is pushed in by
+        // two, so the same screen column is its *first* character.
+        h.view.selections = SelectionSet::caret(Position::new(0, 2));
+        assert_eq!(
+            h.view.goal_column(
+                &h.document.buffer,
+                &h.document.settings,
+                Position::new(0, 2)
+            ),
+            2
+        );
+        h.run("cursorDown");
+        assert_eq!(
+            h.view
+                .goal_column(&h.document.buffer, &h.document.settings, h.cursor()),
+            2,
+            "the same column of the screen"
+        );
+        assert_eq!(h.cursor().character, starts[1], "row 1's first character");
+    }
+
+    #[test]
+    fn a_goal_inside_the_indent_lands_on_the_rows_first_character() {
+        // There is no column further left on that row to land on.
+        let mut h = Harness::new("      aaaaa bbbbb ccccc\n");
+        h.document.settings.word_wrap = deco_config::WordWrap::On;
+        h.document.settings.wrapping_indent = deco_config::WrappingIndent::Same;
+        h.view.text_width = 14;
+
+        let starts = h
+            .view
+            .row_starts(&h.document.buffer, &h.document.settings, 0);
+        assert!(starts.len() > 1, "{starts:?}");
+        h.view.selections = SelectionSet::caret(Position::new(0, 1));
+        h.run("cursorDown");
+        assert_eq!(h.cursor().character, starts[1]);
+    }
+
+    #[test]
     fn every_cursor_moves_by_rows() {
         // Two carets on one wrapped line, on different rows of it.
         let mut h = wrapped(WORDS);

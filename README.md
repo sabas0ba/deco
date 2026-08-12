@@ -78,7 +78,7 @@ thin painter.
 | Find and replace (`ctrl+f`, `ctrl+h`, `F3`, `ctrl+d`, `ctrl+shift+l`) | Literal search only — no regular expressions |
 | Search in files (`ctrl+shift+f`) | Yes — bounded and synchronous, and it says so |
 | Command palette (`ctrl+shift+p`), quick open (`ctrl+p`), go to line (`ctrl+g`) | Yes |
-| Word wrap (`editor.wordWrap`, `alt+z`) | Yes in the terminal — no `wrappingIndent` |
+| Word wrap (`editor.wordWrap`, `editor.wrappingIndent`, `alt+z`) | Yes in the terminal |
 | Detected indentation (`editor.detectIndentation`) | Yes — the status bar says when a file overruled the setting |
 | `renderWhitespace`, `rulers`, `lineNumbers`, `cursorStyle` | Yes in the terminal — `cursorStyle`'s thin and hollow shapes collapse |
 | `.tmTheme` (plist) themes, `-` scope exclusions | No |
@@ -240,9 +240,9 @@ does not:
   whitespace markers or rulers, so `editor.wordWrap`, `editor.renderWhitespace` and
   `editor.rulers` have no effect there — and no chrome, so `ctrl+f` refuses
   rather than opening a find bar the frontend cannot show.
-- **Word wrap has no `editor.wrappingIndent`.** A continuation row starts at
-  column zero rather than matching the indent of the line it belongs to, and the
-  break rule is whitespace rather than Unicode UAX #14 — see
+- **Word wrap breaks at whitespace rather than by Unicode UAX #14.** Which does
+  not know that a closing bracket may not begin a row; the table that does would be
+  the first dependency added for cosmetics — see
   [Word wrap](docs/editing.md#word-wrap).
 
 ## Building

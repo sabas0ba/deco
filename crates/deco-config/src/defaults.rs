@@ -17,6 +17,7 @@ pub const DEFAULT_SETTINGS_JSONC: &str = r#"{
     "editor.wordSeparators": "`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?",
     "editor.wordWrap": "off",
     "editor.wordWrapColumn": 80,
+    "editor.wrappingIndent": "same",
     "editor.lineNumbers": "on",
     "editor.renderWhitespace": "selection",
     "editor.renderControlCharacters": true,
