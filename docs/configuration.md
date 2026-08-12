@@ -63,14 +63,12 @@ Settings deco resolves into an open document's behaviour: `editor.tabSize`,
 `files.insertFinalNewline`, plus `extensions.*` for the host and deco's own
 `deco.lsp.*` (see [Language servers](language-servers.md)).
 
-Three of those are resolved and **not yet read by anything**:
-`editor.renderWhitespace`, `editor.rulers` and `editor.cursorStyle`. Named here
-rather than left to be discovered, because a setting that parses and does nothing is
-worse than one that is rejected. `editor.fontFamily`, `editor.fontSize` and
-`editor.lineHeight` are the GPU frontend's alone — a terminal has no font size — and
-the GPU frontend does not wrap, so `editor.wordWrap` is the terminal's alone in the
-other direction. The
-[top-level README](https://github.com/sabas0ba/deco#readme) tracks what is unbuilt.
+`editor.fontFamily`, `editor.fontSize` and `editor.lineHeight` are the GPU
+frontend's alone — a terminal has no font size — and the GPU frontend does not wrap
+or draw whitespace, so `editor.wordWrap`, `editor.renderWhitespace`, `editor.rulers`
+and `editor.lineNumbers: "interval"` are the terminal's alone in the other
+direction. The [top-level README](https://github.com/sabas0ba/deco#readme) tracks
+what is unbuilt.
 
 Unknown keys are kept rather than rejected. A settings file written for VS Code
 contains a great many of them, and failing on the first one would make the file
@@ -112,6 +110,49 @@ scanning to be told the same thing.
 Set `"editor.detectIndentation": false` to have your settings win outright. It can
 arrive in workspace settings after the file is open and still takes effect — the
 file's answer is remembered rather than re-read, so nothing is copied to apply it.
+
+### What the view settings draw
+
+Three settings change how the text area looks rather than how it behaves.
+
+![The defaults, then whitespace everywhere, then rulers and interval line numbers](img/view-settings.svg)
+
+| Setting | Values | What deco does |
+| --- | --- | --- |
+| `editor.renderWhitespace` | `none`, `selection` (default), `boundary`, `trailing`, `all` | `·` per space, `→` per tab, in `editorWhitespace.foreground` |
+| `editor.rulers` | a list of columns | Tints that column, in `editorRuler.foreground` |
+| `editor.lineNumbers` | `on` (default), `off`, `relative`, `interval` | `interval` numbers every tenth line, and the caret's |
+| `editor.cursorStyle` | `line` (default), `block`, `underline`, and the `-thin` / `-outline` variants | Sets the terminal's caret shape |
+
+**Whitespace.** `selection` is VS Code's default and the least intrusive useful
+mode: the dots appear exactly where you are looking. `boundary` marks everything
+*except* a single space with a word on each side — without that exception it would
+be the same as `all` and would put a dot between every word of a sentence. A tab is
+one arrow at the column it starts on and blank for the rest of its span, the way VS
+Code draws it; filling the span with dots would make one tab indistinguishable from
+the spaces it replaces.
+
+**Rulers** are a hairline *between* two columns in VS Code, and a terminal has no
+space between cells to put one in. So a ruler becomes a tint of the cell instead, at
+a quarter strength — strong enough to follow down the screen, weak enough to read
+the code sitting on it, which is the column a ruler is there to warn about in the
+first place. A selection or a find match wins over it: those are what you are doing,
+and a ruler is furniture.
+
+**The caret shape** is set through `DECSCUSR`, the escape sequence terminals use for
+it, and restored when deco exits — leaving your shell with an editor's caret would
+not be deco's business. Two details:
+
+- **Nothing is sent unless `editor.cursorStyle` is written down.** Your terminal's
+  caret is already configured, and replacing it with VS Code's default on behalf of
+  somebody who never mentioned it would be deco overruling a preference it was not
+  asked about. Setting the key — even to `"line"`, its default value — is asking.
+- **`line-thin` and `block-outline` collapse** onto `line` and `block`. `DECSCUSR`
+  has a bar, a block and an underline, and no thin or hollow variant of any of them,
+  so the nearest shape is closer than refusing.
+
+`editor.cursorBlinking` is not read, and the caret blinks: that is VS Code's default
+for it, and with the setting unread there is one answer rather than a choice.
 
 ## keybindings.json
 

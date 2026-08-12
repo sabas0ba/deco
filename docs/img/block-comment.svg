@@ -25,18 +25,35 @@
 <text x="12.0" y="45.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  2 </text>
 <rect x="80.0" y="31.0" width="25.5" height="19.0" fill="#264f78"/>
 <text x="80.0" y="45.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
-<rect x="105.5" y="31.0" width="76.5" height="19.0" fill="#264f78"/>
-<text x="105.5" y="45.0" font-size="14px" fill="#cccccc" textLength="76.5" lengthAdjust="spacingAndGlyphs"> total = </text>
+<rect x="105.5" y="31.0" width="8.5" height="19.0" fill="#264f78"/>
+<text x="105.5" y="45.0" font-size="14px" fill="#3e3e3e" textLength="8.5" lengthAdjust="spacingAndGlyphs">·</text>
+<rect x="114.0" y="31.0" width="42.5" height="19.0" fill="#264f78"/>
+<text x="114.0" y="45.0" font-size="14px" fill="#cccccc" textLength="42.5" lengthAdjust="spacingAndGlyphs">total</text>
+<rect x="156.5" y="31.0" width="8.5" height="19.0" fill="#264f78"/>
+<text x="156.5" y="45.0" font-size="14px" fill="#3e3e3e" textLength="8.5" lengthAdjust="spacingAndGlyphs">·</text>
+<rect x="165.0" y="31.0" width="8.5" height="19.0" fill="#264f78"/>
+<text x="165.0" y="45.0" font-size="14px" fill="#cccccc" textLength="8.5" lengthAdjust="spacingAndGlyphs">=</text>
+<rect x="173.5" y="31.0" width="8.5" height="19.0" fill="#264f78"/>
+<text x="173.5" y="45.0" font-size="14px" fill="#3e3e3e" textLength="8.5" lengthAdjust="spacingAndGlyphs">·</text>
 <rect x="182.0" y="31.0" width="8.5" height="19.0" fill="#264f78"/>
 <text x="182.0" y="45.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">1</text>
 <rect x="190.5" y="31.0" width="17.0" height="19.0" fill="#264f78"/>
 <text x="190.5" y="45.0" font-size="14px" fill="#cccccc" textLength="17.0" lengthAdjust="spacingAndGlyphs">; </text>
 <text x="12.0" y="64.0" font-size="14px" fill="#cccccc" textLength="34.0" lengthAdjust="spacingAndGlyphs">  3 </text>
 <rect x="46.0" y="50.0" width="34.0" height="19.0" fill="#264f78"/>
+<text x="46.0" y="64.0" font-size="14px" fill="#3e3e3e" textLength="34.0" lengthAdjust="spacingAndGlyphs">····</text>
 <rect x="80.0" y="50.0" width="25.5" height="19.0" fill="#264f78"/>
 <text x="80.0" y="64.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
-<rect x="105.5" y="50.0" width="76.5" height="19.0" fill="#264f78"/>
-<text x="105.5" y="64.0" font-size="14px" fill="#cccccc" textLength="76.5" lengthAdjust="spacingAndGlyphs"> count = </text>
+<rect x="105.5" y="50.0" width="8.5" height="19.0" fill="#264f78"/>
+<text x="105.5" y="64.0" font-size="14px" fill="#3e3e3e" textLength="8.5" lengthAdjust="spacingAndGlyphs">·</text>
+<rect x="114.0" y="50.0" width="42.5" height="19.0" fill="#264f78"/>
+<text x="114.0" y="64.0" font-size="14px" fill="#cccccc" textLength="42.5" lengthAdjust="spacingAndGlyphs">count</text>
+<rect x="156.5" y="50.0" width="8.5" height="19.0" fill="#264f78"/>
+<text x="156.5" y="64.0" font-size="14px" fill="#3e3e3e" textLength="8.5" lengthAdjust="spacingAndGlyphs">·</text>
+<rect x="165.0" y="50.0" width="8.5" height="19.0" fill="#264f78"/>
+<text x="165.0" y="64.0" font-size="14px" fill="#cccccc" textLength="8.5" lengthAdjust="spacingAndGlyphs">=</text>
+<rect x="173.5" y="50.0" width="8.5" height="19.0" fill="#264f78"/>
+<text x="173.5" y="64.0" font-size="14px" fill="#3e3e3e" textLength="8.5" lengthAdjust="spacingAndGlyphs">·</text>
 <rect x="182.0" y="50.0" width="8.5" height="19.0" fill="#264f78"/>
 <text x="182.0" y="64.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">2</text>
 <rect x="190.5" y="50.0" width="8.5" height="19.0" fill="#264f78"/>
@@ -61,12 +78,38 @@
 <text x="105.5" y="26.0" font-size="14px" fill="#cccccc" textLength="552.5" lengthAdjust="spacingAndGlyphs">() {                                                             </text>
 <text x="12.0" y="45.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  2 </text>
 <text x="80.0" y="45.0" font-size="14px" fill="#6a9955" textLength="25.5" lengthAdjust="spacingAndGlyphs">/* </text>
-<rect x="105.5" y="31.0" width="119.0" height="19.0" fill="#264f78"/>
-<text x="105.5" y="45.0" font-size="14px" fill="#6a9955" textLength="119.0" lengthAdjust="spacingAndGlyphs">let total = 1;</text>
+<rect x="105.5" y="31.0" width="25.5" height="19.0" fill="#264f78"/>
+<text x="105.5" y="45.0" font-size="14px" fill="#6a9955" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
+<rect x="131.0" y="31.0" width="8.5" height="19.0" fill="#264f78"/>
+<text x="131.0" y="45.0" font-size="14px" fill="#3e3e3e" textLength="8.5" lengthAdjust="spacingAndGlyphs">·</text>
+<rect x="139.5" y="31.0" width="42.5" height="19.0" fill="#264f78"/>
+<text x="139.5" y="45.0" font-size="14px" fill="#6a9955" textLength="42.5" lengthAdjust="spacingAndGlyphs">total</text>
+<rect x="182.0" y="31.0" width="8.5" height="19.0" fill="#264f78"/>
+<text x="182.0" y="45.0" font-size="14px" fill="#3e3e3e" textLength="8.5" lengthAdjust="spacingAndGlyphs">·</text>
+<rect x="190.5" y="31.0" width="8.5" height="19.0" fill="#264f78"/>
+<text x="190.5" y="45.0" font-size="14px" fill="#6a9955" textLength="8.5" lengthAdjust="spacingAndGlyphs">=</text>
+<rect x="199.0" y="31.0" width="8.5" height="19.0" fill="#264f78"/>
+<text x="199.0" y="45.0" font-size="14px" fill="#3e3e3e" textLength="8.5" lengthAdjust="spacingAndGlyphs">·</text>
+<rect x="207.5" y="31.0" width="17.0" height="19.0" fill="#264f78"/>
+<text x="207.5" y="45.0" font-size="14px" fill="#6a9955" textLength="17.0" lengthAdjust="spacingAndGlyphs">1;</text>
 <rect x="224.5" y="31.0" width="8.5" height="19.0" fill="#264f78"/>
 <text x="12.0" y="64.0" font-size="14px" fill="#cccccc" textLength="34.0" lengthAdjust="spacingAndGlyphs">  3 </text>
-<rect x="46.0" y="50.0" width="153.0" height="19.0" fill="#264f78"/>
-<text x="46.0" y="64.0" font-size="14px" fill="#6a9955" textLength="153.0" lengthAdjust="spacingAndGlyphs">    let count = 2;</text>
+<rect x="46.0" y="50.0" width="34.0" height="19.0" fill="#264f78"/>
+<text x="46.0" y="64.0" font-size="14px" fill="#3e3e3e" textLength="34.0" lengthAdjust="spacingAndGlyphs">····</text>
+<rect x="80.0" y="50.0" width="25.5" height="19.0" fill="#264f78"/>
+<text x="80.0" y="64.0" font-size="14px" fill="#6a9955" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
+<rect x="105.5" y="50.0" width="8.5" height="19.0" fill="#264f78"/>
+<text x="105.5" y="64.0" font-size="14px" fill="#3e3e3e" textLength="8.5" lengthAdjust="spacingAndGlyphs">·</text>
+<rect x="114.0" y="50.0" width="42.5" height="19.0" fill="#264f78"/>
+<text x="114.0" y="64.0" font-size="14px" fill="#6a9955" textLength="42.5" lengthAdjust="spacingAndGlyphs">count</text>
+<rect x="156.5" y="50.0" width="8.5" height="19.0" fill="#264f78"/>
+<text x="156.5" y="64.0" font-size="14px" fill="#3e3e3e" textLength="8.5" lengthAdjust="spacingAndGlyphs">·</text>
+<rect x="165.0" y="50.0" width="8.5" height="19.0" fill="#264f78"/>
+<text x="165.0" y="64.0" font-size="14px" fill="#6a9955" textLength="8.5" lengthAdjust="spacingAndGlyphs">=</text>
+<rect x="173.5" y="50.0" width="8.5" height="19.0" fill="#264f78"/>
+<text x="173.5" y="64.0" font-size="14px" fill="#3e3e3e" textLength="8.5" lengthAdjust="spacingAndGlyphs">·</text>
+<rect x="182.0" y="50.0" width="17.0" height="19.0" fill="#264f78"/>
+<text x="182.0" y="64.0" font-size="14px" fill="#6a9955" textLength="17.0" lengthAdjust="spacingAndGlyphs">2;</text>
 <text x="199.0" y="64.0" font-size="14px" fill="#6a9955" textLength="25.5" lengthAdjust="spacingAndGlyphs"> */</text>
 <text x="12.0" y="83.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  4 </text>
 <text x="46.0" y="83.0" font-size="14px" fill="#cccccc" textLength="110.5" lengthAdjust="spacingAndGlyphs">    println!(</text>
@@ -89,18 +132,35 @@
 <text x="12.0" y="45.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  2 </text>
 <rect x="80.0" y="31.0" width="25.5" height="19.0" fill="#264f78"/>
 <text x="80.0" y="45.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
-<rect x="105.5" y="31.0" width="76.5" height="19.0" fill="#264f78"/>
-<text x="105.5" y="45.0" font-size="14px" fill="#cccccc" textLength="76.5" lengthAdjust="spacingAndGlyphs"> total = </text>
+<rect x="105.5" y="31.0" width="8.5" height="19.0" fill="#264f78"/>
+<text x="105.5" y="45.0" font-size="14px" fill="#3e3e3e" textLength="8.5" lengthAdjust="spacingAndGlyphs">·</text>
+<rect x="114.0" y="31.0" width="42.5" height="19.0" fill="#264f78"/>
+<text x="114.0" y="45.0" font-size="14px" fill="#cccccc" textLength="42.5" lengthAdjust="spacingAndGlyphs">total</text>
+<rect x="156.5" y="31.0" width="8.5" height="19.0" fill="#264f78"/>
+<text x="156.5" y="45.0" font-size="14px" fill="#3e3e3e" textLength="8.5" lengthAdjust="spacingAndGlyphs">·</text>
+<rect x="165.0" y="31.0" width="8.5" height="19.0" fill="#264f78"/>
+<text x="165.0" y="45.0" font-size="14px" fill="#cccccc" textLength="8.5" lengthAdjust="spacingAndGlyphs">=</text>
+<rect x="173.5" y="31.0" width="8.5" height="19.0" fill="#264f78"/>
+<text x="173.5" y="45.0" font-size="14px" fill="#3e3e3e" textLength="8.5" lengthAdjust="spacingAndGlyphs">·</text>
 <rect x="182.0" y="31.0" width="8.5" height="19.0" fill="#264f78"/>
 <text x="182.0" y="45.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">1</text>
 <rect x="190.5" y="31.0" width="17.0" height="19.0" fill="#264f78"/>
 <text x="190.5" y="45.0" font-size="14px" fill="#cccccc" textLength="17.0" lengthAdjust="spacingAndGlyphs">; </text>
 <text x="12.0" y="64.0" font-size="14px" fill="#cccccc" textLength="34.0" lengthAdjust="spacingAndGlyphs">  3 </text>
 <rect x="46.0" y="50.0" width="34.0" height="19.0" fill="#264f78"/>
+<text x="46.0" y="64.0" font-size="14px" fill="#3e3e3e" textLength="34.0" lengthAdjust="spacingAndGlyphs">····</text>
 <rect x="80.0" y="50.0" width="25.5" height="19.0" fill="#264f78"/>
 <text x="80.0" y="64.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
-<rect x="105.5" y="50.0" width="76.5" height="19.0" fill="#264f78"/>
-<text x="105.5" y="64.0" font-size="14px" fill="#cccccc" textLength="76.5" lengthAdjust="spacingAndGlyphs"> count = </text>
+<rect x="105.5" y="50.0" width="8.5" height="19.0" fill="#264f78"/>
+<text x="105.5" y="64.0" font-size="14px" fill="#3e3e3e" textLength="8.5" lengthAdjust="spacingAndGlyphs">·</text>
+<rect x="114.0" y="50.0" width="42.5" height="19.0" fill="#264f78"/>
+<text x="114.0" y="64.0" font-size="14px" fill="#cccccc" textLength="42.5" lengthAdjust="spacingAndGlyphs">count</text>
+<rect x="156.5" y="50.0" width="8.5" height="19.0" fill="#264f78"/>
+<text x="156.5" y="64.0" font-size="14px" fill="#3e3e3e" textLength="8.5" lengthAdjust="spacingAndGlyphs">·</text>
+<rect x="165.0" y="50.0" width="8.5" height="19.0" fill="#264f78"/>
+<text x="165.0" y="64.0" font-size="14px" fill="#cccccc" textLength="8.5" lengthAdjust="spacingAndGlyphs">=</text>
+<rect x="173.5" y="50.0" width="8.5" height="19.0" fill="#264f78"/>
+<text x="173.5" y="64.0" font-size="14px" fill="#3e3e3e" textLength="8.5" lengthAdjust="spacingAndGlyphs">·</text>
 <rect x="182.0" y="50.0" width="8.5" height="19.0" fill="#264f78"/>
 <text x="182.0" y="64.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">2</text>
 <rect x="190.5" y="50.0" width="8.5" height="19.0" fill="#264f78"/>
