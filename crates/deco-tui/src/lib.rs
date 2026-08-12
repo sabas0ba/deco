@@ -18,4 +18,4 @@ pub mod suggest;
 pub mod themes;
 
 pub use app::run;
-pub use render::{render, Frame, Row, Span};
+pub use render::{render, sanitise, Frame, Row, Span};

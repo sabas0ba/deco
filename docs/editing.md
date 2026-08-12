@@ -151,12 +151,23 @@ The setting chooses between the glyph and a blank. It cannot choose to send the 
 that is not a rendering option, it is a way of handing your terminal to whoever wrote
 the file.
 
-The substitution happens twice over, deliberately. The renderer does it for a
-document's own text, where the setting applies; and the painter does it again,
-unconditionally, to every span it writes. Text reaches the screen from places that are
-not the open document — a **file name** appears in the tab bar, and a **search result**
-carries a line of somebody else's file into a prompt row — so the last line of defence
-is at the write, where it cannot be forgotten.
+The substitution happens at every write, deliberately, and not only where the
+document's own text is drawn. Text reaches the terminal from places that are not the
+open document:
+
+- a **file name** appears in the tab bar and the status bar;
+- a **search result** carries a line of somebody else's file into a prompt row;
+- a **configuration problem** quotes what a settings file said — a theme name, a broken
+  keybinding — and the binary prints those *before the alternate screen opens*, straight
+  to the shell's own terminal. A cloned repository's `.vscode/settings.json` is somebody
+  else's text, which is the same threat deco already refuses a workspace-defined
+  [language server](language-servers.md#configuring-a-server) for;
+- `deco --print-config` prints the resolved theme, language and font family, which all
+  come out of a settings file.
+
+So the renderer substitutes for the document, where the setting applies, and the
+painter and the command line substitute unconditionally. The last line of defence
+belongs at the write, where whatever is added next cannot forget it.
 
 ### What this does not cover
 
