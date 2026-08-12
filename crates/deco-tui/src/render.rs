@@ -5,7 +5,7 @@
 //! lets the layout — gutter width, selection highlighting, tab expansion,
 //! status bar — be asserted in CI with no terminal attached.
 
-use deco_config::LineNumbers;
+use deco_config::{LineNumbers, RenderWhitespace};
 use deco_core::position::Range;
 // The gutter width and the column division are the session's, not the renderer's:
 // it needs the same answers to know how many columns are left for text, which is
@@ -61,6 +61,8 @@ struct Palette {
     selection_bg: Rgba,
     find_match_bg: Rgba,
     find_highlight_bg: Rgba,
+    whitespace_fg: Rgba,
+    ruler_bg: Rgba,
     status_fg: Rgba,
     status_bg: Rgba,
 }
@@ -93,11 +95,30 @@ impl Palette {
                 .color("editor.findMatchHighlightBackground")
                 .map(|c| c.over(bg))
                 .unwrap_or(fg),
+            whitespace_fg: theme
+                .color("editorWhitespace.foreground")
+                .map(|c| c.over(bg))
+                .unwrap_or(fg),
+            // A ruler is a hairline between two columns in VS Code, and a terminal
+            // has no space between cells to put one in. So it becomes a tint of the
+            // cell instead, at a quarter strength: strong enough to follow down the
+            // screen, weak enough to read the code sitting on it — which is the
+            // column a ruler is there to warn about in the first place.
+            ruler_bg: theme
+                .color("editorRuler.foreground")
+                .map(|c| Rgba { a: 0x40, ..c }.over(bg))
+                .unwrap_or(bg),
             status_fg: theme.color("statusBar.foreground").unwrap_or(fg),
             status_bg: theme.color("statusBar.background").unwrap_or(bg),
         }
     }
 }
+
+/// How often `editor.lineNumbers: "interval"` draws a number.
+///
+/// Ten, as VS Code does. The setting names no interval of its own, so this is not a
+/// number anybody can configure — in either editor.
+const LINE_NUMBER_INTERVAL: usize = 10;
 
 /// Number of columns the line-number gutter needs.
 pub fn gutter_width(session: &Session) -> usize {
@@ -333,6 +354,14 @@ fn pane_rows(
                         - cursor_line as i64)
                         .unsigned_abs()
                         .to_string(),
+                    // Every tenth, plus the line the caret is on — which is the one
+                    // you are about to quote in a stack trace, and the only line
+                    // worth an exception to the interval.
+                    LineNumbers::Interval
+                        if (line + 1) % LINE_NUMBER_INTERVAL != 0 && line != cursor_line =>
+                    {
+                        String::new()
+                    }
                     _ => (line + 1).to_string(),
                 }
             } else {
@@ -761,7 +790,15 @@ fn line_spans(
             .unwrap_or(palette.fg)
     };
 
-    for c in text.chars() {
+    // Where this line's trailing whitespace begins, for
+    // `editor.renderWhitespace: "trailing"`. A line of nothing but whitespace is
+    // trailing from its first character, which `trim_end` gives for free.
+    let trailing_from: u32 = utf16_len(text.trim_end());
+    let whitespace_mode = pane.document.settings.render_whitespace;
+    // Indexed, because `boundary` mode has to see the characters either side.
+    let chars: Vec<char> = text.chars().collect();
+
+    for (index, &c) in chars.iter().enumerate() {
         // Everything before this row belongs to the row above, but its columns
         // still have to be counted: the lookups below are by column in the line.
         if utf16 < visual.start {
@@ -784,10 +821,23 @@ fn line_spans(
         if column + advance > width {
             break;
         }
+        let marked = marks_whitespace(
+            whitespace_mode,
+            &chars,
+            index,
+            utf16,
+            trailing_from,
+            cell != Cell::Plain,
+        );
         if c == '\t' {
-            for _ in 0..advance {
-                cells.push((' ', cell, fg));
+            // The arrow at the start of the tab's span and spaces after it, so the
+            // glyph sits where the tab does rather than where it lands.
+            for offset in 0..advance {
+                let glyph = if marked && offset == 0 { '→' } else { ' ' };
+                cells.push((glyph, cell, if marked { palette.whitespace_fg } else { fg }));
             }
+        } else if marked && c == ' ' {
+            cells.push(('·', cell, palette.whitespace_fg));
         } else {
             cells.push((c, cell, fg));
         }
@@ -810,9 +860,13 @@ fn line_spans(
 
     // Coalesce runs sharing a style; one span per character would be correct
     // but would make the terminal writer do far more work than it needs to.
+    let rulers = &pane.document.settings.rulers;
     let mut spans: Vec<Span> = Vec::new();
-    for (c, cell, fg) in cells {
+    for (at, (c, cell, fg)) in cells.into_iter().enumerate() {
         let bg = match cell {
+            // A ruler only shows through a cell nothing else has claimed: a
+            // selection or a find match is what the user is doing, and it wins.
+            Cell::Plain if rulers.contains(&at) => palette.ruler_bg,
             Cell::Plain => palette.bg,
             Cell::Selected => palette.selection_bg,
             Cell::CurrentMatch => palette.find_match_bg,
@@ -830,6 +884,46 @@ fn line_spans(
         }
     }
     spans
+}
+
+/// A string's length in UTF-16 code units, which is what a column is measured in.
+fn utf16_len(text: &str) -> u32 {
+    text.chars().map(|c| c.len_utf16() as u32).sum()
+}
+
+/// Whether `editor.renderWhitespace` marks the whitespace at `index`.
+///
+/// VS Code's five modes. `selection` is its default and the least intrusive useful
+/// one: whitespace appears exactly where you are looking at it.
+fn marks_whitespace(
+    mode: RenderWhitespace,
+    chars: &[char],
+    index: usize,
+    column: u32,
+    trailing_from: u32,
+    selected: bool,
+) -> bool {
+    if !matches!(chars.get(index), Some(' ') | Some('\t')) {
+        return false;
+    }
+    match mode {
+        RenderWhitespace::None => false,
+        RenderWhitespace::All => true,
+        RenderWhitespace::Selection => selected,
+        RenderWhitespace::Trailing => column >= trailing_from,
+        // Everything except a single space with a word on each side. Marking those
+        // would put a dot between every word of a sentence, which is the reason this
+        // mode exists rather than being the same as `all`.
+        RenderWhitespace::Boundary => {
+            chars[index] == '\t' || !single_space_between_words(chars, index)
+        }
+    }
+}
+
+/// Whether the space at `index` is a lone one between two non-space characters.
+fn single_space_between_words(chars: &[char], index: usize) -> bool {
+    let solid = |at: Option<&char>| at.is_some_and(|c| !c.is_whitespace());
+    solid(index.checked_sub(1).and_then(|before| chars.get(before))) && solid(chars.get(index + 1))
 }
 
 /// Whether the language server's classification is used.
@@ -2981,6 +3075,174 @@ mod tests {
         let all: String = frame.rows.iter().map(Row::plain).collect();
         assert!(!all.contains("With:"));
         assert!(!all.contains("Find:"));
+    }
+
+    // ---- Rendered whitespace ----------------------------------------------
+
+    /// A session whose `editor.renderWhitespace` is `mode`.
+    fn whitespace(text: &str, mode: &str) -> Session {
+        let mut settings = deco_config::Settings::with_defaults();
+        settings.set(
+            deco_config::Scope::User,
+            "editor.renderWhitespace",
+            serde_json::json!(mode),
+        );
+        let mut session = Session::new(settings, None, deco_keymap::binding::Platform::Linux);
+        session.open(PathBuf::from("/w/file.txt"), text);
+        session
+    }
+
+    /// The text of one row, gutter stripped.
+    fn text_of(frame: &Frame, row: usize) -> String {
+        frame.rows[row].plain()[4..].trim_end().to_owned()
+    }
+
+    #[test]
+    fn all_marks_every_space_and_tab() {
+        // A tab is one arrow at the column it starts on, and blank for the rest of
+        // its span — the same way VS Code draws it. Filling the span with dots would
+        // make one tab indistinguishable from the spaces it replaces.
+        let frame = render(&whitespace("  a b\tc\n", "all"), 40, 6);
+        assert_eq!(text_of(&frame, 0), "··a·b→  c");
+    }
+
+    #[test]
+    fn none_marks_nothing() {
+        let frame = render(&whitespace("  a b\tc\n", "none"), 40, 6);
+        assert_eq!(text_of(&frame, 0), "  a b   c");
+    }
+
+    #[test]
+    fn boundary_leaves_a_single_space_between_words_alone() {
+        // Otherwise a dot appears between every word of a sentence, and the mode
+        // would be no different from `all`.
+        let frame = render(&whitespace("  a b  c\n", "boundary"), 40, 6);
+        assert_eq!(text_of(&frame, 0), "··a b··c");
+    }
+
+    #[test]
+    fn trailing_marks_only_what_is_past_the_last_word() {
+        let frame = render(&whitespace("  a b   \n", "trailing"), 40, 6);
+        assert_eq!(text_of(&frame, 0), "  a b···");
+    }
+
+    #[test]
+    fn selection_is_the_default_and_marks_only_what_is_selected() {
+        // VS Code's default, and the least intrusive useful mode: whitespace appears
+        // exactly where you are looking at it.
+        let mut session = session("a  b  c\n");
+        assert_eq!(
+            session.document.settings.render_whitespace,
+            deco_config::RenderWhitespace::Selection,
+            "the default this test is about"
+        );
+        session.view.selections = SelectionSet::single(Selection::new(
+            deco_core::Position::new(0, 0),
+            deco_core::Position::new(0, 4),
+        ));
+        let frame = render(&session, 40, 6);
+        assert_eq!(text_of(&frame, 0), "a··b  c");
+    }
+
+    // ---- Rulers -----------------------------------------------------------
+
+    /// A session with rulers at `columns`.
+    fn ruled(text: &str, columns: &[usize]) -> Session {
+        let mut settings = deco_config::Settings::with_defaults();
+        settings.set(
+            deco_config::Scope::User,
+            "editor.rulers",
+            serde_json::json!(columns),
+        );
+        let mut session = Session::new(settings, None, deco_keymap::binding::Platform::Linux);
+        session.open(PathBuf::from("/w/file.txt"), text);
+        session
+    }
+
+    /// The background of one cell of one row, counting from the gutter's end.
+    fn cell_bg(frame: &Frame, row: usize, column: usize) -> Rgba {
+        let mut at = 0usize;
+        for span in &frame.rows[row].spans {
+            let width = span.text.chars().count();
+            if at + width > column + 4 {
+                return span.bg;
+            }
+            at += width;
+        }
+        panic!("column {column} is past the row");
+    }
+
+    #[test]
+    fn a_ruler_tints_its_column_under_the_text_and_past_the_end() {
+        // Under the text is where it matters: the column a ruler warns about is one
+        // only a long line reaches.
+        let session = ruled(&format!("{}\n", "x".repeat(20)), &[8]);
+        let frame = render(&session, 40, 6);
+        let tint = Palette::from(&session).ruler_bg;
+        assert_ne!(tint, Palette::from(&session).bg, "the tint is visible");
+        assert_eq!(cell_bg(&frame, 0, 8), tint, "under the text");
+        assert_eq!(cell_bg(&frame, 1, 8), tint, "and on the empty line below");
+        assert_ne!(cell_bg(&frame, 0, 7), tint, "and only that column");
+    }
+
+    #[test]
+    fn several_rulers_are_all_drawn() {
+        let session = ruled(&format!("{}\n", "x".repeat(30)), &[4, 12]);
+        let frame = render(&session, 40, 6);
+        let tint = Palette::from(&session).ruler_bg;
+        assert_eq!(cell_bg(&frame, 0, 4), tint);
+        assert_eq!(cell_bg(&frame, 0, 12), tint);
+    }
+
+    #[test]
+    fn a_selection_wins_over_a_ruler() {
+        // The selection is what the user is doing; a ruler is furniture.
+        let mut session = ruled("xxxxxxxxxxxx\n", &[4]);
+        session.view.selections = SelectionSet::single(Selection::new(
+            deco_core::Position::new(0, 0),
+            deco_core::Position::new(0, 8),
+        ));
+        let frame = render(&session, 40, 6);
+        assert_eq!(cell_bg(&frame, 0, 4), Palette::from(&session).selection_bg);
+    }
+
+    #[test]
+    fn no_rulers_is_the_default_and_tints_nothing() {
+        let session = session("xxxxxxxxxxxx\n");
+        let frame = render(&session, 40, 6);
+        let bg = Palette::from(&session).bg;
+        for column in 0..12 {
+            assert_eq!(cell_bg(&frame, 0, column), bg, "column {column}");
+        }
+    }
+
+    // ---- Interval line numbers --------------------------------------------
+
+    #[test]
+    fn interval_numbers_every_tenth_line_and_the_caret_s() {
+        // The caret's line is the one you are about to quote in a stack trace.
+        let mut settings = deco_config::Settings::with_defaults();
+        settings.set(
+            deco_config::Scope::User,
+            "editor.lineNumbers",
+            serde_json::json!("interval"),
+        );
+        let mut session = Session::new(settings, None, deco_keymap::binding::Platform::Linux);
+        session.open(PathBuf::from("/w/file.txt"), &"x\n".repeat(30));
+        session.view.selections = SelectionSet::caret(deco_core::Position::new(2, 0));
+
+        let frame = render(&session, 40, 12);
+        let gutters: Vec<String> = frame
+            .rows
+            .iter()
+            .take(11)
+            .map(|row| row.plain()[..4].trim().to_owned())
+            .collect();
+        assert_eq!(
+            gutters,
+            ["", "", "3", "", "", "", "", "", "", "10", ""],
+            "line 3 has the caret and line 10 is the interval"
+        );
     }
 
     // ---- The indentation readout ------------------------------------------

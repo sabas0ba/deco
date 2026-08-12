@@ -80,6 +80,7 @@ thin painter.
 | Command palette (`ctrl+shift+p`), quick open (`ctrl+p`), go to line (`ctrl+g`) | Yes |
 | Word wrap (`editor.wordWrap`, `alt+z`) | Yes in the terminal — no `wrappingIndent` |
 | Detected indentation (`editor.detectIndentation`) | Yes — the status bar says when a file overruled the setting |
+| `renderWhitespace`, `rulers`, `lineNumbers`, `cursorStyle` | Yes in the terminal — `cursorStyle`'s thin and hollow shapes collapse |
 | `.tmTheme` (plist) themes, `-` scope exclusions | No |
 
 Settings are read from deco's own configuration directory, falling back to VS
@@ -235,13 +236,10 @@ does not:
   [Running commands](docs/commands.md).
 - **The GPU frontend draws text, a gutter and a caret.** Selection and
   current-line rectangles are computed and tested but not yet painted; there is
-  no scrollbar, minimap or mouse input, and it lays out one line per row, so
-  `editor.wordWrap` has no effect there — and no chrome, so `ctrl+f` refuses
+  no scrollbar, minimap or mouse input, and it lays out one line per row with no
+  whitespace markers or rulers, so `editor.wordWrap`, `editor.renderWhitespace` and
+  `editor.rulers` have no effect there — and no chrome, so `ctrl+f` refuses
   rather than opening a find bar the frontend cannot show.
-- **Three settings parse and do nothing yet:** `editor.renderWhitespace`,
-  `editor.rulers` and `editor.cursorStyle`. Each is resolved into every document's
-  settings and read by no one, which is worse than rejecting it — named here so it
-  is a known gap rather than a surprise.
 - **Word wrap has no `editor.wrappingIndent`.** A continuation row starts at
   column zero rather than matching the indent of the line it belongs to, and the
   break rule is whitespace rather than Unicode UAX #14 — see

@@ -155,6 +155,10 @@ fn demos() -> Vec<Demo> {
             build: detect_indentation,
         },
         Demo {
+            name: "view-settings",
+            build: view_settings,
+        },
+        Demo {
             name: "save-as",
             build: save_as,
         },
@@ -210,20 +214,49 @@ struct Shot {
 
 impl Take {
     fn new(file: &str, text: &str) -> Self {
+        Self::with_settings(deco_config::Settings::with_defaults(), file, text)
+    }
+
+    /// The same, for a demonstration whose subject *is* a setting.
+    fn with_settings(settings: deco_config::Settings, file: &str, text: &str) -> Self {
         // The Linux keymap rather than the host's: a demonstration that pressed
         // `ctrl+d` would be pressing an unbound key when generated on a Mac, and
         // the committed file would differ by who ran the command.
-        let mut session = Session::new(
-            deco_config::Settings::with_defaults(),
-            None,
-            Platform::Linux,
-        );
+        let mut session = Session::new(settings, None, Platform::Linux);
         session.open(PathBuf::from(format!("/demo/{file}")), text);
         session.resize(COLUMNS, ROWS - 1);
         Self {
             session,
             shots: Vec::new(),
         }
+    }
+
+    /// Captures the same file again under an additional settings layer.
+    ///
+    /// For demonstrations whose subject is a setting: the frames before and after sit
+    /// in one animation, which is the only way a reader can see what the setting did.
+    fn append(&mut self, user_json: &str, caption: &str, hold: u32) -> &mut Self {
+        let path = self
+            .session
+            .document
+            .path
+            .clone()
+            .expect("a demonstration opens a file");
+        let text = self.session.document.buffer.text();
+        let selections = self.session.view.selections.clone();
+
+        let mut settings = deco_config::Settings::with_defaults();
+        settings
+            .load_layer(deco_config::Scope::User, user_json)
+            .expect("the settings in this file parse");
+        let mut session = Session::new(settings, None, Platform::Linux);
+        session.open(path, &text);
+        session.view.selections = selections;
+        session.resize(COLUMNS, ROWS - 1);
+
+        self.session = session;
+        self.resize_for_chrome();
+        self.capture(caption, hold)
     }
 
     /// Puts the caret somewhere, without pressing anything.
@@ -820,6 +853,42 @@ fn detect_indentation() -> String {
     take.press_and_hold(&["tab"], 6);
     take.finish()
 }
+
+fn view_settings() -> String {
+    // Three settings that draw rather than behave, so one scenario shows all three
+    // against the same file by turning them on in turn.
+    let mut take = Take::new("main.rs", RULED);
+    take.at(1, 4).capture(
+        "the defaults: whitespace shows inside a selection, and nowhere else",
+        5,
+    );
+
+    // Selected, which is what the default mode marks.
+    take.session.view.selections = SelectionSet::single(deco_core::Selection::new(
+        Position::new(1, 0),
+        Position::new(1, 18),
+    ));
+    take.resize_for_chrome();
+    take.capture("a selection — its spaces are dotted", 5);
+
+    take.append(
+        r#"{"editor.renderWhitespace": "all"}"#,
+        "editor.renderWhitespace: \"all\" — every space, and an arrow per tab",
+        6,
+    );
+    take.append(
+        r#"{"editor.renderWhitespace": "all", "editor.rulers": [24],
+            "editor.lineNumbers": "interval"}"#,
+        "…with editor.rulers: [24] and lineNumbers: \"interval\"",
+        7,
+    );
+    take.finish()
+}
+
+/// A file with lines either side of column 24, so a ruler has something to warn
+/// about; one tab-indented line, so an arrow has somewhere to go; and enough lines
+/// that `lineNumbers: "interval"` reaches its first tenth.
+const RULED: &str = "fn main() {\n    let total = 1;\n    let long = total + 2 + 3 + 4;\n\tlet tabbed = 5;\n    let a = 1;\n    let b = 2;\n    let c = 3;\n    let d = 4;\n    let e = 5;\n    let f = 6;\n    println!(\"{total}\");\n}\n";
 
 fn save_as() -> String {
     let mut take = Take::new("notes.txt", "name = \"deco\"\nedition = \"2021\"\n");

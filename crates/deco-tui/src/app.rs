@@ -34,8 +34,52 @@ impl Drop for TerminalGuard {
     fn drop(&mut self) {
         // Nothing useful can be done about a failure here, and returning early
         // would skip the rest of the restoration.
-        let _ = execute!(io::stdout(), cursor::Show, terminal::LeaveAlternateScreen);
+        //
+        // The cursor shape is restored along with the screen: `editor.cursorStyle`
+        // is deco's business while deco is running, and leaving somebody's shell
+        // with an editor's caret shape is not.
+        let _ = execute!(
+            io::stdout(),
+            cursor::SetCursorStyle::DefaultUserShape,
+            cursor::Show,
+            terminal::LeaveAlternateScreen
+        );
         let _ = terminal::disable_raw_mode();
+    }
+}
+
+/// The caret shape `editor.cursorStyle` asks for, or `None` to leave the
+/// terminal's own alone.
+///
+/// `None` when the setting was never written down. A terminal's caret is already
+/// configured — a block, in most — and replacing it with VS Code's default on behalf
+/// of somebody who never mentioned it would be deco overruling a preference it was
+/// not asked about. Setting the key, even to its default value, is asking.
+///
+/// Two shapes have no terminal equivalent and collapse: DECSCUSR has a bar, a block
+/// and an underline, and no thin or hollow variant of any of them. So `line-thin`
+/// draws as `line` and `block-outline` as `block`, which is closer than refusing.
+fn wanted_cursor_style(session: &Session) -> Option<deco_config::CursorStyle> {
+    let language = session.document.language();
+    let scope = session.settings.source_of("editor.cursorStyle", language)?;
+    if scope == deco_config::Scope::Default {
+        return None;
+    }
+    Some(session.document.settings.cursor_style)
+}
+
+/// The DECSCUSR shape for a style.
+fn to_decscusr(style: deco_config::CursorStyle) -> cursor::SetCursorStyle {
+    use deco_config::CursorStyle;
+    // Blinking, which is VS Code's `editor.cursorBlinking` default. deco does not
+    // resolve that setting, so there is one answer rather than a choice, and this is
+    // the one that matches the editor being imitated.
+    match style {
+        CursorStyle::Line | CursorStyle::LineThin => cursor::SetCursorStyle::BlinkingBar,
+        CursorStyle::Block | CursorStyle::BlockOutline => cursor::SetCursorStyle::BlinkingBlock,
+        CursorStyle::Underline | CursorStyle::UnderlineThin => {
+            cursor::SetCursorStyle::BlinkingUnderScore
+        }
     }
 }
 
@@ -48,7 +92,7 @@ fn to_crossterm(color: Rgba) -> Color {
 }
 
 /// Writes a frame to the terminal.
-fn paint(out: &mut impl Write, frame: &Frame) -> Result<()> {
+fn paint(out: &mut impl Write, frame: &Frame, style: Option<cursor::SetCursorStyle>) -> Result<()> {
     queue!(out, cursor::Hide, cursor::MoveTo(0, 0))?;
     for (row_index, row) in frame.rows.iter().enumerate() {
         queue!(out, cursor::MoveTo(0, row_index as u16))?;
@@ -63,6 +107,9 @@ fn paint(out: &mut impl Write, frame: &Frame) -> Result<()> {
         queue!(out, ResetColor)?;
     }
     if let Some((x, y)) = frame.cursor {
+        if let Some(style) = style {
+            queue!(out, style)?;
+        }
         queue!(out, cursor::MoveTo(x, y), cursor::Show)?;
     }
     out.flush()?;
@@ -90,7 +137,11 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
             resize(session, width, height);
             let frame =
                 render::render_with_hover(session, width as usize, height as usize, lsp.hover());
-            paint(&mut out, &frame)?;
+            paint(
+                &mut out,
+                &frame,
+                wanted_cursor_style(session).map(to_decscusr),
+            )?;
             dirty = false;
         }
 
@@ -556,6 +607,72 @@ mod tests {
         path
     }
 
+    /// A session whose `settings.json` contains `keys`.
+    fn configured(json: &str) -> Session {
+        let mut settings = deco_config::Settings::with_defaults();
+        settings
+            .load_layer(deco_config::Scope::User, json)
+            .expect("valid settings");
+        let mut session = Session::new(settings, None, deco_keymap::binding::Platform::Linux);
+        session.open(PathBuf::from("/w/a.rs"), "fn main() {}\n");
+        session
+    }
+
+    #[test]
+    fn a_cursor_style_nobody_set_leaves_the_terminals_own_alone() {
+        // A terminal's caret is already configured, and replacing it with VS Code's
+        // default on behalf of somebody who never mentioned it would be deco
+        // overruling a preference it was not asked about.
+        assert_eq!(wanted_cursor_style(&configured("{}")), None);
+    }
+
+    #[test]
+    fn setting_the_style_is_asking_for_it_even_at_its_default_value() {
+        // Writing the key down is the ask; which value it holds is a separate
+        // question. `line` is the default *value*, not the absence of one.
+        assert_eq!(
+            wanted_cursor_style(&configured(r#"{"editor.cursorStyle": "line"}"#)),
+            Some(deco_config::CursorStyle::Line)
+        );
+        assert_eq!(
+            wanted_cursor_style(&configured(r#"{"editor.cursorStyle": "block"}"#)),
+            Some(deco_config::CursorStyle::Block)
+        );
+    }
+
+    #[test]
+    fn a_language_override_of_the_style_is_honoured() {
+        let session = configured(r#"{"[rust]": {"editor.cursorStyle": "underline"}}"#);
+        assert_eq!(
+            wanted_cursor_style(&session),
+            Some(deco_config::CursorStyle::Underline)
+        );
+    }
+
+    #[test]
+    fn the_shapes_a_terminal_does_not_have_collapse_rather_than_being_refused() {
+        // DECSCUSR has a bar, a block and an underline, and no thin or hollow
+        // variant of any of them.
+        use deco_config::CursorStyle;
+        assert_eq!(
+            to_decscusr(CursorStyle::LineThin),
+            to_decscusr(CursorStyle::Line)
+        );
+        assert_eq!(
+            to_decscusr(CursorStyle::BlockOutline),
+            to_decscusr(CursorStyle::Block)
+        );
+        assert_eq!(
+            to_decscusr(CursorStyle::UnderlineThin),
+            to_decscusr(CursorStyle::Underline)
+        );
+        assert_ne!(
+            to_decscusr(CursorStyle::Line),
+            to_decscusr(CursorStyle::Block),
+            "the three that do exist stay distinct"
+        );
+    }
+
     #[test]
     fn saving_an_untitled_document_writes_nothing() {
         // The regression guard for a silent overwrite: `save` used to fall back to
@@ -651,7 +768,7 @@ mod tests {
             cursor: Some((3, 0)),
         };
         let mut out: Vec<u8> = Vec::new();
-        paint(&mut out, &frame).unwrap();
+        paint(&mut out, &frame, None).unwrap();
         let written = String::from_utf8_lossy(&out);
         assert!(written.contains("hi"));
         // The cursor is shown again once it has been positioned.
@@ -665,7 +782,7 @@ mod tests {
             cursor: None,
         };
         let mut out: Vec<u8> = Vec::new();
-        paint(&mut out, &frame).unwrap();
+        paint(&mut out, &frame, None).unwrap();
         assert!(!String::from_utf8_lossy(&out).contains("\u{1b}[?25h"));
     }
 
