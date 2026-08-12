@@ -86,6 +86,28 @@ The list is walked fresh on every `ctrl+p`, so a file created a moment ago is
 there. It is sorted by path, because `read_dir` guarantees no order and a list
 that reshuffles between presses is one you cannot learn.
 
+### Files you have had open come first
+
+The file you want is usually one you just had open, and an alphabetical list buries
+it. So the rows are ordered most-recently-on-screen first, then by path — which is
+how VS Code orders quick open, and most of what makes the key fast. The last frame
+above is the second `ctrl+p`, with the two files that have been on screen at the top.
+
+Recency **orders equal matches and no more than that**: a row that matches what you
+typed better still comes first, so typing does not fight the ordering. A file that
+was closed is still remembered, since it is exactly the one you are most likely to
+want back.
+
+Paths are compared with their `.` and `..` resolved, because the walk and `ctrl+o`
+spell the same file differently — `src/main.rs` against `./src/main.rs` — and a
+recent file the list failed to recognise would sink back into the alphabet without
+saying why.
+
+**This session only.** VS Code keeps its history in workspace storage; deco
+[writes no files](configuration.md#colour-themes), so the list starts empty each
+time rather than being persisted somewhere you did not ask for. Sixty-four paths are
+remembered; past that the tail falls back to the alphabet.
+
 The core does not do this walk: it has no filesystem at all — a document is
 handed its text, never a path to read — which is what lets the whole editable
 surface be tested without one. `ctrl+p` therefore asks the frontend for the list,
@@ -242,8 +264,7 @@ remote menu.
 The keyboard-shortcuts editor and the settings UI. Quick open has no `@` mode — the
 symbols of a file are reachable with `ctrl+shift+o`, but typing `@` after `ctrl+p`
 does not switch a file list into a symbol one, which needs the prompt to re-source
-its choices mid-typing. Nor is there a recently-opened ordering: the list is
-alphabetical.
+its choices mid-typing.
 Search in files has no replace-across-files and no regular expressions. Nor is
 there a results view that stays open: the matches are a picker, so reading the
 second one means pressing `ctrl+shift+f` again.
