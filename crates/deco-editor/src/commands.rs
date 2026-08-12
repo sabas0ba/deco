@@ -258,6 +258,7 @@ pub const PALETTE: &[(&str, &str)] = &[
     ("editor.action.addCommentLine", "Add Line Comment"),
     ("editor.action.removeCommentLine", "Remove Line Comment"),
     ("editor.action.blockComment", "Toggle Block Comment"),
+    ("editor.action.toggleWordWrap", "View: Toggle Word Wrap"),
     ("editor.action.indentLines", "Indent Lines"),
     ("editor.action.outdentLines", "Outdent Lines"),
     ("editor.action.deleteLines", "Delete Line"),
@@ -516,9 +517,106 @@ fn motion(ctx: &mut Context<'_>, command: &str) -> Option<Outcome> {
         _ => None,
     };
     if let Some((direction, count)) = vertical {
+        // Rows rather than lines while wrapping, because on screen a row is what
+        // one press of the key looks like it moves by. The goal column is measured
+        // within the row for the same reason.
+        if ctx.view.wrap_column(&ctx.document.settings) > 0 {
+            let view = &*ctx.view;
+            let settings = &ctx.document.settings;
+            let down = direction == VerticalDirection::Down;
+            // Collected before assigning, because working out where a row is takes
+            // the view and the selections live on it.
+            let moved: Vec<Selection> = view
+                .selections
+                .iter()
+                .map(|selection| {
+                    let from = buffer.clamp_position(selection.active);
+                    let goal = selection
+                        .goal_column
+                        .map(|goal| goal as usize)
+                        .unwrap_or_else(|| view.goal_column(buffer, settings, from));
+                    let to = view.step_rows(buffer, settings, from, down, count as usize, goal);
+                    let mut next = if extend {
+                        selection.extended_to(to)
+                    } else {
+                        selection.moved_to(to)
+                    };
+                    next.goal_column = Some(goal as u32);
+                    next
+                })
+                .collect();
+            let primary = view.selections.primary_index();
+            ctx.view.selections = SelectionSet::from_vec(moved, primary);
+        } else {
+            ctx.view
+                .selections
+                .map(|s| movement::vertical(buffer, *s, direction, count, tab_size, extend));
+        }
         ctx.view
+            .reveal_cursor(&ctx.document.buffer, &ctx.document.settings);
+        ctx.document.history.break_group();
+        return Some(Outcome::Handled);
+    }
+
+    // `home` and `end` mean the ends of the row while wrapping, which is where the
+    // key points on screen. On a line's first and last row those are the line's
+    // ends, so an unwrapped line behaves exactly as it always did.
+    if matches!(base, "cursorHome" | "cursorEnd")
+        && ctx.view.wrap_column(&ctx.document.settings) > 0
+    {
+        let view = &*ctx.view;
+        let settings = &ctx.document.settings;
+        let home = base == "cursorHome";
+        let moved: Vec<Selection> = view
             .selections
-            .map(|s| movement::vertical(buffer, *s, direction, count, tab_size, extend));
+            .iter()
+            .map(|selection| {
+                let from = buffer.clamp_position(selection.active);
+                let (start, end) = view.row_bounds(buffer, settings, from);
+                let to = if home {
+                    if start == 0 {
+                        // The first row keeps `home`'s usual trick of stopping at
+                        // the first non-whitespace and toggling to column zero.
+                        movement::smart_home(buffer, from)
+                    } else {
+                        Position::new(from.line, start)
+                    }
+                } else {
+                    match end {
+                        None => movement::line_end(buffer, from),
+                        // One short of the next row's start, or `end` would put the
+                        // caret on the row below the one whose end was asked for.
+                        Some(_) => {
+                            let text = buffer
+                                .line_content(from.line as usize)
+                                .map(|slice| slice.to_string())
+                                .unwrap_or_default();
+                            Position::new(
+                                from.line,
+                                deco_core::wrap::column_in_row(
+                                    &text,
+                                    start,
+                                    end,
+                                    usize::MAX,
+                                    settings.tab_size,
+                                ),
+                            )
+                        }
+                    }
+                };
+                let mut next = if extend {
+                    selection.extended_to(to)
+                } else {
+                    selection.moved_to(to)
+                };
+                // Cleared, so a following `down` measures the column afresh from
+                // where `home` or `end` actually landed.
+                next.goal_column = None;
+                next
+            })
+            .collect();
+        let primary = view.selections.primary_index();
+        ctx.view.selections = SelectionSet::from_vec(moved, primary);
         ctx.view
             .reveal_cursor(&ctx.document.buffer, &ctx.document.settings);
         ctx.document.history.break_group();
@@ -1524,6 +1622,145 @@ mod tests {
         fn cursor(&self) -> Position {
             self.view.selections.primary().active
         }
+    }
+
+    // ---- Motion through a wrapped line ------------------------------------
+
+    /// A harness whose window wraps at ten columns.
+    fn wrapped(text: &str) -> Harness {
+        let mut h = Harness::new(text);
+        h.document.settings.word_wrap = deco_config::WordWrap::On;
+        h.view.text_width = 10;
+        h
+    }
+
+    /// Six-column words, so a ten-column window puts one per row: the rows of
+    /// `WORDS` start at 0, 6, 12 and 18.
+    const WORDS: &str = "aaaaa bbbbb ccccc ddddd\nnext\n";
+
+    #[test]
+    fn the_rows_of_the_sample_are_where_the_tests_below_assume() {
+        // Stated once, so a failure in the motion tests is about motion rather
+        // than about where this particular sentence happens to break.
+        let h = wrapped(WORDS);
+        assert_eq!(
+            h.view
+                .row_starts(&h.document.buffer, &h.document.settings, 0),
+            [0, 6, 12, 18]
+        );
+    }
+
+    #[test]
+    fn down_moves_one_row_and_not_one_line() {
+        // Line 0 is four rows. Moving by line would skip all of it, which in prose
+        // is most of a paragraph passing under one keypress.
+        let mut h = wrapped(WORDS).at(0, 0);
+        for expected in [6, 12, 18] {
+            h.run("cursorDown");
+            assert_eq!(h.cursor(), Position::new(0, expected), "still line 0");
+        }
+        h.run("cursorDown");
+        assert_eq!(h.cursor(), Position::new(1, 0), "and on to the next line");
+    }
+
+    #[test]
+    fn down_still_moves_one_line_when_nothing_is_wrapped() {
+        // The same key, the same file, wrapping off: the rows and the lines are
+        // the same thing, and the old path is what runs.
+        let mut h = Harness::new(WORDS).at(0, 0);
+        h.run("cursorDown");
+        assert_eq!(h.cursor(), Position::new(1, 0));
+    }
+
+    #[test]
+    fn up_and_down_keep_the_column_within_the_row() {
+        // Two columns into row 1 is column 8 of the line, and coming back up has to
+        // be two columns into row 0 — column 2 — rather than column 8, which is
+        // where a goal measured from the line's start would land.
+        let mut h = wrapped(WORDS).at(0, 8);
+        h.run("cursorUp");
+        assert_eq!(h.cursor(), Position::new(0, 2));
+        h.run("cursorDown");
+        assert_eq!(h.cursor(), Position::new(0, 8));
+    }
+
+    #[test]
+    fn a_goal_past_the_end_of_a_row_stops_on_that_row() {
+        // Row 0 is ten columns and row 1 is two, so the goal overshoots. Landing on
+        // the next row's first column would make one press of `down` move two rows.
+        let mut h = wrapped("aaaaaaaaaa bb\ncc\n").at(0, 9);
+        h.run("cursorDown");
+        assert_eq!(h.cursor(), Position::new(0, 13), "the end of row 1");
+    }
+
+    #[test]
+    fn page_down_moves_a_window_of_rows() {
+        // Ten columns to a row and a window nine rows deep.
+        let mut h = wrapped(&format!("{}\nlast\n", "word ".repeat(20))).at(0, 0);
+        h.run("cursorPageDown");
+        assert_eq!(h.cursor(), Position::new(0, 90));
+    }
+
+    #[test]
+    fn home_and_end_are_the_rows_ends_on_a_continuation_row() {
+        let mut h = wrapped(WORDS).at(0, 8);
+        h.run("cursorHome");
+        assert_eq!(h.cursor(), Position::new(0, 6), "the start of the row");
+        h.run("cursorEnd");
+        assert_eq!(
+            h.cursor(),
+            Position::new(0, 11),
+            "the last character the row shows"
+        );
+    }
+
+    #[test]
+    fn home_on_a_lines_first_row_still_stops_at_the_indent() {
+        // The row's start and the line's start are the same cell there, so the key
+        // keeps the trick it has when nothing is wrapped.
+        let mut h = wrapped("  aaaa bbbb cccc\n").at(0, 4);
+        h.run("cursorHome");
+        assert_eq!(h.cursor(), Position::new(0, 2), "the first non-whitespace");
+        h.run("cursorHome");
+        assert_eq!(h.cursor(), Position::new(0, 0), "and then column zero");
+    }
+
+    #[test]
+    fn end_on_a_lines_last_row_is_the_end_of_the_line() {
+        let mut h = wrapped(WORDS).at(0, 20);
+        h.run("cursorEnd");
+        assert_eq!(
+            h.cursor(),
+            Position::new(0, 23),
+            "one past the last character"
+        );
+    }
+
+    #[test]
+    fn end_then_down_measures_the_column_from_where_it_landed() {
+        // `home` and `end` clear the sticky goal. Keeping it would move `down` back
+        // to whatever column was last aimed at rather than down from the end.
+        let mut h = wrapped(WORDS).at(0, 0);
+        h.run("cursorEnd");
+        assert_eq!(h.cursor(), Position::new(0, 5));
+        h.run("cursorDown");
+        assert_eq!(h.cursor(), Position::new(0, 11));
+    }
+
+    #[test]
+    fn every_cursor_moves_by_rows() {
+        // Two carets on one wrapped line, on different rows of it.
+        let mut h = wrapped(WORDS);
+        h.view.selections = SelectionSet::from_vec(
+            vec![
+                Selection::new(Position::new(0, 1), Position::new(0, 1)),
+                Selection::new(Position::new(0, 13), Position::new(0, 13)),
+            ],
+            0,
+        );
+        h.run("cursorDown");
+        let after: Vec<Position> = h.view.selections.iter().map(|s| s.active).collect();
+        assert_eq!(after, [Position::new(0, 7), Position::new(0, 19)]);
     }
 
     // ---- Block comment ----------------------------------------------------

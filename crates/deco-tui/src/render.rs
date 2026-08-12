@@ -6,9 +6,14 @@
 //! status bar — be asserted in CI with no terminal attached.
 
 use deco_config::LineNumbers;
-use deco_core::movement::display_column;
 use deco_core::position::Range;
+// The gutter width and the column division are the session's, not the renderer's:
+// it needs the same answers to know how many columns are left for text, which is
+// what decides where a wrapped line breaks. Two implementations would be free to
+// disagree about the width, and a disagreement there draws a caret beside the
+// character it is on rather than under it.
 use deco_editor::find::Field;
+use deco_editor::layout::{column_widths, gutter_width as gutter_width_of};
 use deco_editor::Session;
 use deco_theme::Rgba;
 use unicode_width::UnicodeWidthChar;
@@ -97,19 +102,6 @@ impl Palette {
 /// Number of columns the line-number gutter needs.
 pub fn gutter_width(session: &Session) -> usize {
     gutter_width_of(&session.document)
-}
-
-/// The gutter one document needs, which depends on how many lines it has.
-///
-/// Per document rather than per session: two groups side by side can be showing
-/// files of very different lengths, and each gutter has to fit its own.
-fn gutter_width_of(document: &deco_editor::Document) -> usize {
-    if document.settings.line_numbers == LineNumbers::Off {
-        return 0;
-    }
-    let digits = document.buffer.line_count().to_string().len();
-    // One space of padding on each side keeps the text off the numbers.
-    digits.max(2) + 2
 }
 
 /// Renders `session` into a `width` x `height` frame.
@@ -270,25 +262,6 @@ fn render_text(session: &Session, width: usize, height: usize) -> Frame {
     }
 }
 
-/// How wide each group's column is, left to right.
-///
-/// The remainder goes to the leftmost columns, a cell each, so the widths differ
-/// by at most one and no column is left a cell short of the others for no reason.
-/// One separator column sits between each pair, which is why the divisor counts
-/// them out first.
-fn column_widths(width: usize, groups: usize) -> Vec<usize> {
-    if groups <= 1 {
-        return vec![width];
-    }
-    let separators = groups - 1;
-    let usable = width.saturating_sub(separators);
-    let each = usable / groups;
-    let extra = usable % groups;
-    (0..groups)
-        .map(|index| each + usize::from(index < extra))
-        .collect()
-}
-
 /// Joins one row of every group into the row that goes on screen.
 ///
 /// The separator is a full-height rule in the gutter's colour: something has to
@@ -330,26 +303,40 @@ fn pane_rows(
     let text_width = width.saturating_sub(gutter);
     let buffer = &pane.document.buffer;
     let tab_size = pane.document.settings.tab_size;
-    let cursor_line = pane.view.cursor().line as usize;
+    let caret = pane.view.cursor();
+    let cursor_line = caret.line as usize;
+
+    // One entry per row on screen rather than one per line: a wrapped line
+    // occupies several, and which part of it each row shows is the view's answer
+    // and not the renderer's — the same answer the view scrolls and moves the
+    // caret by.
+    let visible = pane.view.visible_rows(buffer, &pane.document.settings);
 
     let mut rows = Vec::with_capacity(height);
     let mut cursor = None;
     for row_index in 0..height {
-        let line = pane.view.scroll_top + row_index;
-        if line >= buffer.line_count() {
+        let Some(visual) = visible.get(row_index) else {
             rows.push(Row {
                 spans: vec![blank(width, palette.bg)],
             });
             continue;
-        }
+        };
+        let line = visual.line;
 
         let mut spans = Vec::new();
         if gutter > 0 {
-            let label = match pane.document.settings.line_numbers {
-                LineNumbers::Relative if line != cursor_line => (line as i64 - cursor_line as i64)
-                    .unsigned_abs()
-                    .to_string(),
-                _ => (line + 1).to_string(),
+            // Blank on a continuation row: repeating the number would read as a
+            // second line that is not there, and VS Code leaves it blank too.
+            let label = if visual.numbered() {
+                match pane.document.settings.line_numbers {
+                    LineNumbers::Relative if line != cursor_line => (line as i64
+                        - cursor_line as i64)
+                        .unsigned_abs()
+                        .to_string(),
+                    _ => (line + 1).to_string(),
+                }
+            } else {
+                String::new()
             };
             spans.push(Span {
                 text: format!("{label:>width$} ", width = gutter - 1),
@@ -367,14 +354,18 @@ fn pane_rows(
             .map(|s| s.to_string())
             .unwrap_or_default();
         spans.extend(line_spans(
-            session, pane, &text, line, text_width, tab_size, palette,
+            session, pane, &text, visual, text_width, tab_size, palette,
         ));
         rows.push(Row { spans });
 
         // Only the group with the keyboard draws one: two carets would be a lie
         // about where typing goes.
-        if pane.focused && line == cursor_line {
-            let column = display_column(&text, pane.view.cursor().character, tab_size);
+        if pane.focused && line == cursor_line && visual.holds(caret.character) {
+            // Measured from the row's own start, because that is where this row's
+            // tab stops are counted from — the same measurement the wrap used to
+            // decide the row ends here.
+            let column =
+                deco_core::wrap::width_between(&text, visual.start, caret.character, tab_size);
             if column < text_width {
                 cursor = Some(((gutter + column) as u16, row_index as u16));
             }
@@ -650,16 +641,22 @@ fn blank(width: usize, bg: Rgba) -> Span {
     }
 }
 
-/// Builds the styled spans for one line of text.
+/// Builds the styled spans for one row of one line.
+///
+/// `text` is the whole document line and `visual` says which part of it this row
+/// shows, so highlighting, selections and matches are still looked up by their
+/// column in the line — a wrapped row is a window onto the line, not a line of
+/// its own.
 fn line_spans(
     session: &Session,
     pane: &deco_editor::Pane<'_>,
     text: &str,
-    line: usize,
+    visual: &deco_editor::document::VisualRow,
     width: usize,
     tab_size: usize,
     palette: &Palette,
 ) -> Vec<Span> {
+    let line = visual.line;
     // Expand tabs first: the terminal has no tab stops of its own once we are
     // positioning the cursor by column. `column` counts *terminal columns*, not
     // characters — a CJK character occupies two, so padding by character count
@@ -765,6 +762,16 @@ fn line_spans(
     };
 
     for c in text.chars() {
+        // Everything before this row belongs to the row above, but its columns
+        // still have to be counted: the lookups below are by column in the line.
+        if utf16 < visual.start {
+            utf16 += c.len_utf16() as u32;
+            continue;
+        }
+        // And everything from the next row's start belongs to it.
+        if visual.end.is_some_and(|end| utf16 >= end) {
+            break;
+        }
         let cell = cell_at(utf16);
         let fg = colour_at(utf16);
         let advance = if c == '\t' {
@@ -789,9 +796,10 @@ fn line_spans(
     }
 
     // A selection that runs past the end of the line is drawn one cell wide, so
-    // that selecting a line break is visible rather than invisible.
+    // that selecting a line break is visible rather than invisible. Only on the
+    // line's last row: there is one line break, and it is at the end.
     let trailing = cell_at(utf16);
-    if trailing != Cell::Plain && column < width {
+    if visual.end.is_none() && trailing != Cell::Plain && column < width {
         cells.push((' ', trailing, palette.fg));
         column += 1;
     }
@@ -2948,5 +2956,90 @@ mod tests {
         let all: String = frame.rows.iter().map(Row::plain).collect();
         assert!(!all.contains("With:"));
         assert!(!all.contains("Find:"));
+    }
+
+    // ---- Word wrap --------------------------------------------------------
+
+    /// A session showing `text` in a `width`-column window, wrapping.
+    fn wrapping(text: &str, width: usize) -> Session {
+        let mut session = session(text);
+        session.resize(width, 8);
+        session.run("editor.action.toggleWordWrap", None, 0);
+        session.resize(width, 8);
+        session
+    }
+
+    #[test]
+    fn a_wrapped_line_is_drawn_across_rows() {
+        let session = wrapping("the quick brown fox jumps over it\n", 24);
+        let frame = render(&session, 24, 8);
+        assert_eq!(frame.rows[0].plain(), "  1 the quick brown fox ");
+        assert_eq!(frame.rows[1].plain(), "    jumps over it       ");
+    }
+
+    #[test]
+    fn only_a_lines_first_row_carries_its_number() {
+        // A number on every row would read as lines the file does not have, and
+        // `ctrl+g` would send you somewhere else than the row you counted to.
+        let session = wrapping("aaaa bbbb cccc dddd eeee ffff\nsecond\n", 24);
+        let frame = render(&session, 24, 8);
+        let gutters: Vec<String> = frame
+            .rows
+            .iter()
+            .take(3)
+            .map(|row| row.plain()[..4].to_owned())
+            .collect();
+        assert_eq!(gutters, ["  1 ", "    ", "  2 "]);
+    }
+
+    #[test]
+    fn the_same_line_unwrapped_is_truncated_at_the_edge() {
+        // The behaviour wrapping replaces, and the reason the setting is worth
+        // having: without it the rest of the line is simply not on screen.
+        let session = session("the quick brown fox jumps over it\n");
+        let frame = render(&session, 24, 8);
+        assert_eq!(frame.rows[0].plain(), "  1 the quick brown fox ");
+        assert_eq!(frame.rows[1].plain(), "  2                     ");
+    }
+
+    #[test]
+    fn the_caret_is_drawn_on_the_row_its_column_is_on() {
+        let mut session = wrapping("the quick brown fox jumps over it\n", 24);
+        session.view.selections = deco_core::SelectionSet::caret(deco_core::Position::new(0, 22));
+        let frame = render(&session, 24, 8);
+        // Column 22 is two into the second row, which starts at 20.
+        assert_eq!(frame.cursor, Some((6, 1)));
+    }
+
+    #[test]
+    fn a_selection_across_a_break_is_drawn_on_both_rows() {
+        let mut session = wrapping("aaaa bbbb cccc dddd eeee\n", 24);
+        session.view.selections = deco_core::SelectionSet::single(Selection::new(
+            deco_core::Position::new(0, 2),
+            deco_core::Position::new(0, 23),
+        ));
+        let frame = render(&session, 24, 8);
+        let selected = |row: &Row| {
+            row.spans
+                .iter()
+                .any(|span| span.bg != palette_bg(&session) && !span.text.trim().is_empty())
+        };
+        assert!(selected(&frame.rows[0]), "the first row");
+        assert!(selected(&frame.rows[1]), "and the second");
+    }
+
+    #[test]
+    fn a_tab_on_a_continuation_row_is_measured_from_that_rows_start() {
+        // A row is what has tab stops on screen. The break here is at column 22,
+        // which is not a multiple of the tab size, so measuring from the line's
+        // start instead would put the `c` one column along rather than three.
+        let session = wrapping(&format!("{}b\tc\n", "a".repeat(22)), 26);
+        let frame = render(&session, 26, 8);
+        assert_eq!(frame.rows[1].plain(), "    b   c                 ");
+    }
+
+    /// The editor background, for tests that ask whether a cell is decorated.
+    fn palette_bg(session: &Session) -> Rgba {
+        Palette::from(session).bg
     }
 }

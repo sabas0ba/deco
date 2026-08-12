@@ -28,7 +28,7 @@ running, and is published at
 
 | | |
 | --- | --- |
-| [Editing](docs/editing.md) | Motion, line and block comments, multiple cursors, undo |
+| [Editing](docs/editing.md) | Motion, line and block comments, multiple cursors, word wrap, undo |
 | [Tabs](docs/tabs.md) | Several documents, one per tab; splitting; what a tab keeps |
 | [Syntax highlighting](docs/highlighting.md) | Scopes, languages, choosing one, and why not tree-sitter |
 | [Find and replace](docs/find-and-replace.md) | `ctrl+f`, `ctrl+h`, `F3`, and the multi-cursor find keys |
@@ -78,6 +78,7 @@ thin painter.
 | Find and replace (`ctrl+f`, `ctrl+h`, `F3`, `ctrl+d`, `ctrl+shift+l`) | Literal search only — no regular expressions |
 | Search in files (`ctrl+shift+f`) | Yes — bounded and synchronous, and it says so |
 | Command palette (`ctrl+shift+p`), quick open (`ctrl+p`), go to line (`ctrl+g`) | Yes |
+| Word wrap (`editor.wordWrap`, `alt+z`) | Yes in the terminal — no `wrappingIndent` |
 | `.tmTheme` (plist) themes, `-` scope exclusions | No |
 
 Settings are read from deco's own configuration directory, falling back to VS
@@ -216,11 +217,13 @@ does not:
   open a find bar with a query, a replacement, a match count and highlighting;
   `F3`, `enter`, `ctrl+alt+enter` and `alt+c` / `alt+w` work as they do in VS
   Code, and the multi-cursor keys (`ctrl+d`, `ctrl+shift+l`, `ctrl+k ctrl+d`)
-  search the same way. What is missing is regular expressions —
-  `deco-core::search` is deliberately literal, and a regex mode needs its own
-  escaping rules and its own error reporting for an invalid pattern — and
-  find-in-files, which needs more than one document. Both say so when pressed
-  rather than reporting an unknown command.
+  search the same way, and `ctrl+shift+f` asks what to look for and searches every
+  file in the workspace with its own matching options. What is missing is regular
+  expressions: `deco-core::search` is deliberately literal, and a regex mode needs
+  its own escaping rules and its own error reporting for an invalid pattern.
+  `alt+r` says so when pressed rather than reporting an unknown command. Nor is
+  there replace-across-files, or a results view that stays open — the matches are a
+  picker.
 - **Tabs, splits, quick open and search in files, but no file tree.**
   Several documents open at once, one per tab (see [Tabs](docs/tabs.md)); `ctrl+p`
   opens any file in the workspace and `ctrl+shift+f` searches all of them,
@@ -231,8 +234,13 @@ does not:
   [Running commands](docs/commands.md).
 - **The GPU frontend draws text, a gutter and a caret.** Selection and
   current-line rectangles are computed and tested but not yet painted; there is
-  no scrollbar, minimap or mouse input — and no chrome, so `ctrl+f` refuses there
+  no scrollbar, minimap or mouse input, and it lays out one line per row, so
+  `editor.wordWrap` has no effect there — and no chrome, so `ctrl+f` refuses
   rather than opening a find bar the frontend cannot show.
+- **Word wrap has no `editor.wrappingIndent`.** A continuation row starts at
+  column zero rather than matching the indent of the line it belongs to, and the
+  break rule is whitespace rather than Unicode UAX #14 — see
+  [Word wrap](docs/editing.md#word-wrap).
 
 ## Building
 

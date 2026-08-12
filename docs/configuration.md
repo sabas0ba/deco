@@ -64,9 +64,11 @@ Settings deco resolves into an open document's behaviour: `editor.tabSize`,
 `deco.lsp.*` (see [Language servers](language-servers.md)).
 
 Not every one of those has a visible effect in every frontend yet — the terminal
-has no font size, and word wrap is resolved but not yet applied to the layout.
-The [top-level README](https://github.com/sabas0ba/deco#readme) is the place
-that tracks what is unbuilt.
+has no font size, and the GPU frontend does not wrap. `editor.wordWrap` and
+`editor.wordWrapColumn` are applied to the terminal layout; see
+[Word wrap](editing.md#word-wrap). The
+[top-level README](https://github.com/sabas0ba/deco#readme) is the place that
+tracks what is unbuilt.
 
 Unknown keys are kept rather than rejected. A settings file written for VS Code
 contains a great many of them, and failing on the first one would make the file

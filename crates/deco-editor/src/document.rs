@@ -258,12 +258,30 @@ pub struct View {
     pub selections: SelectionSet,
     /// The first visible line.
     pub scroll_top: usize,
+    /// Which wrapped row of [`View::scroll_top`] is the first on screen.
+    ///
+    /// Zero unless the line is wrapped and the window starts partway down it.
+    /// The scroll position is anchored to a document line and an offset within it,
+    /// rather than to a count of rows from the top of the file, because counting
+    /// rows from the top means wrapping the whole file to find out where the
+    /// window is — on every keystroke, for a file of any size. Anchored this way,
+    /// scrolling and drawing both cost the height of the window.
+    pub scroll_row: usize,
     /// The leftmost visible display column.
+    ///
+    /// Meaningless while wrapping, where nothing extends past the right edge.
     pub scroll_left: usize,
     /// Height of the text area in lines.
     pub height: usize,
     /// Width of the text area in columns.
     pub width: usize,
+    /// Columns this group leaves for text: its own width less its gutter.
+    ///
+    /// The frontend's layout decides it — how many groups are on screen, how wide
+    /// a gutter this document needs — and [`crate::Session::resize`] computes it
+    /// from [`crate::layout`] so that both the wrap and the drawing use one
+    /// answer. Zero means "not laid out yet", which wraps nothing.
+    pub text_width: usize,
     /// Any chord waiting for its second keypress.
     pub chord: deco_keymap::ChordState,
 }
@@ -273,18 +291,151 @@ impl Default for View {
         Self {
             selections: SelectionSet::default(),
             scroll_top: 0,
+            scroll_row: 0,
             scroll_left: 0,
             height: 24,
             width: 80,
+            text_width: 0,
             chord: deco_keymap::ChordState::new(),
         }
     }
 }
 
+/// One document line as a string, or empty past the end of the buffer.
+fn line_text(buffer: &Buffer, line: usize) -> String {
+    buffer
+        .line_content(line)
+        .map(|slice| slice.to_string())
+        .unwrap_or_default()
+}
+
+/// One row on screen: which document line it shows, and which part of it.
+///
+/// A line that is not wrapped produces exactly one of these, so a renderer has
+/// one path rather than two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VisualRow {
+    /// The document line.
+    pub line: usize,
+    /// Which row of that line this is, counting from zero.
+    ///
+    /// Zero is where the line number goes: a continuation row leaves the gutter
+    /// blank, because repeating the number would read as a line that is not there.
+    pub row: usize,
+    /// UTF-16 column the row starts at.
+    pub start: u32,
+    /// UTF-16 column the next row starts at, or `None` on a line's last row —
+    /// which runs to the end of the line.
+    pub end: Option<u32>,
+}
+
+impl VisualRow {
+    /// Whether this row carries the line's number.
+    pub fn numbered(&self) -> bool {
+        self.row == 0
+    }
+
+    /// Whether `column` falls on this row.
+    ///
+    /// The end is exclusive, except on a line's last row, where a caret sitting
+    /// one past the final character still belongs here — there is no next row for
+    /// it to belong to.
+    pub fn holds(&self, column: u32) -> bool {
+        column >= self.start && self.end.is_none_or(|end| column < end)
+    }
+}
+
 impl View {
+    /// The column this view wraps at, or zero when it does not wrap.
+    ///
+    /// `editor.wordWrap` decides which of the two widths applies:
+    /// `"on"` follows the window, `"wordWrapColumn"` ignores it, and `"bounded"`
+    /// takes whichever is narrower — which is the one that keeps prose readable on
+    /// a wide screen without letting a narrow one wrap twice.
+    pub fn wrap_column(&self, settings: &EditorSettings) -> usize {
+        // No width means nothing has laid this group out yet, or the frontend does
+        // not wrap — see `Session::frontend_wraps`. Either way there is nowhere to
+        // break, and that holds for `wordWrapColumn` too: wrapping in the session
+        // while the frontend draws one line per row would scroll and move the caret
+        // by rows nobody draws.
+        if self.text_width == 0 {
+            return 0;
+        }
+        match settings.word_wrap {
+            deco_config::WordWrap::Off => 0,
+            deco_config::WordWrap::On => self.text_width,
+            deco_config::WordWrap::WordWrapColumn => settings.word_wrap_column,
+            deco_config::WordWrap::Bounded => settings.word_wrap_column.min(self.text_width),
+        }
+    }
+
+    /// Where a document line is broken, or a single row when it is not wrapped.
+    pub fn row_starts(&self, buffer: &Buffer, settings: &EditorSettings, line: usize) -> Vec<u32> {
+        let wrap = self.wrap_column(settings);
+        if wrap == 0 {
+            return vec![0];
+        }
+        let text = line_text(buffer, line);
+        deco_core::wrap::row_starts(&text, wrap, settings.tab_size)
+    }
+
+    /// How many rows a document line occupies.
+    fn line_rows(&self, buffer: &Buffer, settings: &EditorSettings, line: usize) -> usize {
+        self.row_starts(buffer, settings, line).len()
+    }
+
+    /// Which row of its line `position` sits on.
+    pub fn row_of(&self, buffer: &Buffer, settings: &EditorSettings, position: Position) -> usize {
+        let starts = self.row_starts(buffer, settings, position.line as usize);
+        deco_core::wrap::row_of(&starts, position.character)
+    }
+
+    /// The rows on screen, from the scroll anchor down.
+    ///
+    /// Shorter than the height only at the end of the document. Costs the height
+    /// of the window and not the length of the file, which is the whole reason the
+    /// anchor is a line rather than a row count.
+    pub fn visible_rows(&self, buffer: &Buffer, settings: &EditorSettings) -> Vec<VisualRow> {
+        let mut rows = Vec::with_capacity(self.height);
+        let mut line = self.scroll_top;
+        let mut row = self.scroll_row;
+        while rows.len() < self.height && line < buffer.line_count() {
+            let starts = self.row_starts(buffer, settings, line);
+            if row >= starts.len() {
+                // The anchor points past the end of a line that has since been
+                // shortened — by an edit, or by the window getting wider.
+                line += 1;
+                row = 0;
+                continue;
+            }
+            let (start, end) = deco_core::wrap::row_range(&starts, row);
+            rows.push(VisualRow {
+                line,
+                row,
+                start,
+                end,
+            });
+            row += 1;
+            if row >= starts.len() {
+                line += 1;
+                row = 0;
+            }
+        }
+        rows
+    }
+
     /// Scrolls the minimum amount needed to bring the primary cursor into view,
     /// honouring `editor.cursorSurroundingLines`.
     pub fn reveal_cursor(&mut self, buffer: &Buffer, settings: &EditorSettings) {
+        if self.wrap_column(settings) == 0 {
+            self.scroll_row = 0;
+            self.reveal_cursor_unwrapped(buffer, settings);
+            return;
+        }
+        self.reveal_cursor_wrapped(buffer, settings);
+    }
+
+    fn reveal_cursor_unwrapped(&mut self, buffer: &Buffer, settings: &EditorSettings) {
         let line = self.selections.primary().active.line as usize;
         let margin = settings
             .cursor_surrounding_lines
@@ -305,7 +456,186 @@ impl View {
         }
     }
 
+    /// The same in rows rather than lines.
+    ///
+    /// Every walk here is bounded by the height of the window: a cursor further
+    /// away than that re-anchors on itself instead of being counted towards.
+    fn reveal_cursor_wrapped(&mut self, buffer: &Buffer, settings: &EditorSettings) {
+        let cursor = buffer.clamp_position(self.selections.primary().active);
+        let at = (cursor.line as usize, self.row_of(buffer, settings, cursor));
+        let margin = settings
+            .cursor_surrounding_lines
+            .min(self.height.saturating_sub(1) / 2);
+        let last = self.height.saturating_sub(1);
+
+        // `None` when the cursor is above the anchor or further below it than the
+        // window is tall; either way the answer is to re-anchor on the cursor.
+        match self.rows_to(buffer, settings, at) {
+            Some(distance) if distance >= margin && distance + margin <= last => {}
+            Some(distance) if distance + margin > last => {
+                let (line, row) = self.back(buffer, settings, at, last.saturating_sub(margin));
+                self.scroll_top = line;
+                self.scroll_row = row;
+            }
+            _ => {
+                let (line, row) = self.back(buffer, settings, at, margin);
+                self.scroll_top = line;
+                self.scroll_row = row;
+            }
+        }
+
+        if !settings.scroll_beyond_last_line {
+            // The furthest the window may sit is one where its last row is the
+            // document's last row. Found by walking back from the end, which costs
+            // the height of the window rather than the length of the file.
+            let last_line = buffer.line_count().saturating_sub(1);
+            let end = (
+                last_line,
+                self.line_rows(buffer, settings, last_line)
+                    .saturating_sub(1),
+            );
+            let furthest = self.back(buffer, settings, end, last);
+            if (self.scroll_top, self.scroll_row) > furthest {
+                (self.scroll_top, self.scroll_row) = furthest;
+            }
+        }
+    }
+
+    /// How many rows from the anchor down to `to`, or `None` when `to` is above
+    /// the anchor or more than a window away from it.
+    fn rows_to(
+        &self,
+        buffer: &Buffer,
+        settings: &EditorSettings,
+        to: (usize, usize),
+    ) -> Option<usize> {
+        if to < (self.scroll_top, self.scroll_row) {
+            return None;
+        }
+        let mut rows = 0usize;
+        let mut line = self.scroll_top;
+        let mut row = self.scroll_row;
+        while (line, row) != to {
+            if rows > self.height || line >= buffer.line_count() {
+                return None;
+            }
+            row += 1;
+            if row >= self.line_rows(buffer, settings, line) {
+                line += 1;
+                row = 0;
+            }
+            rows += 1;
+        }
+        Some(rows)
+    }
+
+    /// The anchor `count` rows above `from`, stopping at the start of the file.
+    fn back(
+        &self,
+        buffer: &Buffer,
+        settings: &EditorSettings,
+        from: (usize, usize),
+        count: usize,
+    ) -> (usize, usize) {
+        let (mut line, mut row) = from;
+        for _ in 0..count {
+            if row > 0 {
+                row -= 1;
+            } else if line > 0 {
+                line -= 1;
+                row = self.line_rows(buffer, settings, line).saturating_sub(1);
+            } else {
+                break;
+            }
+        }
+        (line, row)
+    }
+
+    /// The UTF-16 columns `position`'s own row covers.
+    pub fn row_bounds(
+        &self,
+        buffer: &Buffer,
+        settings: &EditorSettings,
+        position: Position,
+    ) -> (u32, Option<u32>) {
+        let starts = self.row_starts(buffer, settings, position.line as usize);
+        let row = deco_core::wrap::row_of(&starts, position.character);
+        deco_core::wrap::row_range(&starts, row)
+    }
+
+    /// How far into its own row `position` sits, in display columns.
+    ///
+    /// This is what a vertical motion keeps constant. Measured from the row rather
+    /// than from the line, because on screen the row is the line.
+    pub fn goal_column(
+        &self,
+        buffer: &Buffer,
+        settings: &EditorSettings,
+        position: Position,
+    ) -> usize {
+        let (start, _) = self.row_bounds(buffer, settings, position);
+        deco_core::wrap::width_between(
+            &line_text(buffer, position.line as usize),
+            start,
+            position.character,
+            settings.tab_size,
+        )
+    }
+
+    /// The position `count` rows away from `from`, keeping `goal` display columns
+    /// into the row.
+    ///
+    /// Rows, not lines: with wrapping on, one press of `down` moves one row, which
+    /// is what the key looks like it does. Moving by line instead would skip over
+    /// however many rows the current line happens to occupy, and in prose that is
+    /// most of a paragraph.
+    pub fn step_rows(
+        &self,
+        buffer: &Buffer,
+        settings: &EditorSettings,
+        from: Position,
+        down: bool,
+        count: usize,
+        goal: usize,
+    ) -> Position {
+        let mut line = from.line as usize;
+        let mut row = self.row_of(buffer, settings, from);
+        for _ in 0..count {
+            if down {
+                let rows = self.line_rows(buffer, settings, line);
+                if row + 1 < rows {
+                    row += 1;
+                } else if line + 1 < buffer.line_count() {
+                    line += 1;
+                    row = 0;
+                } else {
+                    // Already on the last row of the last line. Stopping here
+                    // rather than at the end of the document matches what `down`
+                    // does when wrapping is off.
+                    break;
+                }
+            } else if row > 0 {
+                row -= 1;
+            } else if line > 0 {
+                line -= 1;
+                row = self.line_rows(buffer, settings, line).saturating_sub(1);
+            } else {
+                break;
+            }
+        }
+
+        let text = line_text(buffer, line);
+        let starts = self.row_starts(buffer, settings, line);
+        let (start, end) = deco_core::wrap::row_range(&starts, row);
+        let character = deco_core::wrap::column_in_row(&text, start, end, goal, settings.tab_size);
+        Position::new(line as u32, character)
+    }
+
     /// The range of lines currently visible.
+    ///
+    /// Counts one row per line, so it over-reports while wrapping — a window four
+    /// rows tall may be showing one line. [`View::visible_rows`] is the wrap-aware
+    /// answer, and what a renderer wants.
     pub fn visible_lines(&self, buffer: &Buffer) -> std::ops::Range<usize> {
         let end = (self.scroll_top + self.height).min(buffer.line_count());
         self.scroll_top.min(end)..end
@@ -441,5 +771,213 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(view.visible_lines(&buffer), 0..3);
+    }
+
+    // ---- Wrapping ---------------------------------------------------------
+
+    /// Settings that wrap at the window's width.
+    fn wrapping() -> EditorSettings {
+        EditorSettings {
+            word_wrap: deco_config::WordWrap::On,
+            ..EditorSettings::default()
+        }
+    }
+
+    /// A view `text_width` columns wide and `height` rows tall.
+    fn view(text_width: usize, height: usize) -> View {
+        View {
+            text_width,
+            height,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn wrapping_off_leaves_a_line_as_one_row() {
+        let buffer = Buffer::from_text(&"x".repeat(200));
+        let view = view(20, 5);
+        assert_eq!(view.wrap_column(&EditorSettings::default()), 0);
+        let rows = view.visible_rows(&buffer, &EditorSettings::default());
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].start, 0);
+        assert_eq!(rows[0].end, None, "the row runs to the end of the line");
+    }
+
+    #[test]
+    fn a_wrapped_line_occupies_several_rows() {
+        let buffer = Buffer::from_text("aaaaa bbbbb ccccc\nshort\n");
+        let rows = view(6, 10).visible_rows(&buffer, &wrapping());
+        let shape: Vec<(usize, usize)> = rows.iter().map(|r| (r.line, r.row)).collect();
+        assert_eq!(shape, [(0, 0), (0, 1), (0, 2), (1, 0), (2, 0)]);
+        assert!(rows[0].numbered() && !rows[1].numbered());
+    }
+
+    #[test]
+    fn bounded_takes_whichever_of_the_two_widths_is_narrower() {
+        let settings = EditorSettings {
+            word_wrap: deco_config::WordWrap::Bounded,
+            word_wrap_column: 40,
+            ..EditorSettings::default()
+        };
+        assert_eq!(view(100, 5).wrap_column(&settings), 40, "the column");
+        assert_eq!(view(20, 5).wrap_column(&settings), 20, "the window");
+    }
+
+    #[test]
+    fn a_wrap_column_ignores_the_window() {
+        // Which is the point of `wordWrapColumn`: the text keeps its measure on a
+        // wide screen instead of running the whole way across it.
+        let settings = EditorSettings {
+            word_wrap: deco_config::WordWrap::WordWrapColumn,
+            word_wrap_column: 30,
+            ..EditorSettings::default()
+        };
+        assert_eq!(view(200, 5).wrap_column(&settings), 30);
+    }
+
+    #[test]
+    fn the_window_can_start_partway_down_a_wrapped_line() {
+        let buffer = Buffer::from_text("aaaaa bbbbb ccccc\n");
+        let mut view = view(6, 2);
+        view.scroll_row = 1;
+        let rows = view.visible_rows(&buffer, &wrapping());
+        assert_eq!(rows.len(), 2);
+        assert_eq!((rows[0].line, rows[0].row), (0, 1));
+        assert_eq!((rows[1].line, rows[1].row), (0, 2));
+    }
+
+    #[test]
+    fn revealing_a_caret_further_down_its_own_line_scrolls_by_rows() {
+        // The whole point. Anchoring on the line would leave the window showing
+        // the line's first row with the caret several rows below the bottom.
+        let buffer = Buffer::from_text(&format!("{}\n", "word ".repeat(20)));
+        let mut view = view(10, 4);
+        view.selections = SelectionSet::caret(Position::new(0, 95));
+        view.reveal_cursor(&buffer, &wrapping());
+        assert_eq!(view.scroll_top, 0, "still the only line");
+        assert!(view.scroll_row > 0, "but not its first row");
+
+        let rows = view.visible_rows(&buffer, &wrapping());
+        assert!(
+            rows.iter().any(|row| row.holds(95)),
+            "the caret's row is on screen: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn revealing_a_caret_above_the_window_scrolls_back_by_rows() {
+        let buffer = Buffer::from_text(&format!("{}\n", "word ".repeat(20)));
+        let mut view = view(10, 4);
+        view.scroll_row = 8;
+        view.selections = SelectionSet::caret(Position::new(0, 2));
+        view.reveal_cursor(&buffer, &wrapping());
+        assert_eq!((view.scroll_top, view.scroll_row), (0, 0));
+    }
+
+    #[test]
+    fn an_anchor_past_the_end_of_a_shortened_line_recovers() {
+        // An edit or a wider window can leave the anchor pointing at a row the
+        // line no longer has. Drawing nothing at all would look like a hang.
+        let buffer = Buffer::from_text("short\nsecond\nthird\n");
+        let mut view = view(20, 3);
+        view.scroll_row = 7;
+        let rows = view.visible_rows(&buffer, &wrapping());
+        assert_eq!(
+            rows.iter().map(|r| r.line).collect::<Vec<_>>(),
+            [1, 2, 3],
+            "carries on from the next line"
+        );
+    }
+
+    #[test]
+    fn the_last_row_of_the_file_can_be_scrolled_to_and_no_further() {
+        // Clamping to `line_count - height`, which is what the unwrapped path
+        // does, would stop with rows still below the bottom of the window: a
+        // wrapped file has more rows than lines, so counting in lines undershoots.
+        let buffer = Buffer::from_text(&format!("{}\n", "word ".repeat(20)));
+        let mut view = view(10, 4);
+        let settings = EditorSettings {
+            scroll_beyond_last_line: false,
+            ..wrapping()
+        };
+        view.selections = SelectionSet::caret(buffer.end_position());
+        view.reveal_cursor(&buffer, &settings);
+
+        let rows = view.visible_rows(&buffer, &settings);
+        assert_eq!(rows.len(), 4, "the window is full: {rows:?}");
+        let last = rows.last().unwrap();
+        assert_eq!(last.line, buffer.line_count() - 1);
+        assert_eq!(last.end, None, "and it is that line's last row");
+    }
+
+    #[test]
+    fn scroll_beyond_last_line_lets_the_window_run_past_the_end() {
+        let buffer = Buffer::from_text(&format!("{}\n", "word ".repeat(20)));
+        let mut view = view(10, 6);
+        let settings = EditorSettings {
+            scroll_beyond_last_line: true,
+            ..wrapping()
+        };
+        view.scroll_row = 9;
+        view.selections = SelectionSet::caret(Position::new(0, 95));
+        view.reveal_cursor(&buffer, &settings);
+        let rows = view.visible_rows(&buffer, &settings);
+        assert!(rows.len() < 6, "the end of the file is on screen: {rows:?}");
+    }
+
+    #[test]
+    fn a_goal_column_is_measured_within_the_row() {
+        // Not from the start of the line: on screen the row is the line, and a
+        // goal counted from the line's start would put every vertical motion
+        // through a wrapped paragraph at the wrong column.
+        let buffer = Buffer::from_text("aaaaa bbbbb ccccc\n");
+        let view = view(6, 5);
+        let settings = wrapping();
+        assert_eq!(view.goal_column(&buffer, &settings, Position::new(0, 8)), 2);
+    }
+
+    #[test]
+    fn stepping_down_a_row_stays_on_the_same_line() {
+        let buffer = Buffer::from_text("aaaaa bbbbb ccccc\nnext\n");
+        let view = view(6, 5);
+        let settings = wrapping();
+        let from = Position::new(0, 1);
+        let next = view.step_rows(&buffer, &settings, from, true, 1, 1);
+        assert_eq!(next, Position::new(0, 7), "the second row, one column in");
+    }
+
+    #[test]
+    fn stepping_down_past_a_lines_last_row_reaches_the_next_line() {
+        let buffer = Buffer::from_text("aaaaa bbbbb\nnext\n");
+        let view = view(6, 5);
+        let settings = wrapping();
+        let next = view.step_rows(&buffer, &settings, Position::new(0, 7), true, 1, 0);
+        assert_eq!(next, Position::new(1, 0));
+    }
+
+    #[test]
+    fn stepping_stops_at_the_ends_of_the_document() {
+        let buffer = Buffer::from_text("aaaaa bbbbb\n");
+        let view = view(6, 5);
+        let settings = wrapping();
+        assert_eq!(
+            view.step_rows(&buffer, &settings, Position::new(0, 0), false, 9, 0),
+            Position::new(0, 0),
+            "up from the first row"
+        );
+        let last = buffer.line_count() - 1;
+        assert_eq!(
+            view.step_rows(
+                &buffer,
+                &settings,
+                Position::new(last as u32, 0),
+                true,
+                9,
+                0
+            )
+            .line as usize,
+            last,
+            "down from the last"
+        );
     }
 }

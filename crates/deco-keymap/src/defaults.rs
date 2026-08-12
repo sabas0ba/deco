@@ -166,6 +166,7 @@ pub const DEFAULT_KEYBINDINGS_JSONC: &str = r#"[
     { "key": "ctrl+\\", "mac": "cmd+\\", "command": "workbench.action.splitEditor" },
 
     // ---- View -----------------------------------------------------------
+    { "key": "alt+z",        "command": "editor.action.toggleWordWrap" },
     { "key": "ctrl+b",       "mac": "cmd+b",       "command": "workbench.action.toggleSidebarVisibility" },
     { "key": "ctrl+j",       "mac": "cmd+j",       "command": "workbench.action.togglePanel" },
     { "key": "ctrl+`",       "command": "workbench.action.terminal.toggleTerminal" },

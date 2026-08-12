@@ -101,6 +101,92 @@ The cursors were placed deliberately and expanding each of them keeps that
 placement. A caret with no word under it stays a caret rather than selecting the
 whitespace it sits in, and a selection you already made is left as you made it.
 
+## Word wrap
+
+`editor.wordWrap` breaks long lines to fit the window instead of running them off
+the right edge, and `alt+z` turns it on for the file you are looking at.
+
+![A long line running off the edge, then wrapped, then walked with the arrow keys](img/word-wrap.svg)
+
+| Key | Command |
+| --- | --- |
+| `alt+z` | `editor.action.toggleWordWrap` |
+
+| `editor.wordWrap` | Where it breaks |
+| --- | --- |
+| `"off"` (default) | Nowhere; a long line is cut off at the edge |
+| `"on"` | At the window's width |
+| `"wordWrapColumn"` | At `editor.wordWrapColumn`, whatever the window's width |
+| `"bounded"` | At whichever of those two is narrower |
+
+`"bounded"` is the one worth knowing about: it keeps prose to a readable measure
+on a wide screen without letting a narrow window wrap the same text twice.
+
+The break goes **after whitespace**, at the last opportunity that fits, with two
+qualifications that exist because the obvious rule reads badly:
+
+- A space that would overflow does not force a break; it hangs past the right
+  edge, where it is invisible. Breaking before it would start the next row with a
+  space, which reads as indentation the file does not have.
+- Whitespace before a row's first word is not an opportunity. An indented line
+  would otherwise break immediately after its indent, spending a row on a lone tab
+  and starting the text at column zero — losing the one cue that says how deep the
+  line is.
+
+A run with no whitespace in it breaks at the width. For code that is a URL or a
+base64 blob, where every break is arbitrary; for Chinese, Japanese and Korean it
+is the *right* answer, since they put no spaces between words. Proper line
+breaking — Unicode UAX #14, which knows that a closing bracket may not begin a
+row — needs a table deco does not carry, and it would be the first dependency
+added for cosmetics.
+
+### The arrow keys move by row
+
+This is the half of word wrap that is easy to get wrong. With wrapping on, `down`
+moves one row and not one document line, because a row is what the key looks like
+it moves by; moving by line would pass over however many rows the current line
+occupies, which in prose is most of a paragraph. `home` and `end` are the ends of
+the *row* — except on a line's first row, where `home` keeps its usual trick of
+stopping at the first non-whitespace and then at column zero, and on a line's
+last row, where `end` is the end of the line.
+
+The sticky column a vertical motion keeps is measured **within the row** for the
+same reason. Measured from the line's start it would be a number with no meaning
+on screen, and every press of `down` through a wrapped paragraph would land
+somewhere unrelated to where the caret looked like it was.
+
+`end` and `home` clear that sticky column, so a `down` after them measures afresh
+from where they landed rather than returning to whatever was last aimed at.
+
+### What it costs
+
+Nothing that grows with the file. The scroll position is anchored to a document
+line plus an offset into it, rather than to a count of rows from the top of the
+file: counting rows from the top means wrapping the whole file to find out where
+the window is, on every keystroke. Anchored this way, drawing and scrolling both
+cost the height of the window — and so does finding the furthest the window may
+scroll, which walks backwards from the last line rather than forwards from the
+first.
+
+### What is not there
+
+- **`editor.wrappingIndent`.** VS Code indents a continuation row to match the
+  line it belongs to; deco starts it at column zero. Every column mapping would
+  have to account for the prefix, and a deeply indented line needs a cap before
+  the indent leaves no room for text.
+- **A wrap marker.** VS Code draws nothing either, but some editors mark the
+  break, and the gutter's blank continuation row is the only signal here.
+- **The GPU frontend does not wrap.** It has no chrome to draw at all yet, so it
+  lays out one line per row — see the [README](https://github.com/sabas0ba/deco#readme).
+
+The setting is not written anywhere when you press `alt+z`. deco
+[does not write configuration files](configuration.md#colour-themes), and a
+keystroke that silently edited one would be a poor way to find that out. The
+toggle is per document — so per tab — and turning it on to read one Markdown file
+leaves the code in the next tab alone. Pressing it twice restores whatever
+`editor.wordWrap` asked for, including a `[language]` override of it, rather than
+assuming `"on"`.
+
 ## Positions are UTF-16 code units
 
 Every position in deco is a line and a UTF-16 code-unit offset, which is what the
