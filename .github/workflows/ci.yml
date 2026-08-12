@@ -176,7 +176,10 @@ jobs:
   # The other half: the test suite as actual Windows binaries. Built for the GNU
   # target with MinGW — the one a Linux host can link — and executed through
   # Wine by way of cargo's target runner, so `#[cfg(windows)]` code really runs,
-  # child processes included.
+  # child processes included. Two tests are skipped because they paint through
+  # crossterm, which on Windows needs the process to own a console whether or
+  # not it was handed a writer, and a runner gives Wine no terminal to make one
+  # out of; `cargo xtask cross` names them and says so.
   #
   # Wine is not Windows and the GNU ABI is not MSVC, so this does not replace
   # the tagged run on a real runner; what it replaces is having no runtime

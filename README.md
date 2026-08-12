@@ -286,7 +286,10 @@ Between tags, `cargo xtask cross` stands in for them from a Linux runner:
   per-platform windowing.
 - **The test suite as Windows binaries, under Wine.** Built for
   `x86_64-pc-windows-gnu` with MinGW and run through cargo's target runner, so
-  the `#[cfg(windows)]` paths actually execute — process spawning included.
+  the `#[cfg(windows)]` paths actually execute — process spawning included. Two
+  tests sit out: crossterm on Windows sends its commands to the console rather
+  than to the writer it was given, and a runner gives Wine no terminal to make a
+  console out of. A real Windows runner has one and covers them at the tag.
 
 That is a substitute, not an equal. macOS gets a compile check and no runtime
 check at all; Wine runs the GNU ABI rather than MSVC, and where Wine's Win32

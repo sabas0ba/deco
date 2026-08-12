@@ -15,8 +15,9 @@
 //!
 //! * **The tests, run under Wine.** Built for `x86_64-pc-windows-gnu` with
 //!   MinGW and executed through Wine by way of cargo's target runner. These
-//!   are real Windows binaries running Windows code paths: the whole suite
-//!   passes, including the tests that spawn a child process.
+//!   are real Windows binaries running Windows code paths — the tests that
+//!   spawn a child process included — bar the two in [`WINE_SKIPS`], which
+//!   need a console Wine has not been given.
 //!
 //! What neither covers, and what the tagged run on real runners is therefore
 //! still for:
@@ -29,7 +30,7 @@
 //!   Windows, a test can pass here and fail there — or the reverse.
 //! * **The GPU frontend and the real console.** `deco-gui` is excluded because
 //!   wgpu and winit want an adapter and a compositor, neither of which a
-//!   headless Wine has.
+//!   headless Wine has; [`WINE_SKIPS`] is the same shortage one layer down.
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -113,6 +114,25 @@ pub fn check_args(target: &str) -> Vec<String> {
         .collect()
 }
 
+/// Tests the Wine pass cannot run, matched as substrings the way libtest's
+/// `--skip` matches them.
+///
+/// Both of these paint a frame through crossterm. On Windows crossterm decides
+/// once, at first use, whether the terminal understands ANSI; when it decides
+/// not, every command it is given goes to the console API instead of to the
+/// writer it was handed — so a test that paints into a `Vec<u8>` still needs
+/// the process to own a console. A CI runner gives Wine no terminal to make one
+/// out of, and the calls come back `Invalid handle`. A real Windows runner has
+/// one and passes them, which is where they stay covered.
+///
+/// These are the only two tests that reach crossterm: everything else in
+/// `deco-tui` compares rendered strings, which is why the frontend's own suite
+/// is otherwise portable. A new test that paints will need adding here.
+pub const WINE_SKIPS: &[&str] = &[
+    "painting_writes_every_span_and_positions_the_cursor",
+    "painting_a_frame_with_no_cursor_leaves_it_hidden",
+];
+
 /// The `cargo test` invocation the Wine pass runs.
 ///
 /// Default features, unlike the check above: `--all-features` would turn on
@@ -129,6 +149,14 @@ pub fn wine_test_args() -> Vec<String> {
     }
     args.push("--target".to_owned());
     args.push(WINE_TARGET.to_owned());
+    for skip in WINE_SKIPS {
+        // After the `--`, so these reach every test harness rather than cargo.
+        if !args.iter().any(|argument| argument == "--") {
+            args.push("--".to_owned());
+        }
+        args.push("--skip".to_owned());
+        args.push((*skip).to_owned());
+    }
     args
 }
 
@@ -230,8 +258,28 @@ fn wine(root: &Path) -> Result<()> {
         .map(|(key, value)| (key.as_str(), value.as_str()))
         .collect();
 
+    boot_wine(root, wine, &env);
+
     let args = wine_test_args();
     crate::run_with_env(root, "cargo", &borrow(&args), &env)
+}
+
+/// Builds the Wine prefix before any test binary asks for one.
+///
+/// The first `wine` in a fresh `$WINEPREFIX` spends about ten seconds creating
+/// it — registry, drive mappings, services — and cargo will happily start the
+/// next test binary in the middle of that. Tests then fail in ways that have
+/// nothing to do with the code: a directory that is not there yet, a console
+/// that does not exist. A CI runner is always the fresh-prefix case, which is
+/// why this is not something a laptop notices.
+///
+/// Advisory: if `wineboot` fails, the run continues and the tests report
+/// whatever is actually wrong, which is more useful than a failure here about
+/// the setup for them.
+fn boot_wine(root: &Path, wine: &str, env: &[(&str, &str)]) {
+    if crate::run_with_env(root, wine, &["wineboot", "--init"], env).is_err() {
+        eprintln!("warning: `wineboot --init` failed; continuing to the tests anyway");
+    }
 }
 
 /// Fails with the `rustup` command that would fix it if any target is missing.
@@ -342,7 +390,30 @@ mod tests {
                 .unwrap_or_else(|| panic!("{crate_name} is not excluded"));
             assert_eq!(args[position - 1], "--exclude");
         }
-        assert_eq!(args.last().unwrap(), WINE_TARGET);
+    }
+
+    #[test]
+    fn the_console_bound_tests_are_skipped_after_a_bare_double_dash() {
+        let args = wine_test_args();
+        let separator = args
+            .iter()
+            .position(|argument| argument == "--")
+            .expect("the skips must reach libtest, not cargo");
+        // The target belongs to cargo, so it has to come first.
+        assert_eq!(args[separator - 1], WINE_TARGET);
+        assert_eq!(
+            args.iter().filter(|argument| *argument == "--").count(),
+            1,
+            "a second `--` would be passed through as a test name filter"
+        );
+        for skip in WINE_SKIPS {
+            let position = args
+                .iter()
+                .position(|argument| argument == skip)
+                .unwrap_or_else(|| panic!("{skip} is not skipped"));
+            assert!(position > separator);
+            assert_eq!(args[position - 1], "--skip");
+        }
     }
 
     #[test]
