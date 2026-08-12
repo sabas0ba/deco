@@ -31,6 +31,7 @@ pub const DEFAULT_SETTINGS_JSONC: &str = r#"{
     "editor.lineHeight": 0,
     "editor.tabCompletion": "off",
     "editor.autoClosingBrackets": "languageDefined",
+    "editor.autoIndent": "full",
     "editor.trimAutoWhitespace": true,
     "editor.largeFileOptimizations": true,
 

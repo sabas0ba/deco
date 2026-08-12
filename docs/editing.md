@@ -69,6 +69,48 @@ Python programmer means by commenting a block out, and it does stop the code run
 — but as an expression statement, so it is only sound where a statement is allowed.
 Matching VS Code beats inventing a third answer.
 
+## A new line starts where the old one started
+
+`editor.autoIndent` carries the indentation across a newline, and opens a block when
+the caret is between a pair of brackets.
+
+![Typing a brace, pressing enter, and typing inside the block](img/auto-indent.svg)
+
+| `editor.autoIndent` | On `enter` |
+| --- | --- |
+| `none` | Column zero |
+| `keep` | The previous line's indentation |
+| `brackets` (default) | And one level deeper after an opening bracket |
+
+`advanced` and `full` resolve to `brackets`. Both mean this plus the
+`indentationRules` a language configuration contributes, and deco has none to read —
+so it says which of the five it is doing rather than accepting a value whose name
+promises more.
+
+**`{|}` and `enter` opens a block**: the closer moves to its own line at the outer
+indent and the caret is left on an indented line between them, which is the shape
+everybody types next. It pairs with
+[auto-closing brackets](#auto-closing-brackets) — typing `{` produces `{}`, and
+`enter` opens it.
+
+Pressing enter *inside* a line's indentation carries only what the caret had reached,
+not the whole indent: two spaces into an eight-space indent gives a new line indented
+two. And each cursor gets its own indent, since each is on its own line.
+
+`ctrl+enter` (`editor.action.insertLineAfter`) has always copied the indentation,
+because it is a command that knows it is making a line. `enter` is bound to `type`
+with a newline in it — a plain insertion — so it went to column zero, and the same
+editor indented on one key and not the other.
+
+### What is not there
+
+**`editor.trimAutoWhitespace`.** VS Code removes an auto-inserted indent when you
+leave the line without typing into it, so pressing enter twice does not leave a line
+of trailing spaces behind. deco keeps the whitespace. Implementing it needs the
+document to remember that a line's indentation was *inserted* rather than typed, and
+an answer for which undo step the removal belongs to — neither of which is a detail.
+`files.trimTrailingWhitespace` covers it on format in the meantime.
+
 ## Auto-closing brackets
 
 `editor.autoClosingBrackets` closes a bracket or a quote as you open it, and steps

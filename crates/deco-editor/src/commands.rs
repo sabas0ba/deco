@@ -347,6 +347,11 @@ pub fn execute(ctx: &mut Context<'_>, command: &str, args: Option<&Value>) -> Ou
             if let Some(outcome) = auto_close(ctx, text) {
                 return outcome;
             }
+            if text == "\n" {
+                if let Some(outcome) = insert_newline(ctx) {
+                    return outcome;
+                }
+            }
             insert_text(ctx, text);
             Outcome::Handled
         }
@@ -736,6 +741,141 @@ fn edit_at_selections(
 }
 
 /// Replaces each selection with `text`.
+/// `editor.autoIndent`: starts the new line where the old one started.
+///
+/// `None` when the setting is off or there is nothing to indent, so the caller falls
+/// back to a plain newline.
+///
+/// # Why `enter` needed this and `ctrl+enter` did not
+///
+/// `editor.action.insertLineAfter` has always copied the line's indentation, because
+/// it is a command that knows it is making a line. `enter` is bound to `type` with a
+/// newline in it — a plain insertion — so it landed at column zero, and the same
+/// editor indented on one key and not the other.
+///
+/// # Between a pair of brackets
+///
+/// With `brackets` (the default), `{|}` and `enter` puts the closer on its own line
+/// at the outer indent and leaves the caret on an indented line between them, which
+/// is the shape everybody types next. It pairs with
+/// [`auto_close`]: typing `{` produces `{}`, and `enter` opens it into a block.
+///
+/// All the carets have to be between a pair for that, or one keystroke would open a
+/// block under some and not others — the same rule, for the same reason, as closing a
+/// bracket.
+fn insert_newline(ctx: &mut Context<'_>) -> Option<Outcome> {
+    use deco_config::AutoIndent;
+    let mode = ctx.document.settings.auto_indent;
+    if mode == AutoIndent::None {
+        return None;
+    }
+    // A selection is replaced by the newline, and the indentation of a line that is
+    // about to be partly deleted is not the indentation of what is left.
+    if ctx.view.selections.iter().any(|s| !s.is_empty()) {
+        return None;
+    }
+
+    let unit = ctx.document.indent_unit();
+    let pairs = crate::document::bracket_pairs(ctx.document.language());
+    let buffer = &ctx.document.buffer;
+
+    // Only the leading whitespace *before* the caret: pressing enter inside a line's
+    // indentation should not hand the new line more indent than the caret had.
+    let indent_at = |buffer: &Buffer, at: Position| -> String {
+        let text = line_text(buffer, at.line);
+        text.chars()
+            .take_while(|c| c.is_whitespace())
+            .take(at.character as usize)
+            .collect()
+    };
+
+    // Whether every caret sits between an opening bracket and its own closer.
+    let between_pair = mode == AutoIndent::Brackets
+        && ctx.view.selections.iter().all(|s| {
+            let at = buffer.clamp_position(s.active);
+            let before = previous_char(buffer, at);
+            let after = next_char(buffer, at);
+            matches!(
+                (before, after),
+                (Some(open), Some(close))
+                    if pairs.iter().any(|(o, c)| *o == open && *c == close)
+            )
+        });
+    // And whether every caret merely *follows* one, which only adds a level.
+    let after_opener = mode == AutoIndent::Brackets
+        && ctx.view.selections.iter().all(|s| {
+            let at = buffer.clamp_position(s.active);
+            previous_char(buffer, at).is_some_and(|c| pairs.iter().any(|(o, _)| *o == c))
+        });
+
+    if !between_pair && !after_opener && indentation_is_absent(buffer, &ctx.view.selections) {
+        // Nothing to copy and no bracket to open: a plain newline is the same answer
+        // and a cheaper one.
+        return None;
+    }
+
+    edit_at_selections(ctx, EditKind::Insert, |buffer, selection| {
+        let at = buffer.clamp_position(selection.active);
+        let base = indent_at(buffer, at);
+        let inner = if between_pair || after_opener {
+            format!("{base}{unit}")
+        } else {
+            base.clone()
+        };
+        let text = if between_pair {
+            format!("\n{inner}\n{base}")
+        } else {
+            format!("\n{inner}")
+        };
+        Some((selection.range(), text))
+    });
+
+    if between_pair {
+        // The caret is after the closer's indent on the last inserted line; it belongs
+        // at the end of the one above. Read off the buffer rather than counted back,
+        // so every caret lands right whatever its own indent was.
+        ctx.view.selections.map(|s| {
+            let line = s.active.line.saturating_sub(1);
+            let end = movement::line_end(&ctx.document.buffer, Position::new(line, 0));
+            s.moved_to(end)
+        });
+    }
+    ctx.view
+        .reveal_cursor(&ctx.document.buffer, &ctx.document.settings);
+    Some(Outcome::Handled)
+}
+
+/// Whether no caret has any indentation to carry to a new line.
+fn indentation_is_absent(buffer: &Buffer, selections: &SelectionSet) -> bool {
+    selections.iter().all(|s| {
+        let at = buffer.clamp_position(s.active);
+        at.character == 0
+            || !line_text(buffer, at.line)
+                .chars()
+                .next()
+                .is_some_and(char::is_whitespace)
+    })
+}
+
+/// The character before `at`, or `None` at the start of a line.
+fn previous_char(buffer: &Buffer, at: Position) -> Option<char> {
+    let at = buffer.clamp_position(at);
+    if at.character == 0 {
+        return None;
+    }
+    let line = line_text(buffer, at.line);
+    let mut last = None;
+    let mut column = 0u32;
+    for c in line.chars() {
+        if column >= at.character {
+            break;
+        }
+        column += c.len_utf16() as u32;
+        last = Some(c);
+    }
+    last
+}
+
 /// `editor.autoClosingBrackets`: closes a bracket the caret has just opened, and
 /// steps over one it has already closed.
 ///
@@ -1725,6 +1865,143 @@ mod tests {
         fn cursor(&self) -> Position {
             self.view.selections.primary().active
         }
+    }
+
+    // ---- Auto-indent on enter ---------------------------------------------
+
+    /// Presses enter, which is bound to `type` with a newline in it.
+    fn enter(h: &mut Harness) {
+        h.type_text("\n");
+    }
+
+    #[test]
+    fn a_new_line_starts_where_the_old_one_started() {
+        // The gap this closes: `enter` went to column zero while `ctrl+enter` copied
+        // the indent, so the same editor indented on one key and not the other.
+        let mut h = Harness::with_language("fn main() {\n    let x = 1;\n}\n", "rs").at(1, 14);
+        enter(&mut h);
+        assert_eq!(h.text(), "fn main() {\n    let x = 1;\n    \n}\n");
+        assert_eq!(h.cursor(), Position::new(2, 4));
+    }
+
+    #[test]
+    fn none_starts_at_column_zero() {
+        let mut h = Harness::with_language("fn main() {\n    let x = 1;\n}\n", "rs").at(1, 14);
+        h.document.settings.auto_indent = deco_config::AutoIndent::None;
+        enter(&mut h);
+        assert_eq!(h.text(), "fn main() {\n    let x = 1;\n\n}\n");
+    }
+
+    #[test]
+    fn enter_inside_the_indentation_carries_only_what_the_caret_had() {
+        // Otherwise pressing enter two spaces into a four-space indent would hand the
+        // new line more indentation than the caret was sitting at.
+        let mut h = Harness::new("        deep\n").at(0, 2);
+        enter(&mut h);
+        // Two spaces stay above; the new line carries those two, and the six the
+        // caret had not reached stay in front of `deep`.
+        assert_eq!(h.text(), "  \n        deep\n");
+        assert_eq!(h.cursor(), Position::new(1, 2));
+    }
+
+    #[test]
+    fn an_opening_bracket_adds_a_level() {
+        let mut h = Harness::with_language("fn main() {\n", "rs").at(0, 11);
+        enter(&mut h);
+        assert_eq!(h.text(), "fn main() {\n    \n");
+        assert_eq!(h.cursor(), Position::new(1, 4));
+    }
+
+    #[test]
+    fn enter_between_a_pair_opens_a_block() {
+        // The shape everybody types next, and the pair to `auto_close`: typing `{`
+        // produces `{}`, and `enter` opens it into a block.
+        let mut h = Harness::with_language("fn main() {}\n", "rs").at(0, 11);
+        enter(&mut h);
+        assert_eq!(h.text(), "fn main() {\n    \n}\n");
+        assert_eq!(h.cursor(), Position::new(1, 4), "on the line between");
+    }
+
+    #[test]
+    fn opening_a_block_keeps_the_outer_indent_on_the_closer() {
+        let mut h = Harness::with_language("    if a {}\n", "rs").at(0, 10);
+        enter(&mut h);
+        assert_eq!(h.text(), "    if a {\n        \n    }\n");
+        assert_eq!(h.cursor(), Position::new(1, 8));
+    }
+
+    #[test]
+    fn typing_a_bracket_and_pressing_enter_composes() {
+        // The two features in sequence, which is how they are actually used.
+        let mut h = Harness::with_language("fn main() \n", "rs").at(0, 10);
+        h.type_text("{");
+        assert_eq!(h.text(), "fn main() {}\n", "closed by `auto_close`");
+        enter(&mut h);
+        assert_eq!(h.text(), "fn main() {\n    \n}\n");
+    }
+
+    #[test]
+    fn keep_copies_the_indent_but_does_not_open_a_block() {
+        let mut h = Harness::with_language("    if a {}\n", "rs").at(0, 10);
+        h.document.settings.auto_indent = deco_config::AutoIndent::Keep;
+        enter(&mut h);
+        assert_eq!(
+            h.text(),
+            "    if a {\n    }\n",
+            "the indent, and no extra line"
+        );
+    }
+
+    #[test]
+    fn a_bracket_that_is_not_this_languages_pair_opens_nothing() {
+        // Rust has no apostrophe pair, so `'|'` is two lifetimes and not a block.
+        let mut h = Harness::with_language("let a = ''\n", "rs").at(0, 9);
+        enter(&mut h);
+        assert_eq!(
+            h.text(),
+            "let a = '\n'\n",
+            "a plain newline, no indent added"
+        );
+    }
+
+    #[test]
+    fn a_selection_is_replaced_rather_than_indented() {
+        // The indentation of a line about to be partly deleted is not the indentation
+        // of what is left of it.
+        let mut h = Harness::new("    one    two\n").selecting((0, 4), (0, 11));
+        enter(&mut h);
+        assert_eq!(h.text(), "    \ntwo\n");
+    }
+
+    #[test]
+    fn every_caret_gets_its_own_indent() {
+        let mut h = Harness::new("  a\n      b\n");
+        h.view.selections = SelectionSet::from_vec(
+            vec![
+                Selection::new(Position::new(0, 3), Position::new(0, 3)),
+                Selection::new(Position::new(1, 7), Position::new(1, 7)),
+            ],
+            0,
+        );
+        enter(&mut h);
+        assert_eq!(h.text(), "  a\n  \n      b\n      \n");
+    }
+
+    #[test]
+    fn a_line_with_no_indent_is_left_to_the_plain_path() {
+        let mut h = Harness::new("abc\n").at(0, 3);
+        enter(&mut h);
+        assert_eq!(h.text(), "abc\n\n");
+        assert_eq!(h.cursor(), Position::new(1, 0));
+    }
+
+    #[test]
+    fn an_indented_newline_is_one_undo_step() {
+        let mut h = Harness::with_language("fn main() {}\n", "rs").at(0, 11);
+        enter(&mut h);
+        assert_eq!(h.text(), "fn main() {\n    \n}\n");
+        h.run("undo");
+        assert_eq!(h.text(), "fn main() {}\n", "all three lines back to one");
     }
 
     // ---- Auto-closing brackets --------------------------------------------
