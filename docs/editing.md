@@ -130,6 +130,43 @@ a transaction to fold the trim into. Between the two the whitespace is invisible
 the file on disk is the same either way — unless you save in between, which VS Code
 would also do.
 
+## A file cannot talk to your terminal
+
+deco draws into a terminal, and a terminal *interprets* what it is written. A document
+containing `\x1b[31m` would recolour everything after it; `\x07` rings the bell; and
+`\x1b]52;c;…\x07` is OSC 52, which **writes the clipboard** on every terminal that
+supports it — iTerm2, kitty, foot, recent xterm, Windows Terminal, tmux with
+`set-clipboard on`.
+
+So no control character is ever written as itself. Each is replaced by its Unicode
+Control Pictures glyph — `␛` for escape, `␇` for bell, `␡` for delete — one column
+each, so the substitution moves nothing that was laid out around it.
+
+| `editor.renderControlCharacters` | What is drawn |
+| --- | --- |
+| `true` (default) | The picture, in `editorWhitespace.foreground` |
+| `false` | A blank of the same width |
+
+The setting chooses between the glyph and a blank. It cannot choose to send the byte:
+that is not a rendering option, it is a way of handing your terminal to whoever wrote
+the file.
+
+The substitution happens twice over, deliberately. The renderer does it for a
+document's own text, where the setting applies; and the painter does it again,
+unconditionally, to every span it writes. Text reaches the screen from places that are
+not the open document — a **file name** appears in the tab bar, and a **search result**
+carries a line of somebody else's file into a prompt row — so the last line of defence
+is at the write, where it cannot be forgotten.
+
+### What this does not cover
+
+**Bidirectional overrides.** `U+202E` and its relatives reorder the characters around
+them, so a line can display as something other than what it says — the Trojan Source
+class of attack, which matters most in code that will be compiled. Those characters are
+printable rather than control, so nothing here touches them, and VS Code handles them
+under a different setting (`editor.unicodeHighlight.*`) that deco does not read. Named
+here rather than left implied.
+
 ## Auto-closing brackets
 
 `editor.autoClosingBrackets` closes a bracket or a quote as you open it, and steps

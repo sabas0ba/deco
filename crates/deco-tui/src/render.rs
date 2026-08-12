@@ -851,6 +851,15 @@ fn line_spans(
             }
         } else if marked && c == ' ' {
             cells.push(('·', cell, palette.whitespace_fg));
+        } else if let Some(picture) = control_picture(c) {
+            // `editor.renderControlCharacters` picks the glyph or a blank. Either way
+            // the byte itself does not reach the terminal — see `control_picture`.
+            let shown = if pane.document.settings.render_control_characters {
+                (picture, palette.whitespace_fg)
+            } else {
+                (' ', fg)
+            };
+            cells.push((shown.0, cell, shown.1));
         } else {
             cells.push((c, cell, fg));
         }
@@ -897,6 +906,53 @@ fn line_spans(
         }
     }
     spans
+}
+
+/// A printable stand-in for a control character.
+///
+/// # Why this is not a cosmetic setting
+///
+/// deco draws into a terminal, and a terminal *interprets* these bytes. A document
+/// containing `\x1b[31m` would recolour everything after it; `\x07` rings the bell; and
+/// `\x1b]52;c;…\x07` is OSC 52, which **writes the clipboard** on every terminal that
+/// supports it. Passing a document's bytes through to the terminal would make "open
+/// this file" mean "let this file talk to your terminal", so nothing here is ever
+/// emitted as-is.
+///
+/// The Unicode Control Pictures block is the stand-in: `␛` for escape, `␇` for bell,
+/// one column each, so the substitution changes no column anybody counted.
+///
+/// `editor.renderControlCharacters` chooses between showing that glyph and showing a
+/// blank. It cannot choose to send the byte: that is not a rendering option, it is a
+/// way of handing the terminal to whoever wrote the file.
+fn control_picture(c: char) -> Option<char> {
+    match c {
+        // Tab is expanded to spaces before this, and a line's content never contains
+        // its own line break.
+        '\t' | '\n' | '\r' => None,
+        // `␀` through `␟`, in order, at U+2400.
+        '\0'..='\u{1f}' => char::from_u32(0x2400 + c as u32),
+        // Delete, which sits on its own at U+2421.
+        '\u{7f}' => Some('␡'),
+        _ => None,
+    }
+}
+
+/// Every control character in `text` replaced by its picture.
+///
+/// The last line of defence, applied by the painter to everything it writes rather
+/// than to the document alone: a file *name* with an escape byte in it reaches the tab
+/// bar, and a search result carries a line of somebody else's file into a prompt row.
+/// One column in, one column out, so no layout depends on which path the text took.
+pub fn sanitise(text: &str) -> std::borrow::Cow<'_, str> {
+    if !text.chars().any(|c| control_picture(c).is_some()) {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    std::borrow::Cow::Owned(
+        text.chars()
+            .map(|c| control_picture(c).unwrap_or(c))
+            .collect(),
+    )
 }
 
 /// A string's length in UTF-16 code units, which is what a column is measured in.
@@ -3088,6 +3144,89 @@ mod tests {
         let all: String = frame.rows.iter().map(Row::plain).collect();
         assert!(!all.contains("With:"));
         assert!(!all.contains("Find:"));
+    }
+
+    // ---- Control characters -----------------------------------------------
+
+    /// A document containing terminal escape sequences.
+    const HOSTILE: &str = "a\u{1b}[31mred\u{7}\n\u{1b}]52;c;aGVsbG8=\u{7}\n";
+
+    #[test]
+    fn a_control_character_never_reaches_the_terminal_as_itself() {
+        // The one that matters: `\x1b]52;c;…` is OSC 52, which writes the clipboard on
+        // every terminal that supports it. Passing a document's bytes through would
+        // make "open this file" mean "let this file talk to your terminal".
+        let session = session(HOSTILE);
+        let frame = render(&session, 40, 6);
+        let all: String = frame.rows.iter().map(Row::plain).collect();
+        assert!(
+            !all.chars().any(|c| c.is_control()),
+            "a control character survived: {all:?}"
+        );
+    }
+
+    #[test]
+    fn a_control_character_is_drawn_as_its_picture() {
+        let session = session(HOSTILE);
+        let frame = render(&session, 40, 6);
+        assert_eq!(
+            frame.rows[0].plain(),
+            "  1 a␛[31mred␇                          "
+        );
+        assert!(frame.rows[1].plain().starts_with("  2 ␛]52;c;aGVsbG8=␇"));
+    }
+
+    #[test]
+    fn the_setting_chooses_the_glyph_or_a_blank_and_not_the_byte() {
+        // `renderControlCharacters: false` hides the marker. It cannot mean "send the
+        // byte", which is not a rendering option.
+        let mut settings = deco_config::Settings::with_defaults();
+        settings.set(
+            deco_config::Scope::User,
+            "editor.renderControlCharacters",
+            serde_json::json!(false),
+        );
+        let mut session = Session::new(settings, None, deco_keymap::binding::Platform::Linux);
+        session.open(PathBuf::from("/w/evil.txt"), HOSTILE);
+        let frame = render(&session, 40, 6);
+        assert_eq!(
+            frame.rows[0].plain(),
+            "  1 a [31mred                           "
+        );
+        let all: String = frame.rows.iter().map(Row::plain).collect();
+        assert!(!all.chars().any(|c| c.is_control()), "{all:?}");
+    }
+
+    #[test]
+    fn a_substitution_costs_no_columns() {
+        // A Control Pictures glyph is one column, as a control character was counted
+        // to be, so nothing that was laid out around it moves.
+        let frame = render(&session(HOSTILE), 40, 6);
+        for row in &frame.rows {
+            assert_eq!(row.plain().chars().count(), 40, "{:?}", row.plain());
+        }
+    }
+
+    #[test]
+    fn the_painter_sanitises_what_the_renderer_did_not() {
+        // A file name reaches the tab bar and a search result carries a line of
+        // somebody else's file into a prompt row. Both come from outside the document,
+        // so the last line of defence is at the write.
+        assert_eq!(sanitise("plain"), "plain");
+        assert_eq!(sanitise("a\u{1b}b\u{7}c"), "a␛b␇c");
+        assert_eq!(sanitise("\u{7f}"), "␡");
+        // A tab has already been expanded and a line holds no break of its own, so
+        // neither is substituted.
+        assert_eq!(sanitise("a\tb"), "a\tb");
+    }
+
+    #[test]
+    fn sanitising_borrows_when_there_is_nothing_to_do() {
+        // Every span of every row of every frame goes through this.
+        assert!(matches!(
+            sanitise("ordinary text"),
+            std::borrow::Cow::Borrowed(_)
+        ));
     }
 
     // ---- Rendered whitespace ----------------------------------------------

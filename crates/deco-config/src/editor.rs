@@ -217,6 +217,8 @@ pub struct EditorSettings {
     pub auto_indent: AutoIndent,
     /// `editor.trimAutoWhitespace`.
     pub trim_auto_whitespace: bool,
+    /// `editor.renderControlCharacters`.
+    pub render_control_characters: bool,
     /// `files.autoSave`.
     pub auto_save: AutoSave,
     /// `files.autoSaveDelay`, in milliseconds.
@@ -288,6 +290,9 @@ impl EditorSettings {
             // VS Code's own default. Clamped away from zero, which would mean saving
             // on every keystroke — and a save per character is a write per character.
             auto_save_delay: s.get_u64("files.autoSaveDelay", l).unwrap_or(1000).max(100),
+            render_control_characters: s
+                .get_bool("editor.renderControlCharacters", l)
+                .unwrap_or(true),
             trim_auto_whitespace: s.get_bool("editor.trimAutoWhitespace", l).unwrap_or(true),
             auto_indent: match s.get_str("editor.autoIndent", l) {
                 Some("none") => AutoIndent::None,
