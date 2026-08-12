@@ -159,6 +159,10 @@ fn demos() -> Vec<Demo> {
             build: view_settings,
         },
         Demo {
+            name: "wrapping-indent",
+            build: wrapping_indent,
+        },
+        Demo {
             name: "save-as",
             build: save_as,
         },
@@ -822,6 +826,29 @@ fn word_wrap() -> String {
     take.press_and_hold(&["down"], 4);
     take.press_and_hold(&["end"], 5);
     take.press_and_hold(&["alt+z"], 5);
+    take.finish()
+}
+
+fn wrapping_indent() -> String {
+    // Indented code, where the continuation row's own indentation is the point: at
+    // column zero it would sit beside the unindented lines around it.
+    const NESTED: &str = "fn main() {\n    if ready {\n        let total = one + two + three + four + five + six + seven + eight;\n    }\n}\n";
+    let mut take = Take::new("main.rs", NESTED);
+    take.at(2, 8).capture(
+        "editor.wrappingIndent defaults to \"same\" — press alt+z to see it",
+        5,
+    );
+    take.press_and_hold(&["alt+z"], 7);
+    take.append(
+        r#"{"editor.wordWrap": "on", "editor.wrappingIndent": "none"}"#,
+        "\"none\" — the continuation starts at column zero, beside the outer block",
+        7,
+    );
+    take.append(
+        r#"{"editor.wordWrap": "on", "editor.wrappingIndent": "deepIndent"}"#,
+        "\"deepIndent\" — two levels past the line, so a wrap cannot be misread as code",
+        7,
+    );
     take.finish()
 }
 

@@ -391,6 +391,12 @@ pub struct VisualRow {
     /// UTF-16 column the next row starts at, or `None` on a line's last row —
     /// which runs to the end of the line.
     pub end: Option<u32>,
+    /// Display columns of blank this row's text is pushed in by.
+    ///
+    /// Zero on a line's first row. `editor.wrappingIndent` decides the rest, and the
+    /// renderer has to draw exactly this much or the text lands somewhere the wrap did
+    /// not put it.
+    pub indent: usize,
 }
 
 impl VisualRow {
@@ -440,7 +446,45 @@ impl View {
             return vec![0];
         }
         let text = line_text(buffer, line);
-        deco_core::wrap::row_starts(&text, wrap, settings.tab_size)
+        let indent = self.wrapping_indent_of(&text, settings, wrap);
+        deco_core::wrap::row_starts(&text, wrap, settings.tab_size, indent)
+    }
+
+    /// How far this line's continuation rows are pushed in.
+    ///
+    /// `editor.wrappingIndent` decides, from the line's own leading whitespace —
+    /// which is why it is measured here, where the text is, rather than resolved once
+    /// with the rest of the settings.
+    fn wrapping_indent_of(&self, text: &str, settings: &EditorSettings, wrap: usize) -> usize {
+        let leading: String = text.chars().take_while(|c| c.is_whitespace()).collect();
+        let columns = deco_core::wrap::width_between(
+            &leading,
+            0,
+            leading.chars().map(|c| c.len_utf16() as u32).sum(),
+            settings.tab_size,
+        );
+        settings.wrapping_prefix(columns, wrap)
+    }
+
+    /// How far the row `position` sits on is pushed in.
+    ///
+    /// Zero on a line's first row, which starts where the line starts.
+    pub fn row_indent(
+        &self,
+        buffer: &Buffer,
+        settings: &EditorSettings,
+        position: Position,
+    ) -> usize {
+        let wrap = self.wrap_column(settings);
+        if wrap == 0 {
+            return 0;
+        }
+        let line = position.line as usize;
+        let starts = self.row_starts(buffer, settings, line);
+        if deco_core::wrap::row_of(&starts, position.character) == 0 {
+            return 0;
+        }
+        self.wrapping_indent_of(&line_text(buffer, line), settings, wrap)
     }
 
     /// How many rows a document line occupies.
@@ -460,6 +504,7 @@ impl View {
     /// of the window and not the length of the file, which is the whole reason the
     /// anchor is a line rather than a row count.
     pub fn visible_rows(&self, buffer: &Buffer, settings: &EditorSettings) -> Vec<VisualRow> {
+        let wrap = self.wrap_column(settings);
         let mut rows = Vec::with_capacity(self.height);
         let mut line = self.scroll_top;
         let mut row = self.scroll_row;
@@ -478,6 +523,11 @@ impl View {
                 row,
                 start,
                 end,
+                indent: if row == 0 || wrap == 0 {
+                    0
+                } else {
+                    self.wrapping_indent_of(&line_text(buffer, line), settings, wrap)
+                },
             });
             row += 1;
             if row >= starts.len() {
@@ -627,10 +677,13 @@ impl View {
         deco_core::wrap::row_range(&starts, row)
     }
 
-    /// How far into its own row `position` sits, in display columns.
+    /// Which column of the text area `position` is drawn in.
     ///
-    /// This is what a vertical motion keeps constant. Measured from the row rather
-    /// than from the line, because on screen the row is the line.
+    /// This is what a vertical motion keeps constant, and it is a column **on
+    /// screen** — the row's own indent included. Measured from the line's start
+    /// instead it would be a number with no meaning on screen; measured from the
+    /// row's text instead, `down` would step sideways every time two rows are pushed
+    /// in by different amounts, which is exactly what `editor.wrappingIndent` does.
     pub fn goal_column(
         &self,
         buffer: &Buffer,
@@ -638,12 +691,15 @@ impl View {
         position: Position,
     ) -> usize {
         let (start, _) = self.row_bounds(buffer, settings, position);
-        deco_core::wrap::width_between(
-            &line_text(buffer, position.line as usize),
-            start,
-            position.character,
-            settings.tab_size,
-        )
+        let indent = self.row_indent(buffer, settings, position);
+        indent
+            + deco_core::wrap::width_between_from(
+                &line_text(buffer, position.line as usize),
+                start,
+                position.character,
+                settings.tab_size,
+                indent,
+            )
     }
 
     /// The position `count` rows away from `from`, keeping `goal` display columns
@@ -691,7 +747,23 @@ impl View {
         let text = line_text(buffer, line);
         let starts = self.row_starts(buffer, settings, line);
         let (start, end) = deco_core::wrap::row_range(&starts, row);
-        let character = deco_core::wrap::column_in_row(&text, start, end, goal, settings.tab_size);
+        let indent = if row == 0 {
+            0
+        } else {
+            self.wrapping_indent_of(&text, settings, self.wrap_column(settings))
+        };
+        // `goal` is a column of the text area, so the target row's indent comes off
+        // it: landing the same distance into two rows pushed in by different amounts
+        // would move the caret sideways. A goal inside the indent lands at the row's
+        // first character, which is the nearest column there is.
+        let character = deco_core::wrap::column_in_row_from(
+            &text,
+            start,
+            end,
+            goal.saturating_sub(indent),
+            settings.tab_size,
+            indent,
+        );
         Position::new(line as u32, character)
     }
 

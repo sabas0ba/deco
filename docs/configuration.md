@@ -55,7 +55,8 @@ the open document's language:
 
 Settings deco resolves into an open document's behaviour: `editor.tabSize`,
 `editor.insertSpaces`, `editor.detectIndentation`, `editor.wordSeparators`,
-`editor.wordWrap`, `editor.wordWrapColumn`, `editor.lineNumbers`,
+`editor.wordWrap`, `editor.wordWrapColumn`, `editor.wrappingIndent`,
+`editor.lineNumbers`,
 `editor.renderWhitespace`, `editor.cursorStyle`,
 `editor.cursorSurroundingLines`, `editor.scrollBeyondLastLine`,
 `editor.rulers`, `editor.fontFamily`, `editor.fontSize`, `editor.lineHeight`,
@@ -65,8 +66,9 @@ Settings deco resolves into an open document's behaviour: `editor.tabSize`,
 
 `editor.fontFamily`, `editor.fontSize` and `editor.lineHeight` are the GPU
 frontend's alone — a terminal has no font size — and the GPU frontend does not wrap
-or draw whitespace, so `editor.wordWrap`, `editor.renderWhitespace`, `editor.rulers`
-and `editor.lineNumbers: "interval"` are the terminal's alone in the other
+or draw whitespace, so `editor.wordWrap`, `editor.wrappingIndent`,
+`editor.renderWhitespace`, `editor.rulers` and `editor.lineNumbers: "interval"` are
+the terminal's alone in the other
 direction. The [top-level README](https://github.com/sabas0ba/deco#readme) tracks
 what is unbuilt.
 

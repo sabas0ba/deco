@@ -21,6 +21,37 @@ pub enum WordWrap {
     Bounded,
 }
 
+/// `editor.wrappingIndent`.
+///
+/// How far a continuation row is pushed in from the left. `Same` is VS Code's
+/// default and the reason a wrapped block of code still reads as one block: without
+/// it the second row of an indented line starts at column zero, next to the
+/// unindented lines around it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WrappingIndent {
+    /// Continuation rows start at column zero.
+    None,
+    /// As deep as the line's own indentation.
+    #[default]
+    Same,
+    /// One level deeper than the line.
+    Indent,
+    /// Two levels deeper.
+    DeepIndent,
+}
+
+impl WrappingIndent {
+    /// Extra indent levels beyond the line's own, or `None` for column zero.
+    fn extra_levels(self) -> Option<usize> {
+        match self {
+            Self::None => None,
+            Self::Same => Some(0),
+            Self::Indent => Some(1),
+            Self::DeepIndent => Some(2),
+        }
+    }
+}
+
 /// `editor.lineNumbers`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LineNumbers {
@@ -96,6 +127,8 @@ pub struct EditorSettings {
     pub word_wrap: WordWrap,
     /// `editor.wordWrapColumn`.
     pub word_wrap_column: usize,
+    /// `editor.wrappingIndent`.
+    pub wrapping_indent: WrappingIndent,
     /// `editor.lineNumbers`.
     pub line_numbers: LineNumbers,
     /// `editor.renderWhitespace`.
@@ -154,6 +187,12 @@ impl EditorSettings {
                 _ => WordWrap::Off,
             },
             word_wrap_column: s.get_u64("editor.wordWrapColumn", l).unwrap_or(80).max(1) as usize,
+            wrapping_indent: match s.get_str("editor.wrappingIndent", l) {
+                Some("none") => WrappingIndent::None,
+                Some("indent") => WrappingIndent::Indent,
+                Some("deepIndent") => WrappingIndent::DeepIndent,
+                _ => WrappingIndent::Same,
+            },
             line_numbers: match s.get_str("editor.lineNumbers", l) {
                 Some("off") => LineNumbers::Off,
                 Some("relative") => LineNumbers::Relative,
@@ -206,6 +245,25 @@ impl EditorSettings {
                 .get_bool("files.trimTrailingWhitespace", l)
                 .unwrap_or(false),
             insert_final_newline: s.get_bool("files.insertFinalNewline", l).unwrap_or(false),
+        }
+    }
+
+    /// How far a continuation row of a line indented `leading` columns is pushed in.
+    ///
+    /// Capped at half the available `width`: past that a wrapped line is more indent
+    /// than text, and a deeply nested line would be wrapped into a column two
+    /// characters wide. VS Code caps it for the same reason. The cap drops the indent
+    /// rather than trimming it, because a partial indent lines the continuation up
+    /// with nothing.
+    pub fn wrapping_prefix(&self, leading: usize, width: usize) -> usize {
+        let Some(levels) = self.wrapping_indent.extra_levels() else {
+            return 0;
+        };
+        let prefix = leading + levels * self.tab_size.max(1);
+        if prefix * 2 > width {
+            0
+        } else {
+            prefix
         }
     }
 

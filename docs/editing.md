@@ -168,12 +168,39 @@ cost the height of the window — and so does finding the furthest the window ma
 scroll, which walks backwards from the last line rather than forwards from the
 first.
 
+### The continuation row keeps the line's indent
+
+`editor.wrappingIndent` decides how far a continuation row is pushed in, and it
+defaults to `same` — VS Code's default too, and the reason a wrapped block of code
+still reads as one block.
+
+![The same wrapped line under same, none and deepIndent](img/wrapping-indent.svg)
+
+| `editor.wrappingIndent` | Where a continuation row starts |
+| --- | --- |
+| `none` | Column zero |
+| `same` (default) | As deep as the line's own indentation |
+| `indent` | One `editor.tabSize` deeper |
+| `deepIndent` | Two deeper |
+
+At `none` the second row of a nested line starts beside the unindented lines around
+it, which is how a wrap comes to be misread as code. The deeper settings make a
+wrapped row impossible to mistake for a statement of its own.
+
+The indent is **dropped** — not trimmed — once it would take more than half the
+width. Past that a wrapped line is more indent than text, and a deeply nested one
+would be wrapped into a column a few characters wide. A partial indent would line
+the continuation up with nothing, so the whole of it goes.
+
+It is not only cosmetic, which is why it reaches into the wrap itself: a row pushed
+in by four columns has four fewer to fill, and its tab stops land differently. The
+caret follows — a vertical motion keeps the column **of the screen**, so `down`
+across two rows pushed in by different amounts still goes straight down. A goal
+column that falls inside the indent lands on the row's first character, there being
+nothing further left on that row.
+
 ### What is not there
 
-- **`editor.wrappingIndent`.** VS Code indents a continuation row to match the
-  line it belongs to; deco starts it at column zero. Every column mapping would
-  have to account for the prefix, and a deeply indented line needs a cap before
-  the indent leaves no room for text.
 - **A wrap marker.** VS Code draws nothing either, but some editors mark the
   break, and the gutter's blank continuation row is the only signal here.
 - **The GPU frontend does not wrap.** It has no chrome to draw at all yet, so it

@@ -393,8 +393,14 @@ fn pane_rows(
             // Measured from the row's own start, because that is where this row's
             // tab stops are counted from — the same measurement the wrap used to
             // decide the row ends here.
-            let column =
-                deco_core::wrap::width_between(&text, visual.start, caret.character, tab_size);
+            let column = visual.indent
+                + deco_core::wrap::width_between_from(
+                    &text,
+                    visual.start,
+                    caret.character,
+                    tab_size,
+                    visual.indent,
+                );
             if column < text_width {
                 cursor = Some(((gutter + column) as u16, row_index as u16));
             }
@@ -691,7 +697,14 @@ fn line_spans(
     // characters — a CJK character occupies two, so padding by character count
     // would push every row past the right edge.
     let mut cells: Vec<(char, Cell, Rgba)> = Vec::new();
+    // The blank a continuation row is pushed in by. Part of the cell run rather than
+    // a span of its own, so a selection or a ruler crossing the indent still draws:
+    // the columns are real, they simply hold nothing.
     let mut column = 0usize;
+    while column < visual.indent.min(width) {
+        cells.push((' ', Cell::Plain, palette.fg));
+        column += 1;
+    }
     let mut utf16 = 0u32;
 
     // The scope stack the theme resolves against: the language's `source.*` scope,
@@ -3348,6 +3361,96 @@ mod tests {
         };
         assert!(selected(&frame.rows[0]), "the first row");
         assert!(selected(&frame.rows[1]), "and the second");
+    }
+
+    /// A session wrapping at `width` less the gutter, with `editor.wrappingIndent`.
+    fn indented(text: &str, width: usize, mode: &str) -> Session {
+        let mut settings = deco_config::Settings::with_defaults();
+        settings
+            .load_layer(
+                deco_config::Scope::User,
+                &format!(r#"{{"editor.wordWrap": "on", "editor.wrappingIndent": "{mode}"}}"#),
+            )
+            .expect("valid settings");
+        let mut session = Session::new(settings, None, deco_keymap::binding::Platform::Linux);
+        session.open(PathBuf::from("/w/file.txt"), text);
+        session.resize(width, 8);
+        session
+    }
+
+    /// An indented line long enough to wrap at thirty columns.
+    const NESTED: &str = "fn a() {\n    let x = one two three four five six;\n}\n";
+
+    #[test]
+    fn a_continuation_row_matches_the_lines_own_indent() {
+        // VS Code's default, and the reason a wrapped block still reads as one block:
+        // at column zero the second row sits beside the unindented lines around it.
+        let frame = render(&indented(NESTED, 34, "same"), 34, 8);
+        assert_eq!(frame.rows[1].plain(), "  2     let x = one two three four");
+        assert_eq!(frame.rows[2].plain(), "        five six;                 ");
+    }
+
+    #[test]
+    fn none_starts_a_continuation_row_at_column_zero() {
+        let frame = render(&indented(NESTED, 34, "none"), 34, 8);
+        assert_eq!(frame.rows[2].plain(), "    five six;                     ");
+    }
+
+    #[test]
+    fn indent_goes_one_level_deeper_than_the_line() {
+        // Four more columns than `same`, at the default tab size.
+        let frame = render(&indented(NESTED, 34, "indent"), 34, 8);
+        assert_eq!(frame.rows[2].plain(), "            five six;             ");
+    }
+
+    #[test]
+    fn deep_indent_goes_two_levels_deeper() {
+        let frame = render(&indented(NESTED, 34, "deepIndent"), 34, 8);
+        assert_eq!(frame.rows[2].plain(), "                five six;         ");
+    }
+
+    #[test]
+    fn an_indent_that_would_leave_no_room_is_dropped() {
+        // Past half the width a wrapped line is more indent than text, and a deeply
+        // nested one would be wrapped into a column a few characters wide. Dropped
+        // rather than trimmed: a partial indent lines the continuation up with
+        // nothing.
+        let deep = format!("{}one two three four five\n", " ".repeat(18));
+        let frame = render(&indented(&deep, 34, "same"), 34, 8);
+        assert_eq!(
+            frame.rows[1].plain(),
+            "    three four five               ",
+            "column zero, not eighteen"
+        );
+    }
+
+    #[test]
+    fn the_caret_sits_after_the_indent_on_a_continuation_row() {
+        // The row's text starts at the indent, so the caret has to as well — or it is
+        // drawn beside the character it is on.
+        let mut session = indented(NESTED, 34, "same");
+        // Character 31 is the `f` of `five`, the first on the second row.
+        session.view.selections = SelectionSet::caret(deco_core::Position::new(1, 31));
+        let frame = render(&session, 34, 8);
+        assert_eq!(
+            frame.cursor,
+            Some((8, 2)),
+            "four columns of gutter, then four of indent"
+        );
+    }
+
+    #[test]
+    fn down_moves_by_screen_column_across_the_indent() {
+        // The goal column is relative to the row's own text, so `down` from three
+        // columns into row 0's text lands three columns into row 1's — which is a
+        // different document column, and the same place on screen.
+        let mut session = indented(NESTED, 34, "same");
+        session.view.selections = SelectionSet::caret(deco_core::Position::new(1, 11));
+        let before = render(&session, 34, 8).cursor.expect("a caret");
+        session.run("cursorDown", None, 0);
+        let after = render(&session, 34, 8).cursor.expect("a caret");
+        assert_eq!(after.0, before.0, "the same screen column");
+        assert_eq!(after.1, before.1 + 1, "one row down");
     }
 
     #[test]
