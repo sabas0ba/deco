@@ -3,6 +3,11 @@ version: 2
 # Actions are pinned to commit SHAs, which is only safe if something keeps them
 # moving — otherwise a pin quietly becomes an unpatched dependency. Dependabot
 # rewrites both the SHA and the trailing version comment.
+#
+# The trailing comment has to name a release — `# v2.9.2`, not `# v2`. Given a
+# resolvable version dependabot walks to the next release and updates both; given
+# a floating major it has no version to walk from and pins the default branch's
+# head instead, which is how an unreleased commit ends up in a workflow.
 updates:
   - package-ecosystem: github-actions
     directory: /
