@@ -102,7 +102,12 @@ fn paint(out: &mut impl Write, frame: &Frame, style: Option<cursor::SetCursorSty
                 SetForegroundColor(to_crossterm(span.fg)),
                 SetBackgroundColor(to_crossterm(span.bg))
             )?;
-            out.write_all(span.text.as_bytes())?;
+            // Nothing reaches the terminal without being made printable first. A
+            // document's own text is already substituted by the renderer; this catches
+            // the rest — a file name with an escape byte in it, a search result
+            // carrying a line of somebody else's file — because a terminal interprets
+            // what it is written, and `\x1b]52;c;…` writes the clipboard.
+            out.write_all(render::sanitise(&span.text).as_bytes())?;
         }
         queue!(out, ResetColor)?;
     }
