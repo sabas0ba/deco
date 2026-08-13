@@ -107,6 +107,15 @@ const HOSTNAME: &str = "deco-host";
 pub const IMAGE_ENVIRONMENT: [&str; 5] =
     ["HOME", "HOSTNAME", "NODE_VERSION", "PATH", "YARN_VERSION"];
 
+/// Variables a container runtime adds on its own account.
+///
+/// Podman sets `container=podman` so that software inside can tell it is
+/// containerised, which is an OCI convention; Docker sets nothing. Neither comes
+/// from deco, and neither carries anything about the machine — but they are named
+/// here so that the test asserting what an extension can see can be specific
+/// about what it tolerates instead of tolerating whatever it finds.
+pub const RUNTIME_INJECTED: [&str; 1] = ["container"];
+
 /// The variables the **container runtime** keeps from deco's environment.
 ///
 /// An inversion worth stating: everywhere else in this crate the environment is
@@ -402,7 +411,13 @@ impl Mounts {
             if !crate::capability::is_within(path, root) {
                 continue;
             }
-            let suffix = path.strip_prefix(root).ok()?;
+            // `is_within` compares normalised paths and this does not, so the two
+            // can disagree — a root written with a `.` in it, say. Then this root
+            // is not the answer, but another one still might be, which is why this
+            // keeps looking instead of returning.
+            let Ok(suffix) = path.strip_prefix(root) else {
+                continue;
+            };
             let mut translated = target.clone();
             for part in suffix.components() {
                 translated.push('/');
@@ -656,15 +671,37 @@ mod tests {
         settings
     }
 
+    /// A path this platform calls absolute, from Unix-shaped parts.
+    ///
+    /// Every path in these tests goes through here, and the reason is a real
+    /// failure: written as the literal `/opt/deco/host`, twelve tests below
+    /// silently changed what they were testing on Windows. `/opt/deco/host` has
+    /// no drive letter, so `Mounts::new` refused it as relative — and each test
+    /// asserting a *successful* spec was really asserting the refusal path, while
+    /// looking exactly as green on Linux as before.
+    fn absolute(parts: &str) -> PathBuf {
+        let parts = parts.trim_start_matches('/');
+        if cfg!(windows) {
+            PathBuf::from(format!("C:\\{}", parts.replace('/', "\\")))
+        } else {
+            PathBuf::from(format!("/{parts}"))
+        }
+    }
+
+    /// The same, as the string a settings file would hold.
+    fn absolute_str(parts: &str) -> String {
+        absolute(parts).display().to_string()
+    }
+
     fn config() -> HostConfig {
         HostConfig {
-            node: PathBuf::from("/usr/bin/node"),
-            bootstrap: PathBuf::from("/opt/deco/host/src/bootstrap.js"),
+            node: absolute("usr/bin/node"),
+            bootstrap: absolute("opt/deco/host/src/bootstrap.js"),
             readable_roots: vec![
-                PathBuf::from("/opt/deco/host"),
-                PathBuf::from("/home/u/.deco/extensions/acme.ext"),
+                absolute("opt/deco/host"),
+                absolute("home/u/.deco/extensions/acme.ext"),
             ],
-            cwd: PathBuf::from("/home/u/project"),
+            cwd: absolute("home/u/project"),
             limits: HostLimits::default(),
             node_permission_model: true,
             allow_code_generation: false,
@@ -673,9 +710,26 @@ mod tests {
 
     fn container() -> ContainerConfig {
         ContainerConfig {
-            runtime: PathBuf::from("/usr/bin/podman"),
+            runtime: absolute("usr/bin/podman"),
             image: DEFAULT_IMAGE.to_owned(),
             node: "node".to_owned(),
+        }
+    }
+
+    #[test]
+    fn the_fixtures_use_paths_this_platform_calls_absolute() {
+        // The guard for the failure described on `absolute`. Without it the suite
+        // can only be trusted on the platform it was written on, and the way it
+        // fails is by passing.
+        let config = config();
+        let mut paths = vec![config.bootstrap, config.cwd, container().runtime];
+        paths.extend(config.readable_roots);
+        for path in paths {
+            assert!(
+                path.is_absolute(),
+                "{} is not absolute here, so the fixture is testing a refusal",
+                path.display()
+            );
         }
     }
 
@@ -827,7 +881,7 @@ mod tests {
             .spec
             .args
             .iter()
-            .any(|arg| arg.contains("/home/u/project")));
+            .any(|arg| arg.contains(&absolute_str("home/u/project"))));
         for mount in mounts {
             assert!(mount.ends_with("readonly"), "{mount} is writable");
         }
@@ -845,7 +899,10 @@ mod tests {
         assert!(args.ends_with("/deco/mnt/0/src/bootstrap.js"), "{args}");
         assert!(args.contains("--allow-fs-read=/deco/mnt/0"));
         assert!(args.contains("--allow-fs-read=/deco/mnt/1"));
-        assert!(!args.contains("--allow-fs-read=/opt/deco/host"));
+        assert!(!args.contains(&format!(
+            "--allow-fs-read={}",
+            absolute_str("opt/deco/host")
+        )));
 
         // A host path appears exactly once, as the source of its own mount —
         // the runtime is the one thing that has to know where deco keeps
@@ -860,12 +917,12 @@ mod tests {
             .expect("the image");
         let handed_to_node = made.spec.args[image + 1..].join(" ");
         for host_path in [
-            "/opt/deco/host",
-            "/home/u/.deco/extensions",
-            "/home/u/project",
+            absolute_str("opt/deco/host"),
+            absolute_str("home/u/.deco/extensions"),
+            absolute_str("home/u/project"),
         ] {
             assert!(
-                !handed_to_node.contains(host_path),
+                !handed_to_node.contains(&host_path),
                 "{host_path} reached the extension in {handed_to_node}"
             );
         }
@@ -965,11 +1022,11 @@ mod tests {
         // and an unknown option `b`. There is no quoting the option parser
         // honours, so the only safe answer is no.
         let mut config = config();
-        config.readable_roots = vec![PathBuf::from("/opt/deco,host")];
+        config.readable_roots = vec![absolute("opt/deco,host")];
         assert_eq!(
             containerise(&config, &container(), "acme.ext"),
             Err(SandboxError::Unmountable {
-                path: "/opt/deco,host".to_owned(),
+                path: absolute_str("opt/deco,host"),
                 why: "a comma would be read as the end of the mount source",
             })
         );
@@ -978,11 +1035,11 @@ mod tests {
     #[test]
     fn a_bootstrap_outside_every_mount_is_refused_before_the_container_starts() {
         let mut config = config();
-        config.bootstrap = PathBuf::from("/somewhere/else/bootstrap.js");
+        config.bootstrap = absolute("somewhere/else/bootstrap.js");
         assert_eq!(
             containerise(&config, &container(), "acme.ext"),
             Err(SandboxError::BootstrapNotMounted {
-                bootstrap: "/somewhere/else/bootstrap.js".to_owned()
+                bootstrap: absolute_str("somewhere/else/bootstrap.js")
             })
         );
     }
@@ -991,25 +1048,25 @@ mod tests {
     fn paths_translate_into_the_container_and_back_out_of_range() {
         let mounts = Mounts::new(&config().readable_roots).expect("mounts");
         assert_eq!(
-            mounts.inside(Path::new("/opt/deco/host/src/bootstrap.js")),
+            mounts.inside(&absolute("opt/deco/host/src/bootstrap.js")),
             Some("/deco/mnt/0/src/bootstrap.js".to_owned())
         );
         assert_eq!(
-            mounts.inside(Path::new("/home/u/.deco/extensions/acme.ext")),
+            mounts.inside(&absolute("home/u/.deco/extensions/acme.ext")),
             Some("/deco/mnt/1".to_owned())
         );
         assert_eq!(
-            mounts.inside(Path::new("/home/u/.deco/extensions/acme.ext/out/main.js")),
+            mounts.inside(&absolute("home/u/.deco/extensions/acme.ext/out/main.js")),
             Some("/deco/mnt/1/out/main.js".to_owned())
         );
         // Not mounted, so there is no container path for it — including the
         // sibling extension next door.
-        assert_eq!(mounts.inside(Path::new("/home/u/project/src/lib.rs")), None);
+        assert_eq!(mounts.inside(&absolute("home/u/project/src/lib.rs")), None);
         assert_eq!(
-            mounts.inside(Path::new("/home/u/.deco/extensions/other.ext")),
+            mounts.inside(&absolute("home/u/.deco/extensions/other.ext")),
             None
         );
-        assert_eq!(mounts.inside(Path::new("/etc/passwd")), None);
+        assert_eq!(mounts.inside(&absolute("etc/passwd")), None);
     }
 
     #[test]
@@ -1039,9 +1096,13 @@ mod tests {
 
     #[test]
     fn an_absolute_runtime_is_taken_as_given() {
-        let settings = settings(Scope::User, RUNTIME_KEY, json!("/opt/bin/podman"));
+        let settings = settings(
+            Scope::User,
+            RUNTIME_KEY,
+            json!(absolute_str("opt/bin/podman")),
+        );
         let resolved = ContainerConfig::resolve(&settings, None).expect("an absolute path");
-        assert_eq!(resolved.runtime, PathBuf::from("/opt/bin/podman"));
+        assert_eq!(resolved.runtime, absolute("opt/bin/podman"));
         assert_eq!(resolved.image, DEFAULT_IMAGE);
     }
 
@@ -1049,7 +1110,10 @@ mod tests {
     fn a_workspace_cannot_choose_the_image_or_the_runtime() {
         let mut settings = Settings::empty();
         let mut layer = serde_json::Map::new();
-        layer.insert(RUNTIME_KEY.to_owned(), json!("/tmp/evil-runtime"));
+        layer.insert(
+            RUNTIME_KEY.to_owned(),
+            json!(absolute_str("tmp/evil-runtime")),
+        );
         layer.insert(IMAGE_KEY.to_owned(), json!(DEFAULT_IMAGE));
         settings.set_layer(Scope::Workspace, layer);
         // Nothing found, because the workspace's runtime was never considered.
@@ -1064,7 +1128,11 @@ mod tests {
         // Trusted enough to be read is not the same as trusted enough to skip
         // the rule: a digest is the only reason to believe an image is what it
         // was when it was reviewed.
-        let mut settings = settings(Scope::User, RUNTIME_KEY, json!("/usr/bin/podman"));
+        let mut settings = settings(
+            Scope::User,
+            RUNTIME_KEY,
+            json!(absolute_str("usr/bin/podman")),
+        );
         settings.set(Scope::User, IMAGE_KEY, json!("node:22"));
         assert_eq!(
             ContainerConfig::resolve(&settings, None),
@@ -1091,18 +1159,22 @@ mod tests {
         assert_eq!(made.sandbox, Sandbox::Process);
         assert_eq!(made.mounts, None);
         // The host's own command line, unwrapped: the program is Node itself.
-        assert_eq!(made.spec.program, PathBuf::from("/usr/bin/node"));
+        assert_eq!(made.spec.program, absolute("usr/bin/node"));
         assert!(made.spec.args.iter().any(|arg| arg == "--permission"));
         // And paths are this machine's, because that is what the host will open.
         assert_eq!(
-            made.seen_by_host(Path::new("/opt/deco/host/src/bootstrap.js")),
-            Some("/opt/deco/host/src/bootstrap.js".to_owned())
+            made.seen_by_host(&absolute("opt/deco/host/src/bootstrap.js")),
+            Some(absolute_str("opt/deco/host/src/bootstrap.js"))
         );
     }
 
     #[test]
     fn a_prepared_container_translates_the_paths_that_go_over_the_wire() {
-        let mut settings = settings(Scope::User, RUNTIME_KEY, json!("/usr/bin/podman"));
+        let mut settings = settings(
+            Scope::User,
+            RUNTIME_KEY,
+            json!(absolute_str("usr/bin/podman")),
+        );
         // Something a repository might have tried, to check it is carried out
         // rather than dropped on the floor.
         let mut workspace = serde_json::Map::new();
@@ -1112,14 +1184,14 @@ mod tests {
         let made = prepare(&settings, &config(), "acme.ext", None).expect("an absolute runtime");
         assert_eq!(made.sandbox, Sandbox::Container);
         assert_eq!(made.ignored, vec![Scope::Workspace]);
-        assert_eq!(made.spec.program, PathBuf::from("/usr/bin/podman"));
+        assert_eq!(made.spec.program, absolute("usr/bin/podman"));
         assert_eq!(
-            made.seen_by_host(Path::new("/home/u/.deco/extensions/acme.ext")),
+            made.seen_by_host(&absolute("home/u/.deco/extensions/acme.ext")),
             Some("/deco/mnt/1".to_owned())
         );
         // Not mounted, so there is no answer — better than a path that would
         // fail to open inside the container for reasons nobody could see.
-        assert_eq!(made.seen_by_host(Path::new("/home/u/project/a.rs")), None);
+        assert_eq!(made.seen_by_host(&absolute("home/u/project/a.rs")), None);
     }
 
     #[test]

@@ -113,11 +113,12 @@ unprivileged uid, and naming a uid there maps it into a subordinate range that
 cannot read the bind mounts — so the flag would break the common case while adding
 nothing to it.
 
-An extension inside the container can see exactly seven environment variables:
-deco's own two, and the five the Node image sets in its own layers (`PATH`,
-`HOME`, `HOSTNAME`, `NODE_VERSION`, `YARN_VERSION`). Nothing from deco's
-environment crosses, which is checked by starting a real container and asking the
-extension to report what it can see.
+An extension inside the container sees deco's own two variables, the five the Node
+image sets in its own layers (`PATH`, `HOME`, `HOSTNAME`, `NODE_VERSION`,
+`YARN_VERSION`), and — under Podman — `container=podman`, which OCI runtimes set
+so software inside can tell where it is. Nothing from deco's environment crosses,
+which is checked by starting a real container and asking the extension to report
+what it can see.
 
 ## What the broker enforces
 

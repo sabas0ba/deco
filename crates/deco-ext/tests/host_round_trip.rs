@@ -403,21 +403,32 @@ fn a_container_host_activates_an_extension_and_hands_it_no_environment() {
         .filter(|name| !name.is_empty())
         .collect();
 
-    // The honest version of the claim: a container's environment is `--env` plus
-    // whatever the image sets in its own layers. The Node image sets `PATH` —
-    // which is how the runtime finds `node` at all — a `HOME`, and two version
-    // labels. Stating the set exactly is what makes a new name a failure rather
-    // than a shrug.
-    let mut expected: Vec<&str> = deco_ext::sandbox::IMAGE_ENVIRONMENT.to_vec();
-    expected.extend(["DECO_EXTENSION_ID", "DECO_HOST_PROTOCOL"]);
-    expected.sort_unstable();
-    assert_eq!(
-        names, expected,
-        "the container's environment is not deco's two variables plus the image's own"
+    // A container's environment is `--env`, plus what the image sets in its own
+    // layers, plus what the runtime adds for itself: Podman sets
+    // `container=podman` where Docker sets nothing, which is why this is a
+    // permitted set rather than an equality. Every name still has to be one deco
+    // has accounted for, so a new one is a failure and not a shrug — what an
+    // equality would buy on top of that is a test that passes on Docker and fails
+    // on Podman, which says nothing about deco.
+    let mut permitted: Vec<&str> = deco_ext::sandbox::IMAGE_ENVIRONMENT.to_vec();
+    permitted.extend(deco_ext::sandbox::RUNTIME_INJECTED);
+    permitted.extend(["DECO_EXTENSION_ID", "DECO_HOST_PROTOCOL"]);
+    let unaccounted: Vec<&&str> = names
+        .iter()
+        .filter(|name| !permitted.contains(name))
+        .collect();
+    assert!(
+        unaccounted.is_empty(),
+        "the container handed the extension {unaccounted:?}, which deco did not \
+         account for; all of it was {names:?}"
     );
-    // Implied by the equality above, but asserted where it can be read: neither
-    // of the parent's variables crossed — not the ordinary one, and not the one
-    // whose name looks like something deco itself would pass.
+    // And deco's own two did arrive, so the emptiness above cannot be passing for
+    // the wrong reason.
+    assert!(names.contains(&"DECO_EXTENSION_ID"), "{names:?}");
+    assert!(names.contains(&"DECO_HOST_PROTOCOL"), "{names:?}");
+    // Implied by the above, but asserted where it can be read: neither of the
+    // parent's variables crossed — not the ordinary one, and not the one whose
+    // name looks like something deco itself would pass.
     for secret in ["PARENT_SECRET_SHOULD_NOT_LEAK", "DECO_TEST_PARENT_SECRET"] {
         assert!(
             !names.contains(&secret),
