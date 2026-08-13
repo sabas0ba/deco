@@ -85,6 +85,64 @@ capabilities and will break wherever it reaches for the filesystem or the networ
 deco does not guess a declaration on its behalf. The alternative to breaking it is
 granting it everything silently, which is the thing this design exists to avoid.
 
+## Starting one
+
+`deco_ext::connection` is the layer between the command line and the protocol:
+`Host::spawn` starts the process described by
+[`build_spec`](#three-independent-layers), and one JSON object per line travels each
+way.
+
+Newline-delimited rather than the Language Server Protocol's `Content-Length` framing.
+There is no specification to match here — both ends are deco's — and a newline is a
+position a reader can resynchronise from, so an unreadable line costs one message
+rather than the rest of the stream.
+
+**The program must be an absolute path.** The host's environment is built from nothing,
+so it carries no `PATH` for the operating system to search, and a bare `node` fails as
+"no such file" — true, and no help to whoever configured it. `Host::spawn` refuses it
+by name instead. That one was found by writing the round-trip test below and reading
+the error it gave.
+
+### `dispatch` is the only way in
+
+Every inbound request goes through one function, and it is a pure function of the
+broker and the request so that every path through it is testable without a process. It
+fails closed twice:
+
+- a method [`required_capability`] does not recognise is refused as unknown, so a host
+  built from a newer deco cannot reach an older one's editor surface by naming
+  something it has never heard of;
+- a capability the manifest never declared is refused by the broker whatever the user
+  has agreed to since — the declaration is a ceiling, not a starting point.
+
+Registering a command, showing a message and appending to the log need no declaration
+at all: they only touch state deco already owns and shows to the user. So the extension
+in the round-trip test declares nothing and still works, which is the shape most
+extensions should have.
+
+### Tested against the real host, and against no host
+
+The connection's own tests drive it over a `Cursor` or a channel, because the Rust
+suite has to run where there is no Node — under Wine, for one.
+
+`crates/deco-ext/tests/host_round_trip.rs` is the other half: it starts the real
+`extension-host` with the real `node`, activates a real extension, and watches
+`commands.registerCommand` arrive and pass the capability seam. It is `#[ignore]`d so
+`cargo test` stays portable, and `cargo xtask host-test` runs it — the same command CI
+runs in the one job that installs Node.
+
+One of its two tests asserts the environment of the **running process** rather than of
+the spec: the extension reports every variable it can see, and anything but deco's own
+two is a failure. An extension that could read `$GITHUB_TOKEN` would make every other
+guard here moot, so it is worth checking against a process and not against a `BTreeMap`.
+
+## What is still not connected
+
+The editor does not start a host yet. This is the wire, tested end to end; what comes
+next is the editor side of it — deciding which extensions to activate from their
+`activationEvents`, putting their commands in the palette, and answering the mediated
+surface from the session.
+
 ## Zero npm dependencies
 
 The extension host has no `node_modules` at all, and a test in

@@ -44,9 +44,12 @@
 //! - [`activation`] — when an extension is allowed to start at all.
 //! - [`host`] — the Node command line, built with a scrubbed environment and
 //!   Node's own permission model.
+//! - [`connection`] — starting that command line and talking to it, with
+//!   [`connection::dispatch`] as the one way an inbound request reaches the editor.
 
 pub mod activation;
 pub mod capability;
+pub mod connection;
 pub mod host;
 pub mod manifest;
 pub mod protocol;

@@ -262,7 +262,23 @@ fn ci(root: &Path, lint_only: bool, test_only: bool) -> Result<()> {
 /// run, and CI calls the same one.
 fn host_test(root: &Path) -> Result<()> {
     let npm = if cfg!(windows) { "npm.cmd" } else { "npm" };
-    run(&root.join("extension-host"), npm, &["test"], &[])
+    run(&root.join("extension-host"), npm, &["test"], &[])?;
+    // The other half: the Rust side against the real host. Ignored by default so
+    // `cargo test` stays runnable where there is no Node — under Wine, for one — and
+    // run here, which is the command that already requires it.
+    run_cargo(
+        root,
+        &[
+            "test",
+            "--locked",
+            "-p",
+            "deco-ext",
+            "--test",
+            "host_round_trip",
+            "--",
+            "--ignored",
+        ],
+    )
 }
 
 /// Runs `cargo` with `args` in `root`.

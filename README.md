@@ -237,9 +237,13 @@ does not:
   language server's **semantic tokens** fill exactly that gap and are
   drawn over the lexer's colouring where a server provides them. The GPU frontend
   draws one colour per line.
-- **The extension host is not connected.** The protocol, the capability broker,
-  the sandbox and the `vscode` shim all exist and are tested against each other;
-  the editor does not yet start a host or dispatch to one.
+- **The extension host is not connected to the editor yet.** The wire now exists and
+  is tested end to end: `deco_ext::connection` starts the real host with the real
+  `node`, an extension activates, and `commands.registerCommand` arrives and passes the
+  capability seam — see [Starting one](docs/extensions.md#starting-one). What is
+  missing is the editor side: deciding which extensions to activate from their
+  `activationEvents`, putting their commands in the palette, and answering the mediated
+  surface from the session.
 - **Search is literal, and only within the open file.** `ctrl+f` and `ctrl+h`
   open a find bar with a query, a replacement, a match count and highlighting;
   `F3`, `enter`, `ctrl+alt+enter` and `alt+c` / `alt+w` work as they do in VS
