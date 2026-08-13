@@ -278,9 +278,51 @@ fn host_test(root: &Path) -> Result<()> {
             "host_round_trip",
             "--",
             "--ignored",
+            // The container round trip is selected separately below, because it
+            // needs something this one does not.
+            "--skip",
+            CONTAINER_TESTS,
         ],
-    )
+    )?;
+
+    // And the same stack in the container deco actually ships with. This needs a
+    // container runtime, which not every machine has — so the decision is
+    // *printed* either way. A test that quietly does not run is worse than one
+    // that is not written, because the output looks the same as passing.
+    match deco_ext::sandbox::find_runtime(
+        &deco_ext::sandbox::RUNTIMES,
+        std::env::var_os("PATH").as_deref(),
+    ) {
+        Some(runtime) => {
+            println!("container round trip: using {}", runtime.display());
+            run_cargo(
+                root,
+                &[
+                    "test",
+                    "--locked",
+                    "-p",
+                    "deco-ext",
+                    "--test",
+                    "host_round_trip",
+                    "--",
+                    "--ignored",
+                    CONTAINER_TESTS,
+                ],
+            )
+        }
+        None => {
+            println!(
+                "container round trip: SKIPPED — none of {} is on the PATH, so the \
+                 default sandbox cannot be exercised here",
+                deco_ext::sandbox::RUNTIMES.join(" or ")
+            );
+            Ok(())
+        }
+    }
 }
+
+/// The name fragment selecting the round-trip tests that need a container.
+const CONTAINER_TESTS: &str = "a_container";
 
 /// The oldest Node the host runs on, as `(major, minor)`.
 ///

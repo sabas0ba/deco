@@ -24,8 +24,22 @@ class RpcConnection {
     this._notificationHandlers = new Map();
     this._buffer = '';
 
+    this._closedHandler = null;
+
     input.setEncoding('utf8');
     input.on('data', (chunk) => this._onData(chunk));
+    // deco closing its end is the only signal that deco is gone. Without acting
+    // on it a host outlives the editor that started it, and in a container that
+    // means `--rm` never fires and the container is left running: an orphan that
+    // still holds whatever it had been granted.
+    input.on('end', () => this._onClosed());
+    input.on('close', () => this._onClosed());
+  }
+
+  _onClosed() {
+    const handler = this._closedHandler;
+    this._closedHandler = null;
+    if (handler) handler();
   }
 
   _onData(chunk) {
@@ -123,6 +137,14 @@ class RpcConnection {
   /** Registers a handler for notifications deco sends. */
   onNotification(method, handler) {
     this._notificationHandlers.set(method, handler);
+  }
+
+  /**
+   * Registers what to do when deco closes the connection. Called at most once,
+   * whichever of `end` and `close` arrives first.
+   */
+  onClosed(handler) {
+    this._closedHandler = handler;
   }
 
   /** Number of requests awaiting a reply, exposed for the host's own limits. */

@@ -53,6 +53,7 @@ pub mod connection;
 pub mod host;
 pub mod manifest;
 pub mod protocol;
+pub mod sandbox;
 
 pub use capability::{
     Broker, Capability, CheckResult, Decision, DefaultPolicy, DenyReason, GrantStore, PathScope,

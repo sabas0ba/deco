@@ -14,17 +14,24 @@ is no way around that. It removes the ambient authority.
 > yet start a host or dispatch to one. Theme and grammar extensions, which have no
 > `main` and never start a host process, work today.
 
-## Three independent layers
+## Four independent layers
+
+**0. A container.** The host runs inside one by default, from an image named by
+digest. This is the outermost layer and the newest; the three below it all live
+*inside* the Node process, which left one assumption unpinned — the runtime
+itself. See [The container](#the-container).
 
 **1. Node's permission model.** The host runs with `--permission`, which blocks
 filesystem, child-process and worker access below JavaScript, where an extension
-cannot argue with it. No `--allow-child-process`, no `--allow-fs-write`.
+cannot argue with it. No `--allow-child-process`, no `--allow-fs-write`. It is
+passed inside the container too: a layer is not dropped because another one
+arrived.
 
 That flag is why the host needs **Node 22.13 or newer**: the permission model
 became stable there and the flag lost its `--experimental-` prefix, and older
-Node rejects the spelling deco passes. `HostConfig::node_permission_model` can
-turn it off for an older runtime, at the cost of the one layer an extension
-cannot argue with.
+Node rejects the spelling deco passes. In the default container this is the
+image's problem rather than yours — the pinned image carries Node 22.23 — and it
+only becomes a requirement on your own machine if you turn the container off.
 
 **2. The host bootstrap.** It removes the network globals and refuses to load
 `fs`, `net`, `http`, `child_process` and friends, so a blocked call produces a
@@ -38,6 +45,79 @@ can be shadowed by a `node_modules` package of that name, and the host has a tes
 asserting no bare `require` of a non-builtin survives anywhere in `src/`.
 
 **3. The capability broker.** It checks every request that does get through.
+
+## The container
+
+Layers 1 to 3 are all enforced by the Node process or by deco. Layer 1 is the
+only one an extension genuinely cannot argue with — and it is a feature of a
+`node` binary deco borrows from whatever machine it is installed on. The version,
+the build, and everything linked into it were outside deco's control.
+
+A container closes that gap:
+
+- **The runtime is pinned by digest**, the same way this project pins its CI
+  actions. `docker.io/library/node:22-bookworm-slim@sha256:d649c27…` is a
+  specific set of bytes, not a tag someone can move. deco **refuses an image
+  reference that is not pinned**, including one you configure yourself.
+- **`--network=none`** severs the network in the kernel. Layer 2 deletes `fetch`
+  and refuses `net`, which produces a clear error — good manners, and manners are
+  not a boundary. A native module has none.
+- **`--read-only`**, one 16MB `noexec` `tmpfs`, and two read-only bind mounts:
+  deco's own host code, and the single extension being run. `--cap-drop=ALL` and
+  `--security-opt=no-new-privileges` leave nothing to escalate with. `--memory`
+  and `--pids-limit` make a runaway extension the container's problem.
+
+### The workspace is not mounted
+
+This is the part that makes a container worth its cost here, so it is worth
+stating plainly: **your project is not visible inside the container.** Extensions
+read and write files through brokered requests that deco performs on their behalf,
+so the container needs no view of the workspace at all.
+
+Had the workspace been bind-mounted — as a dev container would — the container
+would add very little. The files an extension actually wants are in there, and a
+mount hands them over wholesale, with the broker bypassed for anything the
+extension can reach through `fs`.
+
+### If there is no container runtime
+
+deco refuses to start the host, and says so, naming the setting that would let you
+proceed. It does **not** fall back to running the host without a container. A
+sandbox that silently degrades is worse than no sandbox, because nobody can tell
+which one they have.
+
+Neither does a workspace get to make that decision. `deco.extensions.sandbox`,
+`deco.extensions.containerRuntime` and `deco.extensions.containerImage` are read
+from deco's defaults and **your own** settings only. A `.vscode/settings.json`
+arrives with a cloned repository, and a repository that could turn off the sandbox
+that was about to contain its own extensions would make the sandbox decorative. An
+attempt is reported rather than silently dropped.
+
+### Turning it off
+
+```jsonc
+{
+  // Runs the host as an ordinary child process, as deco did before containers.
+  "deco.extensions.sandbox": "process"
+}
+```
+
+This exists for telling a container problem apart from an extension problem. It
+costs you layer 0 and pins nothing about the runtime, so `node` on your `PATH`
+then has to be 22.13 or newer.
+
+### What deco does not pass
+
+`--user`. Under rootless Podman the container's root is already your own
+unprivileged uid, and naming a uid there maps it into a subordinate range that
+cannot read the bind mounts — so the flag would break the common case while adding
+nothing to it.
+
+An extension inside the container can see exactly seven environment variables:
+deco's own two, and the five the Node image sets in its own layers (`PATH`,
+`HOME`, `HOSTNAME`, `NODE_VERSION`, `YARN_VERSION`). Nothing from deco's
+environment crosses, which is checked by starting a real container and asking the
+extension to report what it can see.
 
 ## What the broker enforces
 
@@ -94,7 +174,7 @@ granting it everything silently, which is the thing this design exists to avoid.
 
 `deco_ext::connection` is the layer between the command line and the protocol:
 `Host::spawn` starts the process described by
-[`build_spec`](#three-independent-layers), and one JSON object per line travels each
+[`build_spec`](#four-independent-layers), and one JSON object per line travels each
 way.
 
 Newline-delimited rather than the Language Server Protocol's `Content-Length` framing.
@@ -136,10 +216,25 @@ suite has to run where there is no Node — under Wine, for one.
 `cargo test` stays portable, and `cargo xtask host-test` runs it — the same command CI
 runs in the one job that installs Node.
 
-One of its two tests asserts the environment of the **running process** rather than of
+One of its tests asserts the environment of the **running process** rather than of
 the spec: the extension reports every variable it can see, and anything but deco's own
 two is a failure. An extension that could read `$GITHUB_TOKEN` would make every other
 guard here moot, so it is worth checking against a process and not against a `BTreeMap`.
+
+A third test does the same thing **inside the container**, against the pinned image.
+It is the only check that the digest deco ships still resolves to a working Node, and
+that everything else — the mounts, the translated paths, `--permission` with container
+roots, the `vscode` shim — agrees once the filesystem is not the machine's own.
+`cargo xtask host-test` selects it only when Podman or Docker is on the `PATH`, and
+**prints which of the two it decided**: a test that quietly does not run looks exactly
+like a test that passed.
+
+That test is also where the claim above got more honest. It was written asserting the
+container hands the extension nothing but deco's two variables, and it failed: an image
+sets variables in its own layers, so `PATH`, `HOME`, `HOSTNAME`, `NODE_VERSION` and
+`YARN_VERSION` are there too. None of them come from deco, which is the part that
+matters — but the assertion now names the exact set rather than the set that would have
+been tidier.
 
 ## What is still not connected
 

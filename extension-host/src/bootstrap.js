@@ -101,6 +101,14 @@ function main() {
     process.exit(0);
   });
 
+  // Being asked to stop is the polite path; deco vanishing is the other one. An
+  // extension holding a timer would otherwise keep this process — and, in a
+  // container, the container — alive after the editor is gone.
+  rpc.onClosed(() => {
+    sandbox.restore();
+    process.exit(0);
+  });
+
   // An uncaught throw in extension code must not take the host down silently.
   process.on('uncaughtException', (error) => {
     rpc.notify('log.append', {

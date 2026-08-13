@@ -64,7 +64,30 @@ Settings deco resolves into an open document's behaviour: `editor.tabSize`,
 `editor.rulers`, `editor.fontFamily`, `editor.fontSize`, `editor.lineHeight`,
 `workbench.colorTheme`, `files.eol`, `files.trimTrailingWhitespace`,
 `files.insertFinalNewline`, plus `extensions.*` for the host and deco's own
-`deco.lsp.*` (see [Language servers](language-servers.md)).
+`deco.lsp.*` (see [Language servers](language-servers.md)) and
+`deco.extensions.*` (below).
+
+### Settings a workspace cannot set
+
+Most settings can be resolved by precedence and forgotten about: the
+highest-priority layer wins and where it came from stops mattering. Three cannot,
+because acting on them means **deciding how much authority to hand executing
+code**, and a `.vscode/settings.json` arrives with a cloned repository:
+
+| Key | Default | What it does |
+| --- | --- | --- |
+| `deco.extensions.sandbox` | `"container"` | `"container"` runs the extension host in a container; `"process"` runs it as an ordinary child process. |
+| `deco.extensions.containerRuntime` | first of `podman`, `docker` found | `"podman"`, `"docker"`, or an absolute path to one. Nothing else is accepted. |
+| `deco.extensions.containerImage` | a digest-pinned Node image | The image the host runs in. **Must** be pinned as `name@sha256:<64 hex>`. |
+
+These are read from deco's own defaults and your user settings only. Workspace,
+folder and remote layers are ignored for them, and the attempt is reported rather
+than dropped in silence. The same rule already applies to `deco.lsp.servers` for
+the same reason: see [Language servers](language-servers.md).
+
+If the sandbox is `"container"` and no runtime can be found, deco **refuses to
+start the extension host** and names this setting in the error. It does not fall
+back. [Extensions](extensions.md#the-container) has the reasoning.
 
 Four keys deco ships a **default** for are still read by nothing:
 `editor.tabCompletion`, `editor.largeFileOptimizations`, `files.encoding` and

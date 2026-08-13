@@ -18,10 +18,12 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use deco_config::Settings;
 use deco_ext::capability::{Broker, DefaultPolicy, GrantStore, ResolutionContext};
 use deco_ext::connection::{dispatch, Dispatch, Host, HostEvent};
 use deco_ext::host::{build_spec, HostConfig, HostLimits};
 use deco_ext::protocol::{Message, Response};
+use deco_ext::sandbox::{containerise, ContainerConfig};
 
 /// The repository root, from this crate's own location.
 fn repo_root() -> PathBuf {
@@ -274,6 +276,154 @@ module.exports = { activate };
         unexpected.is_empty(),
         "the host inherited {unexpected:?} from the parent"
     );
+
+    host.shutdown();
+    let _ = std::fs::remove_dir_all(&extension);
+}
+
+/// The extension used by the container test: it reports the environment it can
+/// see through the one call that needs no capability at all.
+///
+/// Every name, including deco's own two — unlike the process-mode fixture, which
+/// filters `DECO_*` out. In a container the whole environment is built by hand,
+/// so the exact set is knowable, and a `DECO_`-prefixed variable that the parent
+/// happened to have would otherwise hide inside the filter.
+fn reporting_fixture(name: &str) -> PathBuf {
+    let dir = fixture(name);
+    std::fs::write(
+        dir.join("extension.js"),
+        r#"'use strict';
+const vscode = require('vscode');
+function activate() {
+  const seen = Object.keys(process.env).sort();
+  vscode.commands.registerCommand('env.report:' + seen.join(','), () => 0);
+}
+module.exports = { activate };
+"#,
+    )
+    .expect("an extension");
+    dir
+}
+
+#[test]
+#[ignore = "needs a container runtime; run through `cargo xtask host-test`"]
+fn a_container_host_activates_an_extension_and_hands_it_no_environment() {
+    // The other two tests prove the stack against a borrowed `node`. This one
+    // proves it against the runtime deco actually intends to use: the image named
+    // by `DEFAULT_IMAGE`, pulled by digest, with the network severed by the
+    // kernel and nothing writable. If the pinned digest ever stops being a
+    // working Node, this is the test that says so.
+    let root = repo_root();
+    let extension = reporting_fixture("container");
+    // What a real parent process has and the extension must not see. Set before
+    // spawning, because the point is that it exists on deco's side at the moment
+    // the container starts.
+    std::env::set_var("DECO_TEST_PARENT_SECRET", "hunter2");
+    std::env::set_var("PARENT_SECRET_SHOULD_NOT_LEAK", "hunter2");
+
+    let config = HostConfig {
+        // Unused in a container — the image supplies Node — and left at
+        // something obviously wrong on purpose, so a spec that reached for the
+        // machine's own runtime would fail loudly here.
+        node: PathBuf::from("/nonexistent/node"),
+        bootstrap: root.join("extension-host/src/bootstrap.js"),
+        readable_roots: vec![root.join("extension-host"), extension.clone()],
+        cwd: extension.clone(),
+        limits: HostLimits {
+            // The first run on a machine pulls the image.
+            startup_timeout_ms: 240_000,
+            ..HostLimits::default()
+        },
+        node_permission_model: true,
+        allow_code_generation: false,
+    };
+
+    // Default settings: the shipped image, and whichever runtime is installed.
+    let container = ContainerConfig::resolve(
+        &Settings::with_defaults(),
+        std::env::var_os("PATH").as_deref(),
+    )
+    .expect("a container runtime; `cargo xtask host-test` should not have run this without one");
+    let made = containerise(&config, &container, "test.container").expect("a container spec");
+    let inside = made
+        .mounts
+        .inside(&extension)
+        .expect("the extension is mounted, so it has a path inside");
+
+    let mut host = Host::spawn(&made.spec).expect("the container runtime should start");
+    let (ready, before) = host.wait_for_ready(Duration::from_millis(240_000));
+    assert!(
+        ready.is_ok(),
+        "the host in the container never became ready: {ready:?}; saw {before:?}; stderr:\n{}",
+        host.errors()
+    );
+
+    host.request(
+        "$/activate",
+        serde_json::json!({ "extensionPath": inside, "main": "./extension.js" }),
+    )
+    .expect("the pipe should take a request");
+
+    let mut reported: Option<String> = None;
+    let deadline = std::time::Instant::now() + Duration::from_secs(120);
+    while std::time::Instant::now() < deadline && reported.is_none() {
+        match host.poll() {
+            Some(HostEvent::Message(Message::Request(request))) => {
+                if request.method == "commands.registerCommand" {
+                    reported = request.params["command"]
+                        .as_str()
+                        .and_then(|name| name.strip_prefix("env.report:"))
+                        .map(str::to_owned);
+                }
+                let _ = host.send(&Message::Response(Response::ok(
+                    request.id,
+                    serde_json::Value::Null,
+                )));
+            }
+            Some(HostEvent::Message(Message::Response(response))) => assert!(
+                response.error.is_none(),
+                "activation failed inside the container: {:?}; stderr:\n{}",
+                response.error,
+                host.errors()
+            ),
+            Some(HostEvent::Closed) => {
+                panic!("the container exited; stderr:\n{}", host.errors())
+            }
+            Some(_) => {}
+            None => std::thread::sleep(Duration::from_millis(20)),
+        }
+    }
+
+    // Reaching here at all means the whole stack works inside the container:
+    // the mounts, the translated paths, `--permission` with container roots, the
+    // `vscode` shim, and the capability seam.
+    let reported = reported.expect("the extension should have registered its report");
+    let names: Vec<&str> = reported
+        .split(',')
+        .filter(|name| !name.is_empty())
+        .collect();
+
+    // The honest version of the claim: a container's environment is `--env` plus
+    // whatever the image sets in its own layers. The Node image sets `PATH` —
+    // which is how the runtime finds `node` at all — a `HOME`, and two version
+    // labels. Stating the set exactly is what makes a new name a failure rather
+    // than a shrug.
+    let mut expected: Vec<&str> = deco_ext::sandbox::IMAGE_ENVIRONMENT.to_vec();
+    expected.extend(["DECO_EXTENSION_ID", "DECO_HOST_PROTOCOL"]);
+    expected.sort_unstable();
+    assert_eq!(
+        names, expected,
+        "the container's environment is not deco's two variables plus the image's own"
+    );
+    // Implied by the equality above, but asserted where it can be read: neither
+    // of the parent's variables crossed — not the ordinary one, and not the one
+    // whose name looks like something deco itself would pass.
+    for secret in ["PARENT_SECRET_SHOULD_NOT_LEAK", "DECO_TEST_PARENT_SECRET"] {
+        assert!(
+            !names.contains(&secret),
+            "{secret} crossed into the container"
+        );
+    }
 
     host.shutdown();
     let _ = std::fs::remove_dir_all(&extension);

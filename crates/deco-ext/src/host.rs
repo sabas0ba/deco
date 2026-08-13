@@ -2,8 +2,13 @@
 //!
 //! # Defence in depth
 //!
-//! Three independent layers stand between an extension and the machine, so that
-//! a bug in any one of them is not on its own sufficient:
+//! Four independent layers stand between an extension and the machine, so that
+//! a bug in any one of them is not on its own sufficient. This module builds the
+//! command line for layers 1 to 3; [`crate::sandbox`] wraps it in layer 0:
+//!
+//! 0. **A container** whose image is pinned by digest, with no network, nothing
+//!    writable and no view of the workspace. It is the only layer that also pins
+//!    the runtime the other three are properties of.
 //!
 //! 1. **Node's permission model** (`--permission`, Node 22.13+) blocks filesystem,
 //!    child-process and worker access at the runtime level. This is the only
