@@ -237,12 +237,55 @@ sets variables in its own layers, so `PATH`, `HOME`, `HOSTNAME`, `NODE_VERSION` 
 matters — but the assertion now names the exact set rather than the set that would have
 been tidier.
 
+## Which extensions start, and when
+
+`deco_ext::catalogue` is the decision: given what is installed and something that
+happened, which extensions should be running. It is pure — the directory walk belongs
+to the frontend, the same way finding themes does — and it holds three rules worth
+stating.
+
+**Only code extensions activate.** An extension with no `main` never starts a process
+at all. A theme's `"activationEvents": ["*"]` fires for nothing, because there is
+nothing to fire: the whole sandbox would be spent starting a process to read a JSON
+file. That is why a marketplace theme works in deco today.
+
+**A contributed command activates its extension, with or without `onCommand:`.** VS
+Code stopped requiring the declaration in 1.74, and the reason to follow it is not
+compatibility: a palette entry that does nothing is worse than either alternative, and
+the trigger is the user naming the command. An empty `activationEvents` is still not a
+wildcard — such an extension activates only through its own commands.
+
+**An activation event deco does not understand fires for nothing.** Activation is a
+security control before it is a performance one: an extension that has not activated
+has no process, so no request it could make exists. Treating an unknown event as `*`
+would turn every future VS Code event into a startup activation.
+
+Collisions are reported rather than resolved silently. The same extension installed
+twice keeps the first copy; a command contributed by two extensions stays with the
+first, and the second is told so — otherwise the loser looks broken with the reason
+visible nowhere.
+
+## Running an extension's command
+
+`commands.registerCommand` goes one way: the extension tells deco a name. Running it
+goes the other, as `$/executeCommand`, and `Host::execute_command` is that call. The
+reply carries whatever the extension's callback returned; a command the host does not
+have is an error reply naming it, not a dropped connection.
+
+This path existed in the `vscode` shim from the beginning and **nothing had ever asked
+it to run**. It works — the round-trip test now activates the fixture, calls
+`roundTrip.hello`, and asserts `"hello from the host"` comes back — and the shim's
+command registry has tests of its own now, which it did not before: arguments in
+order, async callbacks awaited, a `dispose()`d command no longer callable, a throwing
+command reported without ending the session.
+
 ## What is still not connected
 
-The editor does not start a host yet. This is the wire, tested end to end; what comes
-next is the editor side of it — deciding which extensions to activate from their
-`activationEvents`, putting their commands in the palette, and answering the mediated
-surface from the session.
+The editor does not start a host yet. What exists is the wire, the sandbox, and the
+decision about what to start; what is missing is the part that acts on it — walking
+the extension directories, putting contributed commands in the palette, and answering
+the mediated surface from the session. `--print-config` does not yet say which sandbox
+you are getting, which it should.
 
 ## Zero npm dependencies
 

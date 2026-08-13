@@ -274,6 +274,15 @@ impl std::fmt::Display for ReadyError {
 /// the editor is not held up by an extension that will not stop.
 pub const SHUTDOWN_GRACE: Duration = Duration::from_millis(500);
 
+/// The request that loads an extension and runs its `activate`.
+pub const ACTIVATE: &str = "$/activate";
+
+/// The request that runs a command the extension registered.
+///
+/// Named here rather than written at each call site because both ends have to
+/// agree on it, and the other end is `extension-host/src/vscode.js`.
+pub const EXECUTE_COMMAND: &str = "$/executeCommand";
+
 /// A running host process.
 pub struct Host {
     child: Child,
@@ -367,6 +376,33 @@ impl Host {
             method: method.to_owned(),
             params,
         }))
+    }
+
+    /// Asks the host to load an extension and run its `activate`.
+    ///
+    /// `path` is the extension directory **as the host sees it**, which is not
+    /// the same as deco's own path when the host is in a container: translate it
+    /// through [`crate::sandbox::Prepared::seen_by_host`] first. A host path
+    /// passed straight through would be outside every mount and fail to open,
+    /// which is a confusing way to learn that a container is involved.
+    pub fn activate(&mut self, path: &str, main: &str) -> std::io::Result<u64> {
+        self.request(
+            ACTIVATE,
+            serde_json::json!({ "extensionPath": path, "main": main }),
+        )
+    }
+
+    /// Asks the host to run one of the commands its extension registered.
+    ///
+    /// The reply carries whatever the extension's callback returned, or an error
+    /// if it threw or the command is not registered there. This is the other
+    /// direction of `commands.registerCommand`: the extension tells deco a name,
+    /// and this is deco calling it back.
+    pub fn execute_command(&mut self, command: &str, args: Value) -> std::io::Result<u64> {
+        self.request(
+            EXECUTE_COMMAND,
+            serde_json::json!({ "command": command, "args": args }),
+        )
     }
 
     /// The method a reply is answering, forgetting it in the process.

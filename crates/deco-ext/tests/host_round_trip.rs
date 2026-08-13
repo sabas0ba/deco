@@ -123,14 +123,9 @@ fn an_extension_activates_and_registers_a_command() {
         ResolutionContext::default(),
     );
 
-    host.request(
-        "$/activate",
-        serde_json::json!({
-            "extensionPath": extension.to_string_lossy(),
-            "main": "./extension.js",
-        }),
-    )
-    .expect("the pipe should take a request");
+    let activation = host
+        .activate(&extension.to_string_lossy(), "./extension.js")
+        .expect("the pipe should take a request");
 
     // What the extension does on activation reaches deco as a request, and it has to
     // survive the capability seam to get here — `commands.registerCommand` needs no
@@ -185,6 +180,69 @@ fn an_extension_activates_and_registers_a_command() {
         host.errors()
     );
     assert!(activated, "no `$/activated`; stderr:\n{}", host.errors());
+
+    // And now the other direction, which is what a palette entry will need:
+    // deco calling back a command the extension registered, and getting the
+    // callback's own return value. The host has been able to do this since the
+    // `vscode` shim was written and nothing had ever asked it to.
+    let hello = host
+        .execute_command("roundTrip.hello", serde_json::json!([]))
+        .expect("a request");
+    let unknown = host
+        .execute_command("roundTrip.notThere", serde_json::json!([]))
+        .expect("a request");
+
+    let mut said: Option<serde_json::Value> = None;
+    let mut refused: Option<String> = None;
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while std::time::Instant::now() < deadline && (said.is_none() || refused.is_none()) {
+        match host.poll() {
+            Some(HostEvent::Message(Message::Response(response))) => {
+                // The reply to `$/activate` can still be in flight: the loop above
+                // stops on `$/activated`, which the host sends before answering.
+                let method = host.answered(response.id);
+                let expected = if response.id == activation {
+                    "$/activate"
+                } else {
+                    "$/executeCommand"
+                };
+                assert_eq!(method.as_deref(), Some(expected), "{response:?}");
+                if response.id == hello {
+                    assert!(
+                        response.error.is_none(),
+                        "the command failed: {:?}",
+                        response.error
+                    );
+                    said = response.result;
+                } else if response.id == unknown {
+                    // A command that is not registered is an error reply, not a
+                    // dead connection: deco asking for something the host does
+                    // not have must cost one message.
+                    refused = Some(
+                        response
+                            .error
+                            .map(|error| error.message)
+                            .expect("an unregistered command should be an error"),
+                    );
+                }
+            }
+            Some(HostEvent::Closed) => panic!("the host exited; stderr:\n{}", host.errors()),
+            Some(_) => {}
+            None => std::thread::sleep(Duration::from_millis(5)),
+        }
+    }
+
+    assert_eq!(
+        said,
+        Some(serde_json::json!("hello from the host")),
+        "the extension's own return value should come back; stderr:\n{}",
+        host.errors()
+    );
+    let refused = refused.expect("no reply for the unregistered command");
+    assert!(
+        refused.contains("roundTrip.notThere"),
+        "the refusal should name the command: {refused}"
+    );
 
     host.shutdown();
     let _ = std::fs::remove_dir_all(&extension);
