@@ -235,8 +235,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '20'
+          # 22 and not 20: `--permission` is only the flag's stable name from
+          # v22.13, and the host passes it. See `extension-host/package.json`.
+          node-version: '22'
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: stable
       # Everything `cargo xtask host-test` runs: the host's own suite, and the Rust
       # side against the real host — the only place the two ends meet, and the only job
       # that has a Node to meet them with.

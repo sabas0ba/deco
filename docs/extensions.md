@@ -16,10 +16,15 @@ is no way around that. It removes the ambient authority.
 
 ## Three independent layers
 
-**1. Node's permission model.** The host runs with `--permission` (Node 20+),
-which blocks filesystem, child-process and worker access below JavaScript, where
-an extension cannot argue with it. No `--allow-child-process`, no
-`--allow-fs-write`.
+**1. Node's permission model.** The host runs with `--permission`, which blocks
+filesystem, child-process and worker access below JavaScript, where an extension
+cannot argue with it. No `--allow-child-process`, no `--allow-fs-write`.
+
+That flag is why the host needs **Node 22.13 or newer**: the permission model
+became stable there and the flag lost its `--experimental-` prefix, and older
+Node rejects the spelling deco passes. `HostConfig::node_permission_model` can
+turn it off for an older runtime, at the cost of the one layer an extension
+cannot argue with.
 
 **2. The host bootstrap.** It removes the network globals and refuses to load
 `fs`, `net`, `http`, `child_process` and friends, so a blocked call produces a

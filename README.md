@@ -127,7 +127,7 @@ deco keeps the separate Node process — extensions are JavaScript, and there is
 no way around that — but removes its ambient authority. Three independent
 layers:
 
-1. **Node's permission model** (`--permission`, Node 20+) blocks filesystem,
+1. **Node's permission model** (`--permission`, Node 22.13+) blocks filesystem,
    child-process and worker access below JavaScript, where an extension cannot
    argue with it. No `--allow-child-process`, no `--allow-fs-write`.
 2. **The host bootstrap** removes the network globals and refuses to load `fs`,
