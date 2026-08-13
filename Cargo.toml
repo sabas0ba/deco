@@ -19,7 +19,13 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.82"
+# What holds this floor up is `unicode-segmentation`, which asks for 1.85 from
+# 1.13.2 on. Staying below it would mean staying on Unicode 16 and keeping two
+# grapheme-cluster bugs 1.13 fixed — GB11 at a chunk boundary and GB12/GB13
+# once the regional indicator count is known — which in an editor are a cursor
+# landing inside a ZWJ emoji or a flag. Correct clusters are worth more here
+# than three releases of toolchain headroom.
+rust-version = "1.85"
 license = "Apache-2.0"
 repository = "https://github.com/sabas0ba/deco"
 authors = ["deco contributors"]
