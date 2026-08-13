@@ -160,3 +160,29 @@ test('an unknown message type is ignored', async () => {
   assert.strictEqual(written.length, 0);
   assert.strictEqual(rpc.pendingCount, 0);
 });
+
+test('deco closing the connection is reported exactly once', async () => {
+  // The host exits on this, so it has to fire — a host that outlives deco keeps
+  // whatever it was granted, and in a container keeps the container too. Once,
+  // because `end` and `close` both arrive and exiting twice is a race.
+  const { rpc, input } = connect();
+  let closed = 0;
+  rpc.onClosed(() => {
+    closed += 1;
+  });
+  input.end();
+  await tick();
+  await tick();
+  assert.strictEqual(closed, 1);
+});
+
+test('a connection deco never closes reports nothing', async () => {
+  const { rpc, input } = connect();
+  let closed = 0;
+  rpc.onClosed(() => {
+    closed += 1;
+  });
+  input.write(`${JSON.stringify({ type: 'notification', method: '$/nothing' })}\n`);
+  await tick();
+  assert.strictEqual(closed, 0);
+});

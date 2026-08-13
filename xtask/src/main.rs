@@ -261,8 +261,101 @@ fn ci(root: &Path, lint_only: bool, test_only: bool) -> Result<()> {
 /// `extension-host/package.json` is the single definition of how those tests
 /// run, and CI calls the same one.
 fn host_test(root: &Path) -> Result<()> {
+    check_node_version()?;
     let npm = if cfg!(windows) { "npm.cmd" } else { "npm" };
-    run(&root.join("extension-host"), npm, &["test"], &[])
+    run(&root.join("extension-host"), npm, &["test"], &[])?;
+    // The other half: the Rust side against the real host. Ignored by default so
+    // `cargo test` stays runnable where there is no Node — under Wine, for one — and
+    // run here, which is the command that already requires it.
+    run_cargo(
+        root,
+        &[
+            "test",
+            "--locked",
+            "-p",
+            "deco-ext",
+            "--test",
+            "host_round_trip",
+            "--",
+            "--ignored",
+            // The container round trip is selected separately below, because it
+            // needs something this one does not.
+            "--skip",
+            CONTAINER_TESTS,
+        ],
+    )?;
+
+    // And the same stack in the container deco actually ships with. This needs a
+    // container runtime, which not every machine has — so the decision is
+    // *printed* either way. A test that quietly does not run is worse than one
+    // that is not written, because the output looks the same as passing.
+    match deco_ext::sandbox::find_runtime(
+        &deco_ext::sandbox::RUNTIMES,
+        std::env::var_os("PATH").as_deref(),
+    ) {
+        Some(runtime) => {
+            println!("container round trip: using {}", runtime.display());
+            run_cargo(
+                root,
+                &[
+                    "test",
+                    "--locked",
+                    "-p",
+                    "deco-ext",
+                    "--test",
+                    "host_round_trip",
+                    "--",
+                    "--ignored",
+                    CONTAINER_TESTS,
+                ],
+            )
+        }
+        None => {
+            println!(
+                "container round trip: SKIPPED — none of {} is on the PATH, so the \
+                 default sandbox cannot be exercised here",
+                deco_ext::sandbox::RUNTIMES.join(" or ")
+            );
+            Ok(())
+        }
+    }
+}
+
+/// The name fragment selecting the round-trip tests that need a container.
+const CONTAINER_TESTS: &str = "a_container";
+
+/// The oldest Node the host runs on, as `(major, minor)`.
+///
+/// `--permission` became the flag's stable spelling in 22.13, and the host passes
+/// that spelling. An older Node rejects it and exits before printing anything about
+/// deco, so the version is worth stating before the tests rather than after.
+const OLDEST_NODE: (u64, u64) = (22, 13);
+
+/// Refuses to run the host tests on a Node too old to accept `--permission`.
+fn check_node_version() -> Result<()> {
+    let node = if cfg!(windows) { "node.exe" } else { "node" };
+    let output = std::process::Command::new(node)
+        .arg("--version")
+        .output()
+        .with_context(|| format!("running `{node} --version` — is Node installed?"))?;
+    let said = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let version = parse_node_version(&said)
+        .with_context(|| format!("`{node} --version` said {said:?}, which is not a version"))?;
+    anyhow::ensure!(
+        version >= OLDEST_NODE,
+        "the extension host needs Node {}.{} or newer for `--permission`, but this is {said}",
+        OLDEST_NODE.0,
+        OLDEST_NODE.1
+    );
+    Ok(())
+}
+
+/// Reads `v22.13.0` as `(22, 13)`.
+fn parse_node_version(said: &str) -> Option<(u64, u64)> {
+    let mut parts = said.trim_start_matches('v').split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    Some((major, minor))
 }
 
 /// Runs `cargo` with `args` in `root`.
@@ -405,6 +498,39 @@ mod tests {
         assert_eq!(
             absolute(root, Path::new("/tmp/out")),
             PathBuf::from("/tmp/out")
+        );
+    }
+
+    #[test]
+    fn node_versions_are_read_and_compared_by_number_and_not_by_text() {
+        assert_eq!(parse_node_version("v22.13.0"), Some((22, 13)));
+        assert_eq!(parse_node_version("22.13.1"), Some((22, 13)));
+        assert_eq!(parse_node_version("v24.0.0"), Some((24, 0)));
+        assert_eq!(parse_node_version(""), None);
+        assert_eq!(parse_node_version("v22"), None);
+        assert_eq!(parse_node_version("not a version"), None);
+        // Text order would put 22.9 above 22.13, which is the mistake this guards.
+        assert!(parse_node_version("v22.9.0").unwrap() < OLDEST_NODE);
+        assert!(parse_node_version("v20.20.2").unwrap() < OLDEST_NODE);
+        assert!(parse_node_version("v22.13.0").unwrap() >= OLDEST_NODE);
+        assert!(parse_node_version("v24.2.0").unwrap() >= OLDEST_NODE);
+    }
+
+    #[test]
+    fn the_oldest_node_matches_what_the_host_package_declares() {
+        // Two places have to agree about the runtime: this check and the manifest npm
+        // reads. Stating it once is not possible — npm will not read a Rust constant —
+        // so the next best thing is a test that notices when they drift apart.
+        let manifest = std::fs::read_to_string(
+            repository_root()
+                .unwrap()
+                .join("extension-host/package.json"),
+        )
+        .expect("the host manifest");
+        let wanted = format!("\">={}.{}.0\"", OLDEST_NODE.0, OLDEST_NODE.1);
+        assert!(
+            manifest.contains(&wanted),
+            "extension-host/package.json should require node {wanted}"
         );
     }
 

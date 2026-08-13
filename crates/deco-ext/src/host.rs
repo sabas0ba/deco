@@ -2,10 +2,15 @@
 //!
 //! # Defence in depth
 //!
-//! Three independent layers stand between an extension and the machine, so that
-//! a bug in any one of them is not on its own sufficient:
+//! Four independent layers stand between an extension and the machine, so that
+//! a bug in any one of them is not on its own sufficient. This module builds the
+//! command line for layers 1 to 3; [`crate::sandbox`] wraps it in layer 0:
 //!
-//! 1. **Node's permission model** (`--permission`, Node 20+) blocks filesystem,
+//! 0. **A container** whose image is pinned by digest, with no network, nothing
+//!    writable and no view of the workspace. It is the only layer that also pins
+//!    the runtime the other three are properties of.
+//!
+//! 1. **Node's permission model** (`--permission`, Node 22.13+) blocks filesystem,
 //!    child-process and worker access at the runtime level. This is the only
 //!    layer the extension cannot talk its way around, because it is enforced
 //!    below JavaScript.
@@ -59,9 +64,10 @@ pub struct HostConfig {
     pub cwd: PathBuf,
     /// Resource bounds.
     pub limits: HostLimits,
-    /// Whether to pass `--permission`. Requires Node 20 or newer; older Node
-    /// rejects the flag, so callers that support older runtimes must turn it
-    /// off and rely on layers 2 and 3 alone.
+    /// Whether to pass `--permission`. Requires Node 22.13 or newer, where the
+    /// permission model became stable and the flag lost its `--experimental-`
+    /// prefix; older Node rejects the flag outright, so callers that support
+    /// older runtimes must turn it off and rely on layers 2 and 3 alone.
     pub node_permission_model: bool,
     /// Whether extensions may use `eval` and `new Function`.
     ///
@@ -323,7 +329,7 @@ mod tests {
         config.node_permission_model = false;
         let spec = build_spec(&config, "acme.ext");
         assert!(!spec.args.iter().any(|a| a == "--permission"));
-        // The heap cap is not a Node 20 feature, so it stays.
+        // The heap cap is not part of the permission model, so it stays.
         assert!(spec
             .args
             .iter()

@@ -92,7 +92,7 @@ thin painter.
 | Syntax highlighting | 19 languages, from a lexer — see [why not tree-sitter](docs/highlighting.md#why-not-tree-sitter) |
 | Command identifiers | Yes, for implemented commands |
 | Theme extensions from the marketplace | Yes — declarative, no host process; `ctrl+k ctrl+t` lists them |
-| Code extensions (`main`) | Protocol and sandbox built; host not yet wired to the editor |
+| Code extensions (`main`) | Protocol, container sandbox and host process built; host not yet wired to the editor |
 | Remote SSH / containers / WSL | Authorities and transports built; server not yet |
 | Language servers (LSP) | Diagnostics, hover, go-to-definition, references, completion, symbols, semantic tokens, formatting |
 | Find and replace (`ctrl+f`, `ctrl+h`, `F3`, `ctrl+d`, `ctrl+shift+l`) | Literal search only — no regular expressions |
@@ -124,12 +124,20 @@ trusting its author and every package in its `node_modules` with everything you
 can reach.
 
 deco keeps the separate Node process — extensions are JavaScript, and there is
-no way around that — but removes its ambient authority. Three independent
+no way around that — but removes its ambient authority. Four independent
 layers:
 
-1. **Node's permission model** (`--permission`, Node 20+) blocks filesystem,
+0. **A container**, from an image pinned by digest, with `--network=none`,
+   `--read-only`, `--cap-drop=ALL` and **no mount of your workspace** —
+   extensions reach files through the broker, so the container needs no view of
+   the project. If no container runtime is installed, deco refuses to start the
+   host rather than running it with one layer fewer; `"deco.extensions.sandbox":
+   "process"` is the explicit way to ask for that instead. See
+   [Extensions](docs/extensions.md#the-container).
+1. **Node's permission model** (`--permission`, Node 22.13+) blocks filesystem,
    child-process and worker access below JavaScript, where an extension cannot
-   argue with it. No `--allow-child-process`, no `--allow-fs-write`.
+   argue with it. No `--allow-child-process`, no `--allow-fs-write`. Passed
+   inside the container too: a layer is not dropped because another arrived.
 2. **The host bootstrap** removes the network globals and refuses to load `fs`,
    `net`, `http`, `child_process` and friends, so a blocked call produces a
    clear error naming its brokered replacement rather than a permission trap.
@@ -237,9 +245,13 @@ does not:
   language server's **semantic tokens** fill exactly that gap and are
   drawn over the lexer's colouring where a server provides them. The GPU frontend
   draws one colour per line.
-- **The extension host is not connected.** The protocol, the capability broker,
-  the sandbox and the `vscode` shim all exist and are tested against each other;
-  the editor does not yet start a host or dispatch to one.
+- **The extension host is not connected to the editor yet.** The wire now exists and
+  is tested end to end: `deco_ext::connection` starts the real host with the real
+  `node`, an extension activates, and `commands.registerCommand` arrives and passes the
+  capability seam — see [Starting one](docs/extensions.md#starting-one). What is
+  missing is the editor side: deciding which extensions to activate from their
+  `activationEvents`, putting their commands in the palette, and answering the mediated
+  surface from the session.
 - **Search is literal, and only within the open file.** `ctrl+f` and `ctrl+h`
   open a find bar with a query, a replacement, a match count and highlighting;
   `F3`, `enter`, `ctrl+alt+enter` and `alt+c` / `alt+w` work as they do in VS
