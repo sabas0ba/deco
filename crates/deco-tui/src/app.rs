@@ -897,6 +897,39 @@ mod tests {
     }
 
     #[test]
+    fn painting_never_emits_a_span_s_own_escape_sequence() {
+        // The regression guard for the whole class, asserted at the write rather than
+        // on the substitution: OSC 52 sets the clipboard on every terminal that
+        // supports it, and a span's text can come from a file name or a search result
+        // rather than from the renderer's own substitution.
+        let frame = Frame {
+            rows: vec![crate::render::Row {
+                spans: vec![crate::render::Span {
+                    text: "\u{1b}]52;c;aGVsbG8=\u{7}\u{1b}[31m".to_owned(),
+                    fg: Rgba::WHITE,
+                    bg: Rgba::BLACK,
+                }],
+            }],
+            cursor: None,
+        };
+        let mut out: Vec<u8> = Vec::new();
+        paint(&mut out, &frame, None).unwrap();
+
+        assert!(
+            !out.windows(4).any(|w| w == b"\x1b]52"),
+            "an OSC 52 clipboard write reached the terminal"
+        );
+        assert!(
+            !out.windows(5).any(|w| w == b"\x1b[31m"),
+            "a colour sequence from the span reached the terminal"
+        );
+        assert!(!out.contains(&0x07), "a bell reached the terminal");
+        // What it should have written instead.
+        let written = String::from_utf8_lossy(&out);
+        assert!(written.contains("␛]52;c;aGVsbG8=␇"), "{written:?}");
+    }
+
+    #[test]
     fn painting_a_frame_with_no_cursor_leaves_it_hidden() {
         let frame = Frame {
             rows: vec![crate::render::Row::default()],

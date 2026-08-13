@@ -3221,6 +3221,33 @@ mod tests {
     }
 
     #[test]
+    fn a_settings_file_cannot_reach_the_terminal_through_a_problem_message() {
+        // The sharper case, and the reason `sanitise` is exported from the crate root:
+        // a problem message quotes what a settings file said, the binary prints it to
+        // the real terminal *before* the alternate screen opens, and a cloned
+        // repository's `.vscode/settings.json` is somebody else's text.
+        let mut settings = deco_config::Settings::with_defaults();
+        settings.set(
+            deco_config::Scope::User,
+            "workbench.colorTheme",
+            serde_json::json!("\u{1b}]52;c;aGVsbG8=\u{7}"),
+        );
+        let session = Session::new(settings, None, deco_keymap::binding::Platform::Linux);
+        let problem = session
+            .problems
+            .first()
+            .expect("an unknown theme is reported");
+        assert!(
+            problem.chars().any(|c| c.is_control()),
+            "the fixture should carry the bytes: {problem:?}"
+        );
+        assert!(
+            !sanitise(problem).chars().any(|c| c.is_control()),
+            "and they should not survive being made printable"
+        );
+    }
+
+    #[test]
     fn sanitising_borrows_when_there_is_nothing_to_do() {
         // Every span of every row of every frame goes through this.
         assert!(matches!(

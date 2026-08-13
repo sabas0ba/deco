@@ -92,8 +92,14 @@ fn main() -> Result<()> {
 
     // Configuration problems would scroll past unseen once the alternate screen
     // opens, so they are reported before the frontend starts.
+    //
+    // Made printable first, and for a sharper reason than inside the editor: a
+    // problem message quotes what a settings file said — a theme name, a broken
+    // keybinding — and a cloned repository's `.vscode/settings.json` is somebody
+    // else's text. Written raw it would reach the real terminal, with no alternate
+    // screen between it and the shell, where `\x1b]52;c;…` sets the clipboard.
     for problem in &session.problems {
-        eprintln!("deco: {problem}");
+        eprintln!("deco: {}", deco_tui::sanitise(problem));
     }
 
     match cli.frontend {
@@ -134,19 +140,23 @@ fn run_gui(_session: &mut Session) -> Result<()> {
 /// my setting not taking effect".
 fn print_config(session: &Session) {
     let settings = &session.document.settings;
-    println!("theme               {}", session.theme.name);
+    // Every value that came out of a settings file is made printable, for the reason
+    // the problem list is: `--print-config` in a cloned repository prints that
+    // repository's text to the terminal it was run from.
+    let shown = deco_tui::sanitise;
+    println!("theme               {}", shown(&session.theme.name));
     println!(
         "language            {}",
-        session.document.language().unwrap_or("plain text")
+        shown(session.document.language().unwrap_or("plain text"))
     );
     println!("editor.tabSize      {}", settings.tab_size);
     println!("editor.insertSpaces {}", settings.insert_spaces);
     println!("editor.wordWrap     {:?}", settings.word_wrap);
-    println!("editor.fontFamily   {}", settings.font_family);
+    println!("editor.fontFamily   {}", shown(&settings.font_family));
     println!("editor.fontSize     {}", settings.font_size);
     println!("files.eol           {:?}", settings.eol);
     println!("keybindings         {} bindings", session.keymap.len());
     for problem in &session.problems {
-        println!("problem             {problem}");
+        println!("problem             {}", shown(problem));
     }
 }

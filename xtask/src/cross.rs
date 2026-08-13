@@ -16,8 +16,8 @@
 //! * **The tests, run under Wine.** Built for `x86_64-pc-windows-gnu` with
 //!   MinGW and executed through Wine by way of cargo's target runner. These
 //!   are real Windows binaries running Windows code paths — the tests that
-//!   spawn a child process included — bar the two in [`WINE_SKIPS`], which
-//!   need a console Wine has not been given.
+//!   spawn a child process included — bar the painting tests in
+//!   [`WINE_SKIPS`], which need a console Wine has not been given.
 //!
 //! What neither covers, and what the tagged run on real runners is therefore
 //! still for:
@@ -117,7 +117,7 @@ pub fn check_args(target: &str) -> Vec<String> {
 /// Tests the Wine pass cannot run, matched as substrings the way libtest's
 /// `--skip` matches them.
 ///
-/// Both of these paint a frame through crossterm. On Windows crossterm decides
+/// Every test that paints a frame through crossterm. On Windows crossterm decides
 /// once, at first use, whether the terminal understands ANSI; when it decides
 /// not, every command it is given goes to the console API instead of to the
 /// writer it was handed — so a test that paints into a `Vec<u8>` still needs
@@ -125,13 +125,13 @@ pub fn check_args(target: &str) -> Vec<String> {
 /// out of, and the calls come back `Invalid handle`. A real Windows runner has
 /// one and passes them, which is where they stay covered.
 ///
-/// These are the only two tests that reach crossterm: everything else in
-/// `deco-tui` compares rendered strings, which is why the frontend's own suite
-/// is otherwise portable. A new test that paints will need adding here.
-pub const WINE_SKIPS: &[&str] = &[
-    "painting_writes_every_span_and_positions_the_cursor",
-    "painting_a_frame_with_no_cursor_leaves_it_hidden",
-];
+/// A **prefix** rather than the names, because the rule is structural: anything
+/// that calls `paint` fails here, so a list of names is a list that the next
+/// painting test silently falls off. `deco-tui`'s every other test compares
+/// rendered strings and never reaches crossterm, which is why the frontend's
+/// suite is otherwise portable — and why `painting_` is a narrow enough prefix
+/// to name the console-bound ones and nothing else.
+pub const WINE_SKIPS: &[&str] = &["painting_"];
 
 /// The `cargo test` invocation the Wine pass runs.
 ///
@@ -414,6 +414,27 @@ mod tests {
             assert!(position > separator);
             assert_eq!(args[position - 1], "--skip");
         }
+    }
+
+    #[test]
+    fn the_skip_is_a_rule_and_not_a_list_of_names() {
+        // The names of the console-bound tests as they stand. If somebody replaces the
+        // prefix with these, the next painting test falls off the list silently and
+        // fails on the Wine pass instead — which is how this test came to exist.
+        for name in [
+            "painting_writes_every_span_and_positions_the_cursor",
+            "painting_a_frame_with_no_cursor_leaves_it_hidden",
+            "painting_never_emits_a_span_s_own_escape_sequence",
+        ] {
+            assert!(
+                WINE_SKIPS.iter().any(|skip| name.starts_with(skip)),
+                "{name} would run under Wine"
+            );
+        }
+        assert!(
+            WINE_SKIPS.iter().all(|skip| !skip.contains("_the_")),
+            "the skips read like a prefix rather than whole test names"
+        );
     }
 
     #[test]
