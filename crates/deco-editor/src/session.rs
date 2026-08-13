@@ -1146,6 +1146,14 @@ impl Session {
         // differently for a feature deco means to build than for an identifier
         // that does not exist here, because those call for different reactions.
         let outcome = match outcome {
+            // A command the frontend declared is the frontend's, whatever its
+            // name. The identifiers above are written down because they are
+            // deco's own and fixed; an extension's are neither — they are
+            // whatever is installed — so this is the only way one can be routed
+            // at all, and it is what `frontend_commands` is for.
+            Outcome::NotFound if self.frontend_owns(command) => {
+                Outcome::Frontend(command.to_owned())
+            }
             Outcome::NotFound => match commands::pending_title(command) {
                 Some(title) => Outcome::Message(format!("{title} is not implemented yet")),
                 None => {
@@ -1468,6 +1476,16 @@ impl Session {
         (!query.is_empty()).then(|| query.to_owned())
     }
 
+    /// Whether the frontend declared this command as one of its own.
+    ///
+    /// Consulted only after nothing here handled it, so a core command can never
+    /// be shadowed by an extension declaring its identifier.
+    fn frontend_owns(&self, command: &str) -> bool {
+        self.frontend_commands
+            .iter()
+            .any(|entry| entry.id == command)
+    }
+
     /// Everything the palette can offer: this crate's commands and the
     /// frontend's.
     fn palette(&self) -> Vec<crate::commands::PaletteEntry> {
@@ -1478,8 +1496,15 @@ impl Session {
         entries.extend(self.frontend_commands.iter().cloned());
         // The identifier is worth a column of its own here: it is what a
         // `keybindings.json` refers to, and the title does not tell you it.
+        //
+        // Unless the frontend already said something, which it does for a command
+        // that came from an extension: there the useful fact is *which* extension,
+        // and an identifier the reader has no reason to have seen before is not a
+        // reason to throw that away.
         for entry in &mut entries {
-            entry.detail = Some(entry.id.clone());
+            if entry.detail.is_none() {
+                entry.detail = Some(entry.id.clone());
+            }
         }
         entries
     }

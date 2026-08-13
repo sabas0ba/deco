@@ -19,7 +19,7 @@ deco-syntax.workspace = true
 deco-theme.workspace = true
 anyhow.workspace = true
 crossterm.workspace = true
-unicode-width.workspace = true
-
-[dev-dependencies]
+# Already in the graph through every deco crate that speaks a protocol. The host's
+# messages are JSON, and starting one means building their parameters.
 serde_json.workspace = true
+unicode-width.workspace = true

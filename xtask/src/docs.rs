@@ -115,6 +115,10 @@ fn demos() -> Vec<Demo> {
             build: command_palette,
         },
         Demo {
+            name: "extension-commands",
+            build: extension_commands,
+        },
+        Demo {
             name: "go-to-line",
             build: go_to_line,
         },
@@ -1144,6 +1148,50 @@ fn command_palette() -> String {
         .press(&["down"])
         .press_and_hold(&["down"], 3)
         .press_and_hold(&["enter"], 5);
+    take.finish()
+}
+
+/// The palette listing what an extension contributes.
+///
+/// The catalogue is built from a manifest written here rather than from a
+/// directory, because the generator has to produce the same picture on every
+/// machine and a real extensions directory is whatever the reader happens to have
+/// installed. What is *drawn* is the real palette over the real rows.
+fn extension_commands() -> String {
+    let manifest = deco_ext::Manifest::parse(
+        r#"{
+  "name": "prettier-vscode",
+  "publisher": "esbenp",
+  "displayName": "Prettier",
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      { "command": "prettier.forceFormatDocument", "title": "Format Document (Forced)" },
+      { "command": "prettier.openOutput", "title": "Open Output" }
+    ]
+  }
+}"#,
+    )
+    .expect("a manifest");
+    let catalogue = deco_ext::catalogue::Catalogue::build([(
+        std::path::PathBuf::from("/extensions/esbenp.prettier-vscode-11.0.0"),
+        manifest,
+    )]);
+
+    let mut take = Take::new("main.rs", SAMPLE);
+    take.session.frontend_commands = deco_tui::app::frontend_commands();
+    // The same rows the editor puts there, from the same function.
+    take.session
+        .frontend_commands
+        .extend(deco_tui::extensions::rows(&catalogue));
+    take.at(1, 4)
+        .capture(
+            "an extension's commands are in the palette, named by extension",
+            2,
+        )
+        .press(&["ctrl+shift+p"])
+        .type_text("format")
+        .press_and_hold(&["down"], 4);
     take.finish()
 }
 

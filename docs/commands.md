@@ -114,6 +114,16 @@ surface be tested without one. `ctrl+p` therefore asks the frontend for the list
 and accepting a choice asks the frontend to read the file, exactly as saving asks
 it to write one.
 
+## Commands an extension contributes
+
+An installed code extension's commands are in the palette beside deco's own, with the
+extension's name in the right-hand column instead of the identifier. Choosing one
+starts that extension in a sandboxed host and runs it — see
+[Running one](extensions.md#running-one).
+
+Nothing about them is special once they are listed: they match as you type like any
+other entry, and an extension that has not started yet is started by being chosen.
+
 ## Colour theme
 
 `ctrl+k ctrl+t` switches theme. The list and the loading belong to the frontend,
