@@ -49,6 +49,7 @@
 
 pub mod activation;
 pub mod capability;
+pub mod catalogue;
 pub mod connection;
 pub mod host;
 pub mod manifest;
