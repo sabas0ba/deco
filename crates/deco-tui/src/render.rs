@@ -3146,6 +3146,105 @@ mod tests {
         assert!(!all.contains("Find:"));
     }
 
+    // ---- The cost of a large file ------------------------------------------
+
+    /// `lines` of plausible Rust, long enough to be worth wrapping and lexing.
+    fn many_lines(lines: usize) -> String {
+        (0..lines)
+            .map(|i| format!("    let value_{i} = compute({i}) + other({i});\n"))
+            .collect()
+    }
+
+    /// A session showing `lines` lines, laid out.
+    fn opened(text: &str) -> Session {
+        let mut session = Session::new(
+            deco_config::Settings::with_defaults(),
+            None,
+            deco_keymap::binding::Platform::Linux,
+        );
+        session.open(PathBuf::from("/w/big.rs"), text);
+        session.resize(120, 40);
+        session
+    }
+
+    /// How long `body` takes, averaged over `runs`.
+    fn timed(runs: u32, mut body: impl FnMut()) -> std::time::Duration {
+        // Once first, so a lazily built cache is not charged to the measurement.
+        body();
+        let start = std::time::Instant::now();
+        for _ in 0..runs {
+            body();
+        }
+        start.elapsed() / runs
+    }
+
+    #[test]
+    fn drawing_and_typing_do_not_get_slower_as_the_file_gets_longer() {
+        // "Lightweight and fast" is the claim the whole project is for, and it rested
+        // on assertion. What makes it true is that the hot paths are bounded by the
+        // *window*: the lexer resumes from the earliest line an edit touched, the wrap
+        // and the draw walk the visible rows, and the rope makes an edit in the middle
+        // of ten megabytes cost what one at the start costs.
+        //
+        // Asserted as a **ratio** rather than a time, so a loaded CI runner slows both
+        // halves together and cannot fail this on its own. The allowance is an order of
+        // magnitude, because what it is here to catch is an accidental `O(file)` — a
+        // walk from line zero, a re-lex of everything, a `to_string()` of the buffer —
+        // and those cost two hundred times more, not ten.
+        let small = opened(&many_lines(1_000));
+        let large = opened(&many_lines(200_000));
+
+        let draw_small = timed(20, || {
+            let _ = render(&small, 120, 40);
+        });
+        let draw_large = timed(20, || {
+            let _ = render(&large, 120, 40);
+        });
+        assert!(
+            draw_large < draw_small * 10,
+            "drawing grew with the file: {draw_small:?} for 1k lines, {draw_large:?} for 200k"
+        );
+
+        // Typing in the *middle*, which is the worst case for anything that rescans
+        // from the top and the best case for nothing.
+        let mut small = small;
+        let mut large = large;
+        let key = deco_keymap::keys::Chord::parse("x").expect("a bound key");
+        small.view.selections = SelectionSet::caret(deco_core::Position::new(500, 4));
+        large.view.selections = SelectionSet::caret(deco_core::Position::new(100_000, 4));
+        let mut clock = 0u64;
+        let type_small = timed(50, || {
+            clock += 100;
+            small.handle_chord(key, clock);
+        });
+        let type_large = timed(50, || {
+            clock += 100;
+            large.handle_chord(key, clock);
+        });
+        assert!(
+            type_large < type_small * 10,
+            "typing grew with the file: {type_small:?} at 1k lines, {type_large:?} at 200k"
+        );
+    }
+
+    #[test]
+    fn only_the_visible_rows_are_laid_out() {
+        // The structural half of the same claim, and the one that cannot be flaky: the
+        // work is bounded by the window whatever the timings say.
+        let session = opened(&many_lines(200_000));
+        let rows = session
+            .view
+            .visible_rows(&session.document.buffer, &session.document.settings);
+        assert!(
+            rows.len() <= session.view.height,
+            "{} rows for a window of {}",
+            rows.len(),
+            session.view.height
+        );
+        let frame = render(&session, 120, 40);
+        assert_eq!(frame.rows.len(), 40);
+    }
+
     // ---- Control characters -----------------------------------------------
 
     /// A document containing terminal escape sequences.

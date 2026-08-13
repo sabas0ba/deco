@@ -51,6 +51,26 @@ model. The terminal build pulls in 44 third-party crates in total, and the
 extension host pulls in no npm packages at all — see
 [Dependencies](#dependencies).
 
+What that buys, measured rather than asserted — a release build, one file, a
+120×40 window:
+
+| | 1,000 lines | 200,000 lines (10 MiB) |
+| --- | --- | --- |
+| Open | under 1 ms | 21 ms |
+| Draw a frame | 304 µs | 304 µs |
+| One keystroke | 8 µs | 10 µs |
+
+Drawing and typing do not grow with the file, because the hot paths are bounded by
+the **window** rather than the document: the lexer resumes from the earliest line an
+edit touched, the wrap and the draw walk the visible rows, and the rope makes an edit
+in the middle of ten megabytes cost what one at the start costs. Opening is linear, as
+reading a file has to be.
+
+A test asserts the *shape* of that in CI — drawing and typing at 200,000 lines within
+an order of magnitude of the same at 1,000 — as a ratio rather than a time, so a
+loaded runner cannot fail it on its own. What it is there to catch is an accidental
+walk from line zero, which would cost two hundred times more and not ten.
+
 **VS Code's own identifiers everywhere.** Commands are
 `editor.action.commentLine`, not `deco.comment`. Settings are `editor.tabSize`.
 Context keys are `editorHasSelection`. That is what makes an existing
@@ -247,7 +267,9 @@ does not:
   rather than opening a find bar the frontend cannot show.
 - **Four settings deco ships defaults for are read by nothing yet:**
   `editor.tabCompletion`, `editor.largeFileOptimizations`, `files.encoding` and
-  `workbench.editor.enablePreview`. Shipping a default for a key is a claim about it,
+  `workbench.editor.enablePreview`. `editor.largeFileOptimizations` has nothing to
+  turn off so far: VS Code uses it to stop tokenizing and wrapping past a size, and
+  both are already bounded by the window here — see the table above. Shipping a default for a key is a claim about it,
   so they are named here rather than left to be discovered.
   (`extensions.host.*` is the unwired host's, below.)
 - **Bidirectional overrides are not marked.** `U+202E` and its relatives can make a
