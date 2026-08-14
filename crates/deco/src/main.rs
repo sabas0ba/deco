@@ -39,6 +39,10 @@ fn main() -> Result<()> {
     if cli.server {
         return serve(cli.workspace.as_deref());
     }
+    // Likewise: this process is one end of a socket, not an editor.
+    if let Some(target) = cli.forward_to.as_deref() {
+        return forward_to(target);
+    }
 
     let env = Env::from_process();
     // The first file names the workspace; a mixed invocation has to pick one,
@@ -67,10 +71,17 @@ fn main() -> Result<()> {
 
     // A remote session: the files are on the other machine, so they are fetched
     // rather than read, and the same connection is what saves them later.
-    let mut remote = match cli.remote.as_deref() {
-        Some(authority) => Some(connect(authority, &cli, &mut session)?),
-        None => None,
+    let (mut remote, server_path) = match cli.remote.as_deref() {
+        Some(authority) => {
+            let (client, path) = connect(authority, &cli, &mut session)?;
+            (Some(client), Some(path))
+        }
+        None => (None, None),
     };
+    // Held for as long as the editor runs: dropping these stops the listeners,
+    // so binding them to the session rather than to the process is what makes a
+    // forward end when the session does.
+    let _forwards = forwards(&cli, server_path.as_deref(), &mut session)?;
     if let Some(client) = remote.as_mut() {
         for path in &cli.files {
             let asked = path.display().to_string();
@@ -169,7 +180,7 @@ fn connect(
     authority: &str,
     cli: &crate::cli::Cli,
     session: &mut Session,
-) -> Result<deco_remote::Client> {
+) -> Result<(deco_remote::Client, String)> {
     let authority = deco_remote::Authority::parse(authority)
         .with_context(|| format!("`{authority}` is not a remote deco understands"))?;
     let workspace = cli
@@ -196,11 +207,9 @@ fn connect(
                 None => format!("remote session: installed {version} at {path}"),
             },
         });
-        installed.path().to_owned()
+        server_path(cli, Some(&installed))
     } else {
-        cli.remote_server_path
-            .clone()
-            .unwrap_or_else(|| "deco".to_owned())
+        server_path(cli, None)
     };
 
     let command = deco_remote::command_for(
@@ -230,7 +239,99 @@ fn connect(
         "remote session: {} is serving {}",
         command.program, hello.workspace
     ));
-    Ok(client)
+    Ok((client, server_path))
+}
+
+/// Where the remote's deco is, once everything that can change the answer has.
+///
+/// One function because there is more than one caller — the file server and
+/// every forward — and they have to agree. An install knows better than the
+/// flag did, because it is what resolved `$HOME` on the remote into a path.
+fn server_path(cli: &crate::cli::Cli, installed: Option<&deco_remote::Installed>) -> String {
+    match installed {
+        Some(installed) => installed.path().to_owned(),
+        // Bare `deco`, found on the remote's PATH, is the assumption that holds
+        // when it was installed the ordinary way.
+        None => cli
+            .remote_server_path
+            .clone()
+            .unwrap_or_else(|| "deco".to_owned()),
+    }
+}
+
+/// Starts every `--forward`, and says so.
+///
+/// Each one needs the remote's deco, which is the same binary the file server
+/// runs — so `--remote-server-path` and `--remote-install` decide where it is
+/// here too, and a forward without a remote has nothing to tunnel to.
+fn forwards(
+    cli: &crate::cli::Cli,
+    server_path: Option<&str>,
+    session: &mut Session,
+) -> Result<Vec<deco_remote::Forward>> {
+    if cli.forwards.is_empty() {
+        return Ok(Vec::new());
+    }
+    // `server_path` comes from the connection rather than being worked out again
+    // here, and that is the whole point of passing it: computing it twice is how
+    // the file server ended up talking to an installed deco while the forwards
+    // looked for one on the remote's PATH that `--remote-install` had just
+    // decided was not there.
+    let (Some(authority), Some(server_path)) = (cli.remote.as_deref(), server_path) else {
+        anyhow::bail!("`--forward` needs `--remote`: there is no other machine to reach a port on");
+    };
+    let authority = deco_remote::Authority::parse(authority)
+        .with_context(|| format!("`{authority}` is not a remote deco understands"))?;
+
+    let mut started = Vec::new();
+    for spec in &cli.forwards {
+        let command = deco_remote::command_for(
+            &authority,
+            &deco_remote::forward::forward_command(server_path, spec.remote),
+            deco_remote::TransportOptions::default(),
+        )
+        .context("that remote cannot be reached")?;
+        // Started eagerly so that a port already in use is an error now, rather
+        // than a forward that silently never worked.
+        let forward = deco_remote::Forward::start(command, *spec)
+            .with_context(|| format!("could not forward {spec}"))?;
+        session
+            .problems
+            .push(format!("remote session: forwarding {spec}"));
+        started.push(forward);
+    }
+    Ok(started)
+}
+
+/// The remote half of a forward: a socket wearing stdin and stdout.
+///
+/// Refuses anything but loopback, which is the rule that keeps this from being a
+/// way into the remote's network — see [`deco_remote::forward`].
+fn forward_to(target: &str) -> Result<()> {
+    use deco_remote::forward::pipe;
+    use std::net::{Shutdown, TcpStream};
+
+    let address = deco_remote::forward::resolve_loopback(target).map_err(anyhow::Error::msg)?;
+    let stream = TcpStream::connect(address)
+        .with_context(|| format!("nothing is listening on {address} here"))?;
+    let mut to_service = stream.try_clone().context("could not split the socket")?;
+    let mut from_service = stream;
+
+    let upstream = std::thread::spawn(move || {
+        let _ = pipe(&mut std::io::stdin().lock(), &mut to_service);
+        // Half-closed rather than closed: the service may still have something
+        // to say after this end has finished asking.
+        let _ = to_service.shutdown(Shutdown::Write);
+    });
+    // `pipe` rather than `io::copy` because this is the end that writes to a
+    // line-buffered stdout, and a socket's bytes rarely contain a newline.
+    let mut output = std::io::stdout().lock();
+    pipe(&mut from_service, &mut output).context("the forwarded connection failed")?;
+    // Not joined: if the service closed first, the thread above is blocked
+    // reading a stdin that only the transport can close, and waiting for it
+    // would hold a connection open that has nothing left to carry.
+    drop(upstream);
+    Ok(())
 }
 
 /// What to say when the remote answers nothing at all.
@@ -327,6 +428,33 @@ fn print_config(session: &Session) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_install_decides_where_deco_is_for_the_forwards_as_well() {
+        // The bug this pins: the file server used the path an install resolved
+        // while every forward worked it out again and got `deco`, so
+        // `--remote-install --forward 3000` opened files from the installed
+        // binary and tunnelled to one that was not on the remote's PATH at all.
+        let installed = deco_remote::Installed::Sent {
+            path: "/home/u/.deco/bin/deco".to_owned(),
+            version: "deco 0.1.0".to_owned(),
+            replaced: None,
+        };
+        let cli = crate::cli::Cli::default();
+        assert_eq!(
+            server_path(&cli, Some(&installed)),
+            "/home/u/.deco/bin/deco"
+        );
+
+        // Without one, the flag decides, and without the flag it is whatever the
+        // remote's PATH says.
+        assert_eq!(server_path(&cli, None), "deco");
+        let cli = crate::cli::Cli {
+            remote_server_path: Some("/opt/deco".to_owned()),
+            ..crate::cli::Cli::default()
+        };
+        assert_eq!(server_path(&cli, None), "/opt/deco");
+    }
 
     #[test]
     fn the_hint_for_a_remote_with_no_deco_names_both_ways_out_of_it() {

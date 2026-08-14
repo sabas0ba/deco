@@ -1,8 +1,8 @@
 # Remote development
 
 > **State of this: you can open a file on another machine, edit it and save it
-> back, and put deco there if it has none.** What is missing is everything around
-> that — no port forwarding, no language servers or extensions over there, and no
+> back, put deco there if it has none, and reach a port on it.** What is missing
+> is everything around that — no language servers or extensions over there, and no
 > project-wide search. This page is explicit about each.
 
 ## Using it
@@ -95,6 +95,55 @@ The remote is assumed to have a POSIX shell and `uname`, `mkdir`, `dd`, `chmod`
 and `mv` — the same assumption already made by running `deco --server` over
 `ssh`.
 
+## Reaching a port on the remote
+
+A dev server on the remote's `:3000` has no route from here. `--forward` gives it
+one:
+
+```console
+$ deco --remote ssh-remote+myhost --forward 3000 src/main.rs
+$ deco --remote ssh-remote+myhost --forward 8080:3000 src/main.rs
+```
+
+The first makes the remote's `3000` answer on this machine's `3000`; the second
+puts it on `8080` instead, for when something local already holds the port. The
+forward lasts as long as the editor session and the port is released when it
+ends.
+
+### deco is its own tunnel
+
+`ssh -L` exists and does this well, and nothing here uses it, because it is
+available on exactly one of the three transports — `docker exec` cannot forward
+a port at all, and a WSL distribution has no `-L` either.
+
+So the remote's deco is the tunnel. Each connection runs:
+
+```console
+$ ssh myhost deco --forward-to 127.0.0.1:3000 --stdio
+```
+
+which connects to that port and pipes it to its own stdin and stdout. Every
+transport can already carry a program's stdio — that is how the file server
+works — so this works over all three, with no `socat`, no `nc`, and nothing on
+the remote that deco did not put there. It is the same binary
+`--remote-install` provisions, found the same way.
+
+The cost is a process per connection, which over SSH would be an authentication
+round-trip each time. That is why connection multiplexing is on by default:
+after the first, each one is local work.
+
+### Loopback at both ends
+
+- **On the remote**, `--forward-to` accepts loopback addresses only.
+  `--forward-to 10.0.0.5:5432` is refused by name, because a deco that dials
+  anywhere its host can reach is a proxy into that network — the same authority
+  the file server refuses to have over paths. A *name* is resolved first and
+  every address it resolves to is checked, since `localhost` is only loopback by
+  convention and a remote's `/etc/hosts` can say otherwise.
+- **On this machine**, the listener binds `127.0.0.1` and never `0.0.0.0`.
+  Typing a port number is not a request to put someone else's database on your
+  network.
+
 ## Authorities
 
 VS Code addresses a remote with an authority inside a `vscode-remote://` URI. deco
@@ -183,6 +232,7 @@ Named so that the remaining work is legible rather than open-ended:
    harder form: it needs somewhere deco is willing to download from.
 4. Settings scope wiring: the `Remote` layer already exists between `User` and
    `Workspace` in the settings stack, so a remote's settings have somewhere to go.
-5. Port forwarding, which the transports do not model at all.
+5. ~~Port forwarding, which the transports do not model at all.~~ **Done**, by
+   making deco the tunnel rather than reaching for `ssh -L` — see above.
 6. Language servers and extensions on the remote, which is what would turn this
    from "edit a file over there" into remote development.

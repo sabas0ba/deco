@@ -83,6 +83,14 @@ pub struct Cli {
     /// Off unless asked for. Pointing an editor at a machine is not the same as
     /// authorising it to install software there — see [`deco_remote::install`].
     pub remote_install: bool,
+    /// Ports on the remote to make reachable from here, as `3000` or `8080:3000`.
+    pub forwards: Vec<deco_remote::PortSpec>,
+    /// Run as one end of a forwarded connection rather than as an editor.
+    ///
+    /// Set by `--forward-to`. This is the remote half: it connects to the address
+    /// and pipes it to stdin and stdout, which is how a port crosses a transport
+    /// that has no idea what a port is.
+    pub forward_to: Option<String>,
 }
 
 /// What `parse` decided the process should do.
@@ -119,6 +127,8 @@ pub enum CliError {
     },
     /// The same file was given twice, which would be a tab fighting itself.
     DuplicateFile(String),
+    /// A `--forward` value was not a port or a pair of them.
+    BadPort(deco_remote::PortSpecError),
 }
 
 impl fmt::Display for CliError {
@@ -137,6 +147,7 @@ impl fmt::Display for CliError {
             Self::DuplicateFile(arg) => {
                 write!(f, "`{arg}` was given more than once")
             }
+            Self::BadPort(error) => write!(f, "`--forward` was given {error}"),
         }
     }
 }
@@ -163,6 +174,8 @@ Options:
       --remote-server-path <PATH>
                              Where deco is on the remote [default: found on its PATH]
       --remote-install       Send this machine's deco to the remote first, if it needs one
+      --forward <PORT>       Reach a port on the remote here, as 3000 or 8080:3000
+      --forward-to <ADDR>    Pipe stdin and stdout to a loopback address; the remote half
   -h, --help                 Print help
   -V, --version              Print version
 ";
@@ -217,6 +230,14 @@ where
                 cli.remote_server_path = Some(value.as_ref().to_owned());
             }
             "--remote-install" => cli.remote_install = true,
+            "--forward" => {
+                let value = args.next().ok_or(CliError::MissingValue("--forward"))?;
+                cli.forwards.push(port_spec(value.as_ref())?);
+            }
+            "--forward-to" => {
+                let value = args.next().ok_or(CliError::MissingValue("--forward-to"))?;
+                cli.forward_to = Some(value.as_ref().to_owned());
+            }
             "--frontend" => {
                 let value = args.next().ok_or(CliError::MissingValue("--frontend"))?;
                 cli.frontend = Frontend::parse(value.as_ref())?;
@@ -226,6 +247,10 @@ where
                     cli.frontend = Frontend::parse(value)?;
                 } else if let Some(value) = arg.strip_prefix("--workspace=") {
                     cli.workspace = Some(PathBuf::from(value));
+                } else if let Some(value) = arg.strip_prefix("--forward=") {
+                    cli.forwards.push(port_spec(value)?);
+                } else if let Some(value) = arg.strip_prefix("--forward-to=") {
+                    cli.forward_to = Some(value.to_owned());
                 } else if let Some(value) = arg.strip_prefix("--remote-server-path=") {
                     cli.remote_server_path = Some(value.to_owned());
                 } else if let Some(value) = arg.strip_prefix("--remote=") {
@@ -243,6 +268,12 @@ where
     }
 
     Ok(Outcome::Run(Box::new(cli)))
+}
+
+/// Parses a `--forward` value here rather than at startup, so that a mistyped
+/// port is a usage error with an exit code of 2 like every other one.
+fn port_spec(value: &str) -> Result<deco_remote::PortSpec, CliError> {
+    deco_remote::PortSpec::parse(value).map_err(CliError::BadPort)
 }
 
 fn set_file(cli: &mut Cli, arg: &str) -> Result<(), CliError> {
@@ -438,6 +469,8 @@ mod tests {
             remote: None,
             remote_server_path: None,
             remote_install: false,
+            forwards: Vec::new(),
+            forward_to: None,
         };
         assert_eq!(run(&["--clean", "a.rs", "--frontend", "gui"]), expected);
         assert_eq!(run(&["a.rs", "--frontend=gui", "--clean"]), expected);
