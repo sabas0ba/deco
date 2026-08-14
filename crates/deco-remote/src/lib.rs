@@ -10,7 +10,7 @@
 //! let command = command_for(
 //!     &authority,
 //!     &deco_remote::server_command("deco", Some("/home/u")),
-//!     TransportOptions::default(),
+//!     &TransportOptions::default(),
 //! )
 //! .unwrap();
 //! assert_eq!(command.program, "ssh");
@@ -27,6 +27,8 @@
 //! - [`frame`] is the length-prefixed JSON framing the two ends speak, with a
 //!   size ceiling so a hostile peer cannot ask the local machine for 900GB.
 //!
+//! - [`forward`] reaches a port on the remote, using the remote's own deco as
+//!   the tunnel so that it works over every transport rather than only SSH.
 //! - [`install`] is what puts a deco on a remote that has none — only when
 //!   asked, only when it can run there, and never over something that is not
 //!   deco.
@@ -35,11 +37,11 @@
 //! - [`client`] is the near end: it starts the transport's command and calls the
 //!   server's methods.
 //!
-//! What is not here yet: forwarding ports, and running language servers or
-//! extensions over there.
+//! What is not here yet: running language servers or extensions over there.
 
 pub mod authority;
 pub mod client;
+pub mod forward;
 pub mod frame;
 pub mod install;
 pub mod server;
@@ -47,6 +49,7 @@ pub mod transport;
 
 pub use authority::{Authority, AuthorityError};
 pub use client::{Client, ClientError};
+pub use forward::{Forward, ForwardError, PortSpec, PortSpecError};
 pub use frame::{Message, MAX_FRAME_BYTES};
 pub use install::{InstallError, Installed, Runner, TransportRunner};
 pub use server::{Server, ServerError};

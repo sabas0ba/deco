@@ -1,8 +1,8 @@
 # Remote development
 
 > **State of this: you can open a file on another machine, edit it and save it
-> back, and put deco there if it has none.** What is missing is everything around
-> that — no port forwarding, no language servers or extensions over there, and no
+> back, put deco there if it has none, and reach a port on it.** What is missing
+> is everything around that — no language servers or extensions over there, and no
 > project-wide search. This page is explicit about each.
 
 ## Using it
@@ -95,6 +95,103 @@ The remote is assumed to have a POSIX shell and `uname`, `mkdir`, `dd`, `chmod`
 and `mv` — the same assumption already made by running `deco --server` over
 `ssh`.
 
+## Reaching a port on the remote
+
+A dev server on the remote's `:3000` has no route from here. `--forward` gives it
+one:
+
+```console
+$ deco --remote ssh-remote+myhost --forward 3000 src/main.rs
+$ deco --remote ssh-remote+myhost --forward 8080:3000 src/main.rs
+```
+
+The first makes the remote's `3000` answer on this machine's `3000`; the second
+puts it on `8080` instead, for when something local already holds the port. The
+forward lasts as long as the editor session and the port is released when it
+ends.
+
+### deco is its own tunnel
+
+`ssh -L` exists and does this well, and nothing here uses it, because it is
+available on exactly one of the three transports — `docker exec` cannot forward
+a port at all, and a WSL distribution has no `-L` either.
+
+So the remote's deco is the tunnel. Each connection runs:
+
+```console
+$ ssh myhost deco --forward-to 127.0.0.1:3000 --stdio
+```
+
+which connects to that port and pipes it to its own stdin and stdout. Every
+transport can already carry a program's stdio — that is how the file server
+works — so this works over all three, with no `socat`, no `nc`, and nothing on
+the remote that deco did not put there. It is the same binary
+`--remote-install` provisions, found the same way.
+
+The cost is a process per connection, which over SSH would be an authentication
+round-trip each time — twenty of them for one page load. So deco multiplexes: the
+first connection sets up a control socket and the rest are local work.
+
+That needs a `ControlPath`, and it is a path rather than a flag for a reason.
+`ControlMaster=auto` on its own does *nothing*: OpenSSH's `ControlPath` has no
+default, and without one the setting is silently inert. deco used to pass
+`ControlMaster` alone and claim multiplexing it did not have.
+
+### Loopback at both ends
+
+- **On the remote**, `--forward-to` accepts loopback addresses only.
+  `--forward-to 10.0.0.5:5432` is refused by name, because a deco that dials
+  anywhere its host can reach is a proxy into that network — the same authority
+  the file server refuses to have over paths. A *name* is resolved first and
+  every address it resolves to is checked, since `localhost` is only loopback by
+  convention and a remote's `/etc/hosts` can say otherwise.
+- **On this machine**, the listener binds `127.0.0.1` and never `0.0.0.0`.
+  Typing a port number is not a request to put someone else's database on your
+  network.
+
+### Who can use a forward
+
+The honest version, threat by threat.
+
+**From the network — no.** The listener binds `127.0.0.1`, so packets from
+another machine are not routed to it at all; there is no port open on this
+machine's network interfaces. And the forwarded traffic never crosses a network
+in the clear: over SSH it rides inside the SSH connection, and over `docker exec`
+or WSL it never leaves the machine. Network equipment on the path sees SSH
+ciphertext and nothing else. A test asserts the listener is loopback, because
+that one line is the whole of this paragraph and nothing else would catch it
+being changed to `0.0.0.0` for convenience.
+
+**Another user on the same machine — yes, and this is the real exposure.**
+Loopback is not per-user: any local account can connect to a forwarded port and
+reach the remote's service through it, for as long as the session runs. This is
+not particular to deco — `ssh -L` and every other port forwarder have exactly
+the same property — but it is true, and worth knowing before forwarding a
+database on a shared machine.
+
+What deco does about it: forwards are opt-in per port, they last only as long as
+the session, and they reach only the remote's loopback. What deco does **not**
+do is authenticate the connecting process — there is no portable way to identify
+the peer of a TCP connection, and pretending otherwise with a check that works on
+one platform would be worse than saying so.
+
+The SSH control socket is a related and sharper case, because it *is* an
+authenticated connection to the remote: anyone who can reach the socket can ride
+it. It goes in `$XDG_RUNTIME_DIR/deco`, or `~/.ssh/deco` — never the shared
+temporary directory — created `0700`, refused if it is a symbolic link, and
+refused if deco cannot `chmod` it, which is also how it knows the directory is
+this account's own.
+
+**A program running as you — yes, and there is nothing to be done at this
+layer.** It can use the forward. It can also read your SSH keys, run `ssh`
+itself, or attach a debugger to the editor. Code running as you already has
+everything a forward would give it, so defending the forward against it would be
+security theatre.
+
+One thing that is *not* on the list: nothing new listens on the remote. The
+tunnel processes are started per connection through the transport's stdio, so
+there is no daemon over there for anyone to find.
+
 ## Authorities
 
 VS Code addresses a remote with an authority inside a `vscode-remote://` URI. deco
@@ -183,6 +280,7 @@ Named so that the remaining work is legible rather than open-ended:
    harder form: it needs somewhere deco is willing to download from.
 4. Settings scope wiring: the `Remote` layer already exists between `User` and
    `Workspace` in the settings stack, so a remote's settings have somewhere to go.
-5. Port forwarding, which the transports do not model at all.
+5. ~~Port forwarding, which the transports do not model at all.~~ **Done**, by
+   making deco the tunnel rather than reaching for `ssh -L` — see above.
 6. Language servers and extensions on the remote, which is what would turn this
    from "edit a file over there" into remote development.

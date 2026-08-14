@@ -12,7 +12,7 @@
 //! let command = command_for(
 //!     &authority,
 //!     &server_command("deco", Some("/home/u/project")),
-//!     TransportOptions::default(),
+//!     &TransportOptions::default(),
 //! )?;
 //! let mut client = Client::start(&command)?;
 //! let hello = client.handshake()?;
