@@ -244,7 +244,9 @@ pub const PENDING: &[(&str, &str)] = &[
     // action — see docs/language-servers.md.
     ("editor.action.rename", "Rename Symbol"),
     ("editor.action.quickFix", "Quick Fix"),
-    // Needs the remote half that does not exist: there is no `deco --server`.
+    // `deco --server` exists now; what does not is the client half — nothing in
+    // the editor opens a file through a transport, so a menu would offer a list of
+    // places it cannot go.
     ("deco.remote.showMenu", "Remote Menu"),
 ];
 

@@ -27,13 +27,18 @@
 //! - [`frame`] is the length-prefixed JSON framing the two ends speak, with a
 //!   size ceiling so a hostile peer cannot ask the local machine for 900GB.
 //!
-//! What is not here yet: the server itself, provisioning it onto a remote, and
-//! forwarding ports.
+//! - [`server`] is the far end: `deco --server --stdio`, answering those frames
+//!   against one directory it cannot be talked out of.
+//!
+//! What is not here yet: provisioning the binary onto a remote, forwarding ports,
+//! and running language servers or extensions over there.
 
 pub mod authority;
 pub mod frame;
+pub mod server;
 pub mod transport;
 
 pub use authority::{Authority, AuthorityError};
 pub use frame::{Message, MAX_FRAME_BYTES};
+pub use server::{Server, ServerError};
 pub use transport::{command_for, server_command, Command, TransportError, TransportOptions};
