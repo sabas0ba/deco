@@ -57,6 +57,16 @@ pub struct Cli {
     pub print_config: bool,
     /// Ignore the user's settings.json and keybindings.json.
     pub clean: bool,
+    /// Run as the headless remote server rather than as an editor.
+    ///
+    /// Set by `--server`. `--stdio` is accepted and is the only transport there
+    /// is, so it changes nothing — it is taken because the command
+    /// `deco-remote` builds passes it, and because a future transport would need
+    /// the flag to have meant something.
+    pub server: bool,
+    /// The directory a server serves, or the one an editor treats as the
+    /// workspace root.
+    pub workspace: Option<PathBuf>,
 }
 
 /// What `parse` decided the process should do.
@@ -130,6 +140,9 @@ Options:
       --frontend <FRONTEND>  Which frontend to use [default: tui] [possible values: tui, gui]
       --print-config         Print the resolved configuration and exit
       --clean                Ignore the user's settings.json and keybindings.json
+      --server               Run as the headless remote server, not as an editor
+      --stdio                Speak the remote protocol over stdin and stdout
+      --workspace <DIR>      The directory to serve [default: the current one]
   -h, --help                 Print help
   -V, --version              Print version
 ";
@@ -164,6 +177,15 @@ where
             "-V" | "--version" => return Ok(Outcome::Version),
             "--print-config" => cli.print_config = true,
             "--clean" => cli.clean = true,
+            "--server" => cli.server = true,
+            // Accepted and ignored: stdio is the only transport, and refusing a
+            // flag the transport command already passes would make the two halves
+            // of this repository disagree.
+            "--stdio" => {}
+            "--workspace" => {
+                let value = args.next().ok_or(CliError::MissingValue("--workspace"))?;
+                cli.workspace = Some(PathBuf::from(value.as_ref()));
+            }
             "--frontend" => {
                 let value = args.next().ok_or(CliError::MissingValue("--frontend"))?;
                 cli.frontend = Frontend::parse(value.as_ref())?;
@@ -171,6 +193,8 @@ where
             _ => {
                 if let Some(value) = arg.strip_prefix("--frontend=") {
                     cli.frontend = Frontend::parse(value)?;
+                } else if let Some(value) = arg.strip_prefix("--workspace=") {
+                    cli.workspace = Some(PathBuf::from(value));
                 } else if arg.starts_with('-') && arg != "-" {
                     // `-` on its own is conventionally stdin, not a flag. deco
                     // has no use for it yet, so it falls through to being a
@@ -201,6 +225,7 @@ fn set_file(cli: &mut Cli, arg: &str) -> Result<(), CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     /// Unwraps to the options, failing the test on help/version/error. Every
     /// case below that cares about options rather than control flow uses it.
@@ -209,6 +234,52 @@ mod tests {
             Ok(Outcome::Run(cli)) => *cli,
             other => panic!("expected options, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn server_mode_takes_a_workspace_either_way_round() {
+        // `--stdio` is what `deco_remote::server_command` passes, so it has to be
+        // accepted here or the two halves of this repository disagree about the
+        // command line one of them builds.
+        let cli = run(&["--server", "--stdio", "--workspace", "/srv/project"]);
+        assert!(cli.server);
+        assert_eq!(cli.workspace.as_deref(), Some(Path::new("/srv/project")));
+
+        let cli = run(&["--server", "--workspace=/srv/project"]);
+        assert!(cli.server);
+        assert_eq!(cli.workspace.as_deref(), Some(Path::new("/srv/project")));
+    }
+
+    #[test]
+    fn a_server_without_a_workspace_is_allowed() {
+        // `ssh host deco --server --stdio` with no directory means "serve where
+        // you landed", which is the working directory the transport left it in.
+        let cli = run(&["--server", "--stdio"]);
+        assert!(cli.server);
+        assert_eq!(cli.workspace, None);
+    }
+
+    #[test]
+    fn the_editor_is_the_default_and_says_nothing_about_servers() {
+        let cli = run(&["main.rs"]);
+        assert!(!cli.server);
+        assert_eq!(cli.workspace, None);
+    }
+
+    #[test]
+    fn the_server_command_deco_remote_builds_parses_here() {
+        // The one place the two ends can drift apart: `deco-remote` writes the
+        // command and this parses it, and nothing else compares them.
+        let built = deco_remote::server_command("deco", Some("/home/u/project"));
+        let (program, args) = built.split_first().expect("a program");
+        assert_eq!(program, "deco");
+        let cli = run(&args.iter().map(String::as_str).collect::<Vec<_>>());
+        assert!(cli.server);
+        assert_eq!(
+            cli.workspace.as_deref(),
+            Some(Path::new("/home/u/project"))
+        );
+        assert!(cli.files.is_empty());
     }
 
     #[test]
@@ -282,6 +353,8 @@ mod tests {
             frontend: Frontend::Gui,
             print_config: false,
             clean: true,
+            server: false,
+            workspace: None,
         };
         assert_eq!(run(&["--clean", "a.rs", "--frontend", "gui"]), expected);
         assert_eq!(run(&["a.rs", "--frontend=gui", "--clean"]), expected);

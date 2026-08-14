@@ -562,8 +562,10 @@ dependencies = [
  "deco-editor",
  "deco-gui",
  "deco-keymap",
+ "deco-remote",
  "deco-theme",
  "deco-tui",
+ "serde_json",
 ]
 
 [[package]]

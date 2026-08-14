@@ -33,6 +33,13 @@ fn main() -> Result<()> {
         }
     };
 
+    // Before any configuration is read: a server has no editor, no theme and no
+    // keybindings, and reading a `settings.json` on the remote to decide how to
+    // answer `fs.read` would be an authority nobody asked it to have.
+    if cli.server {
+        return serve(cli.workspace.as_deref());
+    }
+
     let env = Env::from_process();
     // The first file names the workspace; a mixed invocation has to pick one,
     // and the first is the one the user led with.
@@ -134,6 +141,31 @@ fn run_gui(_session: &mut Session) -> Result<()> {
         "this build has no GPU frontend. Rebuild with `cargo build --features gui`, \
          or run `deco --frontend tui`."
     )
+}
+
+/// Runs as the remote server, speaking the framed protocol over stdin and stdout.
+///
+/// The workspace defaults to the working directory, which is what an `ssh host
+/// deco --server --stdio` with no `--workspace` means: serve where you landed.
+/// Nothing outside it can be read or written, whatever is asked — see
+/// [`deco_remote::server`].
+fn serve(workspace: Option<&Path>) -> Result<()> {
+    let root = match workspace {
+        Some(path) => path.to_path_buf(),
+        None => std::env::current_dir().context("no working directory to serve")?,
+    };
+    let mut server = deco_remote::Server::new(&root)
+        .with_context(|| format!("cannot serve {}", root.display()))?;
+
+    // Locked once rather than per frame, and stdout is *only* written by the
+    // protocol from here on: a stray `println!` would be read by the client as a
+    // header and end the session.
+    let stdin = std::io::stdin();
+    let mut input = stdin.lock();
+    let stdout = std::io::stdout();
+    let mut output = stdout.lock();
+    deco_remote::server::serve(&mut input, &mut output, &mut server)
+        .context("the remote session ended badly")
 }
 
 /// Prints what the editor resolved, which is the quickest way to answer "why is
