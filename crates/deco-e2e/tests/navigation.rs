@@ -1,0 +1,375 @@
+//! Finding your way around: quick open, go to line, find, replace, and search
+//! in files.
+//!
+//! Every one of these walks a real directory or a real document and then shows a
+//! list. The list is on the screen rather than in a struct, so that is where
+//! these scenarios look.
+
+use deco_e2e::Scenario;
+
+/// A workspace with enough in it for a picker to have to choose.
+fn workspace(name: &str) -> Scenario {
+    Scenario::new(name)
+        .file("src/main.rs", "fn main() {\n    greet();\n}\n")
+        .file(
+            "src/greet.rs",
+            "pub fn greet() {\n    println!(\"hi\");\n}\n",
+        )
+        .file("README.md", "# project\n\nIt greets.\n")
+        .file("notes/todo.txt", "greet better\n")
+}
+
+#[test]
+fn quick_open_lists_the_workspace_and_opens_what_is_chosen() {
+    let scenario = workspace("quick-open");
+    let mut editor = scenario.launch(&["src/main.rs"]);
+
+    editor.press("ctrl+p");
+    let screen = editor.screen();
+    screen.assert_fits();
+    screen.assert_shows("greet.rs");
+
+    editor.type_text("greet");
+    editor.press("enter");
+
+    assert!(
+        editor.path().is_some_and(|p| p.ends_with("greet.rs")),
+        "quick open should have opened greet.rs, not {:?}",
+        editor.path()
+    );
+    editor.screen().assert_shows("println!");
+}
+
+#[test]
+fn quick_open_can_be_cancelled_and_leaves_the_document_alone() {
+    let scenario = workspace("quick-open-cancel");
+    let mut editor = scenario.launch(&["src/main.rs"]);
+
+    editor.press("ctrl+p");
+    editor.type_text("greet");
+    editor.press("escape");
+
+    assert!(editor.path().is_some_and(|p| p.ends_with("main.rs")));
+    // And the text that was typed into the picker did not land in the file.
+    assert_eq!(editor.text(), "fn main() {\n    greet();\n}\n");
+}
+
+#[test]
+fn quick_open_does_not_offer_files_the_settings_exclude() {
+    // `files.exclude` is how a repository keeps `target/` out of every picker,
+    // and a picker that lists 40,000 build artefacts is no picker at all.
+    let scenario = workspace("excluded")
+        .user_settings(r#"{ "files.exclude": { "**/notes": true } }"#)
+        .file("notes/secret.txt", "hidden\n");
+    let mut editor = scenario.launch(&["src/main.rs"]);
+
+    editor.press("ctrl+p");
+    let screen = editor.screen();
+    screen.assert_shows("main.rs");
+    screen.assert_lacks("secret.txt");
+}
+
+#[test]
+fn go_to_line_moves_the_caret_and_says_where_it_is() {
+    let text: String = (1..=50).map(|n| format!("line {n}\n")).collect();
+    let scenario = Scenario::new("go-to-line").file("a.txt", &text);
+    let mut editor = scenario.launch(&["a.txt"]);
+
+    editor.press("ctrl+g");
+    editor.type_text("42");
+    editor.press("enter");
+
+    let screen = editor.screen();
+    screen.assert_status("Ln 42");
+    screen.assert_shows("line 42");
+}
+
+#[test]
+fn go_to_a_line_past_the_end_says_so_instead_of_moving_somewhere_arbitrary() {
+    // deco refuses and names the range. VS Code clamps to the last line instead;
+    // this pins which of the two deco does, so that a change to it is a decision
+    // rather than a surprise.
+    let scenario = Scenario::new("go-to-line-past").file("a.txt", "one\ntwo\n");
+    let mut editor = scenario.launch(&["a.txt"]);
+
+    editor.press("ctrl+g");
+    editor.type_text("9999");
+    editor.press("enter");
+
+    let screen = editor.screen();
+    screen.assert_fits();
+    screen.assert_status("9999");
+    screen.assert_status("Ln 1");
+}
+
+#[test]
+fn find_shows_the_bar_and_moves_between_matches() {
+    let scenario = Scenario::new("find").file("a.txt", "alpha\nbeta\nalpha\ngamma\n");
+    let mut editor = scenario.launch(&["a.txt"]);
+
+    editor.press("ctrl+f");
+    editor.type_text("alpha");
+
+    let screen = editor.screen();
+    screen.assert_fits();
+    // The bar counts them, which is the whole reason to look at it.
+    screen.assert_shows("1 of 2");
+
+    editor.press("enter");
+    editor.press("escape");
+    editor.screen().assert_status("Ln 3");
+}
+
+#[test]
+fn find_leaves_the_document_untouched() {
+    // Typing into the find bar must not type into the file, which is the failure
+    // that makes a find bar terrifying.
+    let scenario = Scenario::new("find-safe").file("a.txt", "alpha\nbeta\n");
+    let mut editor = scenario.launch(&["a.txt"]);
+
+    editor.press("ctrl+f");
+    editor.type_text("beta");
+    editor.press("escape");
+
+    assert_eq!(editor.text(), "alpha\nbeta\n");
+    assert!(!editor.is_dirty());
+}
+
+#[test]
+fn replace_all_changes_every_match_and_saves_what_it_changed() {
+    let scenario = Scenario::new("replace").file("a.txt", "cat\ndog\ncat\n");
+    let mut editor = scenario.launch(&["a.txt"]);
+
+    editor.press("ctrl+h");
+    // `ctrl+h` opens with the *replacement* field focused, so getting to the
+    // query means toggling first — see the finding below.
+    editor.press("tab");
+    editor.type_text("cat");
+    editor.press("tab");
+    editor.type_text("bird");
+    editor.press("ctrl+alt+enter");
+    editor.press("escape");
+    editor.press("ctrl+s");
+
+    assert_eq!(editor.on_disk("a.txt"), "bird\ndog\nbird\n");
+}
+
+#[test]
+fn ctrl_h_puts_the_keyboard_in_the_replacement_field_over_an_empty_query() {
+    // A finding, pinned rather than asserted as good.
+    //
+    // `Find::open_replace` focuses the replacement on the stated grounds that
+    // "the query is either seeded or already typed". When neither is true — no
+    // selection, nothing searched for yet, which is the ordinary way `ctrl+h` is
+    // reached — the premise is false and the keyboard is in the wrong box: the
+    // first thing typed becomes the *replacement* for an empty query. VS Code
+    // focuses the search field in that case.
+    //
+    // The unit test next to `open_replace` asserts the field is the replacement,
+    // which is what the code means to do. Only pressing the keys in order shows
+    // that what it means to do is wrong when its premise does not hold.
+    let scenario = Scenario::new("replace-focus").file("a.txt", "cat\ndog\n");
+    let mut editor = scenario.launch(&["a.txt"]);
+
+    editor.press("ctrl+h");
+    editor.type_text("cat");
+
+    assert_eq!(
+        editor.session().find.query(),
+        "",
+        "the query should be what a user typing `cat` after ctrl+h was aiming at"
+    );
+    assert_eq!(
+        editor.session().find.replace(),
+        "cat",
+        "instead it landed in the replacement field"
+    );
+    // And the screen shows exactly that: an empty `Find:` above a `With:` holding
+    // the word the user thought they were searching for.
+    let screen = editor.screen();
+    screen.assert_shows("With: cat");
+    assert!(
+        screen
+            .lines()
+            .iter()
+            .any(|line| line.trim_end().ends_with("[aa ww]") && line.contains("Find:")),
+        "the query should still be empty{}",
+        screen.dump()
+    );
+}
+
+#[test]
+fn a_search_with_no_matches_says_so_rather_than_looking_broken() {
+    let scenario = Scenario::new("find-nothing").file("a.txt", "alpha\n");
+    let mut editor = scenario.launch(&["a.txt"]);
+
+    editor.press("ctrl+f");
+    editor.type_text("zzz");
+
+    let screen = editor.screen();
+    screen.assert_fits();
+    assert!(
+        screen.text().contains("No results") || screen.text().contains('0'),
+        "a search with no matches should say so{}",
+        screen.dump()
+    );
+}
+
+#[test]
+fn search_in_files_finds_a_line_in_another_file_and_opens_it_there() {
+    let scenario = workspace("search-files");
+    let mut editor = scenario.launch(&["src/main.rs"]);
+
+    // The project-search prompt opens seeded with the word under the cursor, and
+    // typing appends to it rather than replacing it — so a query has to be
+    // cleared first. `ctrl+x` is the only key that does that; see the note on
+    // `a_seeded_prompt_can_only_be_cleared_by_cutting_it` below.
+    editor.press("ctrl+shift+f");
+    editor.press("ctrl+x");
+    editor.type_text("println");
+    editor.press("enter");
+
+    let screen = editor.screen();
+    screen.assert_fits();
+    screen.assert_shows("greet.rs");
+
+    editor.press("enter");
+    assert!(
+        editor.path().is_some_and(|p| p.ends_with("greet.rs")),
+        "choosing a result should open the file it is in, not {:?}",
+        editor.path()
+    );
+    editor.screen().assert_status("Ln 2");
+}
+
+#[test]
+fn search_in_files_says_when_nothing_matched() {
+    let scenario = workspace("search-files-nothing");
+    let mut editor = scenario.launch(&["src/main.rs"]);
+
+    editor.press("ctrl+shift+f");
+    editor.press("ctrl+x");
+    editor.type_text("nothinglikethis");
+    editor.press("enter");
+
+    let screen = editor.screen();
+    screen.assert_fits();
+    assert!(
+        !screen.status_line().is_empty() || screen.text().contains("No"),
+        "a search that found nothing should say so{}",
+        screen.dump()
+    );
+}
+
+#[test]
+fn the_command_palette_runs_a_command_that_has_no_key_bound_to_it() {
+    let scenario = Scenario::new("palette").file("a.txt", "one\ntwo\nthree\n");
+    let mut editor = scenario.launch(&["a.txt"]);
+
+    editor.press("ctrl+shift+p");
+    editor.screen().assert_fits();
+    editor.type_text("Select All");
+    editor.press("enter");
+
+    editor.type_text("x");
+    assert_eq!(
+        editor.text(),
+        "x",
+        "select all should have replaced the file"
+    );
+}
+
+#[test]
+fn the_palette_finds_a_command_by_its_vs_code_identifier() {
+    // Somebody who knows the identifier from `keybindings.json` should be able to
+    // type it, which is a promise the palette's ranking makes.
+    let scenario = Scenario::new("palette-id").file("a.rs", "let x = 1;\n");
+    let mut editor = scenario.launch(&["a.rs"]);
+
+    editor.palette("commentLine");
+
+    assert_eq!(editor.text(), "// let x = 1;\n");
+}
+
+#[test]
+fn a_palette_query_matching_nothing_says_so_instead_of_running_something_else() {
+    // The dangerous failure: the palette closes and *some* command runs.
+    let scenario = Scenario::new("palette-miss").file("a.txt", "one\n");
+    let mut editor = scenario.launch(&["a.txt"]);
+
+    editor.palette("qqqqqqq");
+
+    assert_eq!(editor.text(), "one\n");
+    let screen = editor.screen();
+    assert!(
+        screen.status_line().contains("no command"),
+        "the palette should say nothing matched{}",
+        screen.dump()
+    );
+}
+
+#[test]
+fn a_search_result_from_a_file_that_has_since_changed_still_opens_safely() {
+    // A result carries a position, and the file may have been rewritten between
+    // the search and the choosing. Landing past the end of the file is a panic
+    // waiting to happen.
+    let scenario = workspace("stale-result");
+    let mut editor = scenario.launch(&["src/main.rs"]);
+
+    editor.press("ctrl+shift+f");
+    editor.press("ctrl+x");
+    editor.type_text("println");
+    editor.press("enter");
+    editor.change_on_disk("src/greet.rs", "x\n");
+    editor.press("enter");
+
+    editor.screen().assert_fits();
+    assert_eq!(editor.text(), "x\n");
+}
+
+#[test]
+fn a_seeded_prompt_can_only_be_cleared_by_cutting_it() {
+    // A finding, pinned rather than asserted as good.
+    //
+    // Save As and Find in Files open with text already in them — the current
+    // path, the word under the cursor — and VS Code selects that text, so the
+    // next key replaces it. Here there is no selection model in a one-line field,
+    // so the next key *appends*: `ctrl+shift+f` on the word `fn` and then typing
+    // `println` searches for `fnprintln`, which is in no file anywhere.
+    //
+    // `ctrl+a` is swallowed and does nothing. `ctrl+x` cuts the whole field, so
+    // there is a way out — it is just not one anybody would guess, and nothing on
+    // screen mentions it. The find bar, meanwhile, is not seeded at all, so the
+    // three prompts do not even agree with each other.
+    let scenario = Scenario::new("prompt-seed").file("a.txt", "cat\ndog\n");
+    let mut editor = scenario.launch(&["a.txt"]);
+
+    editor.press("ctrl+shift+f");
+    let seeded = editor.session().prompt.as_ref().expect("a prompt");
+    assert_eq!(
+        seeded.text(),
+        "cat",
+        "seeded with the word under the cursor"
+    );
+
+    // Select-all does nothing at all.
+    editor.press("ctrl+a");
+    editor.type_text("dog");
+    assert_eq!(
+        editor.session().prompt.as_ref().expect("a prompt").text(),
+        "catdog",
+        "typing after select-all appended instead of replacing"
+    );
+
+    // And the one key that does clear it.
+    editor.press("ctrl+x");
+    assert_eq!(
+        editor.session().prompt.as_ref().expect("a prompt").text(),
+        ""
+    );
+
+    // The find bar, by contrast, opens empty.
+    editor.press("escape");
+    editor.press("ctrl+f");
+    assert_eq!(editor.session().find.query(), "");
+}

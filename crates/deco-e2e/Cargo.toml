@@ -1,0 +1,30 @@
+[package]
+name = "deco-e2e"
+description = "End-to-end scenarios: a real configuration directory, a real workspace, real keystrokes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+# Nothing here is linked into a shipped binary; it exists so that the editor can
+# be driven the way it is used. Publishing it would put a test harness on
+# crates.io under a name that reads like part of the editor.
+publish = false
+
+[dependencies]
+# The startup path under test: argument parsing, configuration loading, and the
+# session both of them produce. Depended on as a library so that a scenario runs
+# the same code `deco notes.md` runs rather than a second copy of it.
+deco = { path = "../deco", version = "0.1.0" }
+deco-config.workspace = true
+deco-core.workspace = true
+deco-editor.workspace = true
+deco-keymap.workspace = true
+deco-theme.workspace = true
+deco-tui.workspace = true
+# Keystrokes are delivered as the terminal delivers them, so the harness builds
+# crossterm's own events rather than the chords they translate into.
+crossterm.workspace = true
+# Startup returns one, and a scenario about a startup that fails has to hold it.
+anyhow.workspace = true
