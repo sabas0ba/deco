@@ -466,12 +466,27 @@ mod tests {
     fn a_path_outside_the_workspace_is_refused_however_it_is_spelled() {
         let root = workspace("outside");
         let mut server = Server::new(&root).expect("a server");
-        for asked in [
-            "../secrets.txt",
-            "src/../../secrets.txt",
-            "/etc/passwd",
-            "/etc/./passwd",
-        ] {
+
+        // A file that really is one directory up. Without it the interesting
+        // spellings below are refused on Windows for *not existing* — the paths
+        // are Unix-shaped — and this would pass without checking confinement at
+        // all.
+        std::fs::write(
+            root.parent().expect("a parent").join("secrets.txt"),
+            "secret\n",
+        )
+        .expect("a file");
+        for asked in ["../secrets.txt", "src/../../secrets.txt"] {
+            let error = ask(&mut server, "fs.read", json!({ "path": asked }))
+                .expect_err(&format!("{asked} should be refused"));
+            assert!(error.contains("outside the workspace"), "{asked}: {error}");
+        }
+
+        // These are Unix paths, so on Windows they are refused for not existing
+        // rather than for escaping. Both are refusals, which is what matters
+        // here; the exact reason is checked above with a file that is really
+        // there.
+        for asked in ["/etc/passwd", "/etc/./passwd"] {
             let error = ask(&mut server, "fs.read", json!({ "path": asked }))
                 .expect_err(&format!("{asked} should be refused"));
             assert!(
@@ -492,6 +507,7 @@ mod tests {
             .expect("a parent")
             .join("escaped.txt")
             .exists());
+        let _ = std::fs::remove_file(root.parent().expect("a parent").join("secrets.txt"));
         let _ = std::fs::remove_dir_all(&root);
     }
 

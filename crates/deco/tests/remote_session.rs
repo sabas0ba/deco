@@ -100,11 +100,20 @@ fn a_refusal_reaches_the_client_as_an_error_and_leaves_the_session_usable() {
     let mut client = connect(&root);
     client.handshake().expect("a handshake");
 
+    // A file that really is there, one directory up: `../../etc/passwd` would be
+    // refused on Windows for *not existing* rather than for being outside, which
+    // would leave this test passing without checking the thing it names.
+    let outside = root
+        .parent()
+        .expect("a parent")
+        .join("outside-the-root.txt");
+    std::fs::write(&outside, "secret\n").expect("a file");
     let error = client
-        .read("../../etc/passwd")
+        .read("../outside-the-root.txt")
         .expect_err("outside the workspace")
         .to_string();
     assert!(error.contains("outside the workspace"), "{error}");
+    let _ = std::fs::remove_file(&outside);
 
     assert_eq!(
         client.read("README.md").expect("still working"),
