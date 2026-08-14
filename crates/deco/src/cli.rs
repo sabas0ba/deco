@@ -275,10 +275,7 @@ mod tests {
         assert_eq!(program, "deco");
         let cli = run(&args.iter().map(String::as_str).collect::<Vec<_>>());
         assert!(cli.server);
-        assert_eq!(
-            cli.workspace.as_deref(),
-            Some(Path::new("/home/u/project"))
-        );
+        assert_eq!(cli.workspace.as_deref(), Some(Path::new("/home/u/project")));
         assert!(cli.files.is_empty());
     }
 

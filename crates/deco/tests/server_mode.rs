@@ -61,7 +61,10 @@ fn session(root: &std::path::Path, asked: &[Message]) -> (Vec<Message>, String) 
     while let Some(message) = frame::read(&mut reader).expect("a readable frame") {
         replies.push(message);
     }
-    (replies, String::from_utf8_lossy(&output.stderr).into_owned())
+    (
+        replies,
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
 }
 
 /// The result of a reply, or its error.
@@ -114,7 +117,10 @@ fn a_client_asking_for_something_outside_the_workspace_is_refused_by_the_real_bi
     // served the current directory instead of `--workspace` would pass every unit
     // test and fail this one.
     let root = workspace("refuses");
-    let outside = root.parent().expect("a parent").join("outside-the-root.txt");
+    let outside = root
+        .parent()
+        .expect("a parent")
+        .join("outside-the-root.txt");
     std::fs::write(&outside, "secret\n").expect("a file");
 
     let (replies, _) = session(
@@ -125,7 +131,11 @@ fn a_client_asking_for_something_outside_the_workspace_is_refused_by_the_real_bi
                 "fs.read",
                 serde_json::json!({ "path": outside.display().to_string() }),
             ),
-            request(2, "fs.read", serde_json::json!({ "path": "../outside-the-root.txt" })),
+            request(
+                2,
+                "fs.read",
+                serde_json::json!({ "path": "../outside-the-root.txt" }),
+            ),
         ],
     );
     assert_eq!(replies.len(), 2);
@@ -144,7 +154,11 @@ fn the_stream_ending_stops_the_server_without_a_shutdown() {
     let root = workspace("eof");
     let (replies, _) = session(
         &root,
-        &[request(1, deco_remote::server::HANDSHAKE, serde_json::json!({}))],
+        &[request(
+            1,
+            deco_remote::server::HANDSHAKE,
+            serde_json::json!({}),
+        )],
     );
     assert_eq!(replies.len(), 1);
     let _ = std::fs::remove_dir_all(&root);

@@ -1,10 +1,9 @@
 //! The far end: `deco --server --stdio`, running where the files are.
 //!
-//! [`transport`](crate::transport) has always known how to *start* this — the
+//! [`crate::transport`] has always known how to *start* this — the
 //! command it builds ends in `deco --server --stdio` — and there was nothing on
-//! the other side of it. This is that side: a loop over
-//! [`frame`](crate::frame) messages, answering a small set of methods against one
-//! directory.
+//! the other side of it. This is that side: a loop over [`crate::frame`]
+//! messages, answering a small set of methods against one directory.
 //!
 //! # One directory, and no way out of it
 //!
@@ -44,7 +43,7 @@ pub const PROTOCOL_VERSION: &str = "1";
 /// The handshake, which every session begins with.
 pub const HANDSHAKE: &str = "$/handshake";
 
-/// How many entries [`Method::List`] will return.
+/// How many entries a listing will return.
 ///
 /// The same bound the local file walk uses: a listing is for a picker, and a
 /// picker over a hundred thousand files is not a picker.
@@ -252,13 +251,12 @@ impl Server {
                 if size > MAX_FILE_BYTES {
                     return Err(ServerError::TooLarge { path: asked, size });
                 }
-                let bytes =
-                    std::fs::read(&resolved).map_err(|error| ServerError::Unreadable {
-                        path: asked.clone(),
-                        reason: error.to_string(),
-                    })?;
-                let text = String::from_utf8(bytes)
-                    .map_err(|_| ServerError::NotText { path: asked })?;
+                let bytes = std::fs::read(&resolved).map_err(|error| ServerError::Unreadable {
+                    path: asked.clone(),
+                    reason: error.to_string(),
+                })?;
+                let text =
+                    String::from_utf8(bytes).map_err(|_| ServerError::NotText { path: asked })?;
                 Ok(json!({ "text": text }))
             }
             "fs.write" => {
@@ -358,7 +356,8 @@ pub fn serve(
         let Some(message) = frame::read(input)? else {
             return Ok(());
         };
-        let stopping = matches!(&message, Message::Request { method, .. } if method == "$/shutdown");
+        let stopping =
+            matches!(&message, Message::Request { method, .. } if method == "$/shutdown");
         if let Some(reply) = server.handle(message) {
             frame::write(output, &reply)?;
         }
@@ -396,7 +395,11 @@ mod tests {
     }
 
     /// The result of a request, or the error string.
-    fn ask(server: &mut Server, method: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
+    fn ask(
+        server: &mut Server,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
         match server.handle(request(1, method, params)) {
             Some(Message::Response {
                 result: Some(value),
@@ -573,8 +576,8 @@ mod tests {
         let root = workspace("binary");
         std::fs::write(root.join("blob.bin"), [0xff, 0xfe, 0x00, 0x01]).expect("a file");
         let mut server = Server::new(&root).expect("a server");
-        let error = ask(&mut server, "fs.read", json!({ "path": "blob.bin" }))
-            .expect_err("not text");
+        let error =
+            ask(&mut server, "fs.read", json!({ "path": "blob.bin" })).expect_err("not text");
         assert!(error.contains("UTF-8"), "{error}");
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -631,9 +634,13 @@ mod tests {
         serve(&mut Cursor::new(input), &mut output, &mut server).expect("a session");
 
         let mut replies = Cursor::new(output);
-        let first = frame::read(&mut replies).expect("a frame").expect("a reply");
+        let first = frame::read(&mut replies)
+            .expect("a frame")
+            .expect("a reply");
         assert!(matches!(first, Message::Response { id: 1, .. }));
-        let second = frame::read(&mut replies).expect("a frame").expect("a reply");
+        let second = frame::read(&mut replies)
+            .expect("a frame")
+            .expect("a reply");
         match second {
             Message::Response { id, result, .. } => {
                 assert_eq!(id, 2);
