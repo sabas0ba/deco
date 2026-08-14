@@ -17,7 +17,7 @@ use std::time::Duration;
 use deco_lsp::process::{Consent, ReaderEvent, ServerProcess};
 use deco_lsp::server::{Command, ServerConfig, Trust};
 use deco_lsp::supervisor::{Supervisor, SupervisorError, Update};
-use deco_lsp::uri::PathStyle;
+use deco_lsp::uri::{PathMap, PathStyle};
 
 /// The variable the fake server reads to decide how to misbehave.
 const ROLE: &str = "DECO_TEST_LSP_ROLE";
@@ -66,7 +66,7 @@ fn start(role: &str) -> Result<Supervisor, SupervisorError> {
         &config(role, Trust::User),
         Consent::Granted,
         None,
-        PathStyle::Unix,
+        PathMap::local(PathStyle::Unix),
         Duration::from_secs(20),
     )
 }
@@ -192,7 +192,7 @@ fn a_server_that_never_answers_hits_the_startup_timeout() {
         &config("silent", Trust::User),
         Consent::Granted,
         None,
-        PathStyle::Unix,
+        PathMap::local(PathStyle::Unix),
         Duration::from_millis(500),
     );
     assert!(matches!(
@@ -211,7 +211,7 @@ fn a_protocol_error_across_the_pipe_is_a_startup_failure_not_a_hang() {
         &config("garbage-on-initialize", Trust::User),
         Consent::Granted,
         None,
-        PathStyle::Unix,
+        PathMap::local(PathStyle::Unix),
         Duration::from_secs(10),
     );
     assert!(
@@ -228,7 +228,7 @@ fn a_workspace_server_is_not_launched_without_consent() {
         &config("plain", Trust::Workspace),
         Consent::NotAsked,
         None,
-        PathStyle::Unix,
+        PathMap::local(PathStyle::Unix),
         Duration::from_secs(5),
     );
     let Err(SupervisorError::Spawn(error)) = result else {
@@ -241,7 +241,7 @@ fn a_workspace_server_is_not_launched_without_consent() {
         &config("plain", Trust::Workspace),
         Consent::Granted,
         None,
-        PathStyle::Unix,
+        PathMap::local(PathStyle::Unix),
         Duration::from_secs(20),
     )
     .expect("an approved workspace server should start");
@@ -331,4 +331,51 @@ fn a_process_can_be_driven_directly_without_a_supervisor() {
     );
 
     process.stop(Duration::from_secs(2));
+}
+
+#[test]
+fn a_remote_session_puts_the_far_ends_paths_on_the_wire() {
+    // The whole of remote language support, checked where it can actually be
+    // wrong: what the editor holds is `src/main.rs`, relative to a workspace on
+    // another machine, and what the server has to be told is the absolute path
+    // over there. Nothing but a real server can say which one arrived, so this
+    // one is asked to repeat it back.
+    let mut supervisor = Supervisor::start(
+        &config("echo-uri-on-open", Trust::User),
+        Consent::Granted,
+        Some(std::path::Path::new("/home/u/project")),
+        PathMap::remote(std::path::PathBuf::from("/home/u/project")),
+        Duration::from_secs(20),
+    )
+    .expect("the fake server should start");
+
+    let path = std::path::Path::new("src/main.rs");
+    supervisor
+        .did_open(path, "rust", "fn main() {}\n")
+        .expect("an open");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while supervisor
+        .diagnostics(&supervisor.uri_for(path).expect("a uri"))
+        .is_empty()
+        && std::time::Instant::now() < deadline
+    {
+        supervisor.poll();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    // Found under the path the *editor* uses, which is the half that would break
+    // if the prefix were added and not taken off again.
+    let uri = supervisor.uri_for(path).expect("a uri");
+    assert_eq!(uri.as_str(), "file:///home/u/project/src/main.rs");
+    let diagnostics = supervisor.diagnostics(&uri);
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    // And the server really was told the remote's absolute path, rather than a
+    // relative one it would have resolved against its own working directory.
+    assert_eq!(
+        diagnostics[0].message,
+        "opened file:///home/u/project/src/main.rs"
+    );
+
+    supervisor.stop();
 }

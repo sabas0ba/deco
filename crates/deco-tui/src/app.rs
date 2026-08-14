@@ -153,10 +153,22 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
 /// are not started at all in remote mode (they would be looking at a local
 /// checkout that does not exist), and search-in-files is local, so it is refused
 /// rather than allowed to search the wrong machine.
+/// A session whose files live on another machine.
+///
+/// Carries what the editor needs beyond the connection itself: language servers
+/// have to be started over there too, and that needs the transport as well as
+/// the directory the far end is serving.
+pub struct RemoteSession {
+    /// The connection files are read and written through.
+    pub client: deco_remote::Client,
+    /// Where language servers run, which is the same machine.
+    pub location: crate::lsp::Location,
+}
+
 pub fn run_with(
     session: &mut Session,
     path: Option<PathBuf>,
-    mut remote: Option<deco_remote::Client>,
+    remote: Option<RemoteSession>,
 ) -> Result<()> {
     let _guard = TerminalGuard::enter()?;
     let started = Instant::now();
@@ -165,19 +177,16 @@ pub fn run_with(
     let (mut width, mut height) = terminal::size().unwrap_or((80, 24));
     resize(session, width, height);
 
-    let mut lsp = Lsp::new(session, workspace_root(path.as_deref()));
-    if remote.is_none() {
-        lsp.attach(session);
-    } else {
-        // A language server started here would be reading a local checkout that
-        // does not exist: the files are on the other machine, and deco cannot yet
-        // start a server on that one. Said rather than left as a mystery about why
-        // `F12` does nothing.
-        session.problems.push(
-            "language servers are off in a remote session: deco cannot start one on the              remote yet"
-                .to_owned(),
-        );
-    }
+    let location = match &remote {
+        Some(remote) => remote.location.clone(),
+        None => crate::lsp::Location::Here,
+    };
+    let mut remote = remote.map(|remote| remote.client);
+    let mut lsp = Lsp::with_location(session, workspace_root(path.as_deref()), location);
+    // Started the same way in both cases. A remote session runs its servers on
+    // the machine holding the files, which is the only place one could read
+    // them.
+    lsp.attach(session);
     session.frontend_commands = frontend_commands();
 
     // What is installed, listed in the palette whether or not it has started:

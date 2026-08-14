@@ -40,7 +40,7 @@ fn serve(role: &str) -> i32 {
     let mut output = stdout.lock();
 
     loop {
-        let Some((method, id)) = read_frame(&mut input) else {
+        let Some((method, id, params)) = read_frame(&mut input) else {
             return 0;
         };
 
@@ -88,6 +88,37 @@ fn serve(role: &str) -> i32 {
                 eprintln!("fake server: initialized");
             }
             "textDocument/didOpen" => {
+                // Answers about the URI it was given rather than one it made up,
+                // which is what lets a test see the path mapping as the server
+                // saw it.
+                if role == "echo-uri-on-open" {
+                    let uri = params
+                        .get("textDocument")
+                        .and_then(|document| document.get("uri"))
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("")
+                        .to_owned();
+                    send(
+                        &mut output,
+                        &serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "method": "textDocument/publishDiagnostics",
+                            "params": {
+                                "uri": uri,
+                                "version": 1,
+                                "diagnostics": [{
+                                    "range": {
+                                        "start": {"line": 0, "character": 0},
+                                        "end": {"line": 0, "character": 1},
+                                    },
+                                    "severity": 1,
+                                    "source": "fake",
+                                    "message": format!("opened {uri}"),
+                                }],
+                            },
+                        }),
+                    );
+                }
                 if role == "publish-on-open" {
                     send(
                         &mut output,
@@ -144,7 +175,14 @@ fn serve(role: &str) -> i32 {
 }
 
 /// Reads one framed message, returning its method and id.
-fn read_frame(input: &mut impl BufRead) -> Option<(String, Option<serde_json::Value>)> {
+/// Reads one frame and reports its method, id and params.
+///
+/// The params are returned because one role answers *about what it was told* —
+/// a server that echoes back the URI it received is the only way a test can see
+/// what actually went on the wire.
+fn read_frame(
+    input: &mut impl BufRead,
+) -> Option<(String, Option<serde_json::Value>, serde_json::Value)> {
     let mut length = None;
     let mut line = String::new();
     loop {
@@ -167,6 +205,10 @@ fn read_frame(input: &mut impl BufRead) -> Option<(String, Option<serde_json::Va
     Some((
         value.get("method")?.as_str()?.to_owned(),
         value.get("id").cloned(),
+        value
+            .get("params")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
     ))
 }
 
