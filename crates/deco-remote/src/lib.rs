@@ -27,22 +27,27 @@
 //! - [`frame`] is the length-prefixed JSON framing the two ends speak, with a
 //!   size ceiling so a hostile peer cannot ask the local machine for 900GB.
 //!
+//! - [`install`] is what puts a deco on a remote that has none — only when
+//!   asked, only when it can run there, and never over something that is not
+//!   deco.
 //! - [`server`] is the far end: `deco --server --stdio`, answering those frames
 //!   against one directory it cannot be talked out of.
 //! - [`client`] is the near end: it starts the transport's command and calls the
 //!   server's methods.
 //!
-//! What is not here yet: provisioning the binary onto a remote, forwarding ports,
-//! and running language servers or extensions over there.
+//! What is not here yet: forwarding ports, and running language servers or
+//! extensions over there.
 
 pub mod authority;
 pub mod client;
 pub mod frame;
+pub mod install;
 pub mod server;
 pub mod transport;
 
 pub use authority::{Authority, AuthorityError};
 pub use client::{Client, ClientError};
 pub use frame::{Message, MAX_FRAME_BYTES};
+pub use install::{InstallError, Installed, Runner, TransportRunner};
 pub use server::{Server, ServerError};
 pub use transport::{command_for, server_command, Command, TransportError, TransportOptions};
