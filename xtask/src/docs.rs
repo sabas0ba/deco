@@ -341,7 +341,7 @@ impl Take {
     /// The terminal frontend does this on every frame; a demonstration that
     /// skipped it would show the find bar covering the last line of the file.
     fn resize_for_chrome(&mut self) {
-        let chrome = render::chrome_height(&self.session);
+        let chrome = render::chrome_height(&self.session, ROWS);
         self.session.resize(COLUMNS, ROWS.saturating_sub(chrome));
     }
 
