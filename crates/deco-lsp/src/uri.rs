@@ -109,13 +109,18 @@ impl PathMap {
 
     /// The URI naming `path` on the machine the server runs on.
     pub fn to_uri(&self, path: &Path) -> Result<Uri, UriError> {
-        match &self.root {
-            // `join` with an absolute path yields that path, which is what
-            // should happen: a path the editor already holds in absolute form is
-            // one the server named, and re-rooting it would move it.
-            Some(root) => Uri::from_path(&root.join(path), self.style),
-            None => Uri::from_path(path, self.style),
+        let Some(root) = &self.root else {
+            return Uri::from_path(path, self.style);
+        };
+        let path = path.to_string_lossy();
+        // An absolute path is left alone: one the editor already holds in
+        // absolute form is one the server named, and re-rooting it would move
+        // it somewhere that does not exist.
+        if is_absolute_in(self.style, &path) {
+            return Uri::from_path(Path::new(path.as_ref()), self.style);
         }
+        let root = root.to_string_lossy();
+        Uri::from_path(Path::new(&join_in(self.style, &root, &path)), self.style)
     }
 
     /// The path the editor knows `uri` by.
@@ -127,14 +132,56 @@ impl PathMap {
     /// outside the workspace and says so.
     pub fn from_uri(&self, uri: &Uri) -> Result<PathBuf, UriError> {
         let path = uri.to_path(self.style)?;
-        match &self.root {
-            Some(root) => Ok(path
-                .strip_prefix(root)
-                .map(Path::to_path_buf)
-                .unwrap_or(path)),
-            None => Ok(path),
+        let Some(root) = &self.root else {
+            return Ok(path);
+        };
+        let text = path.to_string_lossy();
+        let root = root.to_string_lossy();
+        let root = root.trim_end_matches(['/', '\\']);
+        // Text rather than `Path::strip_prefix` for the same reason as above:
+        // that compares components under *this* machine's rules. Requiring a
+        // separator after the root is what stops `/home/u/project-secrets` being
+        // read as something inside `/home/u/project`.
+        match text
+            .strip_prefix(root)
+            .and_then(|rest| rest.strip_prefix(['/', '\\']))
+        {
+            Some(rest) => Ok(PathBuf::from(rest)),
+            None => Ok(path.clone()),
         }
     }
+}
+
+/// Whether `path` is absolute under `style`, rather than under this machine.
+///
+/// `Path::is_absolute` answers for the host, which is the wrong question when
+/// the path belongs to another one: on Windows it calls `/home/u` relative, and
+/// on Unix it calls `C:\\code` relative.
+fn is_absolute_in(style: PathStyle, path: &str) -> bool {
+    match style {
+        PathStyle::Unix => path.starts_with('/'),
+        PathStyle::Windows => {
+            path.starts_with("\\\\")
+                || path.starts_with("//")
+                || matches!(path.as_bytes().get(1), Some(b':'))
+        }
+    }
+}
+
+/// Joins a relative path onto a root using `style`'s separator.
+///
+/// Written out rather than `PathBuf::join`, whose separator is this machine's.
+/// A Windows editor joining `src/main.rs` onto a Linux remote's
+/// `/home/u/project` produced `/home/u/project\\src/main.rs`, and the backslash
+/// then percent-encoded into the URI as `%5C` — a path the server had never
+/// heard of. Nothing on one machine could notice, which is what the Windows
+/// target in CI is for.
+fn join_in(style: PathStyle, root: &str, path: &str) -> String {
+    let separator = match style {
+        PathStyle::Unix => '/',
+        PathStyle::Windows => '\\',
+    };
+    format!("{}{separator}{path}", root.trim_end_matches(['/', '\\']))
 }
 
 /// A `file:` URI, kept as the exact string that goes on the wire.
@@ -475,6 +522,50 @@ mod tests {
             .to_uri(Path::new("/home/u/.cargo/registry/src/lib.rs"))
             .expect("a uri");
         assert_eq!(uri.as_str(), "file:///home/u/.cargo/registry/src/lib.rs");
+    }
+
+    #[test]
+    fn a_path_is_joined_and_judged_by_the_far_ends_rules() {
+        // The bug this pins was invisible on Linux and broke every Windows
+        // client talking to a Unix remote: `PathBuf::join` uses *this* machine's
+        // separator, so the URI came out as `…/project%5Csrc/main.rs`. Asserting
+        // it through `to_uri` alone left the only failing platform as the one CI
+        // runs under Wine, so the rules are checked directly here as well.
+        assert_eq!(
+            join_in(PathStyle::Unix, "/home/u/project", "src/main.rs"),
+            "/home/u/project/src/main.rs"
+        );
+        assert_eq!(
+            join_in(PathStyle::Windows, r"C:\code", "src/main.rs"),
+            r"C:\code\src/main.rs"
+        );
+        // A trailing separator on the root is not doubled.
+        assert_eq!(
+            join_in(PathStyle::Unix, "/home/u/project/", "src/main.rs"),
+            "/home/u/project/src/main.rs"
+        );
+
+        // And absolute means what the *server* means by it: a leading slash is
+        // absolute on Unix and a drive letter is absolute on Windows, whichever
+        // machine is asking.
+        assert!(is_absolute_in(PathStyle::Unix, "/home/u"));
+        assert!(!is_absolute_in(PathStyle::Unix, r"C:\code"));
+        assert!(is_absolute_in(PathStyle::Windows, r"C:\code"));
+        assert!(is_absolute_in(PathStyle::Windows, r"\\server\share"));
+        assert!(!is_absolute_in(PathStyle::Windows, "src/main.rs"));
+    }
+
+    #[test]
+    fn a_remote_map_does_not_confuse_a_sibling_for_a_child() {
+        // `/home/u/project-secrets` merely starts with the same text, and
+        // stripping by text alone would report it as `-secrets/notes.txt`
+        // *inside* the workspace.
+        let map = PathMap::remote(PathBuf::from("/home/u/project"));
+        let sibling = Uri::from_string("file:///home/u/project-secrets/notes.txt");
+        assert_eq!(
+            map.from_uri(&sibling).expect("a path"),
+            PathBuf::from("/home/u/project-secrets/notes.txt")
+        );
     }
 
     #[test]
