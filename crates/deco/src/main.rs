@@ -187,13 +187,17 @@ fn connect(
         .workspace
         .as_deref()
         .map(|path| path.display().to_string());
-    let options = deco_remote::TransportOptions::default();
+    // Multiplexed: the file server opens one connection, but every forwarded
+    // connection opens another, and a browser loading one page can open twenty.
+    // The socket goes somewhere only this account can reach — see
+    // `TransportOptions::multiplexed`.
+    let options = deco_remote::TransportOptions::multiplexed();
 
     // Only when asked. Everything about this branch — that it exists at all,
     // and that its absence is a plain failure rather than a silent fix — is the
     // decision described in `deco_remote::install`.
     let server_path = if cli.remote_install {
-        let installed = provision(&authority, cli, options)?;
+        let installed = provision(&authority, cli, options.clone())?;
         session.problems.push(match &installed {
             deco_remote::Installed::AlreadyThere { path, version } => {
                 format!("remote session: {version} was already at {path}")
@@ -215,7 +219,7 @@ fn connect(
     let command = deco_remote::command_for(
         &authority,
         &deco_remote::server_command(&server_path, workspace.as_deref()),
-        options,
+        &options,
     )
     .context("that remote cannot be reached")?;
 
@@ -269,6 +273,7 @@ fn forwards(
     server_path: Option<&str>,
     session: &mut Session,
 ) -> Result<Vec<deco_remote::Forward>> {
+    let options = deco_remote::TransportOptions::multiplexed();
     if cli.forwards.is_empty() {
         return Ok(Vec::new());
     }
@@ -288,7 +293,7 @@ fn forwards(
         let command = deco_remote::command_for(
             &authority,
             &deco_remote::forward::forward_command(server_path, spec.remote),
-            deco_remote::TransportOptions::default(),
+            &options,
         )
         .context("that remote cannot be reached")?;
         // Started eagerly so that a port already in use is an error now, rather

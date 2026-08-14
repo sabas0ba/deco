@@ -129,8 +129,13 @@ the remote that deco did not put there. It is the same binary
 `--remote-install` provisions, found the same way.
 
 The cost is a process per connection, which over SSH would be an authentication
-round-trip each time. That is why connection multiplexing is on by default:
-after the first, each one is local work.
+round-trip each time — twenty of them for one page load. So deco multiplexes: the
+first connection sets up a control socket and the rest are local work.
+
+That needs a `ControlPath`, and it is a path rather than a flag for a reason.
+`ControlMaster=auto` on its own does *nothing*: OpenSSH's `ControlPath` has no
+default, and without one the setting is silently inert. deco used to pass
+`ControlMaster` alone and claim multiplexing it did not have.
 
 ### Loopback at both ends
 
@@ -143,6 +148,49 @@ after the first, each one is local work.
 - **On this machine**, the listener binds `127.0.0.1` and never `0.0.0.0`.
   Typing a port number is not a request to put someone else's database on your
   network.
+
+### Who can use a forward
+
+The honest version, threat by threat.
+
+**From the network — no.** The listener binds `127.0.0.1`, so packets from
+another machine are not routed to it at all; there is no port open on this
+machine's network interfaces. And the forwarded traffic never crosses a network
+in the clear: over SSH it rides inside the SSH connection, and over `docker exec`
+or WSL it never leaves the machine. Network equipment on the path sees SSH
+ciphertext and nothing else. A test asserts the listener is loopback, because
+that one line is the whole of this paragraph and nothing else would catch it
+being changed to `0.0.0.0` for convenience.
+
+**Another user on the same machine — yes, and this is the real exposure.**
+Loopback is not per-user: any local account can connect to a forwarded port and
+reach the remote's service through it, for as long as the session runs. This is
+not particular to deco — `ssh -L` and every other port forwarder have exactly
+the same property — but it is true, and worth knowing before forwarding a
+database on a shared machine.
+
+What deco does about it: forwards are opt-in per port, they last only as long as
+the session, and they reach only the remote's loopback. What deco does **not**
+do is authenticate the connecting process — there is no portable way to identify
+the peer of a TCP connection, and pretending otherwise with a check that works on
+one platform would be worse than saying so.
+
+The SSH control socket is a related and sharper case, because it *is* an
+authenticated connection to the remote: anyone who can reach the socket can ride
+it. It goes in `$XDG_RUNTIME_DIR/deco`, or `~/.ssh/deco` — never the shared
+temporary directory — created `0700`, refused if it is a symbolic link, and
+refused if deco cannot `chmod` it, which is also how it knows the directory is
+this account's own.
+
+**A program running as you — yes, and there is nothing to be done at this
+layer.** It can use the forward. It can also read your SSH keys, run `ssh`
+itself, or attach a debugger to the editor. Code running as you already has
+everything a forward would give it, so defending the forward against it would be
+security theatre.
+
+One thing that is *not* on the list: nothing new listens on the remote. The
+tunnel processes are started per connection through the transport's stdio, so
+there is no daemon over there for anyone to find.
 
 ## Authorities
 

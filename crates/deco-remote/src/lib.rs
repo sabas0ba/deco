@@ -10,7 +10,7 @@
 //! let command = command_for(
 //!     &authority,
 //!     &deco_remote::server_command("deco", Some("/home/u")),
-//!     TransportOptions::default(),
+//!     &TransportOptions::default(),
 //! )
 //! .unwrap();
 //! assert_eq!(command.program, "ssh");

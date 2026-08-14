@@ -96,7 +96,7 @@ impl Runner for TransportRunner {
         argv: &[String],
         stdin: Option<&mut dyn Read>,
     ) -> Result<Output, std::io::Error> {
-        let command = command_for(&self.authority, argv, self.options)
+        let command = command_for(&self.authority, argv, &self.options)
             .map_err(|error| std::io::Error::other(error.to_string()))?;
         run_locally(&command, stdin)
     }

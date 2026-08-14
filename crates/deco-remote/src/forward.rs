@@ -391,6 +391,30 @@ mod tests {
     }
 
     #[test]
+    fn a_forward_listens_on_loopback_and_nowhere_else() {
+        // The single most important line in this module, and the one nothing
+        // else would catch if it were changed to `0.0.0.0` for convenience:
+        // binding anywhere else puts the remote's service on this machine's
+        // network, reachable by every other machine that can route here.
+        let forward = Forward::start(
+            Command {
+                program: "true".to_owned(),
+                args: Vec::new(),
+            },
+            PortSpec {
+                local: 0,
+                remote: 3000,
+            },
+        )
+        .expect("a listener");
+        assert!(
+            forward.address().ip().is_loopback(),
+            "{}",
+            forward.address()
+        );
+    }
+
+    #[test]
     fn a_forward_stops_listening_when_it_is_dropped() {
         // Otherwise a session that ends leaves the port held until the process
         // does, and the next `--forward 3000` fails for no visible reason.
