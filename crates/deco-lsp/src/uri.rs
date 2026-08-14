@@ -53,6 +53,137 @@ impl PathStyle {
     }
 }
 
+/// How the editor's paths relate to the ones a language server sees.
+///
+/// On one machine they are the same path and this is nothing. In a remote
+/// session they are not: the editor holds paths relative to the workspace the
+/// remote serves — that is what its quick open lists and what its documents are
+/// keyed by — while the server, running over there, knows them as absolute paths
+/// under that workspace. Something has to add and remove the prefix, and doing it
+/// at the one place paths become URIs is what keeps it from being done in
+/// eleven.
+///
+/// The style travels with it for a reason the [`PathStyle`] comment gives: in a
+/// remote session the two ends can disagree about which operating system they
+/// are on, and it is the *server's* rules that decide what its URIs look like.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathMap {
+    style: PathStyle,
+    /// What the editor's paths are relative to, on the machine the server runs
+    /// on. `None` when that machine is this one.
+    root: Option<PathBuf>,
+}
+
+impl PathMap {
+    /// The server runs here, so a path is already the path it will see.
+    pub fn host() -> Self {
+        Self::local(PathStyle::host())
+    }
+
+    /// The same, with the style named rather than taken from this machine.
+    ///
+    /// Tests want both sets of rules exercised wherever they run, which is the
+    /// same reason [`PathStyle`] is an enum rather than a `cfg!`.
+    pub fn local(style: PathStyle) -> Self {
+        Self { style, root: None }
+    }
+
+    /// The server runs on a remote serving `root`, and the editor's paths are
+    /// relative to it.
+    ///
+    /// The style is Unix because everything else about deco's remote support
+    /// assumes a POSIX remote — the server is started through a POSIX shell and
+    /// provisioned with `dd` and `chmod`. A Windows remote would need more than
+    /// a different style here.
+    pub fn remote(root: PathBuf) -> Self {
+        Self {
+            style: PathStyle::Unix,
+            root: Some(root),
+        }
+    }
+
+    /// Which rules the server's paths follow.
+    pub fn style(&self) -> PathStyle {
+        self.style
+    }
+
+    /// The URI naming `path` on the machine the server runs on.
+    pub fn to_uri(&self, path: &Path) -> Result<Uri, UriError> {
+        let Some(root) = &self.root else {
+            return Uri::from_path(path, self.style);
+        };
+        let path = path.to_string_lossy();
+        // An absolute path is left alone: one the editor already holds in
+        // absolute form is one the server named, and re-rooting it would move
+        // it somewhere that does not exist.
+        if is_absolute_in(self.style, &path) {
+            return Uri::from_path(Path::new(path.as_ref()), self.style);
+        }
+        let root = root.to_string_lossy();
+        Uri::from_path(Path::new(&join_in(self.style, &root, &path)), self.style)
+    }
+
+    /// The path the editor knows `uri` by.
+    ///
+    /// A URI outside the root keeps its absolute form rather than being refused:
+    /// a server pointing into a dependency it has indexed is answering the
+    /// question honestly, and turning that into an error here would hide it.
+    /// What happens next is the file server's decision, which refuses to read
+    /// outside the workspace and says so.
+    pub fn from_uri(&self, uri: &Uri) -> Result<PathBuf, UriError> {
+        let path = uri.to_path(self.style)?;
+        let Some(root) = &self.root else {
+            return Ok(path);
+        };
+        let text = path.to_string_lossy();
+        let root = root.to_string_lossy();
+        let root = root.trim_end_matches(['/', '\\']);
+        // Text rather than `Path::strip_prefix` for the same reason as above:
+        // that compares components under *this* machine's rules. Requiring a
+        // separator after the root is what stops `/home/u/project-secrets` being
+        // read as something inside `/home/u/project`.
+        match text
+            .strip_prefix(root)
+            .and_then(|rest| rest.strip_prefix(['/', '\\']))
+        {
+            Some(rest) => Ok(PathBuf::from(rest)),
+            None => Ok(path.clone()),
+        }
+    }
+}
+
+/// Whether `path` is absolute under `style`, rather than under this machine.
+///
+/// `Path::is_absolute` answers for the host, which is the wrong question when
+/// the path belongs to another one: on Windows it calls `/home/u` relative, and
+/// on Unix it calls `C:\\code` relative.
+fn is_absolute_in(style: PathStyle, path: &str) -> bool {
+    match style {
+        PathStyle::Unix => path.starts_with('/'),
+        PathStyle::Windows => {
+            path.starts_with("\\\\")
+                || path.starts_with("//")
+                || matches!(path.as_bytes().get(1), Some(b':'))
+        }
+    }
+}
+
+/// Joins a relative path onto a root using `style`'s separator.
+///
+/// Written out rather than `PathBuf::join`, whose separator is this machine's.
+/// A Windows editor joining `src/main.rs` onto a Linux remote's
+/// `/home/u/project` produced `/home/u/project\\src/main.rs`, and the backslash
+/// then percent-encoded into the URI as `%5C` — a path the server had never
+/// heard of. Nothing on one machine could notice, which is what the Windows
+/// target in CI is for.
+fn join_in(style: PathStyle, root: &str, path: &str) -> String {
+    let separator = match style {
+        PathStyle::Unix => '/',
+        PathStyle::Windows => '\\',
+    };
+    format!("{}{separator}{path}", root.trim_end_matches(['/', '\\']))
+}
+
 /// A `file:` URI, kept as the exact string that goes on the wire.
 ///
 /// Stored rather than re-derived because a server is free to hand back a URI
@@ -347,6 +478,110 @@ impl<'de> serde::Deserialize<'de> for Uri {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn on_one_machine_a_path_map_changes_nothing() {
+        let map = PathMap::host();
+        let path = if cfg!(windows) {
+            PathBuf::from(r"C:\code\main.rs")
+        } else {
+            PathBuf::from("/code/main.rs")
+        };
+        let uri = map.to_uri(&path).expect("a uri");
+        assert_eq!(map.from_uri(&uri).expect("a path"), path);
+    }
+
+    #[test]
+    fn a_remote_map_adds_the_workspace_and_takes_it_off_again() {
+        // What the editor holds in a remote session is relative to the workspace
+        // the far end serves; what the server sees is the absolute path there.
+        let map = PathMap::remote(PathBuf::from("/home/u/project"));
+        let uri = map.to_uri(Path::new("src/main.rs")).expect("a uri");
+        assert_eq!(uri.as_str(), "file:///home/u/project/src/main.rs");
+        assert_eq!(
+            map.from_uri(&uri).expect("a path"),
+            PathBuf::from("src/main.rs")
+        );
+    }
+
+    #[test]
+    fn a_remote_map_leaves_a_path_outside_the_workspace_absolute() {
+        // Go-to-definition into an indexed dependency lands here. The server is
+        // answering honestly, so the answer is kept as it is; refusing to read it
+        // is the file server's call to make, and it makes it by name.
+        let map = PathMap::remote(PathBuf::from("/home/u/project"));
+        let outside = Uri::from_string("file:///home/u/.cargo/registry/src/lib.rs");
+        assert_eq!(
+            map.from_uri(&outside).expect("a path"),
+            PathBuf::from("/home/u/.cargo/registry/src/lib.rs")
+        );
+
+        // And an absolute path on the way out is not re-rooted into
+        // `/home/u/project/home/u/...`, which is what a plain join would do.
+        let uri = map
+            .to_uri(Path::new("/home/u/.cargo/registry/src/lib.rs"))
+            .expect("a uri");
+        assert_eq!(uri.as_str(), "file:///home/u/.cargo/registry/src/lib.rs");
+    }
+
+    #[test]
+    fn a_path_is_joined_and_judged_by_the_far_ends_rules() {
+        // The bug this pins was invisible on Linux and broke every Windows
+        // client talking to a Unix remote: `PathBuf::join` uses *this* machine's
+        // separator, so the URI came out as `…/project%5Csrc/main.rs`. Asserting
+        // it through `to_uri` alone left the only failing platform as the one CI
+        // runs under Wine, so the rules are checked directly here as well.
+        assert_eq!(
+            join_in(PathStyle::Unix, "/home/u/project", "src/main.rs"),
+            "/home/u/project/src/main.rs"
+        );
+        assert_eq!(
+            join_in(PathStyle::Windows, r"C:\code", "src/main.rs"),
+            r"C:\code\src/main.rs"
+        );
+        // A trailing separator on the root is not doubled.
+        assert_eq!(
+            join_in(PathStyle::Unix, "/home/u/project/", "src/main.rs"),
+            "/home/u/project/src/main.rs"
+        );
+
+        // And absolute means what the *server* means by it: a leading slash is
+        // absolute on Unix and a drive letter is absolute on Windows, whichever
+        // machine is asking.
+        assert!(is_absolute_in(PathStyle::Unix, "/home/u"));
+        assert!(!is_absolute_in(PathStyle::Unix, r"C:\code"));
+        assert!(is_absolute_in(PathStyle::Windows, r"C:\code"));
+        assert!(is_absolute_in(PathStyle::Windows, r"\\server\share"));
+        assert!(!is_absolute_in(PathStyle::Windows, "src/main.rs"));
+    }
+
+    #[test]
+    fn a_remote_map_does_not_confuse_a_sibling_for_a_child() {
+        // `/home/u/project-secrets` merely starts with the same text, and
+        // stripping by text alone would report it as `-secrets/notes.txt`
+        // *inside* the workspace.
+        let map = PathMap::remote(PathBuf::from("/home/u/project"));
+        let sibling = Uri::from_string("file:///home/u/project-secrets/notes.txt");
+        assert_eq!(
+            map.from_uri(&sibling).expect("a path"),
+            PathBuf::from("/home/u/project-secrets/notes.txt")
+        );
+    }
+
+    #[test]
+    fn a_remote_map_uses_the_remotes_rules_not_this_machines() {
+        // On a Windows client talking to a Linux remote, a backslash is a
+        // character in a filename rather than a separator, and a drive letter is
+        // nothing at all. The style has to be the server's.
+        let map = PathMap::remote(PathBuf::from("/home/u/project"));
+        assert_eq!(map.style(), PathStyle::Unix);
+        assert_eq!(
+            map.to_uri(Path::new("src/main.rs"))
+                .expect("a uri")
+                .as_str(),
+            "file:///home/u/project/src/main.rs"
+        );
+    }
     use super::*;
 
     fn unix(path: &str) -> String {

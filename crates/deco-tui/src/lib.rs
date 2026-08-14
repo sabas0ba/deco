@@ -18,5 +18,5 @@ pub mod render;
 pub mod suggest;
 pub mod themes;
 
-pub use app::{run, run_with};
+pub use app::{run, run_with, RemoteSession};
 pub use render::{render, sanitise, Frame, Row, Span};

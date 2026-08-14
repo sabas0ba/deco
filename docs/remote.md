@@ -1,8 +1,8 @@
 # Remote development
 
 > **State of this: you can open a file on another machine, edit it and save it
-> back, put deco there if it has none, and reach a port on it.** What is missing
-> is everything around that — no language servers or extensions over there, and no
+> back, put deco there if it has none, reach a port on it, and run language
+> servers over there.** What is missing is extensions on the remote and
 > project-wide search. This page is explicit about each.
 
 ## Using it
@@ -22,12 +22,9 @@ home directory.
 
 ### What is different in a remote session
 
-Three things are turned off rather than left to do the wrong thing, and each says
+Two things are turned off rather than left to do the wrong thing, and each says
 so rather than failing silently:
 
-- **Language servers do not start.** They would be reading a local checkout that
-  does not exist. deco cannot yet start one on the remote, so `F12` and its
-  neighbours are unavailable and the reason is in the problem list at startup.
 - **Search in files is refused.** The walk is local; in a remote session it would
   search this machine and report matches in files the editor is not showing.
 - **Extensions are local.** A host started by a remote session runs here, in the
@@ -94,6 +91,37 @@ willing to download from is its own decision, not one to slip in here.
 The remote is assumed to have a POSIX shell and `uname`, `mkdir`, `dd`, `chmod`
 and `mv` — the same assumption already made by running `deco --server` over
 `ssh`.
+
+## Language servers
+
+They run on the machine holding the files, which is the only place that could
+work: a server started here would be indexing a checkout that does not exist.
+
+Nothing needs configuring for this. The same `deco.lsp.servers` definitions are
+used, with each command wrapped in the transport — `rust-analyzer` in your
+settings becomes `ssh myhost rust-analyzer` — so the server has to be installed
+on the remote rather than here. deco does not provision language servers; the
+only binary `--remote-install` sends is its own.
+
+Two things change on the way:
+
+- **Paths.** The editor holds paths relative to the workspace the far end
+  serves; the server knows them as absolute paths over there. The prefix is
+  added when a path becomes a URI and taken off when one comes back, at the
+  single place where that conversion happens. A URI *outside* the workspace —
+  go-to-definition into an indexed dependency — keeps its absolute form, and
+  what happens next is the file server's decision: it refuses to read outside
+  the workspace, by name.
+- **Environment.** A definition's `env` moves into the command as
+  `env NAME=VALUE …` rather than being set on the process deco spawns, because
+  that process is `ssh` on *this* machine. Left where it was it would have been
+  set in the wrong place and never reached the server — the kind of failure that
+  looks like the setting being ignored. A name deco cannot pass through an
+  argument vector is refused by name rather than mangled.
+
+Servers are given longer to answer `initialize` in a remote session, and not by
+a little: the wait covers an SSH handshake and a language server reading a
+project from a disk this machine never touches.
 
 ## Reaching a port on the remote
 
@@ -282,5 +310,11 @@ Named so that the remaining work is legible rather than open-ended:
    `Workspace` in the settings stack, so a remote's settings have somewhere to go.
 5. ~~Port forwarding, which the transports do not model at all.~~ **Done**, by
    making deco the tunnel rather than reaching for `ssh -L` — see above.
-6. Language servers and extensions on the remote, which is what would turn this
-   from "edit a file over there" into remote development.
+6. ~~Language servers on the remote.~~ **Done** — the same definitions, wrapped
+   in the transport, with the far end's paths on the wire.
+7. Extensions on the remote. A host started by a remote session still runs here,
+   and moving it means deciding what a remote extension is allowed to reach —
+   the same question the capability sandbox answers locally, asked again across
+   a machine boundary.
+8. Project-wide search, which needs the server to walk the workspace rather than
+   this machine walking one it does not have.
