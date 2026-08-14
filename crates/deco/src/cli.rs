@@ -67,6 +67,11 @@ pub struct Cli {
     /// The directory a server serves, or the one an editor treats as the
     /// workspace root.
     pub workspace: Option<PathBuf>,
+    /// A remote authority to open the files on, as `ssh-remote+host`.
+    ///
+    /// Present means every file named on the command line lives there, and the
+    /// editor is a client rather than the thing holding the files.
+    pub remote: Option<String>,
 }
 
 /// What `parse` decided the process should do.
@@ -143,6 +148,7 @@ Options:
       --server               Run as the headless remote server, not as an editor
       --stdio                Speak the remote protocol over stdin and stdout
       --workspace <DIR>      The directory to serve [default: the current one]
+      --remote <AUTHORITY>   Open the files on a remote, as ssh-remote+host
   -h, --help                 Print help
   -V, --version              Print version
 ";
@@ -186,6 +192,10 @@ where
                 let value = args.next().ok_or(CliError::MissingValue("--workspace"))?;
                 cli.workspace = Some(PathBuf::from(value.as_ref()));
             }
+            "--remote" => {
+                let value = args.next().ok_or(CliError::MissingValue("--remote"))?;
+                cli.remote = Some(value.as_ref().to_owned());
+            }
             "--frontend" => {
                 let value = args.next().ok_or(CliError::MissingValue("--frontend"))?;
                 cli.frontend = Frontend::parse(value.as_ref())?;
@@ -195,6 +205,8 @@ where
                     cli.frontend = Frontend::parse(value)?;
                 } else if let Some(value) = arg.strip_prefix("--workspace=") {
                     cli.workspace = Some(PathBuf::from(value));
+                } else if let Some(value) = arg.strip_prefix("--remote=") {
+                    cli.remote = Some(value.to_owned());
                 } else if arg.starts_with('-') && arg != "-" {
                     // `-` on its own is conventionally stdin, not a flag. deco
                     // has no use for it yet, so it falls through to being a
@@ -234,6 +246,20 @@ mod tests {
             Ok(Outcome::Run(cli)) => *cli,
             other => panic!("expected options, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_remote_authority_is_taken_either_way_round() {
+        let cli = run(&["--remote", "ssh-remote+myhost", "src/main.rs"]);
+        assert_eq!(cli.remote.as_deref(), Some("ssh-remote+myhost"));
+        assert_eq!(cli.files, vec![PathBuf::from("src/main.rs")]);
+        assert_eq!(
+            run(&["--remote=wsl+Ubuntu"]).remote.as_deref(),
+            Some("wsl+Ubuntu")
+        );
+        // A path is not an authority, and the file list is not the place to put
+        // one: `--remote` without a value is an error rather than a filename.
+        assert_eq!(parse(["--remote"]), Err(CliError::MissingValue("--remote")));
     }
 
     #[test]
@@ -352,6 +378,7 @@ mod tests {
             clean: true,
             server: false,
             workspace: None,
+            remote: None,
         };
         assert_eq!(run(&["--clean", "a.rs", "--frontend", "gui"]), expected);
         assert_eq!(run(&["a.rs", "--frontend=gui", "--clean"]), expected);

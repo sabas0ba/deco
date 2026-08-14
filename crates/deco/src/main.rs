@@ -65,7 +65,23 @@ fn main() -> Result<()> {
     );
     session.problems.extend(loaded.problems);
 
-    for path in &cli.files {
+    // A remote session: the files are on the other machine, so they are fetched
+    // rather than read, and the same connection is what saves them later.
+    let mut remote = match cli.remote.as_deref() {
+        Some(authority) => Some(connect(authority, &cli, &mut session)?),
+        None => None,
+    };
+    if let Some(client) = remote.as_mut() {
+        for path in &cli.files {
+            let asked = path.display().to_string();
+            let text = client
+                .read(&asked)
+                .with_context(|| format!("could not open {asked} on the remote"))?;
+            session.open(path.clone(), &text);
+        }
+    }
+
+    for path in cli.files.iter().filter(|_| remote.is_none()) {
         // Absolute before the session sees it. Every other way a file gets opened
         // — quick open, `ctrl+o`, a search result, a jump to a definition —
         // resolves first, so a relative path from here was the one spelling that
@@ -110,7 +126,7 @@ fn main() -> Result<()> {
     }
 
     match cli.frontend {
-        Frontend::Tui => deco_tui::run(&mut session, cli.files.first().cloned()),
+        Frontend::Tui => deco_tui::run_with(&mut session, cli.files.first().cloned(), remote),
         Frontend::Gui => run_gui(&mut session),
     }
 }
@@ -141,6 +157,44 @@ fn run_gui(_session: &mut Session) -> Result<()> {
         "this build has no GPU frontend. Rebuild with `cargo build --features gui`, \
          or run `deco --frontend tui`."
     )
+}
+
+/// Connects to a remote and starts a server on it.
+///
+/// The workspace is `--workspace` if given, and otherwise wherever the transport
+/// lands — for SSH that is the account's home directory, which is what
+/// `ssh host deco --server --stdio` would serve. The server refuses everything
+/// outside it, so this is also the decision about what this session can reach.
+fn connect(
+    authority: &str,
+    cli: &crate::cli::Cli,
+    session: &mut Session,
+) -> Result<deco_remote::Client> {
+    let authority = deco_remote::Authority::parse(authority)
+        .with_context(|| format!("`{authority}` is not a remote deco understands"))?;
+    let workspace = cli
+        .workspace
+        .as_deref()
+        .map(|path| path.display().to_string());
+    let command = deco_remote::command_for(
+        &authority,
+        &deco_remote::server_command("deco", workspace.as_deref()),
+        deco_remote::TransportOptions::default(),
+    )
+    .context("that remote cannot be reached")?;
+
+    let mut client = deco_remote::Client::start(&command)
+        .with_context(|| format!("could not run `{}`", command.program))?;
+    let hello = client
+        .handshake()
+        .context("the remote did not answer as a deco server")?;
+    // Worth saying once: it names the machine's own idea of where it is, which is
+    // the thing a mistyped `--workspace` gets wrong invisibly.
+    session.problems.push(format!(
+        "remote session: {} is serving {}",
+        command.program, hello.workspace
+    ));
+    Ok(client)
 }
 
 /// Runs as the remote server, speaking the framed protocol over stdin and stdout.
