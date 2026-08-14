@@ -150,6 +150,16 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
     lsp.attach(session);
     session.frontend_commands = frontend_commands();
 
+    // What is installed, listed in the palette whether or not it has started:
+    // invoking one of these is what starts it. The walk happens here for the same
+    // reason the theme walk does — the core has no filesystem.
+    let catalogue = crate::extensions::discover(&extension_roots());
+    session.problems.extend(catalogue.problems.iter().cloned());
+    session
+        .frontend_commands
+        .extend(crate::extensions::rows(&catalogue));
+    let mut hosts = crate::extensions::Hosts::new(catalogue);
+
     let mut dirty = true;
     // When the document last changed, for `files.autoSave: "afterDelay"`. `None` while
     // there is nothing to save.
@@ -176,6 +186,7 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
         // spinning.
         if !event::poll(LSP_POLL_INTERVAL)? {
             dirty |= lsp.poll(session);
+            hosts.poll(session);
             // Checked on the idle path only. A save while keys are still arriving
             // would be a write per keystroke, which is the thing the delay exists to
             // avoid.
@@ -194,6 +205,7 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
             continue;
         }
         dirty |= lsp.poll(session);
+        hosts.poll(session);
 
         match event::read()? {
             Event::Key(key) => {
@@ -382,6 +394,10 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
                         "acceptSelectedSuggestion" => {
                             lsp.accept(session, now_ms);
                         }
+                        // An extension's command, whose identifier is whatever is
+                        // installed rather than anything written down here. Asked
+                        // last so that no core command can be shadowed by one.
+                        other if hosts.run_command(session, other) => {}
                         other => {
                             session.status = Some(format!("{other} is not implemented yet"));
                         }

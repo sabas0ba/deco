@@ -156,6 +156,13 @@ fn print_config(session: &Session) {
     println!("editor.fontSize     {}", settings.font_size);
     println!("files.eol           {:?}", settings.eol);
     println!("keybindings         {} bindings", session.keymap.len());
+    // How extensions would be run. Printed because refusing to degrade silently
+    // only means anything if the answer is available somewhere, and this is where
+    // someone looks for it.
+    println!(
+        "extension sandbox   {}",
+        shown(&deco_tui::extensions::sandbox_summary(&session.settings))
+    );
     for problem in &session.problems {
         println!("problem             {}", shown(problem));
     }

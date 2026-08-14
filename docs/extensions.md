@@ -9,10 +9,32 @@ can reach.
 deco keeps the separate Node process, because extensions are JavaScript and there
 is no way around that. It removes the ambient authority.
 
-> **State of this:** the protocol, the capability broker, the sandbox and the
-> `vscode` shim all exist and are tested against each other. The editor does not
-> yet start a host or dispatch to one. Theme and grammar extensions, which have no
-> `main` and never start a host process, work today.
+> **State of this:** a code extension's commands appear in the command palette, and
+> choosing one starts its host in a container and runs it. What an extension can
+> reach from there is still small — registering commands, saying something, logging
+> — and everything else is refused by name. Theme and grammar extensions, which have
+> no `main` and never start a host process, work fully.
+
+## Running one
+
+Press `ctrl+shift+p` and an extension's commands are in the list, beside deco's own.
+The right-hand column is the *extension's* name rather than the command identifier
+that deco's own commands show there: for something contributed from outside, which
+extension it came from is the fact that decides whether you want it.
+
+![The command palette listing a command contributed by an extension](img/extension-commands.svg)
+
+Choosing one starts the host, activates the extension, and runs the command. The
+first start in a container pulls the image, which can take a minute — the editor
+does not block while it happens, the status bar says what is going on, and the
+command you asked for runs when the host is ready rather than being forgotten.
+
+Nothing starts on its own. `onLanguage:` and `onStartupFinished` are understood by
+the catalogue and deliberately not acted on yet: while this is new, a process should
+start only when you asked for something, because that is the version where a mistake
+costs least. Opening a Rust file will not start three extensions.
+
+An extension is started once and reused. If its host dies, the status bar says so.
 
 ## Four independent layers
 
@@ -279,13 +301,36 @@ command registry has tests of its own now, which it did not before: arguments in
 order, async callbacks awaited, a `dispose()`d command no longer callable, a throwing
 command reported without ending the session.
 
+## What an extension can reach, today
+
+Three things, all of which only touch state deco already owns and shows you:
+
+| Call | What happens |
+| --- | --- |
+| `commands.registerCommand` | Recorded, so the command can be run |
+| `window.showInformationMessage` and its warning, error and status-bar siblings | The message reaches the status bar |
+| `log.append` | Kept in deco's own record of what extensions did |
+
+**Everything else is refused by name.** An extension that asks to read a file gets an
+error saying deco does not implement it yet — not an empty file, not an empty list of
+open editors. An extension told "no" can cope; one told "here is your empty answer"
+cannot, and neither can the person reading its behaviour.
+
+A capability the manifest *did* declare but that needs your decision is also refused
+for now, because deco cannot ask yet: a consent prompt that does not exist must not
+become a silent yes. The refusal is recorded with the capability's name, so an
+extension that misbehaves for this reason says why rather than merely failing.
+
+`deco --print-config` prints which sandbox you would get, including the resolved
+runtime and the pinned image — or the reason there is none, which is the state in
+which extensions refuse to start.
+
 ## What is still not connected
 
-The editor does not start a host yet. What exists is the wire, the sandbox, and the
-decision about what to start; what is missing is the part that acts on it — walking
-the extension directories, putting contributed commands in the palette, and answering
-the mediated surface from the session. `--print-config` does not yet say which sandbox
-you are getting, which it should.
+The mediated surface is three calls wide, and the table above is the whole of it. No
+consent prompt, so no capability that needs one can be granted. No activation on
+opening a file or on startup. No `workspace.fs`, no editor state, no quick pick, no
+tree views, no webviews, no debug adapters.
 
 ## Zero npm dependencies
 

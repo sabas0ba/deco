@@ -285,6 +285,22 @@ fn host_test(root: &Path) -> Result<()> {
         ],
     )?;
 
+    // The editor's half: a directory becoming a palette entry, and the command
+    // being run. Needs Node for the same reason and nothing more.
+    run_cargo(
+        root,
+        &[
+            "test",
+            "--locked",
+            "-p",
+            "deco-tui",
+            "--test",
+            "extension_commands",
+            "--",
+            "--ignored",
+        ],
+    )?;
+
     // And the same stack in the container deco actually ships with. This needs a
     // container runtime, which not every machine has — so the decision is
     // *printed* either way. A test that quietly does not run is worse than one
