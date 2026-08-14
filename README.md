@@ -93,7 +93,7 @@ thin painter.
 | Command identifiers | Yes, for implemented commands |
 | Theme extensions from the marketplace | Yes — declarative, no host process; `ctrl+k ctrl+t` lists them |
 | Code extensions (`main`) | Commands run: the palette lists them, choosing one starts a sandboxed host. The surface an extension can reach is three calls wide — see [Extensions](docs/extensions.md#what-an-extension-can-reach-today) |
-| Remote SSH / containers / WSL | `deco --server --stdio` serves one directory it cannot be talked out of; the editor does not open files through it yet |
+| Remote SSH / containers / WSL | Open, edit and save a file on the far end with `--remote ssh-remote+host`. No language servers, search or provisioning over there — see [Remote](docs/remote.md) |
 | Language servers (LSP) | Diagnostics, hover, go-to-definition, references, completion, symbols, semantic tokens, formatting |
 | Find and replace (`ctrl+f`, `ctrl+h`, `F3`, `ctrl+d`, `ctrl+shift+l`) | Literal search only — no regular expressions |
 | Search in files (`ctrl+shift+f`) | Yes — bounded and synchronous, and it says so |
@@ -212,15 +212,15 @@ frontends depend on everything.
 Named plainly, because a list of what works is only useful next to one of what
 does not:
 
-- **Remote development has both ends and nothing joining them.** `deco-remote`
-  parses VS Code's `ssh-remote+host`, `wsl+Distro` and `dev-container+id`
-  authorities and the `vscode-remote://` URIs they appear in, builds the SSH,
-  `wsl.exe` and `docker exec` commands to reach them, and speaks the framed
-  protocol — and `deco --server --stdio` now answers it, serving one directory it
-  refuses to be talked out of, symlinks included. What is missing is the client:
-  nothing in the editor opens a file through a transport yet. There is also no
-  provisioning (the binary has to already be on the remote) and no port
-  forwarding.
+- **Remote development opens, edits and saves a file, and nothing more.**
+  `deco --remote ssh-remote+myhost --workspace /home/u/project src/main.rs` starts
+  `deco --server --stdio` on the far end, fetches the file, and writes it back on
+  `ctrl+s`; `ctrl+p` lists the remote workspace. The server refuses everything
+  outside the directory it was given, symlinks included. What is missing: no
+  provisioning (the binary has to already be on the remote, which is the item with
+  a security decision in it), no port forwarding, no language servers or
+  extensions over there, and no project-wide search — each of which says so rather
+  than doing the wrong thing quietly.
 - **Rename and code actions are not wired.** Diagnostics, hover
   (`ctrl+k ctrl+i`), go-to-definition (`F12`), references (`shift+f12`),
   document symbols (`ctrl+shift+o`), completion (`ctrl+space`), semantic tokens

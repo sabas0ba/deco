@@ -139,6 +139,25 @@ fn auto_save_due(settings: &deco_config::EditorSettings, idle_ms: u64, dirty: bo
 
 /// Runs the editor until the user quits.
 pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
+    run_with(session, path, None)
+}
+
+/// The editor, optionally against a remote workspace.
+///
+/// `remote` present means every file the session reads and writes lives on the
+/// other end of it. That is a mode rather than a per-document property, because
+/// deco does not open local and remote files in one window: the workspace is one
+/// place, and half of one would make every path ambiguous.
+///
+/// What is *not* redirected is stated where it can be checked: language servers
+/// are not started at all in remote mode (they would be looking at a local
+/// checkout that does not exist), and search-in-files is local, so it is refused
+/// rather than allowed to search the wrong machine.
+pub fn run_with(
+    session: &mut Session,
+    path: Option<PathBuf>,
+    mut remote: Option<deco_remote::Client>,
+) -> Result<()> {
     let _guard = TerminalGuard::enter()?;
     let started = Instant::now();
     let mut out = io::stdout();
@@ -147,7 +166,18 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
     resize(session, width, height);
 
     let mut lsp = Lsp::new(session, workspace_root(path.as_deref()));
-    lsp.attach(session);
+    if remote.is_none() {
+        lsp.attach(session);
+    } else {
+        // A language server started here would be reading a local checkout that
+        // does not exist: the files are on the other machine, and deco cannot yet
+        // start a server on that one. Said rather than left as a mystery about why
+        // `F12` does nothing.
+        session.problems.push(
+            "language servers are off in a remote session: deco cannot start one on the              remote yet"
+                .to_owned(),
+        );
+    }
     session.frontend_commands = frontend_commands();
 
     // What is installed, listed in the palette whether or not it has started:
@@ -193,7 +223,7 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
             if let Some(at) = edited_at {
                 let idle = started.elapsed().as_millis() as u64 - at;
                 if auto_save_due(&session.document.settings, idle, session.document.dirty) {
-                    save(session)?;
+                    save(session, remote.as_mut())?;
                     lsp.saved(session);
                     edited_at = None;
                     dirty = true;
@@ -237,7 +267,7 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
                 match session.handle_chord(chord, now_ms) {
                     Outcome::Quit => break,
                     Outcome::Save => {
-                        save(session)?;
+                        save(session, remote.as_mut())?;
                         lsp.saved(session);
                     }
                     // The picker named a theme; reading it is this side's job.
@@ -298,6 +328,14 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
                     }
                     // The prompt asked what to look for; walking the workspace is
                     // this side's job.
+                    Outcome::SearchInFiles { .. } if remote.is_some() => {
+                        // The walk is local, so in a remote session it would
+                        // search this machine and report matches in files the
+                        // editor is not showing.
+                        session.status = Some(
+                            "search in files is local, and this session's files are not".to_owned(),
+                        );
+                    }
                     Outcome::SearchInFiles { query, options } => {
                         let root =
                             workspace_root(path.as_deref()).unwrap_or_else(|| PathBuf::from("."));
@@ -327,8 +365,21 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
                         // accepts `~/notes.txt` and `src/main.rs`. Quick open and
                         // search hand over absolute paths, for which this is
                         // identity.
-                        let target = resolve_path(&target, path.as_deref());
-                        match std::fs::read_to_string(&target) {
+                        // In remote mode the path is the server's, relative to
+                        // the workspace it serves, and resolving it against a
+                        // local directory would produce a path on the wrong
+                        // machine.
+                        let target = match &remote {
+                            Some(_) => target,
+                            None => resolve_path(&target, path.as_deref()),
+                        };
+                        let read = match remote.as_mut() {
+                            Some(client) => client
+                                .read(&target.display().to_string())
+                                .map_err(|error| std::io::Error::other(error.to_string())),
+                            None => std::fs::read_to_string(&target),
+                        };
+                        match read {
                             Ok(text) => {
                                 session.open(target, &text);
                                 if let Some(at) = at {
@@ -369,6 +420,24 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
                         ),
                         // The workspace has to be walked from here: the core has
                         // no filesystem.
+                        // The listing has to come from wherever the files are.
+                        "workbench.action.quickOpen" if remote.is_some() => {
+                            let client = remote.as_mut().expect("just checked");
+                            match client.list() {
+                                Ok(files) => session.offer_files(
+                                    files
+                                        .into_iter()
+                                        .map(|file| {
+                                            deco_editor::commands::PaletteEntry::new(&file, &file)
+                                        })
+                                        .collect(),
+                                ),
+                                Err(error) => {
+                                    session.status =
+                                        Some(format!("could not list the remote: {error}"));
+                                }
+                            }
+                        }
                         "workbench.action.quickOpen" => {
                             let root = workspace_root(path.as_deref())
                                 .unwrap_or_else(|| PathBuf::from("."));
@@ -642,11 +711,31 @@ fn write_file(path: &Path, contents: &str) -> std::result::Result<(), String> {
 ///
 /// A document with no path never reaches here — [`Session`] turns `ctrl+s` into the
 /// save-as prompt instead — but the arm stays as a guard rather than a `panic!`.
-fn save(session: &mut Session) -> Result<()> {
+fn save(session: &mut Session, remote: Option<&mut deco_remote::Client>) -> Result<()> {
     let Some(path) = session.document.path.clone() else {
         session.status = Some("This document has no filename yet".to_owned());
         return Ok(());
     };
+
+    // A failed remote write is reported and *not* fatal: the connection can drop
+    // while the editor is perfectly able to keep the text and try again. A failed
+    // local write is still fatal, as it was, because the alternative is an editor
+    // that says "saved" about a disk that refused.
+    if let Some(client) = remote {
+        let asked = path.display().to_string();
+        return match client.write(&asked, &session.save_contents()) {
+            Ok(()) => {
+                session.mark_saved();
+                session.status = Some(format!("Saved {asked} on the remote"));
+                Ok(())
+            }
+            Err(error) => {
+                session.status = Some(format!("could not save {asked}: {error}"));
+                Ok(())
+            }
+        };
+    }
+
     std::fs::write(&path, session.save_contents())
         .with_context(|| format!("could not write {}", path.display()))?;
     session.mark_saved();
@@ -826,7 +915,7 @@ mod tests {
         session.run("type", Some(&serde_json::json!({ "text": "scratch" })), 0);
         assert!(session.document.path.is_none(), "an untitled document");
 
-        save(&mut session).unwrap();
+        save(&mut session, None).unwrap();
         assert_eq!(
             std::fs::read_to_string(&started_with).unwrap(),
             "fn main() {}\n",
@@ -959,7 +1048,7 @@ mod tests {
     #[test]
     fn saving_an_untitled_document_says_so_instead_of_failing_silently() {
         let mut session = Session::with_defaults();
-        save(&mut session).unwrap();
+        save(&mut session, None).unwrap();
         assert!(session.status.as_deref().unwrap().contains("no filename"));
     }
 }

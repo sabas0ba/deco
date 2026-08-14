@@ -688,6 +688,7 @@ dependencies = [
  "deco-ext",
  "deco-keymap",
  "deco-lsp",
+ "deco-remote",
  "deco-syntax",
  "deco-theme",
  "serde_json",

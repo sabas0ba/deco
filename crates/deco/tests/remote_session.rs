@@ -1,0 +1,137 @@
+//! A whole remote session: this binary as the client, and as the server.
+//!
+//! `deco-remote`'s own tests cover each half against a buffer. This is the two
+//! halves against each other, over pipes, through the real binary — the same
+//! substitution the transport makes, with `deco --server --stdio` standing in for
+//! `ssh host deco --server --stdio`. What the transport adds is an argument
+//! vector, which is tested next door without running anything, so nothing here
+//! needs a network or an SSH daemon.
+
+use std::path::{Path, PathBuf};
+
+use deco_remote::client::Client;
+use deco_remote::transport::Command;
+
+/// A workspace with a couple of files in it.
+fn workspace(name: &str) -> PathBuf {
+    let root = std::env::temp_dir().join(format!(
+        "deco-remote-session-{name}-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("src")).expect("a directory");
+    std::fs::write(root.join("src/main.rs"), "fn main() {}\n").expect("a file");
+    std::fs::write(root.join("README.md"), "# hello\n").expect("a file");
+    root
+}
+
+/// A client connected to a server serving `root`.
+fn connect(root: &Path) -> Client {
+    Client::start(&Command {
+        program: env!("CARGO_BIN_EXE_deco").to_owned(),
+        args: vec![
+            "--server".to_owned(),
+            "--stdio".to_owned(),
+            "--workspace".to_owned(),
+            root.display().to_string(),
+        ],
+    })
+    .expect("the server should start")
+}
+
+#[test]
+fn a_session_opens_a_file_edits_it_and_saves_it_back() {
+    // The whole point of the feature, end to end: the bytes that come back are
+    // the bytes that were sent, and they land in the file on the far end.
+    let root = workspace("round-trip");
+    let mut client = connect(&root);
+
+    let hello = client.handshake().expect("a handshake");
+    assert_eq!(
+        Path::new(&hello.workspace),
+        root.canonicalize().expect("canonical")
+    );
+    assert!(hello.methods.iter().any(|method| method == "fs.write"));
+
+    assert_eq!(client.read("src/main.rs").expect("read"), "fn main() {}\n");
+
+    client
+        .write("src/main.rs", "fn main() {\n    println!(\"hi\");\n}\n")
+        .expect("write");
+    assert_eq!(
+        std::fs::read_to_string(root.join("src/main.rs")).expect("the file"),
+        "fn main() {\n    println!(\"hi\");\n}\n"
+    );
+    // And read back through the connection, not just off the disk: a write that
+    // only looked right locally would still be a broken session.
+    assert_eq!(
+        client.read("src/main.rs").expect("read"),
+        "fn main() {\n    println!(\"hi\");\n}\n"
+    );
+
+    client.shutdown();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_listing_is_what_a_picker_would_show() {
+    let root = workspace("listing");
+    let mut client = connect(&root);
+    client.handshake().expect("a handshake");
+    let files = client.list().expect("a listing");
+    assert_eq!(files, vec!["README.md", "src/main.rs"]);
+    // Every path in it can be read straight back, which is the property a picker
+    // depends on: what is listed is what can be opened.
+    for file in &files {
+        client
+            .read(file)
+            .expect("each listed file should be readable");
+    }
+    client.shutdown();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_refusal_reaches_the_client_as_an_error_and_leaves_the_session_usable() {
+    // The far end refusing must not look like the connection breaking: one bad
+    // request costs one request.
+    let root = workspace("refusal");
+    let mut client = connect(&root);
+    client.handshake().expect("a handshake");
+
+    let error = client
+        .read("../../etc/passwd")
+        .expect_err("outside the workspace")
+        .to_string();
+    assert!(error.contains("outside the workspace"), "{error}");
+
+    assert_eq!(
+        client.read("README.md").expect("still working"),
+        "# hello\n"
+    );
+    client.shutdown();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_transport_that_is_not_a_server_fails_with_something_a_person_can_act_on() {
+    // What happens when `deco` is not installed on the remote and the transport
+    // runs something else entirely. The client must not hang waiting for a frame
+    // that is never coming.
+    let root = workspace("not-a-server");
+    let mut client = Client::start(&Command {
+        program: env!("CARGO_BIN_EXE_deco").to_owned(),
+        // A real deco, asked to do something that is not serving: it prints the
+        // configuration and exits.
+        args: vec!["--print-config".to_owned()],
+    })
+    .expect("it starts");
+    let error = client.handshake().expect_err("no handshake from that");
+    let said = error.to_string();
+    assert!(
+        said.contains("stopped without answering") || said.contains("connection"),
+        "{said}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
