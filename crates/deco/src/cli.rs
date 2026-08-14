@@ -72,6 +72,17 @@ pub struct Cli {
     /// Present means every file named on the command line lives there, and the
     /// editor is a client rather than the thing holding the files.
     pub remote: Option<String>,
+    /// Where deco lives on the remote.
+    ///
+    /// `None` means whatever `deco` resolves to on the remote's PATH, which is
+    /// right when it was installed the ordinary way and wrong when it was
+    /// unpacked into a directory no login shell adds.
+    pub remote_server_path: Option<String>,
+    /// Put this machine's deco on the remote before connecting.
+    ///
+    /// Off unless asked for. Pointing an editor at a machine is not the same as
+    /// authorising it to install software there — see [`deco_remote::install`].
+    pub remote_install: bool,
 }
 
 /// What `parse` decided the process should do.
@@ -149,6 +160,9 @@ Options:
       --stdio                Speak the remote protocol over stdin and stdout
       --workspace <DIR>      The directory to serve [default: the current one]
       --remote <AUTHORITY>   Open the files on a remote, as ssh-remote+host
+      --remote-server-path <PATH>
+                             Where deco is on the remote [default: found on its PATH]
+      --remote-install       Send this machine's deco to the remote first, if it needs one
   -h, --help                 Print help
   -V, --version              Print version
 ";
@@ -196,6 +210,13 @@ where
                 let value = args.next().ok_or(CliError::MissingValue("--remote"))?;
                 cli.remote = Some(value.as_ref().to_owned());
             }
+            "--remote-server-path" => {
+                let value = args
+                    .next()
+                    .ok_or(CliError::MissingValue("--remote-server-path"))?;
+                cli.remote_server_path = Some(value.as_ref().to_owned());
+            }
+            "--remote-install" => cli.remote_install = true,
             "--frontend" => {
                 let value = args.next().ok_or(CliError::MissingValue("--frontend"))?;
                 cli.frontend = Frontend::parse(value.as_ref())?;
@@ -205,6 +226,8 @@ where
                     cli.frontend = Frontend::parse(value)?;
                 } else if let Some(value) = arg.strip_prefix("--workspace=") {
                     cli.workspace = Some(PathBuf::from(value));
+                } else if let Some(value) = arg.strip_prefix("--remote-server-path=") {
+                    cli.remote_server_path = Some(value.to_owned());
                 } else if let Some(value) = arg.strip_prefix("--remote=") {
                     cli.remote = Some(value.to_owned());
                 } else if arg.starts_with('-') && arg != "-" {
@@ -260,6 +283,40 @@ mod tests {
         // A path is not an authority, and the file list is not the place to put
         // one: `--remote` without a value is an error rather than a filename.
         assert_eq!(parse(["--remote"]), Err(CliError::MissingValue("--remote")));
+    }
+
+    #[test]
+    fn installing_onto_a_remote_is_asked_for_rather_than_assumed() {
+        // The default has to stay off: this flag is what turns "open a file over
+        // there" into "put software on that machine", and a person who did not
+        // type it did not agree to the second one.
+        let cli = run(&["--remote", "ssh-remote+myhost", "src/main.rs"]);
+        assert!(!cli.remote_install);
+        assert_eq!(cli.remote_server_path, None);
+
+        let cli = run(&[
+            "--remote",
+            "ssh-remote+myhost",
+            "--remote-install",
+            "--remote-server-path",
+            "/opt/deco/bin/deco",
+        ]);
+        assert!(cli.remote_install);
+        assert_eq!(
+            cli.remote_server_path.as_deref(),
+            Some("/opt/deco/bin/deco")
+        );
+
+        assert_eq!(
+            run(&["--remote-server-path=/opt/deco"])
+                .remote_server_path
+                .as_deref(),
+            Some("/opt/deco")
+        );
+        assert_eq!(
+            parse(["--remote-server-path"]),
+            Err(CliError::MissingValue("--remote-server-path"))
+        );
     }
 
     #[test]
@@ -379,6 +436,8 @@ mod tests {
             server: false,
             workspace: None,
             remote: None,
+            remote_server_path: None,
+            remote_install: false,
         };
         assert_eq!(run(&["--clean", "a.rs", "--frontend", "gui"]), expected);
         assert_eq!(run(&["a.rs", "--frontend=gui", "--clean"]), expected);

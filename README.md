@@ -93,7 +93,7 @@ thin painter.
 | Command identifiers | Yes, for implemented commands |
 | Theme extensions from the marketplace | Yes — declarative, no host process; `ctrl+k ctrl+t` lists them |
 | Code extensions (`main`) | Commands run: the palette lists them, choosing one starts a sandboxed host. The surface an extension can reach is three calls wide — see [Extensions](docs/extensions.md#what-an-extension-can-reach-today) |
-| Remote SSH / containers / WSL | Open, edit and save a file on the far end with `--remote ssh-remote+host`. No language servers, search or provisioning over there — see [Remote](docs/remote.md) |
+| Remote SSH / containers / WSL | Open, edit and save a file on the far end with `--remote ssh-remote+host`, and `--remote-install` puts deco there if it has none. No language servers or search over there — see [Remote](docs/remote.md) |
 | Language servers (LSP) | Diagnostics, hover, go-to-definition, references, completion, symbols, semantic tokens, formatting |
 | Find and replace (`ctrl+f`, `ctrl+h`, `F3`, `ctrl+d`, `ctrl+shift+l`) | Literal search only — no regular expressions |
 | Search in files (`ctrl+shift+f`) | Yes — bounded and synchronous, and it says so |
@@ -216,11 +216,13 @@ does not:
   `deco --remote ssh-remote+myhost --workspace /home/u/project src/main.rs` starts
   `deco --server --stdio` on the far end, fetches the file, and writes it back on
   `ctrl+s`; `ctrl+p` lists the remote workspace. The server refuses everything
-  outside the directory it was given, symlinks included. What is missing: no
-  provisioning (the binary has to already be on the remote, which is the item with
-  a security decision in it), no port forwarding, no language servers or
-  extensions over there, and no project-wide search — each of which says so rather
-  than doing the wrong thing quietly.
+  outside the directory it was given, symlinks included. `--remote-install` sends
+  this machine's binary to a remote that has none — only when asked, only to a
+  matching platform, and never over something that is not deco. What is missing:
+  no port forwarding, no language servers or extensions over there, and no
+  project-wide search — each of which says so rather than doing the wrong thing
+  quietly. Provisioning a *different* platform is refused rather than guessed at,
+  because it needs somewhere deco is willing to download a build from.
 - **Rename and code actions are not wired.** Diagnostics, hover
   (`ctrl+k ctrl+i`), go-to-definition (`F12`), references (`shift+f12`),
   document symbols (`ctrl+shift+o`), completion (`ctrl+space`), semantic tokens

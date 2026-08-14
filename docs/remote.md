@@ -1,10 +1,9 @@
 # Remote development
 
 > **State of this: you can open a file on another machine, edit it and save it
-> back.** What is missing is everything around that — no provisioning (the binary
-> has to already be on the remote), no port forwarding, no language servers or
-> extensions over there, and no project-wide search. This page is explicit about
-> each.
+> back, and put deco there if it has none.** What is missing is everything around
+> that — no port forwarding, no language servers or extensions over there, and no
+> project-wide search. This page is explicit about each.
 
 ## Using it
 
@@ -38,6 +37,63 @@ Saving is the one place where a failure is *not* fatal: a connection can drop
 while the editor is perfectly able to keep your text and try again. A failed
 remote save says so and leaves the document dirty, rather than reporting a save
 that did not happen.
+
+## Getting deco onto the remote
+
+The far end needs a `deco` to run. If it has one on its PATH, nothing below is
+needed; if it is installed somewhere a login shell does not look, name it:
+
+```console
+$ deco --remote ssh-remote+myhost --remote-server-path ~/.deco/bin/deco src/main.rs
+```
+
+And if it has none at all, deco can send this machine's own binary — **when you
+ask it to**:
+
+```console
+$ deco --remote ssh-remote+myhost --remote-install src/main.rs
+```
+
+It lands in `$HOME/.deco/bin/deco` on the remote, under the account's own home
+rather than anywhere on the system path: installing for one user needs no
+privileges and affects nobody else, which is the least surprising thing an editor
+can do to a machine. `--remote-server-path` chooses somewhere else.
+
+### What it will not do
+
+Pointing an editor at a machine is not the same as authorising it to install
+software there. That is the whole design of this part, and it is why the flag
+exists rather than the behaviour being automatic:
+
+- **Nothing happens unless asked.** A session that finds no `deco` fails and
+  mentions `--remote-install`. It does not helpfully fix it.
+- **A different platform is refused.** The remote is asked what it is *before*
+  anything is sent, and a mismatch names both sides rather than uploading a
+  binary that cannot run there.
+- **Anything that is not deco is left alone.** Existence and runnability are
+  asked separately, so a `--remote-server-path` typo landing on a `notes.txt` —
+  which exists but answers no `--version` — is a refusal, not an overwrite.
+- **A half-written binary never reaches the destination.** The upload goes to
+  `deco.incoming` beside it and is renamed once complete, so an interrupted
+  install leaves the old deco, or nothing.
+- **The result is checked.** The installed binary is asked for its version, so a
+  `noexec` mount or a missing libc is an error here rather than a handshake that
+  never answers.
+
+A deco of the same version already at the destination is left where it is, so
+this is not an upload on every start.
+
+### What it cannot do yet
+
+It sends *this* machine's binary, which means both ends must be the same
+platform: Linux to Linux, and every WSL and container case. **A macOS laptop
+provisioning a Linux server is refused**, because the fix is fetching a release
+built for the remote rather than sending the wrong file — and where deco is
+willing to download from is its own decision, not one to slip in here.
+
+The remote is assumed to have a POSIX shell and `uname`, `mkdir`, `dd`, `chmod`
+and `mv` — the same assumption already made by running `deco --server` over
+`ssh`.
 
 ## Authorities
 
@@ -120,11 +176,13 @@ Named so that the remaining work is legible rather than open-ended:
 1. ~~`deco --server`, a headless session that answers frames.~~ **Done.**
 2. ~~The client: opening a file through a transport, saving it back, and listing
    the remote workspace with `ctrl+p`.~~ **Done.**
-3. Provisioning: getting the binary onto the remote and starting it, which means a
-   decision about how much deco is willing to install on a machine you pointed it
-   at. Today the binary has to be there.
+3. ~~Provisioning: getting the binary onto the remote, which means a decision
+   about how much deco is willing to install on a machine you pointed it at.~~
+   **Done** for same-platform remotes, under the rules above. Fetching a build
+   for a *different* platform is still open, and is the same decision again in a
+   harder form: it needs somewhere deco is willing to download from.
 4. Settings scope wiring: the `Remote` layer already exists between `User` and
    `Workspace` in the settings stack, so a remote's settings have somewhere to go.
 5. Port forwarding, which the transports do not model at all.
-
-Item 3 is the one with a security decision in it, not just work.
+6. Language servers and extensions on the remote, which is what would turn this
+   from "edit a file over there" into remote development.

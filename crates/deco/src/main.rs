@@ -176,18 +176,54 @@ fn connect(
         .workspace
         .as_deref()
         .map(|path| path.display().to_string());
+    let options = deco_remote::TransportOptions::default();
+
+    // Only when asked. Everything about this branch — that it exists at all,
+    // and that its absence is a plain failure rather than a silent fix — is the
+    // decision described in `deco_remote::install`.
+    let server_path = if cli.remote_install {
+        let installed = provision(&authority, cli, options)?;
+        session.problems.push(match &installed {
+            deco_remote::Installed::AlreadyThere { path, version } => {
+                format!("remote session: {version} was already at {path}")
+            }
+            deco_remote::Installed::Sent {
+                path,
+                version,
+                replaced,
+            } => match replaced {
+                Some(old) => format!("remote session: replaced {old} at {path} with {version}"),
+                None => format!("remote session: installed {version} at {path}"),
+            },
+        });
+        installed.path().to_owned()
+    } else {
+        cli.remote_server_path
+            .clone()
+            .unwrap_or_else(|| "deco".to_owned())
+    };
+
     let command = deco_remote::command_for(
         &authority,
-        &deco_remote::server_command("deco", workspace.as_deref()),
-        deco_remote::TransportOptions::default(),
+        &deco_remote::server_command(&server_path, workspace.as_deref()),
+        options,
     )
     .context("that remote cannot be reached")?;
 
     let mut client = deco_remote::Client::start(&command)
         .with_context(|| format!("could not run `{}`", command.program))?;
-    let hello = client
-        .handshake()
-        .context("the remote did not answer as a deco server")?;
+    let hello = client.handshake().map_err(|error| {
+        // The overwhelmingly common cause of a server that never answers is the
+        // remote having no deco, and that is fixable in one flag — so say so
+        // here rather than leaving a person to guess at a protocol error.
+        let missing =
+            matches!(error, deco_remote::ClientError::Closed { .. }) && !cli.remote_install;
+        anyhow::Error::new(error).context(if missing {
+            no_server_hint(&server_path)
+        } else {
+            "the remote did not answer as a deco server".to_owned()
+        })
+    })?;
     // Worth saying once: it names the machine's own idea of where it is, which is
     // the thing a mistyped `--workspace` gets wrong invisibly.
     session.problems.push(format!(
@@ -195,6 +231,40 @@ fn connect(
         command.program, hello.workspace
     ));
     Ok(client)
+}
+
+/// What to say when the remote answers nothing at all.
+///
+/// Its own function so that a test can read it. It is the one message here a
+/// person is most likely to meet, and it is the difference between "something
+/// went wrong" and knowing which flag fixes it.
+fn no_server_hint(server_path: &str) -> String {
+    format!(
+        "the remote did not answer as a deco server. If `{server_path}` is not there, \
+         `--remote-install` sends this one, or `--remote-server-path` points at an \
+         existing install"
+    )
+}
+
+/// Puts this machine's deco on the remote, if `--remote-install` asked for it.
+///
+/// The version sent is this binary's own, and the binary sent is this process's
+/// own file: a deco that provisions a *different* deco than the one running
+/// would make "which version is over there" unanswerable.
+fn provision(
+    authority: &deco_remote::Authority,
+    cli: &crate::cli::Cli,
+    options: deco_remote::TransportOptions,
+) -> Result<deco_remote::Installed> {
+    let binary = std::env::current_exe().context("cannot find this deco to send it")?;
+    let mut runner = deco_remote::TransportRunner::new(authority.clone(), options);
+    deco_remote::install::ensure(
+        &mut runner,
+        cli.remote_server_path.as_deref(),
+        &binary,
+        env!("CARGO_PKG_VERSION"),
+    )
+    .context("could not put deco on the remote")
 }
 
 /// Runs as the remote server, speaking the framed protocol over stdin and stdout.
@@ -251,5 +321,23 @@ fn print_config(session: &Session) {
     );
     for problem in &session.problems {
         println!("problem             {}", shown(problem));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_hint_for_a_remote_with_no_deco_names_both_ways_out_of_it() {
+        let hint = no_server_hint("deco");
+        assert!(hint.contains("--remote-install"), "{hint}");
+        assert!(hint.contains("--remote-server-path"), "{hint}");
+
+        // A wrapped string literal whose continuations are broken reads as one
+        // line with gaps in it, which is how this message reached a terminal
+        // before anyone looked at it. Cheap to pin, invisible to a compiler.
+        assert!(!hint.contains("  "), "gaps in the message: {hint:?}");
+        assert!(!hint.contains('\n'), "a newline in the message: {hint:?}");
     }
 }
