@@ -16,7 +16,8 @@ fn project(name: &str) -> Scenario {
             r#"{
                 "editor.tabSize": 4,
                 "editor.insertSpaces": true,
-                "files.autoSave": "off"
+                "files.autoSave": "off",
+                "files.eol": "\n"
             }"#,
         )
         .workspace_settings(r#"{ "editor.tabSize": 2 }"#)

@@ -200,6 +200,26 @@ fn a_machine_with_no_configuration_at_all_starts_on_the_defaults() {
 }
 
 #[test]
+fn a_new_file_gets_the_platforms_own_ending_when_the_setting_says_auto() {
+    // `files.eol: "auto"` is the default, and what it means depends on the
+    // machine — LF on Unix, CRLF on Windows. Every other scenario pins the key so
+    // that it can assert bytes without asserting about the runner; this is the one
+    // that is about the runner, and it says so.
+    let scenario = Scenario::new("eol-auto").user_settings(r#"{ "files.eol": "auto" }"#);
+    let mut editor = scenario.launch(&["new.txt"]);
+
+    editor.type_text("one\ntwo\n");
+    editor.press("ctrl+s");
+
+    let expected: &[u8] = if cfg!(windows) {
+        b"one\r\ntwo\r\n"
+    } else {
+        b"one\ntwo\n"
+    };
+    assert_eq!(editor.on_disk_bytes("new.txt"), expected);
+}
+
+#[test]
 fn the_end_of_line_setting_decides_what_a_new_file_gets() {
     let scenario = Scenario::new("eol").user_settings(r#"{ "files.eol": "\r\n" }"#);
     let mut editor = scenario.launch(&["new.txt"]);

@@ -30,6 +30,11 @@ pub struct Scenario {
     /// Written at launch rather than when it is set, because the harness has a
     /// key of its own to put in front of it — see [`Scenario::language_servers`].
     user_settings: Option<String>,
+    /// Written at launch for the same reason, and to the same rule: a scenario
+    /// about deco reading VS Code's file has to have VS Code's file be the one
+    /// the harness's own keys are in, or writing them would create the deco file
+    /// whose absence is the thing being tested.
+    vscode_settings: Option<String>,
     language_servers: bool,
 }
 
@@ -59,6 +64,7 @@ impl Scenario {
             platform: Platform::Linux,
             size: (80, 24),
             user_settings: None,
+            vscode_settings: None,
             language_servers: false,
         }
     }
@@ -139,9 +145,8 @@ impl Scenario {
     }
 
     /// VS Code's `settings.json`, which deco reads when it has none of its own.
-    pub fn vscode_settings(self, json: &str) -> Self {
-        let path = self.vscode_paths().settings;
-        write_config(&path, json);
+    pub fn vscode_settings(mut self, json: &str) -> Self {
+        self.vscode_settings = Some(json.to_owned());
         self
     }
 
@@ -233,39 +238,49 @@ impl Scenario {
 
     /// Writes the `settings.json` a launch will read.
     ///
-    /// The harness's own key goes in first so that anything the scenario wrote
-    /// comes later and therefore wins, which is the rule the JSONC layer already
-    /// applies to a repeated key.
+    /// The harness has two keys of its own, and they go into whichever file the
+    /// scenario is exercising: deco's if the scenario wrote one, VS Code's if it
+    /// wrote only that. Putting them in deco's file unconditionally would create
+    /// the very file a scenario about reading VS Code's is asserting is absent.
+    ///
+    /// They go in first, so that anything the scenario wrote comes later and
+    /// therefore wins — the rule the JSONC layer already applies to a repeated
+    /// key.
     fn write_user_settings(&self) {
-        let own = self.user_settings.as_deref();
-        if own.is_none() && self.language_servers {
-            // Nothing to write: no scenario settings, and the machine is allowed
-            // its language servers.
-            return;
+        let mut defaults: Vec<&str> = Vec::new();
+        if !self.language_servers {
+            defaults.push(
+                "    // deco-e2e: this machine has no language servers installed.\n    \"deco.lsp.enabled\": false",
+            );
         }
-        let mut json = String::new();
-        if self.language_servers {
-            json.push_str(own.unwrap_or("{}"));
-        } else {
-            json.push_str("{\n    // deco-e2e: this machine has no language servers installed.\n");
-            json.push_str("    \"deco.lsp.enabled\": false");
-            match own {
-                Some(settings) => {
-                    let rest = settings.trim();
-                    let inner = rest
-                        .strip_prefix('{')
-                        .unwrap_or_else(|| panic!("settings must be a JSON object, got {rest}"));
-                    if inner.trim_start().starts_with('}') {
-                        json.push_str("\n}");
-                    } else {
-                        json.push(',');
-                        json.push_str(inner);
-                    }
+        // Deliberately *not* pinning `files.eol` here, tempting as it is. A new
+        // file's ending depends on the platform, so a scenario asserting the bytes
+        // of a file it created has to say which ending it expects — but setting
+        // the key is not a way to make that go away, because in deco an explicit
+        // `files.eol` also converts the ending of every *existing* file that is
+        // opened. A harness default would silently change what those scenarios
+        // were testing. Each scenario that creates a file says so for itself.
+
+        match (&self.user_settings, &self.vscode_settings) {
+            (Some(own), vscode) => {
+                write_config(
+                    &self.deco_paths().settings,
+                    &with_defaults(&defaults, Some(own)),
+                );
+                if let Some(vscode) = vscode {
+                    write_config(&self.vscode_paths().settings, vscode);
                 }
-                None => json.push_str("\n}"),
+            }
+            (None, Some(vscode)) => {
+                write_config(
+                    &self.vscode_paths().settings,
+                    &with_defaults(&defaults, Some(vscode)),
+                );
+            }
+            (None, None) => {
+                write_config(&self.deco_paths().settings, &with_defaults(&defaults, None));
             }
         }
-        write_config(&self.deco_paths().settings, &json);
     }
 
     /// What `deco` says about a command line it refuses.
@@ -343,6 +358,39 @@ impl Drop for Scenario {
         }
         let _ = std::fs::remove_dir_all(&self.root);
     }
+}
+
+/// A settings object holding the harness's keys, then the scenario's own.
+///
+/// Spliced textually rather than parsed and merged, because a scenario's JSON is
+/// JSONC — it has comments in it, on purpose, because a real `settings.json`
+/// does — and a merge through a JSON value would throw them away.
+fn with_defaults(defaults: &[&str], own: Option<&str>) -> String {
+    if defaults.is_empty() {
+        // Nothing of the harness's to add, so the scenario's own text goes to
+        // disk exactly as it was written — and an object with only a leading
+        // comma in it, which is what splicing nothing in front would produce, is
+        // not valid JSON.
+        return own.unwrap_or("{}").to_owned();
+    }
+    let mut json = String::from("{\n");
+    json.push_str(&defaults.join(",\n"));
+    match own {
+        Some(settings) => {
+            let rest = settings.trim();
+            let inner = rest
+                .strip_prefix('{')
+                .unwrap_or_else(|| panic!("settings must be a JSON object, got {rest}"));
+            if inner.trim_start().starts_with('}') {
+                json.push_str("\n}");
+            } else {
+                json.push(',');
+                json.push_str(inner);
+            }
+        }
+        None => json.push_str("\n}"),
+    }
+    json
 }
 
 /// Writes a configuration file, creating its directory.

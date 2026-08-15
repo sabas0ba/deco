@@ -119,7 +119,7 @@ fn an_untitled_buffer_cannot_overwrite_the_file_deco_was_started_with() {
 
 #[test]
 fn saving_an_untitled_buffer_asks_for_a_name_and_then_writes_it() {
-    let scenario = Scenario::new("untitled-save");
+    let scenario = Scenario::new("untitled-save").user_settings(r#"{ "files.eol": "\n" }"#);
     let mut editor = scenario.launch(&[]);
 
     editor.type_text("scratch\n");
@@ -290,7 +290,7 @@ fn a_file_saved_under_a_new_name_is_not_then_opened_a_second_time() {
     // Quick open hands over absolute paths, so the same file did not compare
     // equal to itself and opened again in a second buffer with its own undo
     // history — and whichever tab was saved last silently won.
-    let scenario = Scenario::new("save-then-reopen");
+    let scenario = Scenario::new("save-then-reopen").user_settings(r#"{ "files.eol": "\n" }"#);
     let mut editor = scenario.launch(&[]);
 
     editor.type_text("scratch\n");

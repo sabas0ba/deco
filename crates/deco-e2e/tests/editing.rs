@@ -41,7 +41,10 @@ fn typing_a_line_and_saving_it_puts_it_in_the_file() {
 fn a_file_that_does_not_exist_yet_is_created_by_saving_it() {
     // How every editor is used to make a new file: name it on the command line
     // and start typing.
-    let scenario = Scenario::new("new-file");
+    // The ending is named rather than assumed: a new file follows the platform
+    // unless something says otherwise, and this scenario is about creating the
+    // file rather than about the runner it is created on.
+    let scenario = Scenario::new("new-file").user_settings(r#"{ "files.eol": "\n" }"#);
     let mut editor = scenario.launch(&["fresh.md"]);
     assert!(!editor.exists("fresh.md"), "nothing on disk yet");
 
@@ -61,10 +64,13 @@ fn the_indentation_settings_say_what_tab_inserts() {
     let mut editor = scenario.launch(&["a.txt"]);
 
     editor.press("tab");
-    editor.press("ctrl+s");
-
-    assert_eq!(editor.on_disk("a.txt"), "  x\n");
+    // Read before saving: the save message is the whole absolute path, which on a
+    // deep directory is wider than the terminal and pushes everything else off
+    // the status line.
     editor.screen().assert_status("Spaces: 2");
+
+    editor.press("ctrl+s");
+    assert_eq!(editor.on_disk("a.txt"), "  x\n");
 }
 
 #[test]
@@ -165,6 +171,39 @@ fn a_windows_file_stays_a_windows_file_through_an_edit() {
     assert_eq!(
         String::from_utf8_lossy(&editor.on_disk_bytes("dos.txt")),
         "one\r\ntwo\r\nthree\r\n"
+    );
+}
+
+#[test]
+fn setting_files_eol_converts_every_existing_file_that_is_opened() {
+    // A finding, pinned rather than asserted as good.
+    //
+    // `files.eol` in VS Code is the ending a *new* file gets; an existing file
+    // keeps the ending it already had. In deco the setting is applied in
+    // `Document::from_file`, so it converts on open — and the conversion reaches
+    // the disk on the next save of a file that was opened only to have a typo
+    // fixed in it.
+    //
+    // `"files.eol": "\n"` is an ordinary thing to have in a settings file. With it,
+    // editing one line of a CRLF file rewrites every line of it, which is a
+    // whole-file diff nobody asked for and one that is invisible in the editor.
+    //
+    // The unit test beside this behaviour covers `auto`, where nothing is
+    // converted. Nobody asked what the other two values do to a file that already
+    // had an ending of its own.
+    let scenario = Scenario::new("eol-converts")
+        .user_settings(r#"{ "files.eol": "\n" }"#)
+        .file("dos.txt", "one\r\ntwo\r\n");
+    let mut editor = scenario.launch(&["dos.txt"]);
+
+    editor.press("ctrl+end");
+    editor.type_text("!");
+    editor.press("ctrl+s");
+
+    assert_eq!(
+        String::from_utf8_lossy(&editor.on_disk_bytes("dos.txt")),
+        "one\ntwo\n!",
+        "every line ending in the file was rewritten, not just the edited line"
     );
 }
 
