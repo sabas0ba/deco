@@ -157,16 +157,9 @@ fn a_terminal_too_small_to_draw_in_does_not_panic() {
     editor.screen().assert_fits();
 }
 
-#[test]
-fn a_file_whose_name_carries_an_escape_sequence_cannot_reach_the_terminal() {
-    // A file name is somebody else's text — a cloned repository can contain
-    // anything — and a terminal executes `\x1b]52;c;…` as a clipboard write. The
-    // renderer substitutes it; this is the check that the substitution is on the
-    // path a real file name takes.
-    let scenario = Scenario::new("escape-name").file("evil\u{1b}]52;c;aGk=\u{7}.txt", "hello\n");
-    let mut editor = scenario.launch(&["evil\u{1b}]52;c;aGk=\u{7}.txt"]);
-
-    let screen = editor.screen();
+/// Fails if anything a terminal would execute is in the frame.
+#[track_caller]
+fn assert_nothing_executable(screen: &deco_e2e::Screen) {
     assert!(
         !screen.text().contains('\u{1b}'),
         "an escape byte reached the screen{}",
@@ -177,6 +170,59 @@ fn a_file_whose_name_carries_an_escape_sequence_cannot_reach_the_terminal() {
         "a bell reached the screen{}",
         screen.dump()
     );
+}
+
+#[test]
+fn a_settings_file_cannot_put_an_escape_sequence_on_the_screen() {
+    // A cloned repository's `.vscode/settings.json` is somebody else's text, and
+    // deco quotes it back when it cannot make sense of it — here, the name of a
+    // theme that is not installed. That message reaches the status line without
+    // passing through the renderer's substitution of a *document's* text, so
+    // `paint` is what has to make it printable.
+    //
+    // Spelled as JSON escapes rather than raw bytes, which is both what a hostile
+    // file would have to do and half the reason this is worth a scenario: a raw
+    // control character is invalid JSON and the parser refuses the whole file, so
+    // the only way one of these reaches a message is `\u001b` — perfectly valid
+    // JSON, decoding to exactly the byte a terminal acts on.
+    let scenario = Scenario::new("escape-setting")
+        .file("a.txt", "hello\n")
+        .workspace_settings(
+            r#"{ "workbench.colorTheme": "Nothing\u001b]52;c;aGk=\u0007Like This" }"#,
+        );
+    let mut editor = scenario.launch(&["a.txt"]);
+
+    assert!(
+        editor
+            .problems()
+            .iter()
+            .any(|problem| problem.contains('\u{1b}')),
+        "the theme name should have reached a problem message: {:?}",
+        editor.problems()
+    );
+    assert_nothing_executable(&editor.screen());
+}
+
+// A file name is somebody else's text too, and it reaches the tab bar and the
+// status line without passing through the renderer's own substitution.
+//
+// Unix only, because the hazard is. Windows refuses to *create* a name holding a
+// control byte — `ERROR_INVALID_NAME` — so there is no such file to open there,
+// and a scenario that tried would be asserting about the operating system's
+// refusal rather than about deco. The sibling above covers the same substitution
+// on every platform.
+#[cfg(unix)]
+#[test]
+fn a_file_whose_name_carries_an_escape_sequence_cannot_reach_the_terminal() {
+    // OSC 52 sets the clipboard on every terminal that supports it, and the bell
+    // rings. Declared here rather than beside the scenario above, which spells the
+    // same bytes as the JSON escapes a settings file has to use — and where a
+    // constant would be unused on the platforms this scenario is compiled out of.
+    let name = "evil\u{1b}]52;c;aGk=\u{7}.txt".to_owned();
+    let scenario = Scenario::new("escape-name").file(&name, "hello\n");
+    let mut editor = scenario.launch(&[&name]);
+
+    assert_nothing_executable(&editor.screen());
 }
 
 #[test]
