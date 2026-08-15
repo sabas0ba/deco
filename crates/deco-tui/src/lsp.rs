@@ -29,8 +29,9 @@ use deco_core::position::Position;
 use deco_editor::Session;
 use deco_lsp::process::Consent;
 use deco_lsp::requests::CompletionTrigger;
+use deco_lsp::server::ServerConfig;
 use deco_lsp::supervisor::{Supervisor, Update};
-use deco_lsp::uri::PathStyle;
+use deco_lsp::uri::PathMap;
 use deco_lsp::{Hover, RequestId, ServerRegistry, Trust};
 
 use crate::suggest::Suggest;
@@ -40,6 +41,9 @@ use crate::suggest::Suggest;
 /// Shorter than [`deco_lsp::supervisor::INITIALIZE_TIMEOUT`] because this
 /// happens while the user is looking at an empty screen waiting for their file.
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The same, for a server on the other end of a transport.
+const REMOTE_STARTUP_TIMEOUT: Duration = Duration::from_secs(45);
 
 /// The language-server side of a terminal session.
 pub struct Lsp {
@@ -52,7 +56,9 @@ pub struct Lsp {
     /// The document the server has been told about.
     open: Option<PathBuf>,
     root: Option<PathBuf>,
-    style: PathStyle,
+    paths: PathMap,
+    /// Where a server should run, and how to reach it if that is elsewhere.
+    location: Location,
     /// The hover currently on screen, and the position it describes.
     ///
     /// Kept with its position so it can be dismissed the moment the cursor
@@ -196,12 +202,116 @@ fn typed_between(line: &str, from: u32, to: u32) -> Vec<char> {
     String::from_utf16_lossy(&units[from..to]).chars().collect()
 }
 
+/// Where a language server runs.
+///
+/// The whole of remote language support is this enum and the [`PathMap`] it
+/// hands out. A server is a program speaking a protocol over its stdin and
+/// stdout, and every transport deco has already carries exactly that — so
+/// running one on the far end is a question of which command to spawn and which
+/// paths to put in the messages, and nothing about the protocol changes.
+#[derive(Debug, Clone)]
+pub enum Location {
+    /// On this machine, reading the checkout the editor is looking at.
+    Here,
+    /// On the machine the session is connected to.
+    Remote {
+        /// How to reach it.
+        authority: deco_remote::Authority,
+        /// How to build the command that gets there.
+        options: deco_remote::TransportOptions,
+        /// The directory it serves, as *it* spells it.
+        workspace: PathBuf,
+    },
+}
+
+impl Location {
+    /// How long to wait for a server to answer `initialize`.
+    ///
+    /// Longer over a transport, and not by a little: the wait covers an SSH
+    /// handshake and a language server reading a project from a disk this
+    /// machine never touches. Ten seconds is generous locally and would be a
+    /// coin toss on a real remote.
+    pub fn startup_timeout(&self) -> Duration {
+        match self {
+            Self::Here => STARTUP_TIMEOUT,
+            Self::Remote { .. } => REMOTE_STARTUP_TIMEOUT,
+        }
+    }
+
+    /// How the editor's paths relate to the ones a server there will see.
+    pub fn paths(&self) -> PathMap {
+        match self {
+            Self::Here => PathMap::host(),
+            Self::Remote { workspace, .. } => PathMap::remote(workspace.clone()),
+        }
+    }
+
+    /// The definition, with its command changed into one that runs it there.
+    ///
+    /// Environment variables move into the argument vector as `env NAME=VALUE`
+    /// rather than staying on the config, because [`deco_lsp`] sets them on the
+    /// process it spawns — which over a transport is `ssh`, on this machine.
+    /// They would have been set in the wrong place and silently not reached the
+    /// server at all.
+    pub fn resolve(&self, config: &ServerConfig) -> Result<ServerConfig, String> {
+        let Self::Remote {
+            authority, options, ..
+        } = self
+        else {
+            return Ok(config.clone());
+        };
+
+        let mut argv = Vec::new();
+        if !config.env.is_empty() {
+            argv.push("env".to_owned());
+            for (name, value) in &config.env {
+                // A name with an `=` in it would split in the wrong place and
+                // set a variable nobody asked for; a NUL or a newline cannot be
+                // passed through an argument vector at all. Refused by name
+                // rather than mangled, which is the same rule the server
+                // definition itself is read under.
+                if name.is_empty()
+                    || name.contains('=')
+                    || [name.as_str(), value.as_str()]
+                        .iter()
+                        .any(|text| text.contains('\0') || text.contains('\n'))
+                {
+                    return Err(format!(
+                        "`{name}` cannot be sent to a remote server as an environment variable"
+                    ));
+                }
+                argv.push(format!("{name}={value}"));
+            }
+        }
+        argv.push(config.command.program.clone());
+        argv.extend(config.command.args.iter().cloned());
+
+        let command = deco_remote::command_for(authority, &argv, options)
+            .map_err(|error| error.to_string())?;
+        Ok(ServerConfig {
+            command: deco_lsp::server::Command {
+                program: command.program,
+                args: command.args,
+            },
+            // Moved into the argument vector above, so leaving them here as well
+            // would set them twice: once uselessly on this machine.
+            env: Vec::new(),
+            ..config.clone()
+        })
+    }
+}
+
 impl Lsp {
-    /// Reads the configuration and prepares to attach servers.
+    /// Reads the configuration and prepares to attach servers here.
+    pub fn new(session: &mut Session, root: Option<PathBuf>) -> Self {
+        Self::with_location(session, root, Location::Here)
+    }
+
+    /// The same, saying where the servers should run.
     ///
     /// Nothing is started here: which server to run depends on the document,
     /// which may not be open yet.
-    pub fn new(session: &mut Session, root: Option<PathBuf>) -> Self {
+    pub fn with_location(session: &mut Session, root: Option<PathBuf>, location: Location) -> Self {
         let enabled = deco_lsp::settings::enabled(&session.settings);
         let (registry, problems) = deco_lsp::settings::registry(&session.settings);
         for problem in problems {
@@ -215,8 +325,14 @@ impl Lsp {
             supervisor: None,
             language: None,
             open: None,
-            root,
-            style: PathStyle::host(),
+            paths: location.paths(),
+            root: match &location {
+                // The root a server is told about has to be one it can see, and
+                // in a remote session that is a directory on the other machine.
+                Location::Remote { workspace, .. } => Some(workspace.clone()),
+                Location::Here => root,
+            },
+            location,
             hover: None,
             hover_request: None,
             definition_request: None,
@@ -645,12 +761,22 @@ impl Lsp {
                 continue;
             }
 
+            // Rewritten to run wherever this session's servers run, which for a
+            // remote session means the same definition wrapped in the transport.
+            let config = match self.location.resolve(config) {
+                Ok(config) => config,
+                Err(problem) => {
+                    session.status = Some(format!("{}: {problem}", config.id));
+                    session.problems.push(problem);
+                    return;
+                }
+            };
             match Supervisor::start(
-                config,
+                &config,
                 Consent::Granted,
                 self.root.as_deref(),
-                self.style,
-                STARTUP_TIMEOUT,
+                self.paths.clone(),
+                self.location.startup_timeout(),
             ) {
                 Ok(supervisor) => {
                     self.supervisor = Some(supervisor);
@@ -1001,7 +1127,7 @@ impl Lsp {
             return true;
         }
 
-        let Ok(path) = target.uri.to_path(self.style) else {
+        let Ok(path) = self.paths.from_uri(&target.uri) else {
             // `jdt:`, `untitled:` and friends. The editor cannot open one, and
             // pretending otherwise would create an empty buffer named after a
             // URI.
@@ -1052,7 +1178,7 @@ impl Lsp {
     /// widget that behaved almost identically would be a second place for it to
     /// behave slightly differently.
     fn offer_locations(&mut self, session: &mut Session, locations: &[deco_lsp::Location]) {
-        let style = self.style;
+        let paths = self.paths.clone();
         // The line's text is what makes a list of locations readable, and for a
         // location in a file that is not on screen it has to be read from disk.
         // One cache per response, because a server answering "find all references"
@@ -1062,7 +1188,7 @@ impl Lsp {
         let mut entries = Vec::new();
 
         for location in locations {
-            let Ok(path) = location.uri.to_path(style) else {
+            let Ok(path) = paths.from_uri(&location.uri) else {
                 // `jdt:` and friends: nothing here can open one, and an entry that
                 // cannot be opened is worse than one that is missing.
                 continue;
@@ -1216,6 +1342,110 @@ mod tests {
     use super::*;
     use deco_config::{Scope, Settings};
     use serde_json::json;
+
+    /// A server definition to be rewritten.
+    fn definition(env: Vec<(String, String)>) -> ServerConfig {
+        ServerConfig {
+            id: "toml-lsp".to_owned(),
+            language_ids: vec!["toml".to_owned()],
+            command: deco_lsp::server::Command {
+                program: "taplo".to_owned(),
+                args: vec!["lsp".to_owned(), "stdio".to_owned()],
+            },
+            env,
+            initialization_options: None,
+            trust: Trust::User,
+        }
+    }
+
+    fn remote() -> Location {
+        Location::Remote {
+            authority: deco_remote::Authority::parse("ssh-remote+myhost").expect("an authority"),
+            options: deco_remote::TransportOptions::default(),
+            workspace: PathBuf::from("/home/u/project"),
+        }
+    }
+
+    #[test]
+    fn a_local_session_runs_the_definition_exactly_as_written() {
+        let config = definition(vec![("RUST_LOG".to_owned(), "debug".to_owned())]);
+        let resolved = Location::Here.resolve(&config).expect("no rewriting");
+        assert_eq!(resolved.command, config.command);
+        assert_eq!(resolved.env, config.env);
+    }
+
+    #[test]
+    fn a_remote_session_runs_the_same_definition_over_the_transport() {
+        let resolved = remote()
+            .resolve(&definition(Vec::new()))
+            .expect("a command");
+        assert_eq!(resolved.command.program, "ssh");
+        // The server's own command survives as the tail, as separate arguments:
+        // the transport never assembles a shell string.
+        let tail = &resolved.command.args[resolved.command.args.len() - 3..];
+        assert_eq!(tail, ["taplo", "lsp", "stdio"]);
+        assert!(resolved.command.args.contains(&"myhost".to_owned()));
+        // Everything else about the definition is untouched — it is the same
+        // server, started somewhere else.
+        assert_eq!(resolved.id, "toml-lsp");
+        assert_eq!(resolved.language_ids, ["toml"]);
+    }
+
+    #[test]
+    fn environment_variables_travel_to_the_far_end_rather_than_being_set_here() {
+        // `deco-lsp` sets `env` on the process it spawns, which over a transport
+        // is `ssh` on this machine. Left there they would be set in the wrong
+        // place and never reach the server, which is the kind of failure that
+        // looks like the setting being ignored.
+        let config = definition(vec![
+            ("RUST_LOG".to_owned(), "debug".to_owned()),
+            ("PATH_EXTRA".to_owned(), "/opt/bin".to_owned()),
+        ]);
+        let resolved = remote().resolve(&config).expect("a command");
+        assert!(resolved.env.is_empty(), "{:?}", resolved.env);
+
+        let args = resolved.command.args.join(" ");
+        assert!(
+            args.contains("env RUST_LOG=debug PATH_EXTRA=/opt/bin taplo lsp stdio"),
+            "{args}"
+        );
+    }
+
+    #[test]
+    fn an_environment_variable_that_cannot_be_sent_is_refused_by_name() {
+        // `NAME=VALUE` splits at the first `=`, so a name containing one would
+        // set a variable nobody asked for.
+        let config = definition(vec![("A=B".to_owned(), "c".to_owned())]);
+        let error = remote().resolve(&config).expect_err("a refusal");
+        assert!(error.contains("A=B"), "{error}");
+
+        // And a newline cannot be carried in an argument vector at all.
+        let config = definition(vec![("A".to_owned(), "one\ntwo".to_owned())]);
+        assert!(remote().resolve(&config).is_err());
+    }
+
+    #[test]
+    fn a_remote_session_maps_paths_through_the_far_ends_workspace() {
+        let paths = remote().paths();
+        assert_eq!(
+            paths
+                .to_uri(Path::new("src/main.rs"))
+                .expect("a uri")
+                .as_str(),
+            "file:///home/u/project/src/main.rs"
+        );
+        assert!(Location::Here
+            .paths()
+            .to_uri(Path::new("src/main.rs"))
+            .is_err());
+    }
+
+    #[test]
+    fn a_remote_server_is_given_longer_to_start() {
+        // The wait covers an SSH handshake and a server reading a project from a
+        // disk this machine never touches.
+        assert!(remote().startup_timeout() > Location::Here.startup_timeout());
+    }
 
     /// A session pinned to Linux, so the keymap and context keys agree
     /// regardless of which platform the test runs on.
@@ -1480,7 +1710,7 @@ mod tests {
 
     fn location(path: &str, line: u32, character: u32) -> deco_lsp::Location {
         deco_lsp::Location {
-            uri: deco_lsp::Uri::from_path(Path::new(path), PathStyle::Unix).unwrap(),
+            uri: deco_lsp::Uri::from_path(Path::new(path), deco_lsp::uri::PathStyle::Unix).unwrap(),
             range: deco_core::position::Range::new(
                 Position::new(line, character),
                 Position::new(line, character + 3),

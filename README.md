@@ -94,7 +94,7 @@ thin painter.
 | Command identifiers | Yes, for implemented commands |
 | Theme extensions from the marketplace | Yes — declarative, no host process; `ctrl+k ctrl+t` lists them |
 | Code extensions (`main`) | Commands run: the palette lists them, choosing one starts a sandboxed host. The surface an extension can reach is three calls wide — see [Extensions](docs/extensions.md#what-an-extension-can-reach-today) |
-| Remote SSH / containers / WSL | Open, edit and save a file on the far end with `--remote ssh-remote+host`, `--remote-install` puts deco there if it has none, and `--forward 3000` reaches a port on it. No language servers or search over there — see [Remote](docs/remote.md) |
+| Remote SSH / containers / WSL | Open, edit and save a file on the far end with `--remote ssh-remote+host`, `--remote-install` puts deco there if it has none, `--forward 3000` reaches a port on it, and language servers run over there too. No extensions or project search on the remote — see [Remote](docs/remote.md) |
 | Language servers (LSP) | Diagnostics, hover, go-to-definition, references, completion, symbols, semantic tokens, formatting |
 | Find and replace (`ctrl+f`, `ctrl+h`, `F3`, `ctrl+d`, `ctrl+shift+l`) | Literal search only — no regular expressions |
 | Search in files (`ctrl+shift+f`) | Yes — bounded and synchronous, and it says so |
@@ -222,10 +222,12 @@ does not:
   matching platform, and never over something that is not deco. `--forward 3000`
   reaches a port over there, using the remote's own deco as the tunnel so that it
   works over containers and WSL and not only SSH; both ends are loopback-only.
-  What is missing: no language servers or extensions over there, and no
-  project-wide search — each of which says so rather than doing the wrong thing
-  quietly. Provisioning a *different* platform is refused rather than guessed at,
-  because it needs somewhere deco is willing to download a build from.
+  Language servers run on the remote, from the same `deco.lsp.servers`
+  definitions with the far end's paths on the wire. What is missing: no
+  extensions over there, and no project-wide search — each of which says so
+  rather than doing the wrong thing quietly. Provisioning a *different* platform
+  is refused rather than guessed at, because it needs somewhere deco is willing
+  to download a build from.
 - **Rename and code actions are not wired.** Diagnostics, hover
   (`ctrl+k ctrl+i`), go-to-definition (`F12`), references (`shift+f12`),
   document symbols (`ctrl+shift+o`), completion (`ctrl+space`), semantic tokens

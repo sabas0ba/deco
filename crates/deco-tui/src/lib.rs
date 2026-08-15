@@ -22,5 +22,5 @@ pub mod render;
 pub mod suggest;
 pub mod themes;
 
-pub use app::{run, run_with, Driver, Flow, Options};
+pub use app::{run, run_with, Driver, Flow, Options, RemoteSession};
 pub use render::{render, sanitise, Frame, Row, Span};

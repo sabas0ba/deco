@@ -47,7 +47,7 @@ use crate::requests::{
 };
 use crate::server::ServerConfig;
 use crate::sync::{ContentChange, DocumentSync, SyncError};
-use crate::uri::{PathStyle, Uri};
+use crate::uri::{PathMap, Uri};
 
 /// How long to wait for `initialize` to be answered.
 ///
@@ -240,7 +240,7 @@ pub struct Supervisor {
     process: Option<ServerProcess>,
     sync: DocumentSync,
     diagnostics: DiagnosticStore,
-    style: PathStyle,
+    paths: PathMap,
     /// Set once the server is gone, so a later call reports the original reason
     /// rather than a bare "not running".
     stopped: Option<String>,
@@ -262,13 +262,15 @@ impl Supervisor {
         config: &ServerConfig,
         consent: Consent,
         root: Option<&Path>,
-        style: PathStyle,
+        paths: PathMap,
         timeout: Duration,
     ) -> Result<Self, SupervisorError> {
         let mut process = ServerProcess::spawn(config, consent)?;
         let mut client = Client::new();
 
-        let root_uri = root.and_then(|path| Uri::from_path(path, style).ok());
+        // The root as the *server* spells it, which in a remote session is a
+        // path on that machine rather than anything this one has.
+        let root_uri = root.and_then(|path| Uri::from_path(path, paths.style()).ok());
         let Outgoing(message) =
             client.initialize(root_uri.as_ref(), config.initialization_options.clone())?;
 
@@ -291,7 +293,7 @@ impl Supervisor {
             process: Some(process),
             sync: DocumentSync::new(),
             diagnostics: DiagnosticStore::new(),
-            style,
+            paths,
             stopped: None,
             pending_updates: Vec::new(),
         };
@@ -388,9 +390,17 @@ impl Supervisor {
         self.diagnostics.for_uri(uri)
     }
 
-    /// The URI a path maps to under this server's path style.
+    /// The URI a path maps to for this server.
+    ///
+    /// The one place a path becomes a URI, which is why the remote prefix is
+    /// applied here and not at each of the eleven callers.
     pub fn uri_for(&self, path: &Path) -> Option<Uri> {
-        Uri::from_path(path, self.style).ok()
+        self.paths.to_uri(path).ok()
+    }
+
+    /// How this server's paths relate to the editor's.
+    pub fn paths(&self) -> &PathMap {
+        &self.paths
     }
 
     /// Tells the server a document is open.
@@ -989,7 +999,7 @@ mod tests {
             process: None,
             sync: DocumentSync::new(),
             diagnostics: DiagnosticStore::new(),
-            style: PathStyle::Unix,
+            paths: PathMap::local(crate::uri::PathStyle::Unix),
             stopped: None,
             pending_updates: Vec::new(),
         }

@@ -6,7 +6,7 @@
 //! makes sense in a process: the remote transports, the server mode, and choosing
 //! a frontend.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use deco_editor::Session;
 
@@ -63,7 +63,7 @@ fn main() -> Result<()> {
     // so binding them to the session rather than to the process is what makes a
     // forward end when the session does.
     let _forwards = forwards(&cli, server_path.as_deref(), &mut session)?;
-    if let Some(client) = remote.as_mut() {
+    if let Some(client) = remote.as_mut().map(|remote| &mut remote.client) {
         for path in &cli.files {
             let asked = path.display().to_string();
             let text = client
@@ -124,7 +124,7 @@ fn connect(
     authority: &str,
     cli: &cli::Cli,
     session: &mut Session,
-) -> Result<(deco_remote::Client, String)> {
+) -> Result<(deco_tui::RemoteSession, String)> {
     let authority = deco_remote::Authority::parse(authority)
         .with_context(|| format!("`{authority}` is not a remote deco understands"))?;
     let workspace = cli
@@ -187,7 +187,15 @@ fn connect(
         "remote session: {} is serving {}",
         command.program, hello.workspace
     ));
-    Ok((client, server_path))
+    // The workspace as the *far end* spells it, which is what every URI a
+    // language server over there sees has to be built from — and the one thing
+    // this machine cannot work out for itself.
+    let location = deco_tui::lsp::Location::Remote {
+        authority,
+        options,
+        workspace: PathBuf::from(&hello.workspace),
+    };
+    Ok((deco_tui::RemoteSession { client, location }, server_path))
 }
 
 /// Where the remote's deco is, once everything that can change the answer has.

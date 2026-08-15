@@ -143,6 +143,18 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
     run_with(session, path, None)
 }
 
+/// A session whose files live on another machine.
+///
+/// Carries what the editor needs beyond the connection itself: language servers
+/// have to be started over there too, and that needs the transport as well as
+/// the directory the far end is serving.
+pub struct RemoteSession {
+    /// The connection files are read and written through.
+    pub client: deco_remote::Client,
+    /// Where language servers run, which is the same machine.
+    pub location: crate::lsp::Location,
+}
+
 /// The editor, optionally against a remote workspace.
 ///
 /// `remote` present means every file the session reads and writes lives on the
@@ -150,14 +162,14 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
 /// deco does not open local and remote files in one window: the workspace is one
 /// place, and half of one would make every path ambiguous.
 ///
-/// What is *not* redirected is stated where it can be checked: language servers
-/// are not started at all in remote mode (they would be looking at a local
-/// checkout that does not exist), and search-in-files is local, so it is refused
-/// rather than allowed to search the wrong machine.
+/// What is *not* redirected is stated where it can be checked: search-in-files is
+/// local, so it is refused rather than allowed to search the wrong machine.
+/// Language servers are not in that list any more — they run on the machine
+/// holding the files, which is the only place one could read them.
 pub fn run_with(
     session: &mut Session,
     path: Option<PathBuf>,
-    remote: Option<deco_remote::Client>,
+    remote: Option<RemoteSession>,
 ) -> Result<()> {
     let _guard = TerminalGuard::enter()?;
     let started = Instant::now();
@@ -240,8 +252,9 @@ pub struct Options {
     /// The file deco was started with. Relative paths and the language server's
     /// workspace root are resolved against its directory.
     pub started_with: Option<PathBuf>,
-    /// Present when every file this session reads and writes is on another machine.
-    pub remote: Option<deco_remote::Client>,
+    /// Present when every file this session reads and writes is on another
+    /// machine — and, with it, where language servers are started.
+    pub remote: Option<RemoteSession>,
     /// Every directory that may hold installed extensions.
     pub extension_roots: Vec<PathBuf>,
     /// What a leading `~` in a typed path expands to.
@@ -305,19 +318,17 @@ impl Driver {
 
         resize(session, width, height);
 
-        let mut lsp = Lsp::new(session, workspace_root(started_with.as_deref()));
-        if remote.is_none() {
-            lsp.attach(session);
-        } else {
-            // A language server started here would be reading a local checkout that
-            // does not exist: the files are on the other machine, and deco cannot yet
-            // start a server on that one. Said rather than left as a mystery about why
-            // `F12` does nothing.
-            session.problems.push(
-                "language servers are off in a remote session: deco cannot start one on the remote yet"
-                    .to_owned(),
-            );
-        }
+        let location = match &remote {
+            Some(remote) => remote.location.clone(),
+            None => crate::lsp::Location::Here,
+        };
+        let remote = remote.map(|remote| remote.client);
+        let mut lsp =
+            Lsp::with_location(session, workspace_root(started_with.as_deref()), location);
+        // Started the same way in both cases. A remote session runs its servers on
+        // the machine holding the files, which is the only place one could read
+        // them.
+        lsp.attach(session);
         session.frontend_commands = frontend_commands();
 
         // What is installed, listed in the palette whether or not it has started:
