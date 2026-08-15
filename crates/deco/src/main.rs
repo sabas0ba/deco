@@ -1,16 +1,19 @@
 //! The deco editor.
-
-mod cli;
-mod config;
+//!
+//! Argument parsing, configuration loading and everything else that decides what
+//! the first frame shows live in the library next door, so that they can be run
+//! against a directory a test built. What is left here is the part that only
+//! makes sense in a process: the remote transports, the server mode, and choosing
+//! a frontend.
 
 use std::path::{Path, PathBuf};
 
+use deco_editor::Session;
+
 use anyhow::{Context, Result};
 
-use crate::cli::{Frontend, Outcome};
-use deco_config::paths::{Env, Layout};
-use deco_editor::Session;
-use deco_keymap::binding::Platform;
+use deco::cli::{self, Frontend, Outcome};
+use deco::startup::{self, Boot};
 
 fn main() -> Result<()> {
     // Skipping the program name: `cli::parse` takes arguments only, so tests
@@ -44,30 +47,8 @@ fn main() -> Result<()> {
         return forward_to(target);
     }
 
-    let env = Env::from_process();
-    // The first file names the workspace; a mixed invocation has to pick one,
-    // and the first is the one the user led with.
-    let workspace = cli
-        .files
-        .first()
-        .map(PathBuf::as_path)
-        .and_then(config::workspace_root_for);
-    let loaded = if cli.clean {
-        config::LoadedConfig {
-            settings: deco_config::Settings::with_defaults(),
-            keybindings: None,
-            problems: Vec::new(),
-        }
-    } else {
-        config::load(&env, Layout::host(), workspace.as_deref())
-    };
-
-    let mut session = Session::new(
-        loaded.settings,
-        loaded.keybindings.as_deref(),
-        Platform::host(),
-    );
-    session.problems.extend(loaded.problems);
+    let boot = Boot::from_process();
+    let mut session = startup::session(&cli, &boot);
 
     // A remote session: the files are on the other machine, so they are fetched
     // rather than read, and the same connection is what saves them later.
@@ -92,35 +73,13 @@ fn main() -> Result<()> {
         }
     }
 
-    for path in cli.files.iter().filter(|_| remote.is_none()) {
-        // Absolute before the session sees it. Every other way a file gets opened
-        // — quick open, `ctrl+o`, a search result, a jump to a definition —
-        // resolves first, so a relative path from here was the one spelling that
-        // never compared equal to any other: `deco src/main.rs` and then picking
-        // the same file from `ctrl+p` opened it twice, in two buffers with two
-        // undo histories.
-        let path = absolute(path);
-        // A path that does not exist yet is a new file, not an error — that is
-        // how every editor is used to create one.
-        let text = match std::fs::read_to_string(&path) {
-            Ok(text) => text,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-            Err(error) => {
-                return Err(error).with_context(|| format!("could not read {}", path.display()))
-            }
-        };
-        session.open(path, &text);
+    if remote.is_none() {
+        startup::open_local(&mut session, &cli.files, &boot)?;
     }
-    // Opening focuses each file in turn, so the last one ends up active. The
-    // first is what the user led with, so it is the one shown.
-    if cli.files.len() > 1 {
-        for _ in 0..cli.files.len() - 1 {
-            session.run("workbench.action.previousEditor", None, 0);
-        }
-    }
+    startup::focus_first(&mut session, cli.files.len());
 
     if cli.print_config {
-        print_config(&session);
+        print!("{}", startup::config_report(&session));
         return Ok(());
     }
 
@@ -139,21 +98,6 @@ fn main() -> Result<()> {
     match cli.frontend {
         Frontend::Tui => deco_tui::run_with(&mut session, cli.files.first().cloned(), remote),
         Frontend::Gui => run_gui(&mut session),
-    }
-}
-
-/// `path` against the working directory, when it is not already absolute.
-///
-/// Lexical: a file that does not exist yet has to resolve too, so this cannot be
-/// `fs::canonicalize`. A working directory that cannot be read leaves the path as
-/// typed, which is what deco did before it resolved anything.
-fn absolute(path: &Path) -> PathBuf {
-    if path.is_absolute() {
-        return path.to_path_buf();
-    }
-    match std::env::current_dir() {
-        Ok(cwd) => cwd.join(path),
-        Err(_) => path.to_path_buf(),
     }
 }
 
@@ -178,7 +122,7 @@ fn run_gui(_session: &mut Session) -> Result<()> {
 /// outside it, so this is also the decision about what this session can reach.
 fn connect(
     authority: &str,
-    cli: &crate::cli::Cli,
+    cli: &cli::Cli,
     session: &mut Session,
 ) -> Result<(deco_tui::RemoteSession, String)> {
     let authority = deco_remote::Authority::parse(authority)
@@ -259,7 +203,7 @@ fn connect(
 /// One function because there is more than one caller — the file server and
 /// every forward — and they have to agree. An install knows better than the
 /// flag did, because it is what resolved `$HOME` on the remote into a path.
-fn server_path(cli: &crate::cli::Cli, installed: Option<&deco_remote::Installed>) -> String {
+fn server_path(cli: &cli::Cli, installed: Option<&deco_remote::Installed>) -> String {
     match installed {
         Some(installed) => installed.path().to_owned(),
         // Bare `deco`, found on the remote's PATH, is the assumption that holds
@@ -277,7 +221,7 @@ fn server_path(cli: &crate::cli::Cli, installed: Option<&deco_remote::Installed>
 /// runs — so `--remote-server-path` and `--remote-install` decide where it is
 /// here too, and a forward without a remote has nothing to tunnel to.
 fn forwards(
-    cli: &crate::cli::Cli,
+    cli: &cli::Cli,
     server_path: Option<&str>,
     session: &mut Session,
 ) -> Result<Vec<deco_remote::Forward>> {
@@ -367,7 +311,7 @@ fn no_server_hint(server_path: &str) -> String {
 /// would make "which version is over there" unanswerable.
 fn provision(
     authority: &deco_remote::Authority,
-    cli: &crate::cli::Cli,
+    cli: &cli::Cli,
     options: deco_remote::TransportOptions,
 ) -> Result<deco_remote::Installed> {
     let binary = std::env::current_exe().context("cannot find this deco to send it")?;
@@ -406,38 +350,6 @@ fn serve(workspace: Option<&Path>) -> Result<()> {
         .context("the remote session ended badly")
 }
 
-/// Prints what the editor resolved, which is the quickest way to answer "why is
-/// my setting not taking effect".
-fn print_config(session: &Session) {
-    let settings = &session.document.settings;
-    // Every value that came out of a settings file is made printable, for the reason
-    // the problem list is: `--print-config` in a cloned repository prints that
-    // repository's text to the terminal it was run from.
-    let shown = deco_tui::sanitise;
-    println!("theme               {}", shown(&session.theme.name));
-    println!(
-        "language            {}",
-        shown(session.document.language().unwrap_or("plain text"))
-    );
-    println!("editor.tabSize      {}", settings.tab_size);
-    println!("editor.insertSpaces {}", settings.insert_spaces);
-    println!("editor.wordWrap     {:?}", settings.word_wrap);
-    println!("editor.fontFamily   {}", shown(&settings.font_family));
-    println!("editor.fontSize     {}", settings.font_size);
-    println!("files.eol           {:?}", settings.eol);
-    println!("keybindings         {} bindings", session.keymap.len());
-    // How extensions would be run. Printed because refusing to degrade silently
-    // only means anything if the answer is available somewhere, and this is where
-    // someone looks for it.
-    println!(
-        "extension sandbox   {}",
-        shown(&deco_tui::extensions::sandbox_summary(&session.settings))
-    );
-    for problem in &session.problems {
-        println!("problem             {}", shown(problem));
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -453,7 +365,7 @@ mod tests {
             version: "deco 0.1.0".to_owned(),
             replaced: None,
         };
-        let cli = crate::cli::Cli::default();
+        let cli = cli::Cli::default();
         assert_eq!(
             server_path(&cli, Some(&installed)),
             "/home/u/.deco/bin/deco"
@@ -462,9 +374,9 @@ mod tests {
         // Without one, the flag decides, and without the flag it is whatever the
         // remote's PATH says.
         assert_eq!(server_path(&cli, None), "deco");
-        let cli = crate::cli::Cli {
+        let cli = cli::Cli {
             remote_server_path: Some("/opt/deco".to_owned()),
-            ..crate::cli::Cli::default()
+            ..cli::Cli::default()
         };
         assert_eq!(server_path(&cli, None), "/opt/deco");
     }

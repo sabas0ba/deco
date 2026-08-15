@@ -173,13 +173,23 @@ pub fn render_with_overlays(
 ///
 /// The frontend needs this to tell the session how tall the text area is, so
 /// exported rather than folded into the renderer.
-pub fn chrome_height(session: &Session) -> usize {
+pub fn chrome_height(session: &Session, height: usize) -> usize {
+    fixed_chrome_height(session) + prompt_rows(session, height)
+}
+
+/// The rows of chrome whose count does not depend on the terminal's height: the
+/// status bar, the find bar's one or two, the tab bar, and the prompt's own input
+/// line. Everything here is a row the editor cannot do without while it is
+/// showing — which is what makes the prompt's *list* the part that gives way when
+/// the terminal is too short to hold all of it.
+fn fixed_chrome_height(session: &Session) -> usize {
     let find = if session.find.visible() {
         1 + usize::from(session.find.replacing())
     } else {
         0
     };
-    1 + find + prompt_height(session) + tab_bar_height(session)
+    let prompt = usize::from(session.prompt.is_some());
+    1 + find + prompt + tab_bar_height(session)
 }
 
 /// One row for the tab bar, or none while a single document is open.
@@ -192,21 +202,30 @@ pub fn tab_bar_height(session: &Session) -> usize {
     usize::from(session.panes().iter().any(|pane| pane.tabs.len() > 1))
 }
 
-/// Rows the quick-open prompt takes: its own, plus a row per offered choice.
+/// Rows the open prompt's list of choices takes.
 ///
-/// The list is bounded by how many choices there are as well as by
-/// [`deco_editor::prompt::MAX_ROWS`], so a prompt with two matches costs two rows
-/// and not eight — the file is what the user is trying to look at.
-fn prompt_height(session: &Session) -> usize {
-    match &session.prompt {
-        Some(prompt) => 1 + prompt.matches().min(deco_editor::prompt::MAX_ROWS),
-        None => 0,
-    }
+/// Bounded three ways: by how many choices there are, so a prompt with two
+/// matches costs two rows and not eight; by [`deco_editor::prompt::MAX_ROWS`],
+/// because the file is what the user is trying to look at; and by the rows the
+/// terminal actually has left after the chrome that cannot be shortened.
+///
+/// That third bound is not a nicety. Eight choices, an input line and a status
+/// bar are ten rows, and a terminal can be five — at which point the frame was
+/// twice the height of the window it was painted into, which on a real terminal
+/// scrolls the screen and walks the whole editor upwards. The list is the part
+/// that gives way because it is the only part that can: it is already a window
+/// onto a longer list, and it already scrolls with the selection.
+fn prompt_rows(session: &Session, height: usize) -> usize {
+    let Some(prompt) = &session.prompt else {
+        return 0;
+    };
+    let wanted = prompt.matches().min(deco_editor::prompt::MAX_ROWS);
+    wanted.min(height.saturating_sub(fixed_chrome_height(session)))
 }
 
 fn render_text(session: &Session, width: usize, height: usize) -> Frame {
     let palette = Palette::from(session);
-    let text_height = height.saturating_sub(chrome_height(session));
+    let text_height = height.saturating_sub(chrome_height(session, height));
     // Screen rows the text area starts below: the tab bar, when it is showing.
     let top = tab_bar_height(session);
 
@@ -263,7 +282,11 @@ fn render_text(session: &Session, width: usize, height: usize) -> Frame {
     // Below the find bar, because the prompt is the thing that just opened and so
     // is the thing holding the keyboard.
     if let Some(prompt) = &session.prompt {
-        for (index, entry) in prompt.visible().iter().enumerate() {
+        // Only as many as `prompt_rows` said would fit — the same count the text
+        // area was sized against, so the two cannot disagree about how tall the
+        // frame is.
+        let listed = prompt_rows(session, height);
+        for (index, entry) in prompt.visible().iter().take(listed).enumerate() {
             rows.push(choice_row(
                 entry,
                 index == prompt.selected_row(),
@@ -277,6 +300,20 @@ fn render_text(session: &Session, width: usize, height: usize) -> Frame {
     }
 
     rows.push(status_bar(session, width, &palette));
+
+    // The backstop, for a terminal shorter than the chrome that cannot be
+    // shortened: two rows of find bar and a status bar do not fit in one row,
+    // however little else is drawn. Rows go from the top, because what is at the
+    // bottom is what has the keyboard — the input being typed into and the line
+    // that reports what happened — and a frame taller than its window does not
+    // merely lose a row, it scrolls the terminal and walks the editor off the
+    // screen.
+    if rows.len() > height {
+        let excess = rows.len() - height;
+        rows.drain(..excess);
+        cursor_cell = cursor_cell.map(|(x, y)| (x, y.saturating_sub(excess as u16)));
+    }
+
     Frame {
         rows,
         cursor: cursor_cell,
@@ -1154,7 +1191,7 @@ fn overlay_hover(
     let palette = Palette::from(session);
     // Never over the chrome: the status bar is where the editor reports things,
     // and the find bar is where the user is typing.
-    let text_height = height.saturating_sub(chrome_height(session));
+    let text_height = height.saturating_sub(chrome_height(session, height));
     if text_height < 3 || width < 8 {
         // Not enough screen to draw a box that says anything. The status bar
         // still carries the first line, so nothing is lost silently.
@@ -1334,7 +1371,7 @@ fn overlay_suggest(
     let palette = Palette::from(session);
     // Never over the chrome: the status bar is where the editor reports things,
     // and the find bar is where the user is typing.
-    let text_height = height.saturating_sub(chrome_height(session));
+    let text_height = height.saturating_sub(chrome_height(session, height));
     let rows = suggest.rows();
     if rows.is_empty() || text_height < 2 || width < 10 {
         return;
@@ -2258,8 +2295,17 @@ mod tests {
     fn a_one_row_terminal_still_renders_something() {
         // Not enough room for both bars; the status bar wins, since it is where
         // the editor says what is wrong.
+        //
+        // It used to say that and then draw both anyway: two rows into a one-row
+        // window, which a terminal answers by scrolling. The frame is now as tall
+        // as the window it is painted into, whatever is open.
         let frame = render(&searching("foo\n", "foo"), 40, 1);
-        assert_eq!(frame.rows.len(), 2);
+        assert_eq!(frame.rows.len(), 1);
+        assert!(
+            frame.rows[0].plain().contains("Ln 1"),
+            "the row that survived should be the status bar: {:?}",
+            frame.rows[0].plain()
+        );
     }
 
     // ---- The replace row ------------------------------------------------
@@ -2846,7 +2892,7 @@ mod tests {
         let mut with = session("a\nb\nc\nd\ne\nf\ng\nh\n");
         let without = render(&with, 60, 14);
         with.run("workbench.action.gotoLine", None, 0);
-        with.resize(60, 14 - chrome_height(&with));
+        with.resize(60, 14 - chrome_height(&with, 14));
         let frame = render(&with, 60, 14);
         assert_eq!(frame.rows.len(), without.rows.len());
         assert!(
@@ -2917,7 +2963,7 @@ mod tests {
         let frame = render(&session, 60, 14);
         assert!(prompt_line(&frame).contains("No commands"));
         // And the list is gone, so it costs a single row.
-        assert_eq!(chrome_height(&session), 2);
+        assert_eq!(chrome_height(&session, 14), 2);
     }
 
     #[test]
@@ -2928,9 +2974,15 @@ mod tests {
             "the window is capped"
         );
         assert_eq!(
-            chrome_height(&session),
+            chrome_height(&session, 14),
             1 + 1 + deco_editor::prompt::MAX_ROWS
         );
+
+        // …of a screen that has the rows to spare. On one that does not, the list
+        // is what gives way, so that the frame is never taller than the terminal
+        // it is painted into.
+        assert_eq!(chrome_height(&session, 5), 5);
+        assert_eq!(render(&session, 60, 5).rows.len(), 5);
     }
 
     #[test]
@@ -2977,7 +3029,7 @@ mod tests {
         let all: String = frame.rows.iter().map(Row::plain).collect();
         assert!(!all.contains("Command:"));
         assert!(!all.contains("Toggle Line Comment"));
-        assert_eq!(chrome_height(&session), 1);
+        assert_eq!(chrome_height(&session, 14), 1);
     }
 
     #[test]

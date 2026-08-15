@@ -16,6 +16,7 @@ yet.
 | [Configuration](configuration.md) | `settings.json`, `keybindings.json`, colour themes, and where they are read from |
 | [Extensions](extensions.md) | The capability model, and why an extension gets less power here than in VS Code |
 | [Remote](remote.md) | SSH, container and WSL authorities — and which half of it exists |
+| [Testing](testing.md) | Unit tests, end-to-end scenarios, and what each one is for |
 
 ## About the animations
 

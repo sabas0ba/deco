@@ -4,6 +4,7 @@ members = [
     "crates/deco",
     "crates/deco-core",
     "crates/deco-config",
+    "crates/deco-e2e",
     "crates/deco-editor",
     "crates/deco-ext",
     "crates/deco-keymap",

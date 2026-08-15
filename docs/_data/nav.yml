@@ -49,6 +49,11 @@
   url: /extensions.html
   blurb: The capability model, and why an extension gets less power here
 
+- title: Testing
+  path: testing.md
+  url: /testing.html
+  blurb: Unit tests, end-to-end scenarios, and what each one is for
+
 - title: Remote
   path: remote.md
   url: /remote.html

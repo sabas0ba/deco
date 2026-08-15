@@ -37,6 +37,7 @@ running, and is published at
 | [Configuration](docs/configuration.md) | `settings.json`, `keybindings.json`, themes, and where they are read from |
 | [Extensions](docs/extensions.md) | The capability model, and why an extension gets less power here |
 | [Remote](docs/remote.md) | SSH, container and WSL authorities, and the server that answers on the far end |
+| [Testing](docs/testing.md) | Unit tests, end-to-end scenarios, and what each one is for |
 
 The animations are generated from deco's own renderer by `cargo xtask docs`, and
 `cargo xtask docs --check` runs in CI — so a demonstration cannot show a feature

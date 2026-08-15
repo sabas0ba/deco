@@ -9,6 +9,7 @@ use crossterm::event::{self, Event};
 use crossterm::style::{Color, ResetColor, SetBackgroundColor, SetForegroundColor};
 use crossterm::{cursor, execute, queue, terminal};
 use deco_editor::{Outcome, Session};
+use deco_keymap::keys::Chord;
 use deco_theme::Rgba;
 
 use crate::keys::chord_from_event;
@@ -142,17 +143,6 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
     run_with(session, path, None)
 }
 
-/// The editor, optionally against a remote workspace.
-///
-/// `remote` present means every file the session reads and writes lives on the
-/// other end of it. That is a mode rather than a per-document property, because
-/// deco does not open local and remote files in one window: the workspace is one
-/// place, and half of one would make every path ambiguous.
-///
-/// What is *not* redirected is stated where it can be checked: language servers
-/// are not started at all in remote mode (they would be looking at a local
-/// checkout that does not exist), and search-in-files is local, so it is refused
-/// rather than allowed to search the wrong machine.
 /// A session whose files live on another machine.
 ///
 /// Carries what the editor needs beyond the connection itself: language servers
@@ -165,6 +155,17 @@ pub struct RemoteSession {
     pub location: crate::lsp::Location,
 }
 
+/// The editor, optionally against a remote workspace.
+///
+/// `remote` present means every file the session reads and writes lives on the
+/// other end of it. That is a mode rather than a per-document property, because
+/// deco does not open local and remote files in one window: the workspace is one
+/// place, and half of one would make every path ambiguous.
+///
+/// What is *not* redirected is stated where it can be checked: search-in-files is
+/// local, so it is refused rather than allowed to search the wrong machine.
+/// Language servers are not in that list any more — they run on the machine
+/// holding the files, which is the only place one could read them.
 pub fn run_with(
     session: &mut Session,
     path: Option<PathBuf>,
@@ -174,48 +175,25 @@ pub fn run_with(
     let started = Instant::now();
     let mut out = io::stdout();
 
-    let (mut width, mut height) = terminal::size().unwrap_or((80, 24));
-    resize(session, width, height);
+    let size = terminal::size().unwrap_or((80, 24));
+    let mut driver = Driver::start(
+        session,
+        Options {
+            started_with: path,
+            remote,
+            size,
+            ..Options::default()
+        },
+    );
 
-    let location = match &remote {
-        Some(remote) => remote.location.clone(),
-        None => crate::lsp::Location::Here,
-    };
-    let mut remote = remote.map(|remote| remote.client);
-    let mut lsp = Lsp::with_location(session, workspace_root(path.as_deref()), location);
-    // Started the same way in both cases. A remote session runs its servers on
-    // the machine holding the files, which is the only place one could read
-    // them.
-    lsp.attach(session);
-    session.frontend_commands = frontend_commands();
-
-    // What is installed, listed in the palette whether or not it has started:
-    // invoking one of these is what starts it. The walk happens here for the same
-    // reason the theme walk does — the core has no filesystem.
-    let catalogue = crate::extensions::discover(&extension_roots());
-    session.problems.extend(catalogue.problems.iter().cloned());
-    session
-        .frontend_commands
-        .extend(crate::extensions::rows(&catalogue));
-    let mut hosts = crate::extensions::Hosts::new(catalogue);
-
-    let mut dirty = true;
-    // When the document last changed, for `files.autoSave: "afterDelay"`. `None` while
-    // there is nothing to save.
-    let mut edited_at: Option<u64> = None;
     loop {
-        if dirty {
-            // The find bar costs a row, so the text area's height depends on
-            // whether it is open — which the last keypress may have changed.
-            resize(session, width, height);
-            let frame =
-                render::render_with_hover(session, width as usize, height as usize, lsp.hover());
+        if driver.needs_redraw() {
+            let frame = driver.frame(session);
             paint(
                 &mut out,
                 &frame,
                 wanted_cursor_style(session).map(to_decscusr),
             )?;
-            dirty = false;
         }
 
         // Waiting with a timeout rather than blocking on `event::read`, so a
@@ -224,341 +202,529 @@ pub fn run_with(
         // that results feel immediate, long enough that an idle editor is not
         // spinning.
         if !event::poll(LSP_POLL_INTERVAL)? {
-            dirty |= lsp.poll(session);
-            hosts.poll(session);
-            // Checked on the idle path only. A save while keys are still arriving
-            // would be a write per keystroke, which is the thing the delay exists to
-            // avoid.
-            if let Some(at) = edited_at {
-                let idle = started.elapsed().as_millis() as u64 - at;
-                if auto_save_due(&session.document.settings, idle, session.document.dirty) {
-                    save(session, remote.as_mut())?;
-                    lsp.saved(session);
-                    edited_at = None;
-                    dirty = true;
-                } else if !session.document.dirty {
-                    // Saved by hand in the meantime.
-                    edited_at = None;
-                }
-            }
+            driver.idle(session, elapsed_ms(started))?;
             continue;
         }
-        dirty |= lsp.poll(session);
-        hosts.poll(session);
+        driver.poll(session);
 
         match event::read()? {
             Event::Key(key) => {
                 let Some(chord) = chord_from_event(key) else {
                     continue;
                 };
-                dirty = true;
-                // Elapsed milliseconds is the monotonic clock the editor uses
-                // for undo grouping.
-                let now_ms = started.elapsed().as_millis() as u64;
-                // Remembered before the chord runs: a printable key both inserts
-                // itself and narrows an open list, and afterwards there is no way
-                // to tell which key it was.
-                let typed = printable(&chord);
-                // Remembered so a tab switch can be seen afterwards: the chord
-                // may put a different document on screen, and the language
-                // server has to be told which file it is now looking at.
-                let path_before = session.document.path.clone();
-                let was_dirty = session.document.dirty;
-                // And the language, which `ctrl+k m` can change without the
-                // document changing — a different language is a different server.
-                let language_before = session.document.language().map(str::to_owned);
-                let was_backspace = chord.key
-                    == deco_keymap::keys::Key::Named(deco_keymap::keys::NamedKey::Backspace)
-                    && !chord.modifiers.ctrl
-                    && !chord.modifiers.alt
-                    && !chord.modifiers.meta;
-
-                match session.handle_chord(chord, now_ms) {
-                    Outcome::Quit => break,
-                    Outcome::Save => {
-                        save(session, remote.as_mut())?;
-                        lsp.saved(session);
-                    }
-                    // The picker named a theme; reading it is this side's job.
-                    Outcome::LoadTheme { label, path } => {
-                        match load_theme(&label, path.as_deref()) {
-                            Ok(theme) => {
-                                if let Outcome::Message(report) = session.set_theme(theme) {
-                                    session.status = Some(report);
-                                }
-                            }
-                            Err(error) => {
-                                session.status = Some(error.clone());
-                                session.problems.push(error);
-                            }
-                        }
-                    }
-                    // The prompt named a path; writing it is this side's job, and
-                    // so is working out what it meant.
-                    Outcome::SaveAs(target) => {
-                        let target = resolve_path(&target, path.as_deref());
-                        match write_file(&target, &session.save_contents()) {
-                            Ok(()) => {
-                                if let Outcome::Message(report) = session.rename_to(target) {
-                                    session.status = Some(report);
-                                }
-                                // A different path is a different document to a
-                                // server, and possibly a different language.
-                                lsp.attach(session);
-                                lsp.saved(session);
-                            }
-                            Err(error) => {
-                                session.status = Some(error.clone());
-                                session.problems.push(error);
-                            }
-                        }
-                    }
-                    // The core asked for the file as it is on disk; reading it is
-                    // this side's job.
-                    Outcome::Revert => {
-                        let target = session.document.path.clone();
-                        match target.as_deref().map(std::fs::read_to_string) {
-                            Some(Ok(text)) => {
-                                if let Outcome::Message(report) = session.revert_to(&text) {
-                                    session.status = Some(report);
-                                }
-                                lsp.changed(session);
-                            }
-                            Some(Err(error)) => {
-                                // The edits stay: throwing them away because the
-                                // file could not be read would lose work to a
-                                // failure that had nothing to do with it.
-                                let path = target.unwrap_or_default();
-                                session.status =
-                                    Some(format!("could not read {}: {error}", path.display()));
-                            }
-                            None => {}
-                        }
-                    }
-                    // The prompt asked what to look for; walking the workspace is
-                    // this side's job.
-                    Outcome::SearchInFiles { .. } if remote.is_some() => {
-                        // The walk is local, so in a remote session it would
-                        // search this machine and report matches in files the
-                        // editor is not showing.
-                        session.status = Some(
-                            "search in files is local, and this session's files are not".to_owned(),
-                        );
-                    }
-                    Outcome::SearchInFiles { query, options } => {
-                        let root =
-                            workspace_root(path.as_deref()).unwrap_or_else(|| PathBuf::from("."));
-                        let found = crate::files::search(&root, &session.settings, &query, options);
-                        let (truncated, count) = (found.truncated, found.matches.len());
-                        session.offer_search_results(&query, found.matches);
-                        if truncated {
-                            session.status = Some(format!(
-                                "{count} matches for `{query}`, and there may be more"
-                            ));
-                        }
-                    }
-                    Outcome::SaveAll => {
-                        // The loop and the reporting are the core's; only the
-                        // write is this side's, because only this side has a
-                        // filesystem.
-                        let outcome = session.save_all(write_file);
-                        if let Outcome::Message(report) = outcome {
-                            session.status = Some(report);
-                        }
-                        lsp.saved(session);
-                    }
-                    // Quick open and search named a file; reading it is this
-                    // side's job.
-                    Outcome::OpenFile { path: target, at } => {
-                        // Resolved because the path may have been typed: `ctrl+o`
-                        // accepts `~/notes.txt` and `src/main.rs`. Quick open and
-                        // search hand over absolute paths, for which this is
-                        // identity.
-                        // In remote mode the path is the server's, relative to
-                        // the workspace it serves, and resolving it against a
-                        // local directory would produce a path on the wrong
-                        // machine.
-                        let target = match &remote {
-                            Some(_) => target,
-                            None => resolve_path(&target, path.as_deref()),
-                        };
-                        let read = match remote.as_mut() {
-                            Some(client) => client
-                                .read(&target.display().to_string())
-                                .map_err(|error| std::io::Error::other(error.to_string())),
-                            None => std::fs::read_to_string(&target),
-                        };
-                        match read {
-                            Ok(text) => {
-                                session.open(target, &text);
-                                if let Some(at) = at {
-                                    // Clamped, because the file on disk may have
-                                    // moved on since it was searched.
-                                    let at = session.document.buffer.clamp_position(at);
-                                    session.view.selections = deco_core::SelectionSet::caret(at);
-                                    session.view.reveal_cursor(
-                                        &session.document.buffer,
-                                        &session.document.settings,
-                                    );
-                                }
-                            }
-                            Err(error) => {
-                                session.status =
-                                    Some(format!("could not open {}: {error}", target.display()));
-                            }
-                        }
-                    }
-                    // Commands the core cannot implement because they need a
-                    // language server. Named rather than guessed at, so a
-                    // mistyped binding still reports as unknown.
-                    Outcome::Frontend(command) => match command.as_str() {
-                        "editor.action.showHover" => lsp.request_hover(session),
-                        "editor.action.revealDefinition" => lsp.request_definition(session),
-                        "editor.action.goToReferences" => lsp.request_references(session),
-                        "workbench.action.gotoSymbol" => lsp.request_document_symbols(session),
-                        // The extension directories have to be walked from here,
-                        // for the same reason the file list is.
-                        "workbench.action.selectTheme" => {
-                            let available = crate::themes::list(&extension_roots());
-                            session.offer_themes(crate::themes::rows(&available));
-                        }
-                        "closeHoverWidget" => lsp.dismiss_hover(),
-                        "editor.action.triggerSuggest" => lsp.request_completion(
-                            session,
-                            deco_lsp::requests::CompletionTrigger::Invoked,
-                        ),
-                        // The workspace has to be walked from here: the core has
-                        // no filesystem.
-                        // The listing has to come from wherever the files are.
-                        "workbench.action.quickOpen" if remote.is_some() => {
-                            let client = remote.as_mut().expect("just checked");
-                            match client.list() {
-                                Ok(files) => session.offer_files(
-                                    files
-                                        .into_iter()
-                                        .map(|file| {
-                                            deco_editor::commands::PaletteEntry::new(&file, &file)
-                                        })
-                                        .collect(),
-                                ),
-                                Err(error) => {
-                                    session.status =
-                                        Some(format!("could not list the remote: {error}"));
-                                }
-                            }
-                        }
-                        "workbench.action.quickOpen" => {
-                            let root = workspace_root(path.as_deref())
-                                .unwrap_or_else(|| PathBuf::from("."));
-                            let listing = crate::files::list(&root, &session.settings);
-                            let truncated = listing.truncated;
-                            session.offer_files(listing.files);
-                            if truncated {
-                                session.status = Some(format!(
-                                    "showing the first {} files",
-                                    crate::files::MAX_FILES
-                                ));
-                            }
-                        }
-                        "editor.action.formatDocument" => lsp.request_formatting(session, false),
-                        "editor.action.formatSelection" => lsp.request_formatting(session, true),
-                        "hideSuggestWidget" => lsp.dismiss_suggest(),
-                        "selectNextSuggestion" => {
-                            lsp.select_next();
-                        }
-                        "selectPrevSuggestion" => {
-                            lsp.select_previous();
-                        }
-                        "acceptSelectedSuggestion" => {
-                            lsp.accept(session, now_ms);
-                        }
-                        // An extension's command, whose identifier is whatever is
-                        // installed rather than anything written down here. Asked
-                        // last so that no core command can be shadowed by one.
-                        other if hosts.run_command(session, other) => {}
-                        other => {
-                            session.status = Some(format!("{other} is not implemented yet"));
-                        }
-                    },
-                    _ => {}
-                }
-
-                // While the find bar has the keyboard, a keystroke narrows the
-                // query and the document never sees it. A completion list left
-                // open underneath would be narrowed by text that was never
-                // typed into the file — so it goes, along with any hover.
-                if session.find.visible() || session.prompt.is_some() {
-                    lsp.dismiss_suggest();
-                    lsp.dismiss_hover();
-                }
-                // A printable key both typed itself and narrowed the list; a
-                // backspace both deleted and widened it. Both after the command,
-                // so the list and the document agree about what has been typed.
-                else if let Some(c) = typed {
-                    if !lsp.typed(session, c) {
-                        // No list was open, so this may be a trigger character —
-                        // `.` or `::` — that should open one.
-                        if lsp
-                            .completion_triggers()
-                            .iter()
-                            .any(|trigger| trigger.ends_with(c))
-                        {
-                            lsp.request_completion(
-                                session,
-                                deco_lsp::requests::CompletionTrigger::Character(c.to_string()),
-                            );
-                        }
-                    }
-                } else if was_backspace {
-                    lsp.backspaced(session);
-                }
-                // The chord may have switched tabs — ctrl+tab, ctrl+w, a file
-                // opened from a jump. `attach` is idempotent, so calling it for
-                // the same document costs a comparison; for a new one it sends
-                // didClose/didOpen or starts the right server, and the stored
-                // diagnostics for the returning document are collected.
-                if session.document.path != path_before
-                    || session.document.language().map(str::to_owned) != language_before
-                {
-                    // A hover or completion list anchored in the old document
-                    // would describe text that is no longer on screen — or, after
-                    // a language change, would be the old server's answer about a
-                    // file it is no longer responsible for.
-                    lsp.dismiss_hover();
-                    lsp.dismiss_suggest();
-                    lsp.attach(session);
-                    lsp.refresh_diagnostics(session);
-                }
-                // After the command, not before: the server has to be told
-                // about the text as it now is.
-                lsp.changed(session);
-                // A hover describing where the cursor was is worse than none.
-                dirty |= lsp.cursor_moved(session);
-
-                // The auto-save clock restarts on every edit, so a delay measured
-                // from the *first* keystroke of a paragraph cannot fire in the middle
-                // of typing it. Cleared when the document is clean again, whether
-                // this keystroke saved it or undid its way back.
-                if session.document.dirty {
-                    edited_at = Some(started.elapsed().as_millis() as u64);
-                } else if was_dirty {
-                    edited_at = None;
+                if driver.key(session, chord, elapsed_ms(started))? == Flow::Quit {
+                    break;
                 }
             }
-            Event::Resize(new_width, new_height) => {
-                width = new_width;
-                height = new_height;
-                resize(session, width, height);
-                dirty = true;
-            }
+            Event::Resize(width, height) => driver.resize(session, width, height),
             _ => {}
         }
     }
 
     // Before the terminal guard restores the screen, so a server that takes a
     // moment to stop does so while the editor still looks alive.
-    lsp.detach();
+    driver.shutdown();
     Ok(())
+}
+
+/// Milliseconds since the editor started, which is the monotonic clock the core
+/// uses for undo grouping and the auto-save delay.
+fn elapsed_ms(started: Instant) -> u64 {
+    started.elapsed().as_millis() as u64
+}
+
+/// Whether the loop should keep going after a keystroke.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Flow {
+    /// Carry on.
+    Continue,
+    /// The user asked to quit.
+    Quit,
+}
+
+/// Everything a [`Driver`] needs that it cannot work out from the session.
+///
+/// The three that are read from the process by default — the home directory, the
+/// extension directories and the terminal size — are fields rather than calls
+/// buried in the loop, so a test can put a driver in a temporary home instead of
+/// the one the test runner happens to have.
+pub struct Options {
+    /// The file deco was started with. Relative paths and the language server's
+    /// workspace root are resolved against its directory.
+    pub started_with: Option<PathBuf>,
+    /// Present when every file this session reads and writes is on another
+    /// machine — and, with it, where language servers are started.
+    pub remote: Option<RemoteSession>,
+    /// Every directory that may hold installed extensions.
+    pub extension_roots: Vec<PathBuf>,
+    /// What a leading `~` in a typed path expands to.
+    pub home: Option<PathBuf>,
+    /// What a relative typed path is taken against when the session has no file
+    /// to name a workspace — `deco` on its own, and then a save-as.
+    pub cwd: Option<PathBuf>,
+    /// The terminal size, in cells.
+    pub size: (u16, u16),
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            started_with: None,
+            remote: None,
+            extension_roots: extension_roots(),
+            home: deco_config::paths::Env::from_process().home,
+            cwd: std::env::current_dir().ok(),
+            size: (80, 24),
+        }
+    }
+}
+
+/// The event loop, with the terminal taken out of it.
+///
+/// [`run_with`] is this plus a source of events and a painter: it reads keys from
+/// crossterm and writes frames to stdout, and everything in between — what a chord
+/// does, which of its outcomes need a filesystem, when an idle editor saves — is
+/// here. The split is what lets the loop be driven by a test with no terminal
+/// attached, against a real workspace on disk, rather than being reachable only by
+/// a person holding a keyboard.
+pub struct Driver {
+    lsp: Lsp,
+    hosts: crate::extensions::Hosts,
+    remote: Option<deco_remote::Client>,
+    started_with: Option<PathBuf>,
+    extension_roots: Vec<PathBuf>,
+    home: Option<PathBuf>,
+    cwd: Option<PathBuf>,
+    width: u16,
+    height: u16,
+    dirty: bool,
+    /// When the document last changed, for `files.autoSave: "afterDelay"`. `None`
+    /// while there is nothing to save.
+    edited_at: Option<u64>,
+}
+
+impl Driver {
+    /// Starts a language server, walks the extension directories and sizes the
+    /// session — everything the loop does once, before its first keystroke.
+    pub fn start(session: &mut Session, options: Options) -> Self {
+        let Options {
+            started_with,
+            remote,
+            extension_roots,
+            home,
+            cwd,
+            size: (width, height),
+        } = options;
+
+        resize(session, width, height);
+
+        let location = match &remote {
+            Some(remote) => remote.location.clone(),
+            None => crate::lsp::Location::Here,
+        };
+        let remote = remote.map(|remote| remote.client);
+        let mut lsp =
+            Lsp::with_location(session, workspace_root(started_with.as_deref()), location);
+        // Started the same way in both cases. A remote session runs its servers on
+        // the machine holding the files, which is the only place one could read
+        // them.
+        lsp.attach(session);
+        session.frontend_commands = frontend_commands();
+
+        // What is installed, listed in the palette whether or not it has started:
+        // invoking one of these is what starts it. The walk happens here for the same
+        // reason the theme walk does — the core has no filesystem.
+        let catalogue = crate::extensions::discover(&extension_roots);
+        session.problems.extend(catalogue.problems.iter().cloned());
+        session
+            .frontend_commands
+            .extend(crate::extensions::rows(&catalogue));
+
+        Self {
+            lsp,
+            hosts: crate::extensions::Hosts::new(catalogue),
+            remote,
+            started_with,
+            extension_roots,
+            home,
+            cwd,
+            width,
+            height,
+            dirty: true,
+            edited_at: None,
+        }
+    }
+
+    /// Whether anything has changed since the last frame was taken.
+    pub fn needs_redraw(&self) -> bool {
+        self.dirty
+    }
+
+    /// The frame to paint, and the acknowledgement that it has been.
+    pub fn frame(&mut self, session: &mut Session) -> Frame {
+        // The find bar costs a row, so the text area's height depends on
+        // whether it is open — which the last keypress may have changed.
+        resize(session, self.width, self.height);
+        self.dirty = false;
+        render::render_with_hover(
+            session,
+            self.width as usize,
+            self.height as usize,
+            self.lsp.hover(),
+        )
+    }
+
+    /// The terminal changed size.
+    pub fn resize(&mut self, session: &mut Session, width: u16, height: u16) {
+        self.width = width;
+        self.height = height;
+        resize(session, width, height);
+        self.dirty = true;
+    }
+
+    /// Collects whatever the language server and the extension hosts have said.
+    pub fn poll(&mut self, session: &mut Session) {
+        self.dirty |= self.lsp.poll(session);
+        self.hosts.poll(session);
+    }
+
+    /// A moment with no keystroke in it: the same poll, plus the auto-save clock.
+    ///
+    /// Checked on the idle path only. A save while keys are still arriving would be
+    /// a write per keystroke, which is the thing the delay exists to avoid.
+    pub fn idle(&mut self, session: &mut Session, now_ms: u64) -> Result<()> {
+        self.poll(session);
+        let Some(at) = self.edited_at else {
+            return Ok(());
+        };
+        let idle = now_ms.saturating_sub(at);
+        if auto_save_due(&session.document.settings, idle, session.document.dirty) {
+            save(session, self.remote.as_mut())?;
+            self.lsp.saved(session);
+            self.edited_at = None;
+            self.dirty = true;
+        } else if !session.document.dirty {
+            // Saved by hand in the meantime.
+            self.edited_at = None;
+        }
+        Ok(())
+    }
+
+    /// Stops the language server. The loop is over.
+    pub fn shutdown(&mut self) {
+        self.lsp.detach();
+    }
+
+    /// One keystroke, all the way through: what the core makes of it, and then
+    /// whichever of its outcomes needs something the core does not have.
+    pub fn key(&mut self, session: &mut Session, chord: Chord, now_ms: u64) -> Result<Flow> {
+        let Self {
+            lsp,
+            hosts,
+            remote,
+            started_with: path,
+            extension_roots,
+            home,
+            cwd,
+            dirty,
+            edited_at,
+            ..
+        } = self;
+        *dirty = true;
+        // Remembered before the chord runs: a printable key both inserts
+        // itself and narrows an open list, and afterwards there is no way
+        // to tell which key it was.
+        let typed = printable(&chord);
+        // Remembered so a tab switch can be seen afterwards: the chord
+        // may put a different document on screen, and the language
+        // server has to be told which file it is now looking at.
+        let path_before = session.document.path.clone();
+        let was_dirty = session.document.dirty;
+        // And the language, which `ctrl+k m` can change without the
+        // document changing — a different language is a different server.
+        let language_before = session.document.language().map(str::to_owned);
+        let was_backspace = chord.key
+            == deco_keymap::keys::Key::Named(deco_keymap::keys::NamedKey::Backspace)
+            && !chord.modifiers.ctrl
+            && !chord.modifiers.alt
+            && !chord.modifiers.meta;
+
+        match session.handle_chord(chord, now_ms) {
+            Outcome::Quit => return Ok(Flow::Quit),
+            Outcome::Save => {
+                save(session, remote.as_mut())?;
+                lsp.saved(session);
+            }
+            // The picker named a theme; reading it is this side's job.
+            Outcome::LoadTheme { label, path } => match load_theme(&label, path.as_deref()) {
+                Ok(theme) => {
+                    if let Outcome::Message(report) = session.set_theme(theme) {
+                        session.status = Some(report);
+                    }
+                }
+                Err(error) => {
+                    session.status = Some(error.clone());
+                    session.problems.push(error);
+                }
+            },
+            // The prompt named a path; writing it is this side's job, and
+            // so is working out what it meant.
+            Outcome::SaveAs(target) => {
+                let target =
+                    resolve_path(&target, path.as_deref(), home.as_deref(), cwd.as_deref());
+                match write_file(&target, &session.save_contents()) {
+                    Ok(()) => {
+                        if let Outcome::Message(report) = session.rename_to(target) {
+                            session.status = Some(report);
+                        }
+                        // A different path is a different document to a
+                        // server, and possibly a different language.
+                        lsp.attach(session);
+                        lsp.saved(session);
+                    }
+                    Err(error) => {
+                        session.status = Some(error.clone());
+                        session.problems.push(error);
+                    }
+                }
+            }
+            // The core asked for the file as it is on disk; reading it is
+            // this side's job.
+            Outcome::Revert => {
+                let target = session.document.path.clone();
+                match target.as_deref().map(std::fs::read_to_string) {
+                    Some(Ok(text)) => {
+                        if let Outcome::Message(report) = session.revert_to(&text) {
+                            session.status = Some(report);
+                        }
+                        lsp.changed(session);
+                    }
+                    Some(Err(error)) => {
+                        // The edits stay: throwing them away because the
+                        // file could not be read would lose work to a
+                        // failure that had nothing to do with it.
+                        let path = target.unwrap_or_default();
+                        session.status =
+                            Some(format!("could not read {}: {error}", path.display()));
+                    }
+                    None => {}
+                }
+            }
+            // The prompt asked what to look for; walking the workspace is
+            // this side's job.
+            Outcome::SearchInFiles { .. } if remote.is_some() => {
+                // The walk is local, so in a remote session it would
+                // search this machine and report matches in files the
+                // editor is not showing.
+                session.status =
+                    Some("search in files is local, and this session's files are not".to_owned());
+            }
+            Outcome::SearchInFiles { query, options } => {
+                let root = workspace_root(path.as_deref()).unwrap_or_else(|| PathBuf::from("."));
+                let found = crate::files::search(&root, &session.settings, &query, options);
+                let (truncated, count) = (found.truncated, found.matches.len());
+                session.offer_search_results(&query, found.matches);
+                if truncated {
+                    session.status = Some(format!(
+                        "{count} matches for `{query}`, and there may be more"
+                    ));
+                }
+            }
+            Outcome::SaveAll => {
+                // The loop and the reporting are the core's; only the
+                // write is this side's, because only this side has a
+                // filesystem.
+                let outcome = session.save_all(write_file);
+                if let Outcome::Message(report) = outcome {
+                    session.status = Some(report);
+                }
+                lsp.saved(session);
+            }
+            // Quick open and search named a file; reading it is this
+            // side's job.
+            Outcome::OpenFile { path: target, at } => {
+                // Resolved because the path may have been typed: `ctrl+o`
+                // accepts `~/notes.txt` and `src/main.rs`. Quick open and
+                // search hand over absolute paths, for which this is
+                // identity.
+                // In remote mode the path is the server's, relative to
+                // the workspace it serves, and resolving it against a
+                // local directory would produce a path on the wrong
+                // machine.
+                let target = match remote {
+                    Some(_) => target,
+                    None => resolve_path(&target, path.as_deref(), home.as_deref(), cwd.as_deref()),
+                };
+                let read = match remote.as_mut() {
+                    Some(client) => client
+                        .read(&target.display().to_string())
+                        .map_err(|error| std::io::Error::other(error.to_string())),
+                    None => std::fs::read_to_string(&target),
+                };
+                match read {
+                    Ok(text) => {
+                        session.open(target, &text);
+                        if let Some(at) = at {
+                            // Clamped, because the file on disk may have
+                            // moved on since it was searched.
+                            let at = session.document.buffer.clamp_position(at);
+                            session.view.selections = deco_core::SelectionSet::caret(at);
+                            session.view.reveal_cursor(
+                                &session.document.buffer,
+                                &session.document.settings,
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        session.status =
+                            Some(format!("could not open {}: {error}", target.display()));
+                    }
+                }
+            }
+            // Commands the core cannot implement because they need a
+            // language server. Named rather than guessed at, so a
+            // mistyped binding still reports as unknown.
+            Outcome::Frontend(command) => match command.as_str() {
+                "editor.action.showHover" => lsp.request_hover(session),
+                "editor.action.revealDefinition" => lsp.request_definition(session),
+                "editor.action.goToReferences" => lsp.request_references(session),
+                "workbench.action.gotoSymbol" => lsp.request_document_symbols(session),
+                // The extension directories have to be walked from here,
+                // for the same reason the file list is.
+                "workbench.action.selectTheme" => {
+                    let available = crate::themes::list(extension_roots);
+                    session.offer_themes(crate::themes::rows(&available));
+                }
+                "closeHoverWidget" => lsp.dismiss_hover(),
+                "editor.action.triggerSuggest" => {
+                    lsp.request_completion(session, deco_lsp::requests::CompletionTrigger::Invoked)
+                }
+                // The workspace has to be walked from here: the core has
+                // no filesystem.
+                // The listing has to come from wherever the files are.
+                "workbench.action.quickOpen" if remote.is_some() => {
+                    let client = remote.as_mut().expect("just checked");
+                    match client.list() {
+                        Ok(files) => session.offer_files(
+                            files
+                                .into_iter()
+                                .map(|file| deco_editor::commands::PaletteEntry::new(&file, &file))
+                                .collect(),
+                        ),
+                        Err(error) => {
+                            session.status = Some(format!("could not list the remote: {error}"));
+                        }
+                    }
+                }
+                "workbench.action.quickOpen" => {
+                    let root =
+                        workspace_root(path.as_deref()).unwrap_or_else(|| PathBuf::from("."));
+                    let listing = crate::files::list(&root, &session.settings);
+                    let truncated = listing.truncated;
+                    session.offer_files(listing.files);
+                    if truncated {
+                        session.status = Some(format!(
+                            "showing the first {} files",
+                            crate::files::MAX_FILES
+                        ));
+                    }
+                }
+                "editor.action.formatDocument" => lsp.request_formatting(session, false),
+                "editor.action.formatSelection" => lsp.request_formatting(session, true),
+                "hideSuggestWidget" => lsp.dismiss_suggest(),
+                "selectNextSuggestion" => {
+                    lsp.select_next();
+                }
+                "selectPrevSuggestion" => {
+                    lsp.select_previous();
+                }
+                "acceptSelectedSuggestion" => {
+                    lsp.accept(session, now_ms);
+                }
+                // An extension's command, whose identifier is whatever is
+                // installed rather than anything written down here. Asked
+                // last so that no core command can be shadowed by one.
+                other if hosts.run_command(session, other) => {}
+                other => {
+                    session.status = Some(format!("{other} is not implemented yet"));
+                }
+            },
+            _ => {}
+        }
+
+        // While the find bar has the keyboard, a keystroke narrows the
+        // query and the document never sees it. A completion list left
+        // open underneath would be narrowed by text that was never
+        // typed into the file — so it goes, along with any hover.
+        if session.find.visible() || session.prompt.is_some() {
+            lsp.dismiss_suggest();
+            lsp.dismiss_hover();
+        }
+        // A printable key both typed itself and narrowed the list; a
+        // backspace both deleted and widened it. Both after the command,
+        // so the list and the document agree about what has been typed.
+        else if let Some(c) = typed {
+            if !lsp.typed(session, c) {
+                // No list was open, so this may be a trigger character —
+                // `.` or `::` — that should open one.
+                if lsp
+                    .completion_triggers()
+                    .iter()
+                    .any(|trigger| trigger.ends_with(c))
+                {
+                    lsp.request_completion(
+                        session,
+                        deco_lsp::requests::CompletionTrigger::Character(c.to_string()),
+                    );
+                }
+            }
+        } else if was_backspace {
+            lsp.backspaced(session);
+        }
+        // The chord may have switched tabs — ctrl+tab, ctrl+w, a file
+        // opened from a jump. `attach` is idempotent, so calling it for
+        // the same document costs a comparison; for a new one it sends
+        // didClose/didOpen or starts the right server, and the stored
+        // diagnostics for the returning document are collected.
+        if session.document.path != path_before
+            || session.document.language().map(str::to_owned) != language_before
+        {
+            // A hover or completion list anchored in the old document
+            // would describe text that is no longer on screen — or, after
+            // a language change, would be the old server's answer about a
+            // file it is no longer responsible for.
+            lsp.dismiss_hover();
+            lsp.dismiss_suggest();
+            lsp.attach(session);
+            lsp.refresh_diagnostics(session);
+        }
+        // After the command, not before: the server has to be told
+        // about the text as it now is.
+        lsp.changed(session);
+        // A hover describing where the cursor was is worse than none.
+        *dirty |= lsp.cursor_moved(session);
+
+        // The auto-save clock restarts on every edit, so a delay measured
+        // from the *first* keystroke of a paragraph cannot fire in the middle
+        // of typing it. Cleared when the document is clean again, whether
+        // this keystroke saved it or undid its way back.
+        if session.document.dirty {
+            *edited_at = Some(now_ms);
+        } else if was_dirty {
+            *edited_at = None;
+        }
+        Ok(Flow::Continue)
+    }
+
+    /// What the extension hosts have been up to, for a test or a status line.
+    pub fn hosts(&self) -> &crate::extensions::Hosts {
+        &self.hosts
+    }
+
+    /// The language-server client, for the same reason.
+    pub fn lsp(&self) -> &Lsp {
+        &self.lsp
+    }
 }
 
 /// The commands this frontend implements, for the command palette.
@@ -592,7 +758,8 @@ pub fn frontend_commands() -> Vec<deco_editor::commands::PaletteEntry> {
 /// so this has to be redone whenever either the terminal or the find bar changes
 /// size, or the last line of the file ends up underneath the bar.
 fn resize(session: &mut Session, width: u16, height: u16) {
-    let text_height = (height as usize).saturating_sub(render::chrome_height(session));
+    let height = height as usize;
+    let text_height = height.saturating_sub(render::chrome_height(session, height));
     session.resize(width as usize, text_height);
 }
 
@@ -650,11 +817,30 @@ fn workspace_root(path: Option<&Path>) -> Option<PathBuf> {
 ///
 /// An absolute path is returned unchanged, so callers that already have one — quick
 /// open, search results, a go-to-definition jump — can go through here too.
-fn resolve_path(typed: &Path, started_with: Option<&Path>) -> PathBuf {
+///
+/// `home` and `cwd` are passed in rather than read here, so that the rule can be
+/// exercised against directories a test controls instead of whichever ones the
+/// machine running the tests happens to have.
+///
+/// The working directory is the fallback for a session that was started with no
+/// file — `deco` on its own, then `ctrl+s` and a name — and it is a fallback
+/// rather than nothing for a sharp reason. A relative path returned from here
+/// reaches [`Session::rename_to`] as the document's path and never compares equal
+/// to the absolute one every other way of opening that same file produces, so
+/// saving an untitled buffer as `notes.txt` and then choosing `notes.txt` from
+/// quick open opened it twice, in two buffers with two undo histories. That is
+/// the bug `deco::startup::absolute` exists to prevent for a path on the command
+/// line; this is the other door into it.
+fn resolve_path(
+    typed: &Path,
+    started_with: Option<&Path>,
+    home: Option<&Path>,
+    cwd: Option<&Path>,
+) -> PathBuf {
     let text = typed.to_string_lossy();
     if let Some(rest) = text.strip_prefix('~') {
         if rest.is_empty() || rest.starts_with('/') || rest.starts_with('\\') {
-            if let Some(home) = deco_config::paths::Env::from_process().home {
+            if let Some(home) = home {
                 // `trim_start_matches` rather than `join`, because joining an
                 // absolute `/notes.txt` onto the home directory discards it.
                 return home.join(rest.trim_start_matches(['/', '\\']));
@@ -664,8 +850,11 @@ fn resolve_path(typed: &Path, started_with: Option<&Path>) -> PathBuf {
     if typed.is_absolute() {
         return typed.to_path_buf();
     }
-    match workspace_root(started_with) {
+    match workspace_root(started_with).or_else(|| cwd.map(Path::to_path_buf)) {
         Some(root) => root.join(typed),
+        // Neither a workspace nor a readable working directory. The path is
+        // handed onward as it was typed, which is what deco did before it
+        // resolved anything.
         None => typed.to_path_buf(),
     }
 }
@@ -939,7 +1128,7 @@ mod tests {
         // paths, so this has to be identity for them.
         let target = absolute(&["w", "src", "main.rs"]);
         assert_eq!(
-            resolve_path(&target, Some(&absolute(&["elsewhere", "a.rs"]))),
+            resolve_path(&target, Some(&absolute(&["elsewhere", "a.rs"])), None, None),
             target
         );
     }
@@ -952,7 +1141,9 @@ mod tests {
         assert_eq!(
             resolve_path(
                 Path::new("src/main.rs"),
-                Some(&absolute(&["w", "notes.txt"]))
+                Some(&absolute(&["w", "notes.txt"])),
+                None,
+                None
             ),
             absolute(&["w", "src", "main.rs"])
         );
@@ -960,16 +1151,52 @@ mod tests {
 
     #[test]
     fn a_tilde_expands_to_the_home_directory() {
-        let Some(home) = deco_config::paths::Env::from_process().home else {
-            // No HOME in this environment; there is nothing to expand to and the
-            // path is left as typed.
-            return;
-        };
+        // A directory this test names, rather than whichever one the machine
+        // running it has: the rule is the same either way, and a fixture that
+        // depends on the runner's `$HOME` is a test that passes for a reason it
+        // is not asserting.
+        let home = absolute(&["home", "u"]);
         assert_eq!(
-            resolve_path(Path::new("~/notes.txt"), None),
+            resolve_path(Path::new("~/notes.txt"), None, Some(&home), None),
             home.join("notes.txt")
         );
-        assert_eq!(resolve_path(Path::new("~"), None), home);
+        assert_eq!(resolve_path(Path::new("~"), None, Some(&home), None), home);
+    }
+
+    #[test]
+    fn a_tilde_with_no_home_to_expand_to_is_left_as_typed() {
+        // Nothing sensible to expand to, and inventing a directory would be worse
+        // than handing the path onward as it was written.
+        assert_eq!(
+            resolve_path(Path::new("~/notes.txt"), None, None, None),
+            PathBuf::from("~/notes.txt")
+        );
+    }
+
+    #[test]
+    fn a_relative_path_with_no_workspace_falls_back_to_the_working_directory() {
+        // The bug this pins: `deco` with no file, then `ctrl+s` and a name, used
+        // to store the name unresolved. Every other way of opening that same file
+        // produces an absolute path, which never compares equal to a relative one
+        // — so the file opened a second time, in a second buffer, with a second
+        // undo history, and whichever tab was saved last won.
+        let cwd = absolute(&["home", "u", "project"]);
+        assert_eq!(
+            resolve_path(Path::new("notes.txt"), None, None, Some(&cwd)),
+            cwd.join("notes.txt")
+        );
+    }
+
+    #[test]
+    fn the_workspace_root_still_wins_over_the_working_directory() {
+        // The fallback is a fallback. A session started with a file resolves
+        // against that file's directory, wherever deco was launched from.
+        let root = absolute(&["w", "notes.txt"]);
+        let cwd = absolute(&["somewhere", "else"]);
+        assert_eq!(
+            resolve_path(Path::new("a.txt"), Some(&root), None, Some(&cwd)),
+            absolute(&["w", "a.txt"])
+        );
     }
 
     #[test]
@@ -977,7 +1204,12 @@ mod tests {
         // `~backup` is a file called `~backup`, and `a~b` is not a home directory.
         // Only a leading `~` on its own component means one.
         assert_eq!(
-            resolve_path(Path::new("~backup"), Some(&absolute(&["w", "a.txt"]))),
+            resolve_path(
+                Path::new("~backup"),
+                Some(&absolute(&["w", "a.txt"])),
+                None,
+                None
+            ),
             absolute(&["w", "~backup"])
         );
     }
