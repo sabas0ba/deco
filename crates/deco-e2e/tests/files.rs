@@ -9,6 +9,43 @@
 
 use deco_e2e::Scenario;
 
+/// `text` followed by the line ending an untitled buffer gets on this platform.
+///
+/// Not a choice this scenario is making — see
+/// `files_eol_is_ignored_for_a_new_untitled_buffer` below. An untitled document
+/// takes the platform's ending and `files.eol` cannot change it, so a scenario
+/// about saving one has to expect whichever ending the runner has.
+fn untitled_line(text: &str) -> String {
+    let ending = if cfg!(windows) { "\r\n" } else { "\n" };
+    format!("{text}{ending}")
+}
+
+#[test]
+fn files_eol_is_ignored_for_a_new_untitled_buffer() {
+    // A finding, pinned rather than asserted as good, and the other half of the
+    // one in `editing.rs`: `files.eol` is applied in `Document::from_file`, so it
+    // converts every *existing* file that is opened — and `Document::untitled`
+    // builds a `Buffer::new()`, which takes `LineEnding::platform_default()` and
+    // never looks at the setting at all.
+    //
+    // So the key is wired to exactly the wrong half. VS Code's `files.eol` is the
+    // ending a *new* file gets and leaves existing files alone; deco's leaves new
+    // ones alone and rewrites existing ones.
+    let scenario = Scenario::new("eol-untitled").user_settings(r#"{ "files.eol": "\r\n" }"#);
+    let mut editor = scenario.launch(&[]);
+
+    editor.type_text("one\n");
+    editor.press("ctrl+s");
+    editor.type_text("new.txt");
+    editor.press("enter");
+
+    assert_eq!(
+        editor.on_disk_bytes("new.txt"),
+        untitled_line("one").as_bytes(),
+        "the buffer took the platform's ending, not the one `files.eol` asked for"
+    );
+}
+
 #[test]
 fn save_as_writes_the_file_the_prompt_was_given() {
     let scenario = Scenario::new("save-as").file("a.txt", "hello\n");
@@ -119,7 +156,7 @@ fn an_untitled_buffer_cannot_overwrite_the_file_deco_was_started_with() {
 
 #[test]
 fn saving_an_untitled_buffer_asks_for_a_name_and_then_writes_it() {
-    let scenario = Scenario::new("untitled-save").user_settings(r#"{ "files.eol": "\n" }"#);
+    let scenario = Scenario::new("untitled-save");
     let mut editor = scenario.launch(&[]);
 
     editor.type_text("scratch\n");
@@ -128,7 +165,7 @@ fn saving_an_untitled_buffer_asks_for_a_name_and_then_writes_it() {
     editor.type_text("scratch.txt");
     editor.press("enter");
 
-    assert_eq!(editor.on_disk("scratch.txt"), "scratch\n");
+    assert_eq!(editor.on_disk("scratch.txt"), untitled_line("scratch"));
 }
 
 #[test]
@@ -290,7 +327,7 @@ fn a_file_saved_under_a_new_name_is_not_then_opened_a_second_time() {
     // Quick open hands over absolute paths, so the same file did not compare
     // equal to itself and opened again in a second buffer with its own undo
     // history — and whichever tab was saved last silently won.
-    let scenario = Scenario::new("save-then-reopen").user_settings(r#"{ "files.eol": "\n" }"#);
+    let scenario = Scenario::new("save-then-reopen");
     let mut editor = scenario.launch(&[]);
 
     editor.type_text("scratch\n");
@@ -298,7 +335,7 @@ fn a_file_saved_under_a_new_name_is_not_then_opened_a_second_time() {
     editor.type_text("scratch.txt");
     editor.press("enter");
 
-    assert_eq!(editor.on_disk("scratch.txt"), "scratch\n");
+    assert_eq!(editor.on_disk("scratch.txt"), untitled_line("scratch"));
     assert!(
         editor.path().is_some_and(|path| path.is_absolute()),
         "the document should have kept a path that means one file: {:?}",

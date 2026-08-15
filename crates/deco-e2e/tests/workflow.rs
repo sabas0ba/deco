@@ -236,8 +236,14 @@ fn a_hundred_keystrokes_of_nonsense_leave_the_editor_standing() {
     editor.type_text("after.txt");
     editor.press("enter");
     // Next to the file deco was started with, which is what a relative path in
-    // the save prompt means.
-    assert_eq!(editor.on_disk("src/after.txt"), "still here\n");
+    // the save prompt means. The ending is the platform's: this began as an
+    // untitled buffer, and `files.eol` does not reach one — see
+    // `files_eol_is_ignored_for_a_new_untitled_buffer` in `files.rs`.
+    let ending = if cfg!(windows) { "\r\n" } else { "\n" };
+    assert_eq!(
+        editor.on_disk("src/after.txt"),
+        format!("still here{ending}")
+    );
 }
 
 #[test]
