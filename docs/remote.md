@@ -2,8 +2,8 @@
 
 > **State of this: you can open a file on another machine, edit it and save it
 > back, put deco there if it has none, reach a port on it, and run language
-> servers over there.** What is missing is extensions on the remote and
-> project-wide search. This page is explicit about each.
+> servers over there, and search it.** What is missing is extensions on the
+> remote. This page is explicit about each.
 
 ## Using it
 
@@ -22,11 +22,9 @@ home directory.
 
 ### What is different in a remote session
 
-Two things are turned off rather than left to do the wrong thing, and each says
-so rather than failing silently:
+One thing is turned off rather than left to do the wrong thing, and it says so
+rather than failing silently:
 
-- **Search in files is refused.** The walk is local; in a remote session it would
-  search this machine and report matches in files the editor is not showing.
 - **Extensions are local.** A host started by a remote session runs here, in the
   same container sandbox as always, and reaches the remote's files not at all.
 
@@ -122,6 +120,32 @@ Two things change on the way:
 Servers are given longer to answer `initialize` in a remote session, and not by
 a little: the wait covers an SSH handshake and a language server reading a
 project from a disk this machine never touches.
+
+## Searching the workspace
+
+`ctrl+shift+f` searches the remote, because that is where the files are. It used
+to be refused: a local walk in a remote session searches *this* machine and
+reports matches in files the editor is not showing.
+
+The matching happens on the far end, with the same function the find bar and the
+local project search use — `deco-remote` depends on `deco-core` for exactly that
+reason. Two definitions of what counts as a match would drift, and a term that
+matched in one place and not the other would be worse than no search at all.
+
+The limits are the server's, not the client's: five hundred matches and a
+megabyte per file, enforced over there because the client is whatever is on the
+other end of a connection the server did not authenticate. A search that stopped
+early says so.
+
+Two things are worth knowing:
+
+- **`files.exclude` is applied here, not there.** The server reads no settings —
+  deliberately, since answering `fs.read` by consulting a `settings.json` on the
+  remote would be an authority nobody gave it — so the only end that can apply
+  your excludes is this one. The server still skips `.git`, `node_modules` and
+  `target` on its own, which is where most of the cost of a walk is.
+- **The count shown is the count after filtering**, which can be fewer than the
+  server found.
 
 ## Reaching a port on the remote
 
@@ -316,5 +340,6 @@ Named so that the remaining work is legible rather than open-ended:
    and moving it means deciding what a remote extension is allowed to reach —
    the same question the capability sandbox answers locally, asked again across
    a machine boundary.
-8. Project-wide search, which needs the server to walk the workspace rather than
-   this machine walking one it does not have.
+8. ~~Project-wide search, which needs the server to walk the workspace rather
+   than this machine walking one it does not have.~~ **Done** — `fs.search`, with
+   the far end matching.

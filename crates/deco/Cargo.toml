@@ -36,3 +36,12 @@ gui = ["dep:deco-gui"]
 # the graph through deco-remote; a dev-dependency because the binary itself never
 # constructs a message by hand.
 serde_json.workspace = true
+# For the search options a remote search takes. Already in the graph through
+# deco-remote, and a dev-dependency for the same reason: the binary passes the
+# options through rather than naming them itself.
+deco-core.workspace = true
+# The end-to-end harness, for scenarios that need this package's binary as the
+# far end of a remote session. A dev-dependency cycle — deco-e2e depends on this
+# crate's library — which Cargo allows and which is the only way a scenario can
+# have both the editor's own startup and a real `deco --server` to talk to.
+deco-e2e = { path = "../deco-e2e", version = "0.1.0" }

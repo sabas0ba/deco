@@ -237,7 +237,7 @@ impl Server {
                 "workspace": self.root.display().to_string(),
                 // What this server can do, so a client need not discover it by
                 // being refused.
-                "methods": ["fs.read", "fs.write", "fs.list", "$/shutdown"],
+                "methods": ["fs.read", "fs.write", "fs.list", "fs.search", "$/shutdown"],
             })),
             "fs.read" => {
                 let asked = path("path")?;
@@ -278,6 +278,19 @@ impl Server {
                 let asked = params["path"].as_str().unwrap_or(".").to_owned();
                 let resolved = self.resolve(&asked)?;
                 Ok(json!({ "files": self.list(&resolved) }))
+            }
+            "fs.search" => {
+                let needle = params["needle"]
+                    .as_str()
+                    .ok_or_else(|| ServerError::BadParams {
+                        method: method.to_owned(),
+                        what: "a `needle` string".to_owned(),
+                    })?;
+                let options = deco_core::search::SearchOptions {
+                    case_sensitive: params["caseSensitive"].as_bool().unwrap_or(true),
+                    whole_word: params["wholeWord"].as_bool().unwrap_or(false),
+                };
+                Ok(self.search(needle, options))
             }
             "$/shutdown" => Ok(json!({ "stopping": true })),
             other => Err(ServerError::UnknownMethod {
@@ -324,7 +337,88 @@ impl Server {
         found.sort();
         found
     }
+
+    /// Searches every file in the workspace for `needle`.
+    ///
+    /// Here rather than on the client because the files are here — that is the
+    /// whole of it. A client walking its own disk in a remote session searches
+    /// the wrong machine and reports matches in files the editor is not showing,
+    /// which is why this used to be refused instead.
+    ///
+    /// Synchronous and bounded, like the local one it replaces. The bounds are
+    /// reported rather than hidden, so "500 matches" and "the first 500 of many"
+    /// are distinguishable.
+    fn search(&self, needle: &str, options: deco_core::search::SearchOptions) -> serde_json::Value {
+        let mut matches = Vec::new();
+        let mut truncated = false;
+        let mut files_searched = 0usize;
+        if needle.is_empty() {
+            return json!({ "matches": matches, "truncated": false, "filesSearched": 0 });
+        }
+
+        for relative in self.list(&self.root) {
+            if matches.len() >= MAX_MATCHES {
+                truncated = true;
+                break;
+            }
+            let path = self.root.join(&relative);
+            // Size first, so a huge file costs a `stat` rather than a read.
+            let Ok(metadata) = std::fs::metadata(&path) else {
+                continue;
+            };
+            if metadata.len() > MAX_SEARCHED_BYTES {
+                continue;
+            }
+            // Not UTF-8 is how a binary file presents itself here, and skipping
+            // it is right: a match inside a PNG is not a search result.
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            files_searched += 1;
+
+            let buffer = deco_core::buffer::Buffer::from_text(&text);
+            for range in deco_core::search::find_all(&buffer, needle, options) {
+                if matches.len() >= MAX_MATCHES {
+                    truncated = true;
+                    break;
+                }
+                let line = buffer
+                    .line_content(range.start.line as usize)
+                    .map(|line| line.to_string().trim().to_owned())
+                    .unwrap_or_default();
+                matches.push(json!({
+                    "path": relative,
+                    "line": range.start.line,
+                    "character": range.start.character,
+                    // Trimmed and cut here rather than on the client: the whole
+                    // point of a limit is that the bytes are not sent, and a
+                    // minified line is one match and a megabyte.
+                    "text": line.chars().take(200).collect::<String>(),
+                }));
+            }
+        }
+        json!({
+            "matches": matches,
+            "truncated": truncated,
+            "filesSearched": files_searched,
+        })
+    }
 }
+
+/// How many matches a search reports before it stops.
+///
+/// The same number the editor's own search stops at, and for the same reason: a
+/// term that appears ten thousand times is not being read one occurrence at a
+/// time. Enforced here rather than trusted to the client, because the client is
+/// whatever is on the other end of a connection this server did not authenticate.
+pub const MAX_MATCHES: usize = 500;
+
+/// Largest file a search will read.
+///
+/// Much smaller than [`MAX_FILE_BYTES`], which is what a person can ask to
+/// *open*. A minified bundle or a checked-in database is not what anyone means by
+/// "search my project", and reading it is most of what the search would cost.
+pub const MAX_SEARCHED_BYTES: u64 = 1 << 20;
 
 /// A relative path with `/` separators, whatever this platform uses.
 ///
@@ -693,5 +787,121 @@ mod tests {
     fn a_workspace_that_does_not_exist_is_refused_at_startup() {
         // Rather than serving a root that will fail every request afterwards.
         assert!(Server::new("/nowhere/at/all/really").is_err());
+    }
+
+    #[test]
+    fn a_search_finds_matches_and_reports_where_they_are() {
+        let root = workspace("search");
+        std::fs::write(
+            root.join("src/main.rs"),
+            "fn main() {\n    let needle = 1;\n}\n",
+        )
+        .expect("a file");
+        let mut server = Server::new(&root).expect("a server");
+
+        let found = ask(&mut server, "fs.search", json!({ "needle": "needle" }))
+            .expect("a search should succeed");
+        let matches = found["matches"].as_array().expect("matches");
+        assert_eq!(matches.len(), 1, "{matches:?}");
+        assert_eq!(matches[0]["path"], "src/main.rs");
+        // Zero-based, like every other position on this wire.
+        assert_eq!(matches[0]["line"], 1);
+        assert_eq!(matches[0]["character"], 8);
+        // Trimmed by the server: the indentation is not what a person is reading
+        // the result for, and sending it is bytes over a link.
+        assert_eq!(matches[0]["text"], "let needle = 1;");
+        assert_eq!(found["truncated"], false);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_search_honours_the_same_options_the_find_bar_does() {
+        // The reason this server depends on `deco-core` at all: one definition of
+        // what a match is, so a term that matches in the find bar matches here.
+        let root = workspace("search-options");
+        std::fs::write(root.join("src/main.rs"), "Needle needles needle\n").expect("a file");
+        let mut server = Server::new(&root).expect("a server");
+
+        let count = |server: &mut Server, params: serde_json::Value| {
+            ask(server, "fs.search", params).expect("a search")["matches"]
+                .as_array()
+                .expect("matches")
+                .len()
+        };
+
+        // Case-sensitive by default, and `needles` contains `needle`.
+        assert_eq!(count(&mut server, json!({ "needle": "needle" })), 2);
+        assert_eq!(
+            count(
+                &mut server,
+                json!({ "needle": "needle", "caseSensitive": false })
+            ),
+            3
+        );
+        // Whole word drops the one inside `needles`.
+        assert_eq!(
+            count(
+                &mut server,
+                json!({ "needle": "needle", "wholeWord": true })
+            ),
+            1
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_search_stops_at_its_limit_and_says_so() {
+        // Enforced here rather than trusted to the client, which is whatever is
+        // on the other end of a connection this server did not authenticate.
+        let root = workspace("search-limit");
+        let line = "needle\n".repeat(MAX_MATCHES + 50);
+        std::fs::write(root.join("src/main.rs"), line).expect("a file");
+        let mut server = Server::new(&root).expect("a server");
+
+        let found = ask(&mut server, "fs.search", json!({ "needle": "needle" })).expect("a search");
+        assert_eq!(
+            found["matches"].as_array().expect("matches").len(),
+            MAX_MATCHES
+        );
+        assert_eq!(found["truncated"], true);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_search_skips_what_it_should_not_read() {
+        let root = workspace("search-skips");
+        // Binary: a match inside a PNG is not a search result.
+        std::fs::write(root.join("src/blob.bin"), [0xff, 0xfe, b'n', b'e', 0x00]).expect("a file");
+        // Over the search limit, which is far smaller than the open limit.
+        let big = "needle\n".repeat((MAX_SEARCHED_BYTES as usize / 7) + 10);
+        std::fs::write(root.join("src/huge.txt"), big).expect("a file");
+        std::fs::write(root.join("src/small.txt"), "needle\n").expect("a file");
+        // And a directory the walk does not enter at all.
+        std::fs::create_dir_all(root.join(".git")).expect("a directory");
+        std::fs::write(root.join(".git/config"), "needle\n").expect("a file");
+        let mut server = Server::new(&root).expect("a server");
+
+        let found = ask(&mut server, "fs.search", json!({ "needle": "needle" })).expect("a search");
+        let paths: Vec<&str> = found["matches"]
+            .as_array()
+            .expect("matches")
+            .iter()
+            .map(|entry| entry["path"].as_str().unwrap_or_default())
+            .collect();
+        assert_eq!(paths, ["src/small.txt"], "{paths:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_search_for_nothing_is_not_a_search_for_everything() {
+        let root = workspace("search-empty");
+        let mut server = Server::new(&root).expect("a server");
+        let found = ask(&mut server, "fs.search", json!({ "needle": "" })).expect("a search");
+        assert!(found["matches"].as_array().expect("matches").is_empty());
+
+        // And a missing needle is a bad request rather than an empty answer: the
+        // client asked something this cannot interpret.
+        assert!(ask(&mut server, "fs.search", json!({})).is_err());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

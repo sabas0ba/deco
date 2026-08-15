@@ -21,6 +21,9 @@ deco-config.workspace = true
 deco-core.workspace = true
 deco-editor.workspace = true
 deco-keymap.workspace = true
+# For `launch_remote`: a scenario about a remote session starts a real server and
+# talks to it, rather than standing in a fake for the half being tested.
+deco-remote.workspace = true
 deco-theme.workspace = true
 deco-tui.workspace = true
 # Keystrokes are delivered as the terminal delivers them, so the harness builds

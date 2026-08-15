@@ -98,6 +98,45 @@ pub struct Handshake {
     pub methods: Vec<String>,
 }
 
+/// One place a search term was found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Match {
+    /// The file, relative to the workspace the server serves.
+    pub path: String,
+    /// Zero-based line.
+    pub line: u32,
+    /// Zero-based character within the line.
+    pub character: u32,
+    /// The line's text, trimmed and cut by the server.
+    pub text: String,
+}
+
+impl Match {
+    /// Reads one match, or nothing if the server sent something else.
+    ///
+    /// Skipped rather than failing the whole search: one malformed entry in five
+    /// hundred is not a reason to show none of them.
+    fn from_json(value: &Value) -> Option<Self> {
+        Some(Self {
+            path: value["path"].as_str()?.to_owned(),
+            line: value["line"].as_u64()? as u32,
+            character: value["character"].as_u64().unwrap_or(0) as u32,
+            text: value["text"].as_str().unwrap_or_default().to_owned(),
+        })
+    }
+}
+
+/// What a search found.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Search {
+    /// The matches, in the order the server walked them.
+    pub matches: Vec<Match>,
+    /// Whether a limit stopped the search early.
+    pub truncated: bool,
+    /// How many files were read.
+    pub files_searched: usize,
+}
+
 /// A connection to a server started over a transport.
 pub struct Client {
     child: Child,
@@ -238,6 +277,36 @@ impl Client {
                     .collect()
             })
             .unwrap_or_default())
+    }
+
+    /// Searches the remote's workspace for `needle`.
+    ///
+    /// The matching happens on the far end because the files do. What comes back
+    /// is bounded by the server rather than by this end — see
+    /// [`server::MAX_MATCHES`](crate::server::MAX_MATCHES) — so a workspace with
+    /// a million occurrences cannot make it send them.
+    pub fn search(
+        &mut self,
+        needle: &str,
+        options: deco_core::search::SearchOptions,
+    ) -> Result<Search, ClientError> {
+        let said = self.request(
+            "fs.search",
+            json!({
+                "needle": needle,
+                "caseSensitive": options.case_sensitive,
+                "wholeWord": options.whole_word,
+            }),
+        )?;
+        let matches = said["matches"]
+            .as_array()
+            .map(|values| values.iter().filter_map(Match::from_json).collect())
+            .unwrap_or_default();
+        Ok(Search {
+            matches,
+            truncated: said["truncated"].as_bool().unwrap_or(false),
+            files_searched: said["filesSearched"].as_u64().unwrap_or(0) as usize,
+        })
     }
 
     /// Asks the server to stop, then waits for it briefly.

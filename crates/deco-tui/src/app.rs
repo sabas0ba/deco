@@ -143,6 +143,33 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
     run_with(session, path, None)
 }
 
+/// The remote's matches as palette entries, minus what `files.exclude` hides.
+///
+/// The server applies its own skip list — `.git`, `node_modules`, `target` — and
+/// knows nothing of this user's settings, so the rest of the filtering happens
+/// here. Which means a `files.exclude` pattern can make a search report fewer
+/// than the server counted; the count shown is the one after filtering, because
+/// that is the one on screen.
+fn remote_matches(
+    found: &deco_remote::Search,
+    settings: &deco_config::Settings,
+) -> Vec<deco_editor::commands::PaletteEntry> {
+    found
+        .matches
+        .iter()
+        .filter(|entry| !crate::files::excluded_by_settings(settings, &entry.path))
+        .map(|entry| {
+            deco_editor::commands::PaletteEntry::at(
+                // The id is what opening one asks the server for, and in a
+                // remote session that is the path relative to its workspace.
+                &entry.path,
+                &format!("{}:{}: {}", entry.path, entry.line + 1, entry.text),
+                deco_core::position::Position::new(entry.line, entry.character),
+            )
+        })
+        .collect()
+}
+
 /// A session whose files live on another machine.
 ///
 /// Carries what the editor needs beyond the connection itself: language servers
@@ -162,10 +189,9 @@ pub struct RemoteSession {
 /// deco does not open local and remote files in one window: the workspace is one
 /// place, and half of one would make every path ambiguous.
 ///
-/// What is *not* redirected is stated where it can be checked: search-in-files is
-/// local, so it is refused rather than allowed to search the wrong machine.
-/// Language servers are not in that list any more — they run on the machine
-/// holding the files, which is the only place one could read them.
+/// Nothing is left doing the wrong thing quietly any more: language servers run
+/// on the machine holding the files and project search happens there too, which
+/// in both cases is the only place that could work.
 pub fn run_with(
     session: &mut Session,
     path: Option<PathBuf>,
@@ -512,12 +538,29 @@ impl Driver {
             }
             // The prompt asked what to look for; walking the workspace is
             // this side's job.
-            Outcome::SearchInFiles { .. } if remote.is_some() => {
-                // The walk is local, so in a remote session it would
-                // search this machine and report matches in files the
-                // editor is not showing.
-                session.status =
-                    Some("search in files is local, and this session's files are not".to_owned());
+            // Searched on the far end, because that is where the files are.
+            // This used to be refused: a local walk in a remote session
+            // searches the wrong machine and reports matches in files the
+            // editor is not showing.
+            Outcome::SearchInFiles { query, options } if remote.is_some() => {
+                let client = remote.as_mut().expect("a remote session");
+                match client.search(&query, options) {
+                    Ok(found) => {
+                        let matches = remote_matches(&found, &session.settings);
+                        let (truncated, count) = (found.truncated, matches.len());
+                        session.offer_search_results(&query, matches);
+                        if truncated {
+                            session.status = Some(format!(
+                                "{count} matches for `{query}`, and there may be more"
+                            ));
+                        }
+                    }
+                    // A failed search leaves the session alone: nothing was
+                    // opened and nothing changed, so there is nothing to undo.
+                    Err(error) => {
+                        session.status = Some(format!("could not search the remote: {error}"))
+                    }
+                }
             }
             Outcome::SearchInFiles { query, options } => {
                 let root = workspace_root(path.as_deref()).unwrap_or_else(|| PathBuf::from("."));

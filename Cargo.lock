@@ -559,6 +559,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "deco-config",
+ "deco-core",
+ "deco-e2e",
  "deco-editor",
  "deco-gui",
  "deco-keymap",
@@ -599,6 +601,7 @@ dependencies = [
  "deco-core",
  "deco-editor",
  "deco-keymap",
+ "deco-remote",
  "deco-theme",
  "deco-tui",
 ]
@@ -669,6 +672,7 @@ dependencies = [
 name = "deco-remote"
 version = "0.1.0"
 dependencies = [
+ "deco-core",
  "serde",
  "serde_json",
  "thiserror 2.0.20",

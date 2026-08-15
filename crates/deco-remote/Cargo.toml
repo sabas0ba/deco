@@ -9,6 +9,11 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+# For `fs.search`: the server matches with `deco_core::search::find_all`, the
+# same function the find bar and the local project search use. Two definitions
+# of what counts as a match would drift, and a search that finds different
+# things depending on which machine the files are on is worse than none.
+deco-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
