@@ -59,6 +59,15 @@ pub enum Outcome {
     Frontend(String),
     /// The document should be written to disk.
     Save,
+    /// The user answered an extension's permission request.
+    ///
+    /// Which extension and which capability are not carried: whoever opened the
+    /// prompt is holding the request that is waiting on it, and putting a copy
+    /// here would create two answers to keep in step.
+    ExtensionConsent {
+        /// Whether the extension may proceed.
+        allow: bool,
+    },
     /// The frontend should load this colour theme and hand it back with
     /// [`Session::set_theme`](crate::Session::set_theme).
     ///

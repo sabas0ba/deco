@@ -43,6 +43,13 @@ pub enum PromptKind {
     OpenPath,
     /// `ctrl+shift+f`: what to look for across the workspace.
     SearchQuery,
+    /// An extension asked for a capability nobody has decided about yet.
+    ///
+    /// Not opened by a key: it appears because an extension asked, which is the
+    /// only prompt here that the user did not start. The question itself is in
+    /// the choices, because a label is one static string and a permission is
+    /// about a particular extension and a particular thing.
+    ExtensionConsent,
 }
 
 impl PromptKind {
@@ -59,6 +66,7 @@ impl PromptKind {
             Self::SaveAs => "Save as:",
             Self::OpenPath => "Open file:",
             Self::SearchQuery => "Search:",
+            Self::ExtensionConsent => "Extension permission:",
         }
     }
 
@@ -84,6 +92,8 @@ impl PromptKind {
             (Self::Languages, _) => "languages",
             (Self::Themes, 1) => "theme",
             (Self::Themes, _) => "themes",
+            // Two, always, and counting them tells nobody anything.
+            (Self::ExtensionConsent, _) => "",
         }
     }
 
@@ -104,6 +114,7 @@ impl PromptKind {
             Self::SaveAs => "save as",
             Self::OpenPath => "open file",
             Self::SearchQuery => "search in files",
+            Self::ExtensionConsent => "an extension's permission request",
         }
     }
 

@@ -570,6 +570,16 @@ impl Driver {
             // This used to be refused: a local walk in a remote session
             // searches the wrong machine and reports matches in files the
             // editor is not showing.
+            // The user answered an extension's permission request. The request
+            // itself has been waiting in `hosts` since it was asked about; this is
+            // what finally sends it a reply.
+            Outcome::ExtensionConsent { allow } => {
+                let mut files = match remote.as_mut() {
+                    Some(client) => crate::extensions::Files::Remote(client),
+                    None => crate::extensions::Files::Here,
+                };
+                hosts.answer_consent(session, allow, &mut files);
+            }
             Outcome::SearchInFiles { query, options } if remote.is_some() => {
                 let client = remote.as_mut().expect("a remote session");
                 match client.search(&query, options) {

@@ -16,6 +16,14 @@ use crate::document::{Document, View};
 use crate::find::Find;
 use crate::prompt::{Prompt, PromptKind};
 
+/// The two answers a permission prompt offers, as the identifiers its choices
+/// carry.
+///
+/// Constants rather than literals in two places: the prompt builds them and the
+/// submit reads them, and a typo in either would silently mean "deny".
+const CONSENT_ALLOW: &str = "allow";
+const CONSENT_DENY: &str = "deny";
+
 /// The length of `text` in UTF-16 code units, which is how positions count.
 fn utf16_len(text: &str) -> u32 {
     text.encode_utf16().count() as u32
@@ -1219,6 +1227,24 @@ impl Session {
     /// nothing: an empty file list means the workspace is empty, and an empty
     /// result list means the term is not in it — different facts, and reporting
     /// one as the other would send the reader looking in the wrong place.
+    /// Asks the user about a capability an extension wants.
+    ///
+    /// `what` describes the request in the words the user will read — the
+    /// extension's name and what it is asking for — because a permission prompt
+    /// that does not say who is asking is not a decision anyone can make.
+    pub fn ask_extension_consent(&mut self, what: &str) {
+        self.prompt = Some(Prompt::list(
+            PromptKind::ExtensionConsent,
+            vec![
+                crate::commands::PaletteEntry::new(CONSENT_ALLOW, &format!("Allow — {what}")),
+                crate::commands::PaletteEntry::new(
+                    CONSENT_DENY,
+                    &format!("Deny — refuse, and remember that for this session ({what})"),
+                ),
+            ],
+        ));
+    }
+
     pub fn offer_search_results(
         &mut self,
         needle: &str,
@@ -1555,6 +1581,16 @@ impl Session {
                     at: None,
                 }
             }
+            PromptKind::ExtensionConsent => match prompt.selected() {
+                Some(entry) => Outcome::ExtensionConsent {
+                    allow: entry.id == CONSENT_ALLOW,
+                },
+                // Nothing matched what was typed, which for a two-choice prompt
+                // means the filter hid both. Treated as no decision rather than
+                // as a refusal: the extension is still waiting, and the prompt
+                // can be opened again.
+                None => Outcome::Message("no answer chosen".to_owned()),
+            },
             PromptKind::Themes => match prompt.selected() {
                 // The identifier is the file to read, empty for one compiled in.
                 Some(entry) => Outcome::LoadTheme {
