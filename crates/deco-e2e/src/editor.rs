@@ -34,9 +34,28 @@ impl Editor {
     /// Starts the editor the way the binary does: configuration, then files,
     /// then the event loop's own setup.
     pub(crate) fn start(scenario: &Scenario, cli: deco::cli::Cli) -> anyhow::Result<Self> {
+        Self::start_with(scenario, cli, None)
+    }
+
+    /// The same, with the session's files on the other end of `remote`.
+    pub(crate) fn start_with(
+        scenario: &Scenario,
+        cli: deco::cli::Cli,
+        mut remote: Option<deco_tui::RemoteSession>,
+    ) -> anyhow::Result<Self> {
         let boot = scenario.boot();
         let mut session = deco::startup::session(&cli, &boot);
-        deco::startup::open_local(&mut session, &cli.files, &boot)?;
+        if let Some(remote) = remote.as_mut() {
+            // Fetched through the connection rather than read from disk, which is
+            // what the binary does in a remote session — and what makes the
+            // documents here carry the far end's relative paths.
+            for path in &cli.files {
+                let text = remote.client.read(&path.display().to_string())?;
+                session.open(path.clone(), &text);
+            }
+        } else {
+            deco::startup::open_local(&mut session, &cli.files, &boot)?;
+        }
         deco::startup::focus_first(&mut session, cli.files.len());
 
         // Absolute, which is what the binary's own working directory would have
@@ -52,7 +71,7 @@ impl Editor {
             &mut session,
             Options {
                 started_with,
-                remote: None,
+                remote,
                 extension_roots: scenario.extension_roots(),
                 home: Some(scenario.home().to_path_buf()),
                 cwd: boot.cwd.clone(),

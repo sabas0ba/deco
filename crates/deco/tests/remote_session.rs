@@ -144,3 +144,48 @@ fn a_transport_that_is_not_a_server_fails_with_something_a_person_can_act_on() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn a_search_crosses_the_connection_and_every_hit_can_be_opened() {
+    // The pair that matters: what the search reports has to be something the
+    // *same* connection will then read. A path spelled one way in a result and
+    // another way in `fs.read` is a search whose results cannot be opened, which
+    // is how this would break without either half being obviously wrong.
+    let root = workspace("search");
+    std::fs::write(root.join("src/main.rs"), "fn main() {\n    let x = 1;\n}\n").expect("a file");
+    std::fs::write(root.join("README.md"), "# hello\nlet x be x\n").expect("a file");
+    let mut client = connect(&root);
+    client.handshake().expect("a handshake");
+
+    let found = client
+        .search("let", deco_core::search::SearchOptions::default())
+        .expect("a search");
+    let mut paths: Vec<&str> = found
+        .matches
+        .iter()
+        .map(|entry| entry.path.as_str())
+        .collect();
+    paths.sort_unstable();
+    paths.dedup();
+    assert_eq!(paths, ["README.md", "src/main.rs"], "{paths:?}");
+    assert!(!found.truncated);
+    assert_eq!(found.files_searched, 2);
+
+    for entry in &found.matches {
+        let text = client
+            .read(&entry.path)
+            .unwrap_or_else(|error| panic!("{} should be readable: {error}", entry.path));
+        // The line the match named is the line the file has there, so the editor
+        // lands where the result said it would.
+        let line = text
+            .lines()
+            .nth(entry.line as usize)
+            .unwrap_or_else(|| panic!("{} has no line {}", entry.path, entry.line));
+        assert!(line.contains("let"), "{line:?}");
+        // And the text shown is that line, trimmed.
+        assert_eq!(entry.text, line.trim());
+    }
+
+    client.shutdown();
+    let _ = std::fs::remove_dir_all(&root);
+}

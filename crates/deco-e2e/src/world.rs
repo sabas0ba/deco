@@ -218,6 +218,61 @@ impl Scenario {
             .unwrap_or_else(|error| panic!("`deco {}` did not start: {error:#}", args.join(" ")))
     }
 
+    /// The same, with the workspace served by a real `deco --server` process.
+    ///
+    /// The one substitution: `ssh host` is not in front of the server command.
+    /// What that leaves out is an argument vector, tested where it is built; what
+    /// it keeps is everything a remote session actually depends on — a second
+    /// process, a framed protocol over its stdio, documents keyed by paths
+    /// relative to the far end's workspace, and a server that refuses anything
+    /// outside it.
+    ///
+    /// The authority is a real one so that language servers resolve the way they
+    /// would in a session: they are wrapped in a transport, and a scenario with
+    /// no `docker` on it sees that reported rather than silently running one
+    /// here.
+    /// `server_binary` is a `deco` to run as the far end. It is a parameter
+    /// rather than something this works out for itself because `CARGO_BIN_EXE_*`
+    /// is only defined for tests of the package that builds the binary, and a
+    /// harness guessing at a path under `target/` would be a different kind of
+    /// wrong.
+    pub fn launch_remote(&self, args: &[&str], server_binary: &std::path::Path) -> Editor {
+        self.write_user_settings();
+        let cli = match deco::cli::parse(args.iter().map(|arg| arg.to_string())) {
+            Ok(deco::cli::Outcome::Run(cli)) => *cli,
+            Ok(other) => panic!("`deco {}` did not ask to run: {other:?}", args.join(" ")),
+            Err(error) => panic!("`deco {}` did not parse: {error}", args.join(" ")),
+        };
+
+        let mut client = deco_remote::Client::start(&deco_remote::transport::Command {
+            program: server_binary.display().to_string(),
+            args: vec![
+                "--server".to_owned(),
+                "--stdio".to_owned(),
+                "--workspace".to_owned(),
+                self.workspace().display().to_string(),
+            ],
+        })
+        .unwrap_or_else(|error| panic!("the server should start: {error}"));
+        let hello = client
+            .handshake()
+            .unwrap_or_else(|error| panic!("the server should answer: {error}"));
+
+        let remote = deco_tui::RemoteSession {
+            client,
+            location: deco_tui::lsp::Location::Remote {
+                authority: deco_remote::Authority::parse("attached-container+scenario")
+                    .expect("an authority"),
+                options: deco_remote::TransportOptions::default(),
+                // As the *server* spells it, which is what every path in the
+                // session is relative to.
+                workspace: std::path::PathBuf::from(hello.workspace),
+            },
+        };
+        Editor::start_with(self, cli, Some(remote))
+            .unwrap_or_else(|error| panic!("`deco {}` did not start: {error:#}", args.join(" ")))
+    }
+
     /// Why `deco` refused to start.
     ///
     /// Startup can fail for reasons a command line cannot be blamed for — a file

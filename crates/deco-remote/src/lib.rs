@@ -48,7 +48,7 @@ pub mod server;
 pub mod transport;
 
 pub use authority::{Authority, AuthorityError};
-pub use client::{Client, ClientError};
+pub use client::{Client, ClientError, Match, Search};
 pub use forward::{Forward, ForwardError, PortSpec, PortSpecError};
 pub use frame::{Message, MAX_FRAME_BYTES};
 pub use install::{InstallError, Installed, Runner, TransportRunner};

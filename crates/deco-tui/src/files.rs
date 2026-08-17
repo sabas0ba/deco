@@ -234,6 +234,16 @@ fn relative_to(root: &Path, path: &Path) -> Option<String> {
 /// The setting is a map of pattern to boolean, and a pattern set to `false` is
 /// how VS Code turns off one it inherited — so the value matters, not just the
 /// key's presence.
+/// Whether `relative` is one of the paths `files.exclude` turns off.
+///
+/// Public because a remote search is filtered here rather than on the far end:
+/// the server reads no settings — deliberately, since answering `fs.read` by
+/// consulting a `settings.json` on the remote would be an authority nobody gave
+/// it — so the user's own excludes can only be applied by whoever has them.
+pub fn excluded_by_settings(settings: &Settings, relative: &str) -> bool {
+    is_excluded(&exclude_patterns(settings), relative)
+}
+
 fn exclude_patterns(settings: &Settings) -> Vec<String> {
     settings
         .get("files.exclude")
