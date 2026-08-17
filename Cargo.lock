@@ -601,9 +601,11 @@ dependencies = [
  "deco-core",
  "deco-editor",
  "deco-keymap",
+ "deco-lsp",
  "deco-remote",
  "deco-theme",
  "deco-tui",
+ "serde_json",
 ]
 
 [[package]]

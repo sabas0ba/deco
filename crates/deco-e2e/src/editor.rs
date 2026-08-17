@@ -1,6 +1,7 @@
 //! A running editor, driven by keystrokes.
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use deco_editor::Session;
@@ -83,7 +84,9 @@ impl Editor {
             session,
             driver,
             now_ms: 0,
-            workspace: scenario.workspace().to_path_buf(),
+            // Where `on_disk` looks. For a remote session that is the directory
+            // the *server* is serving, which may not be this machine's.
+            workspace: scenario.served_workspace(),
             size: scenario.terminal_size(),
             quit: false,
         })
@@ -156,17 +159,75 @@ impl Editor {
         self.press("enter")
     }
 
-    /// Time passing with nobody at the keyboard.
+    /// Time passing on the editor's own clock, with nobody at the keyboard.
     ///
-    /// This is the editor's idle path: it is where a language server's answers
-    /// are collected and where `files.autoSave: "afterDelay"` fires, so a
-    /// scenario about either has to let time pass rather than press another key.
+    /// This is the idle path, and it advances only the clock the editor is
+    /// handed — it does not sleep. That makes it exactly right for
+    /// `files.autoSave: "afterDelay"`, where a scenario wants to say "a minute
+    /// went by" without taking a minute.
+    ///
+    /// It is exactly wrong for waiting on a language server, which is a separate
+    /// process that needs real time to answer: a loop of `wait` runs in
+    /// microseconds and collects nothing, which looks identical to a broken
+    /// feature. [`Editor::settle_until`] is the one to reach for there.
     pub fn wait(&mut self, ms: u64) -> &mut Self {
         self.now_ms += ms;
         self.driver
             .idle(&mut self.session, self.now_ms)
             .expect("the idle path should not fail");
         self
+    }
+
+    /// Polls until `ready` holds, or fails saying what it was waiting for.
+    ///
+    /// A language server is a separate process on the other end of a pipe, so its
+    /// answer arrives when it arrives — there is no keystroke that makes it have
+    /// happened. This is the editor's own idle path, run in a loop: the same poll
+    /// that collects diagnostics while a person sits still.
+    ///
+    /// It sleeps for real, unlike [`Editor::wait`], because real time is what a
+    /// subprocess needs. The clock the editor is handed advances only a little,
+    /// so that settling for an answer cannot silently trip the auto-save delay.
+    ///
+    /// The budget is generous and the failure is loud: a scenario that gave up
+    /// after two polls would be a scenario that fails on a loaded machine and
+    /// passes on a quiet one.
+    #[track_caller]
+    pub fn settle_until(&mut self, what: &str, ready: impl Fn(&Editor) -> bool) -> &mut Self {
+        const STEP: Duration = Duration::from_millis(5);
+        const BUDGET: Duration = Duration::from_secs(10);
+
+        let started = Instant::now();
+        loop {
+            if ready(self) {
+                return self;
+            }
+            if started.elapsed() > BUDGET {
+                panic!(
+                    "waited {BUDGET:?} for {what} and it never happened.\n\
+                     status: {:?}\nproblems: {:?}",
+                    self.status(),
+                    self.problems()
+                );
+            }
+            std::thread::sleep(STEP);
+            self.now_ms += STEP.as_millis() as u64;
+            self.driver
+                .idle(&mut self.session, self.now_ms)
+                .expect("the idle path should not fail");
+        }
+    }
+
+    /// Waits for the language server to have started and said hello.
+    ///
+    /// Every scenario about a server needs this first: until the handshake is
+    /// done there are no capabilities, and until there are capabilities `f12` is
+    /// not bound to anything.
+    #[track_caller]
+    pub fn settle_lsp(&mut self) -> &mut Self {
+        self.settle_until("the language server to be ready", |editor| {
+            editor.driver.lsp().is_ready()
+        })
     }
 
     /// The terminal was resized.
@@ -229,6 +290,13 @@ impl Editor {
     /// Whether the last keystroke asked the editor to quit.
     pub fn has_quit(&self) -> bool {
         self.quit
+    }
+
+    /// The driver, for the assertions that are about what the frontend is
+    /// holding rather than about the session — a hover that has arrived, a
+    /// completion list that is open, a language server that is ready.
+    pub fn driver(&self) -> &Driver {
+        &self.driver
     }
 
     /// The session itself, for the assertions a screen cannot make.

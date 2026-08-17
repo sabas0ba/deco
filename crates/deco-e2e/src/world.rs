@@ -36,6 +36,9 @@ pub struct Scenario {
     /// whose absence is the thing being tested.
     vscode_settings: Option<String>,
     language_servers: bool,
+    /// A workspace for the far end that is not this machine's, once a scenario
+    /// has put a file on it — see [`Scenario::remote_file`].
+    remote: Option<PathBuf>,
 }
 
 impl Scenario {
@@ -66,6 +69,7 @@ impl Scenario {
             user_settings: None,
             vscode_settings: None,
             language_servers: false,
+            remote: None,
         }
     }
 
@@ -135,6 +139,74 @@ impl Scenario {
     pub fn language_servers(mut self, enabled: bool) -> Self {
         self.language_servers = enabled;
         self
+    }
+
+    /// Installs a language server for `language` that this scenario can rely on.
+    ///
+    /// The server is [`examples/language_server.rs`], a real program on a real
+    /// pipe speaking real LSP — not a stub the editor is handed. `role` is
+    /// `argv[1]` and selects what it offers; `"full"` answers everything.
+    ///
+    /// Written the way a user writes it, into `deco.lsp.servers`, so the
+    /// configuration path is on the way in too. Turns [`Scenario::language_servers`]
+    /// on, because a machine with a server on it is one where they are enabled.
+    ///
+    /// [`examples/language_server.rs`]: https://github.com/sabas0ba/deco/blob/main/crates/deco-e2e/examples/language_server.rs
+    pub fn language_server(mut self, language: &str, role: &str) -> Self {
+        self.language_servers = true;
+        let program = fake_server();
+        // Through `serde_json` rather than `format!`: on Windows the path is
+        // full of backslashes, every one of which has to be escaped to survive
+        // being read back as JSON.
+        let definition = serde_json::json!({
+            "deco.lsp.servers": {
+                "fake": {
+                    "languages": [language],
+                    "command": program.to_string_lossy(),
+                    "args": [role],
+                },
+            },
+        });
+        let text = serde_json::to_string_pretty(&definition).expect("serialisable");
+        // Spliced into whatever the scenario already asked for, so a scenario can
+        // have both a server and settings of its own.
+        self.user_settings = Some(match self.user_settings.take() {
+            Some(existing) => splice(&text, &existing),
+            None => text,
+        });
+        self
+    }
+
+    /// Writes a file onto the far end, in a directory this machine's workspace
+    /// is not.
+    ///
+    /// Without this, [`Scenario::launch_remote`] serves the scenario's own
+    /// workspace, and "the far end" and "this machine" are one directory — which
+    /// means a scenario cannot tell a file that came over the connection from
+    /// one that was read off the local disk, and cannot tell a write that went to
+    /// the server from a write that went here. Both look identical when the two
+    /// are the same folder.
+    ///
+    /// Using this makes them different folders, so those questions have answers.
+    /// [`Editor::on_disk`] then looks at the far end's, because that is where a
+    /// remote session's files are.
+    pub fn remote_file(mut self, relative: &str, contents: &str) -> Self {
+        let remote = self.root.join("remote");
+        let path = remote.join(relative);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("a directory on the far end");
+        }
+        std::fs::write(&path, contents).expect("a file on the far end");
+        self.remote = Some(remote);
+        self
+    }
+
+    /// The directory the far end serves: its own if a scenario gave it one, and
+    /// otherwise this machine's workspace.
+    pub(crate) fn served_workspace(&self) -> PathBuf {
+        self.remote
+            .clone()
+            .unwrap_or_else(|| self.workspace.clone())
     }
 
     /// deco's own `keybindings.json`.
@@ -250,7 +322,7 @@ impl Scenario {
                 "--server".to_owned(),
                 "--stdio".to_owned(),
                 "--workspace".to_owned(),
-                self.workspace().display().to_string(),
+                self.served_workspace().display().to_string(),
             ],
         })
         .unwrap_or_else(|error| panic!("the server should start: {error}"));
@@ -446,6 +518,48 @@ fn with_defaults(defaults: &[&str], own: Option<&str>) -> String {
         None => json.push_str("\n}"),
     }
     json
+}
+
+/// The `language_server` example, built alongside the tests that use it.
+///
+/// `cargo test` puts examples in `target/<profile>/examples/` and the test
+/// binary in `target/<profile>/deps/`, so it is two levels up and across. There
+/// is no `CARGO_BIN_EXE_*` for an example, which is why this is derived rather
+/// than looked up.
+fn fake_server() -> PathBuf {
+    let test_binary = std::env::current_exe().expect("the test binary's own path");
+    let profile = test_binary
+        .parent()
+        .and_then(|deps| deps.parent())
+        .expect("target/<profile>/deps/<binary>");
+    let path = profile
+        .join("examples")
+        .join(format!("language_server{}", std::env::consts::EXE_SUFFIX));
+    assert!(
+        path.is_file(),
+        "the language_server example was not built at {}.\n\
+         `cargo test -p deco-e2e` builds it; a bare `cargo test --test <name>` may not.",
+        path.display()
+    );
+    path
+}
+
+/// One JSON object's keys in front of another's.
+///
+/// Textual rather than parsed and merged, for the reason `with_defaults` is: a
+/// scenario's settings are JSONC with comments in them, and a merge through a
+/// JSON value would throw those away. `first` wins only where `second` does not
+/// repeat the key, since a repeated key takes its last value.
+fn splice(first: &str, second: &str) -> String {
+    let first = first.trim().trim_end_matches('}').trim_end();
+    let second = second.trim();
+    let rest = second
+        .strip_prefix('{')
+        .unwrap_or_else(|| panic!("settings must be a JSON object, got {second}"));
+    if rest.trim_start().starts_with('}') {
+        return format!("{first}\n}}");
+    }
+    format!("{first},{rest}")
 }
 
 /// Writes a configuration file, creating its directory.

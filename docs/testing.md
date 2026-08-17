@@ -9,7 +9,7 @@ comes from: `deco-keymap` resolves a chord correctly, `deco-config` layers a
 `settings.json` correctly, `deco_tui::render` lays a session out correctly.
 
 **End-to-end scenarios** live in [`crates/deco-e2e`](../crates/deco-e2e) and
-there are about ninety. They start the editor on a machine the test built, press
+there are about a hundred and twenty. They start the editor on a machine the test built, press
 keys, and look at the screen and the disk. They exist because the way an editor
 breaks in practice is rarely one function returning the wrong value. It is a
 `settings.json` read from the wrong directory, a keybinding that resolved but
@@ -78,8 +78,19 @@ Four things are deliberately real:
   is a different machine from one without, and a scenario about saving a file
   should not start failing because of something it never mentioned. The default
   machine has none, said the way a user would say it —
-  `"deco.lsp.enabled": false`. `Scenario::language_servers(true)` turns them back
-  on.
+  `"deco.lsp.enabled": false`.
+
+  A scenario that *is* about a language server asks for one with
+  `Scenario::language_server("rust", "full")`, which writes a `deco.lsp.servers`
+  definition pointing at `examples/language_server.rs` — a real program on a real
+  pipe, answering real LSP. `deco-lsp` has a fake server too and it is the
+  opposite instrument: that one acts out failure modes and cannot tell you
+  whether go-to-definition works.
+
+  Waiting on one needs real time, so `Editor::settle_until` sleeps and polls the
+  editor's own idle path. `Editor::wait` does not — it advances only the clock
+  the editor is handed, which is right for `files.autoSave` and useless for a
+  subprocess.
 
 ## Where the scenarios are
 
@@ -92,6 +103,14 @@ Four things are deliberately real:
 | `tests/navigation.rs` | Quick open, go to line, find and replace, search in files, the command palette |
 | `tests/appearance.rs` | Themes from an installed extension, the frame at every terminal size, escape sequences in a file name, wide characters |
 | `tests/workflow.rs` | Long sessions: several hundred keystrokes at one editor, because a class of bug only exists after the fifth thing |
+| `tests/language_servers.rs` | A real server on a real pipe: diagnostics, hover, definition, references, symbols, completion, formatting — and a server a cloned repository asked for, which is not run |
+
+Remote sessions have scenarios of their own in
+[`crates/deco/tests/remote_editor.rs`](../crates/deco/tests/remote_editor.rs),
+where `CARGO_BIN_EXE_deco` names the binary to run as the far end.
+`Scenario::remote_file` puts files on a directory this machine does not have, so
+that a file arriving over the connection is one the local disk could not have
+supplied.
 
 A scenario that fails leaves its directory on disk and prints where it is, so the
 first question — what was actually in that home directory — can be answered by
@@ -129,3 +148,26 @@ than a fault in carrying it out:
   `Document::from_file`, so opening a CRLF file with `"files.eol": "\n"` in
   settings converts it, and the next save writes every line back changed. Pinned
   by `setting_files_eol_converts_every_existing_file_that_is_opened`.
+
+## What the second round found
+
+The scenarios above deliberately turned language servers off and left remote
+sessions to their own protocol tests. Both gaps were where the next defects were:
+
+- **The completion list was never drawn.** `overlay_suggest` renders one beside
+  the cursor and has seven unit tests; the event loop asked the renderer for a
+  frame with a *hover* in it, and there is no way to mention a completion list to
+  that function. The list was fetched, filtered, navigable and invisible. Fixed.
+- **`ctrl+space` cannot reach Trigger Suggest in a terminal.** A terminal sends
+  NUL for it; crossterm turns that into `Char(' ')` with Control; deco maps only
+  `KeyCode::Null` to `space`, and the binding is `Named(Space)`. The two never
+  meet. The GUI maps its space bar the other way, so the frontends disagree.
+- **A refused server is not mentioned when the user has one of their own.**
+  `Lsp::attach` collects refusals and reports them after the loop, and the loop
+  returns as soon as a trusted candidate starts — so the disclosure is reached
+  only when there was nothing else to try.
+- **Save-as in a remote session renames the document to a local path**, which
+  every later save then asks the server to write, outside the workspace it
+  serves.
+- **Revert in a remote session reads this machine**, at the far end's relative
+  path.

@@ -392,11 +392,18 @@ impl Driver {
         // whether it is open — which the last keypress may have changed.
         resize(session, self.width, self.height);
         self.dirty = false;
-        render::render_with_hover(
+        // Both overlays, not just the hover. The completion list was built,
+        // filtered, navigable with the arrow keys and acceptable with `tab` —
+        // and never drawn, because this call asked for a frame with a hover in
+        // it and no way to mention the list. `render_with_overlays` has existed
+        // the whole time, along with the rule for what happens when both are
+        // present: the list wins, since it is the one being interacted with.
+        render::render_with_overlays(
             session,
             self.width as usize,
             self.height as usize,
             self.lsp.hover(),
+            self.lsp.suggest(),
         )
     }
 
