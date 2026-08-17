@@ -74,7 +74,7 @@ fn until(
 ) {
     let deadline = Instant::now() + Duration::from_secs(30);
     while Instant::now() < deadline {
-        hosts.poll(session);
+        hosts.poll(session, &mut deco_tui::extensions::Files::Here);
         if done(hosts, session) {
             return;
         }

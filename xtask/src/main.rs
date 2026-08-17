@@ -301,6 +301,26 @@ fn host_test(root: &Path) -> Result<()> {
         ],
     )?;
 
+    // The same stack again, with the files on the other end of a connection: an
+    // extension's read has to go through the server rather than around it, and
+    // only a real host asking a real server can show which one happened.
+    run_cargo(
+        root,
+        &[
+            "test",
+            "--locked",
+            "-p",
+            "deco",
+            "--test",
+            "remote_extension",
+            "--",
+            "--ignored",
+            // One at a time: each scenario starts its own host and its own
+            // server, and the bootstrap path they need is process-wide.
+            "--test-threads=1",
+        ],
+    )?;
+
     // And the same stack in the container deco actually ships with. This needs a
     // container runtime, which not every machine has — so the decision is
     // *printed* either way. A test that quietly does not run is worse than one

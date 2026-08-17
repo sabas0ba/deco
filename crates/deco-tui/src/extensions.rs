@@ -197,6 +197,42 @@ struct Running {
 }
 
 /// The extensions that are installed, and the hosts running some of them.
+/// Where an extension's file requests are actually served from.
+///
+/// A remote session's files are on the other machine, so an extension reading
+/// one has to read it through the same connection the editor does. The
+/// alternative — reading whatever happens to be at that path on this machine —
+/// is the failure mode this whole enum exists to make impossible: it would
+/// silently answer from a checkout that is not the one being edited.
+pub enum Files<'a> {
+    /// This machine's filesystem.
+    Here,
+    /// The far end of a remote session.
+    Remote(&'a mut deco_remote::Client),
+}
+
+impl Files<'_> {
+    /// Reads `path`, as text.
+    ///
+    /// Text rather than bytes, and a file that is not UTF-8 is refused: deco's
+    /// own editor refuses one for the same reason, and an extension handed
+    /// replacement characters would write them back.
+    fn read(&mut self, path: &str) -> Result<String, String> {
+        match self {
+            Self::Here => std::fs::read_to_string(path).map_err(|error| error.to_string()),
+            Self::Remote(client) => client.read(path).map_err(|error| error.to_string()),
+        }
+    }
+
+    /// Writes `text` to `path`.
+    fn write(&mut self, path: &str, text: &str) -> Result<(), String> {
+        match self {
+            Self::Here => std::fs::write(path, text).map_err(|error| error.to_string()),
+            Self::Remote(client) => client.write(path, text).map_err(|error| error.to_string()),
+        }
+    }
+}
+
 pub struct Hosts {
     catalogue: Catalogue,
     running: BTreeMap<String, Running>,
@@ -206,11 +242,24 @@ pub struct Hosts {
     problems: Vec<String>,
     bootstrap: Option<PathBuf>,
     node: Option<PathBuf>,
+    /// The workspace folders a `workspace`-scoped capability stands for.
+    ///
+    /// Without them a grant of `readFile: workspace` covers no concrete path at
+    /// all, because a scope resolves to the roots it is given and an empty list
+    /// contains nothing. In a remote session these are the *far end's*
+    /// directories, which is what makes an extension's path requests mean the
+    /// same thing as the session's.
+    workspace_roots: Vec<PathBuf>,
 }
 
 impl Hosts {
     /// Takes a catalogue and finds what starting one of its extensions needs.
     pub fn new(catalogue: Catalogue) -> Self {
+        Self::rooted(catalogue, Vec::new())
+    }
+
+    /// The same, with the workspace folders extensions may be granted.
+    pub fn rooted(catalogue: Catalogue, workspace_roots: Vec<PathBuf>) -> Self {
         let problems = catalogue.problems.clone();
         Self {
             catalogue,
@@ -219,6 +268,7 @@ impl Hosts {
             problems,
             bootstrap: find_bootstrap(),
             node: find_node(std::env::var_os("PATH").as_deref()),
+            workspace_roots,
         }
     }
 
@@ -354,11 +404,26 @@ impl Hosts {
             Sandbox::Container => READY_TIMEOUT_CONTAINER,
             Sandbox::Process => READY_TIMEOUT,
         };
+        // The user's setting, not a constant. `extensions.permissions.default`
+        // has existed and been parsed since the broker did, and this was passing
+        // `Deny` regardless — so a person who wrote `"allow"` got a refusal and
+        // no explanation of why their setting did nothing. The default is
+        // `prompt`, which still refuses, because there is nowhere to ask yet;
+        // what changes is that saying `allow` now means something.
+        let policy = session
+            .settings
+            .get(deco_ext::capability::DEFAULT_POLICY_KEY)
+            .and_then(|value| value.as_str())
+            .and_then(DefaultPolicy::parse)
+            .unwrap_or(DefaultPolicy::Prompt);
         let broker = Broker::new(
             self.declared(id),
             GrantStore::default(),
-            DefaultPolicy::Deny,
-            ResolutionContext::default(),
+            policy,
+            ResolutionContext {
+                workspace_roots: self.workspace_roots.clone(),
+                ..ResolutionContext::default()
+            },
         );
         self.running.insert(
             id.to_owned(),
@@ -417,14 +482,14 @@ impl Hosts {
     ///
     /// Called from the event loop, like the language-server client, because a host
     /// that started a minute ago is ready now and nothing else would notice.
-    pub fn poll(&mut self, session: &mut Session) {
+    pub fn poll(&mut self, session: &mut Session, files: &mut Files<'_>) {
         let ids: Vec<String> = self.running.keys().cloned().collect();
         for id in ids {
-            self.poll_one(&id, session);
+            self.poll_one(&id, session, files);
         }
     }
 
-    fn poll_one(&mut self, id: &str, session: &mut Session) {
+    fn poll_one(&mut self, id: &str, session: &mut Session, files: &mut Files<'_>) {
         let mut notes: Vec<String> = Vec::new();
         let mut statuses: Vec<String> = Vec::new();
         let mut dead = false;
@@ -472,9 +537,14 @@ impl Hosts {
                                 "deco cannot ask for consent yet, so this is refused",
                             )
                         }
-                        Dispatch::Allowed => {
-                            Self::mediated(running, &request, &label, &mut notes, &mut statuses)
-                        }
+                        Dispatch::Allowed => Self::mediated(
+                            running,
+                            &request,
+                            &label,
+                            &mut notes,
+                            &mut statuses,
+                            files,
+                        ),
                     };
                     if running.host.send(&Message::Response(reply)).is_err() {
                         dead = true;
@@ -632,6 +702,7 @@ impl Hosts {
         label: &str,
         notes: &mut Vec<String>,
         statuses: &mut Vec<String>,
+        files: &mut Files<'_>,
     ) -> Response {
         let text = |key: &str| {
             request.params[key]
@@ -665,6 +736,52 @@ impl Hosts {
                 // when a message is dismissed, so this is a shape extensions
                 // already handle.
                 Response::ok(request.id, serde_json::Value::Null)
+            }
+            // Reached only once the broker has allowed it, which is what makes
+            // the path safe to act on: the check is that it falls inside a scope
+            // the manifest declared and the user did not decline.
+            "fs.readFile" => {
+                let path = text("path");
+                if path.is_empty() {
+                    return Response::err(
+                        request.id,
+                        ErrorCode::InvalidParams,
+                        "a read needs a path",
+                    );
+                }
+                match files.read(&path) {
+                    Ok(contents) => Response::ok(request.id, serde_json::json!(contents)),
+                    // The operating system's words, not deco's: "no such file" and
+                    // "permission denied" are the two answers an extension can do
+                    // something about, and paraphrasing them loses which it was.
+                    Err(reason) => Response::err(
+                        request.id,
+                        ErrorCode::InvalidParams,
+                        format!("could not read {path}: {reason}"),
+                    ),
+                }
+            }
+            "fs.writeFile" => {
+                let path = text("path");
+                if path.is_empty() {
+                    return Response::err(
+                        request.id,
+                        ErrorCode::InvalidParams,
+                        "a write needs a path",
+                    );
+                }
+                // `content` is what the shim sends, and an absent one is an empty
+                // file rather than an error: truncating is a thing an extension
+                // may legitimately mean.
+                let contents = text("content");
+                match files.write(&path, &contents) {
+                    Ok(()) => Response::ok(request.id, serde_json::Value::Null),
+                    Err(reason) => Response::err(
+                        request.id,
+                        ErrorCode::InvalidParams,
+                        format!("could not write {path}: {reason}"),
+                    ),
+                }
             }
             "log.append" => {
                 let message = text("message");

@@ -562,6 +562,7 @@ dependencies = [
  "deco-core",
  "deco-e2e",
  "deco-editor",
+ "deco-ext",
  "deco-gui",
  "deco-keymap",
  "deco-remote",
