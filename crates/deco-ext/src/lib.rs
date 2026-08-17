@@ -53,6 +53,7 @@ pub mod catalogue;
 pub mod connection;
 pub mod host;
 pub mod manifest;
+pub mod permissions;
 pub mod protocol;
 pub mod sandbox;
 

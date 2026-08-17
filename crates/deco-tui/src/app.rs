@@ -283,6 +283,11 @@ pub struct Options {
     pub remote: Option<RemoteSession>,
     /// Every directory that may hold installed extensions.
     pub extension_roots: Vec<PathBuf>,
+    /// Where extension permission decisions are remembered between sessions.
+    ///
+    /// `None` remembers nothing past this session, which is what a scenario wants
+    /// and what deco does when it cannot work out where its configuration lives.
+    pub permissions_file: Option<PathBuf>,
     /// What a leading `~` in a typed path expands to.
     pub home: Option<PathBuf>,
     /// What a relative typed path is taken against when the session has no file
@@ -298,6 +303,11 @@ impl Default for Options {
             started_with: None,
             remote: None,
             extension_roots: extension_roots(),
+            permissions_file: deco_config::paths::ConfigPaths::deco(
+                &deco_config::paths::Env::from_process(),
+                deco_config::paths::Layout::host(),
+            )
+            .map(|paths| paths.permissions),
             home: deco_config::paths::Env::from_process().home,
             cwd: std::env::current_dir().ok(),
             size: (80, 24),
@@ -337,6 +347,7 @@ impl Driver {
             started_with,
             remote,
             extension_roots,
+            permissions_file,
             home,
             cwd,
             size: (width, height),
@@ -372,15 +383,21 @@ impl Driver {
 
         Self {
             lsp,
-            hosts: crate::extensions::Hosts::rooted(
-                catalogue,
-                // The workspace as the machine holding it spells it, which in a
-                // remote session is a directory on the far end. An extension
-                // granted `readFile: workspace` gets exactly the directory the
-                // session is editing, and nothing when there is no workspace at
-                // all.
-                workspace_roots.into_iter().collect(),
-            ),
+            hosts: {
+                let hosts = crate::extensions::Hosts::rooted(
+                    catalogue,
+                    // The workspace as the machine holding it spells it, which in a
+                    // remote session is a directory on the far end. An extension
+                    // granted `readFile: workspace` gets exactly the directory the
+                    // session is editing, and nothing when there is no workspace at
+                    // all.
+                    workspace_roots.into_iter().collect(),
+                );
+                match permissions_file {
+                    Some(path) => hosts.remembering(path),
+                    None => hosts,
+                }
+            },
             remote,
             started_with,
             extension_roots,

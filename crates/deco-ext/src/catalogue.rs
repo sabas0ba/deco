@@ -55,6 +55,12 @@ pub struct Installed {
     pub label: String,
     /// The directory it was found in.
     pub root: PathBuf,
+    /// What its manifest calls this version.
+    ///
+    /// Kept because a remembered permission is a decision about *this* code: a
+    /// new version is new code, and carrying a grant across an update would be
+    /// allowing something without having seen what it now does.
+    pub version: String,
     /// Its entry point, relative to `root`. `None` for a declarative extension,
     /// which never runs.
     pub main: Option<String>,
@@ -134,6 +140,7 @@ impl Catalogue {
 
             catalogue.extensions.push(Installed {
                 label: manifest.label().to_owned(),
+                version: manifest.version.clone(),
                 id,
                 root,
                 main: manifest.main.clone().filter(|main| !main.trim().is_empty()),

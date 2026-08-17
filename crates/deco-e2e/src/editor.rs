@@ -74,6 +74,11 @@ impl Editor {
                 started_with,
                 remote,
                 extension_roots: scenario.extension_roots(),
+                // Under the scenario's own home, so a scenario that answers a
+                // permission question writes it somewhere it owns — and a second
+                // launch of the same scenario can be asked whether the answer
+                // stuck.
+                permissions_file: Some(scenario.home().join("deco/permissions.json")),
                 home: Some(scenario.home().to_path_buf()),
                 cwd: boot.cwd.clone(),
                 size: scenario.terminal_size(),
