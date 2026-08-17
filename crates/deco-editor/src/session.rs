@@ -1227,6 +1227,23 @@ impl Session {
     /// nothing: an empty file list means the workspace is empty, and an empty
     /// result list means the term is not in it — different facts, and reporting
     /// one as the other would send the reader looking in the wrong place.
+    /// Offers the decisions already made, so one can be taken back.
+    ///
+    /// Empty says so rather than opening a list with nothing in it: "no decisions
+    /// to forget" is an answer, and an empty picker is a puzzle.
+    pub fn offer_extension_permissions(
+        &mut self,
+        decisions: Vec<crate::commands::PaletteEntry>,
+    ) -> Outcome {
+        if decisions.is_empty() {
+            return Outcome::Message(
+                "no extension permission has been decided in this session".to_owned(),
+            );
+        }
+        self.prompt = Some(Prompt::list(PromptKind::ExtensionPermissions, decisions));
+        Outcome::Handled
+    }
+
     /// Asks the user about a capability an extension wants.
     ///
     /// `what` describes the request in the words the user will read — the
@@ -1581,6 +1598,10 @@ impl Session {
                     at: None,
                 }
             }
+            PromptKind::ExtensionPermissions => match prompt.selected() {
+                Some(entry) => Outcome::ForgetExtensionPermission(entry.id.clone()),
+                None => Outcome::Message(format!("no decision matches `{}`", prompt.text())),
+            },
             PromptKind::ExtensionConsent => match prompt.selected() {
                 Some(entry) => Outcome::ExtensionConsent {
                     allow: entry.id == CONSENT_ALLOW,

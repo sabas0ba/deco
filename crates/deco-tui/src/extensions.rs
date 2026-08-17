@@ -281,6 +281,14 @@ pub struct Hosts {
     problems: Vec<String>,
     bootstrap: Option<PathBuf>,
     node: Option<PathBuf>,
+    /// What the last-offered list of decisions stood for, in the order it was
+    /// offered.
+    ///
+    /// The choice carries an index into this rather than a spelling of the
+    /// extension and capability: encoding them into a string would mean parsing
+    /// one back out, and a capability's `Debug` is not a format anything should
+    /// have to read.
+    decisions: Vec<(String, deco_ext::capability::Capability)>,
     /// The one permission question that is open, if any.
     ///
     /// One at a time, deliberately: two prompts cannot be on screen at once, and
@@ -315,6 +323,7 @@ impl Hosts {
             bootstrap: find_bootstrap(),
             node: find_node(std::env::var_os("PATH").as_deref()),
             asking: None,
+            decisions: Vec::new(),
             workspace_roots,
         }
     }
@@ -728,6 +737,80 @@ impl Hosts {
         }
 
         self.finish(id, dead, notes, statuses, session);
+    }
+
+    /// Offers every decision made in this session, newest extension first.
+    ///
+    /// The point is a mistaken answer. A `deny` chosen in a hurry otherwise means
+    /// that extension quietly fails for the rest of the session, with nothing to
+    /// undo it and no hint that a decision is the reason.
+    pub fn offer_permissions(&mut self, session: &mut Session) -> bool {
+        self.decisions.clear();
+        let mut entries = Vec::new();
+        for (id, running) in &self.running {
+            let label = self
+                .catalogue
+                .by_id(id)
+                .map(|entry| entry.label.clone())
+                .unwrap_or_else(|| id.clone());
+            let grants = running.broker.grants();
+            for (capability, decided) in grants
+                .allowed
+                .iter()
+                .map(|c| (c, "allowed"))
+                .chain(grants.denied.iter().map(|c| (c, "refused")))
+            {
+                entries.push(deco_editor::commands::PaletteEntry::new(
+                    &self.decisions.len().to_string(),
+                    &format!("{label}: {decided} — {}", describe(capability, "")),
+                ));
+                self.decisions.push((id.clone(), capability.clone()));
+            }
+        }
+        // The message is put on the status bar here rather than returned for
+        // somebody to forward: this is invoked from a palette entry, whose caller
+        // has no outcome to hand onward, so a returned message would be dropped
+        // and the command would do nothing visible at all.
+        match session.offer_extension_permissions(entries) {
+            deco_editor::commands::Outcome::Handled => true,
+            deco_editor::commands::Outcome::Message(said) => {
+                session.status = Some(said);
+                false
+            }
+            _ => false,
+        }
+    }
+
+    /// Takes back the decision the user picked out of that list.
+    pub fn forget_permission(&mut self, session: &mut Session, chosen: &str) {
+        let Some((id, capability)) = chosen
+            .parse::<usize>()
+            .ok()
+            .and_then(|index| self.decisions.get(index))
+            .cloned()
+        else {
+            return;
+        };
+        let label = self
+            .catalogue
+            .by_id(&id)
+            .map(|entry| entry.label.clone())
+            .unwrap_or_else(|| id.clone());
+        let Some(running) = self.running.get_mut(&id) else {
+            session.status = Some(format!("{label} is not running any more"));
+            return;
+        };
+        running.broker.forget(&capability);
+        // Said in the terms the decision was made in, and what happens next: the
+        // extension is not re-asked now, because nothing is asking now.
+        session.status = Some(format!(
+            "{label} will ask again about {}",
+            describe(&capability, "")
+        ));
+        self.note(&format!(
+            "{label}: forgot the decision about {}",
+            describe(&capability, "")
+        ));
     }
 
     /// Applies the user's answer to the request that was waiting on it.

@@ -59,6 +59,12 @@ pub enum Outcome {
     Frontend(String),
     /// The document should be written to disk.
     Save,
+    /// The user chose a remembered decision to take back.
+    ///
+    /// The identifier is whatever the frontend put on the choice when it built
+    /// the list: only the frontend knows which extension and capability it stands
+    /// for, and the core has no reason to learn.
+    ForgetExtensionPermission(String),
     /// The user answered an extension's permission request.
     ///
     /// Which extension and which capability are not carried: whoever opened the

@@ -328,6 +328,13 @@ Only one question is open at a time. A second extension asking while one is on
 screen is refused, with that as the reason: a queue would mean answering about a
 request that was abandoned long before anyone read it.
 
+A decision can be taken back. **Extensions: Forget a Permission Decision** in the
+command palette lists what has been decided — *"Acme Tools: refused — read files
+under /home/u/project/notes.txt"* — and choosing one makes that extension ask
+again the next time it wants it. Without that, a `deny` chosen in a hurry means
+the extension quietly fails for the rest of the session, with nothing to undo it
+and no hint that a decision is the reason.
+
 Decisions last for the session and are not written down yet, so restarting the
 editor asks again.
 

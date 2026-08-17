@@ -349,6 +349,105 @@ fn a_declared_capability_is_asked_about_rather_than_refused() {
 
 #[test]
 #[ignore = "needs node; run through `cargo xtask host-test`"]
+fn a_decision_can_be_taken_back_from_the_palette() {
+    // The reason this exists: a `deny` chosen in a hurry otherwise means that
+    // extension quietly fails for the rest of the session, with nothing to undo
+    // it and no hint that a decision is why.
+    let workspace = std::env::temp_dir().join(format!("deco-consent-undo-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&workspace);
+    std::fs::create_dir_all(&workspace).expect("a workspace");
+    let file = workspace.join("notes.txt");
+    std::fs::write(&file, "the contents\n").expect("a file");
+
+    let root = reader("consent-undo", &file);
+    point_at_the_host();
+    let mut session = session();
+    let catalogue = discover(std::slice::from_ref(&root));
+    session.frontend_commands.extend(rows(&catalogue));
+    let mut hosts = Hosts::rooted(catalogue, vec![workspace.clone()]);
+
+    // Refused by mistake.
+    assert!(hosts.run_command(&mut session, "acme.read"));
+    until(&mut hosts, &mut session, "the question", |_, session| {
+        session.prompt.is_some()
+    });
+    hosts.answer_consent(&mut session, false, &mut deco_tui::extensions::Files::Here);
+    until(&mut hosts, &mut session, "the refusal", |_, session| {
+        session
+            .status
+            .as_deref()
+            .is_some_and(|s| s.contains("refused"))
+    });
+
+    // The decision is listed, in the words it was made in.
+    session.prompt = None;
+    assert!(hosts.offer_permissions(&mut session));
+    let listed = session
+        .prompt
+        .as_ref()
+        .expect("a list")
+        .visible()
+        .iter()
+        .map(|entry| (entry.id.clone(), entry.title.clone()))
+        .collect::<Vec<_>>();
+    let shown = listed
+        .iter()
+        .map(|(_, title)| title.clone())
+        .collect::<Vec<_>>()
+        .join(" | ");
+    assert!(shown.contains("Acme Tools"), "{shown}");
+    assert!(shown.contains("refused"), "{shown}");
+    assert!(shown.contains("notes.txt"), "{shown}");
+
+    // Taken back, and the extension asks again rather than being refused from
+    // memory.
+    let (chosen, _) = listed.first().expect("a decision").clone();
+    session.prompt = None;
+    hosts.forget_permission(&mut session, &chosen);
+
+    session.status = None;
+    assert!(hosts.run_command(&mut session, "acme.read"));
+    until(
+        &mut hosts,
+        &mut session,
+        "the second question",
+        |_, session| session.prompt.is_some(),
+    );
+    hosts.answer_consent(&mut session, true, &mut deco_tui::extensions::Files::Here);
+    until(&mut hosts, &mut session, "the read", |_, session| {
+        session
+            .status
+            .as_deref()
+            .is_some_and(|said| said.contains("the contents") || said.contains("refused"))
+    });
+    let said = session.status.clone().unwrap_or_default();
+    assert!(said.contains("the contents"), "{said}");
+
+    hosts.shutdown();
+    let _ = std::fs::remove_dir_all(&workspace);
+}
+
+#[test]
+fn with_nothing_decided_the_palette_says_so_rather_than_offering_an_empty_list() {
+    // No host, no decisions: an empty picker is a puzzle, and this is the one
+    // scenario here that needs no Node at all.
+    let mut session = session();
+    let mut hosts = Hosts::new(discover(&[]));
+    assert!(!hosts.offer_permissions(&mut session));
+    assert!(session.prompt.is_none());
+    assert!(
+        session
+            .status
+            .as_deref()
+            .unwrap_or_default()
+            .contains("no extension permission"),
+        "{:?}",
+        session.status
+    );
+}
+
+#[test]
+#[ignore = "needs node; run through `cargo xtask host-test`"]
 fn a_refusal_is_remembered_so_an_extension_cannot_ask_in_a_loop() {
     let workspace = std::env::temp_dir().join(format!("deco-consent-no-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&workspace);

@@ -50,6 +50,8 @@ pub enum PromptKind {
     /// the choices, because a label is one static string and a permission is
     /// about a particular extension and a particular thing.
     ExtensionConsent,
+    /// A decision already made about an extension, to be taken back.
+    ExtensionPermissions,
 }
 
 impl PromptKind {
@@ -67,6 +69,7 @@ impl PromptKind {
             Self::OpenPath => "Open file:",
             Self::SearchQuery => "Search:",
             Self::ExtensionConsent => "Extension permission:",
+            Self::ExtensionPermissions => "Forget which decision?",
         }
     }
 
@@ -94,6 +97,8 @@ impl PromptKind {
             (Self::Themes, _) => "themes",
             // Two, always, and counting them tells nobody anything.
             (Self::ExtensionConsent, _) => "",
+            (Self::ExtensionPermissions, 1) => "decision",
+            (Self::ExtensionPermissions, _) => "decisions",
         }
     }
 
@@ -115,6 +120,7 @@ impl PromptKind {
             Self::OpenPath => "open file",
             Self::SearchQuery => "search in files",
             Self::ExtensionConsent => "an extension's permission request",
+            Self::ExtensionPermissions => "the list of permission decisions",
         }
     }
 
