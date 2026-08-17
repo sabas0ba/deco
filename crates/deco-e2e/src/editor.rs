@@ -84,7 +84,9 @@ impl Editor {
             session,
             driver,
             now_ms: 0,
-            workspace: scenario.workspace().to_path_buf(),
+            // Where `on_disk` looks. For a remote session that is the directory
+            // the *server* is serving, which may not be this machine's.
+            workspace: scenario.served_workspace(),
             size: scenario.terminal_size(),
             quit: false,
         })

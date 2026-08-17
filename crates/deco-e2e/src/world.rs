@@ -36,6 +36,9 @@ pub struct Scenario {
     /// whose absence is the thing being tested.
     vscode_settings: Option<String>,
     language_servers: bool,
+    /// A workspace for the far end that is not this machine's, once a scenario
+    /// has put a file on it — see [`Scenario::remote_file`].
+    remote: Option<PathBuf>,
 }
 
 impl Scenario {
@@ -66,6 +69,7 @@ impl Scenario {
             user_settings: None,
             vscode_settings: None,
             language_servers: false,
+            remote: None,
         }
     }
 
@@ -171,6 +175,38 @@ impl Scenario {
             None => text,
         });
         self
+    }
+
+    /// Writes a file onto the far end, in a directory this machine's workspace
+    /// is not.
+    ///
+    /// Without this, [`Scenario::launch_remote`] serves the scenario's own
+    /// workspace, and "the far end" and "this machine" are one directory — which
+    /// means a scenario cannot tell a file that came over the connection from
+    /// one that was read off the local disk, and cannot tell a write that went to
+    /// the server from a write that went here. Both look identical when the two
+    /// are the same folder.
+    ///
+    /// Using this makes them different folders, so those questions have answers.
+    /// [`Editor::on_disk`] then looks at the far end's, because that is where a
+    /// remote session's files are.
+    pub fn remote_file(mut self, relative: &str, contents: &str) -> Self {
+        let remote = self.root.join("remote");
+        let path = remote.join(relative);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("a directory on the far end");
+        }
+        std::fs::write(&path, contents).expect("a file on the far end");
+        self.remote = Some(remote);
+        self
+    }
+
+    /// The directory the far end serves: its own if a scenario gave it one, and
+    /// otherwise this machine's workspace.
+    pub(crate) fn served_workspace(&self) -> PathBuf {
+        self.remote
+            .clone()
+            .unwrap_or_else(|| self.workspace.clone())
     }
 
     /// deco's own `keybindings.json`.
@@ -286,7 +322,7 @@ impl Scenario {
                 "--server".to_owned(),
                 "--stdio".to_owned(),
                 "--workspace".to_owned(),
-                self.workspace().display().to_string(),
+                self.served_workspace().display().to_string(),
             ],
         })
         .unwrap_or_else(|error| panic!("the server should start: {error}"));
