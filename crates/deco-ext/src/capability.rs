@@ -358,6 +358,15 @@ impl Broker {
         }
     }
 
+    /// Forgets a decision, so the next request covered by it asks again.
+    ///
+    /// Both lists, because a decision is one answer and remembering it in one
+    /// place while forgetting it in the other would leave the old answer standing.
+    pub fn forget(&mut self, capability: &Capability) {
+        self.grants.allowed.retain(|c| c != capability);
+        self.grants.denied.retain(|c| c != capability);
+    }
+
     /// Decides what happens to `request`.
     ///
     /// # What this does not protect against

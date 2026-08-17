@@ -570,6 +570,21 @@ impl Driver {
             // This used to be refused: a local walk in a remote session
             // searches the wrong machine and reports matches in files the
             // editor is not showing.
+            // Chosen out of the list below: the decision is taken back, and the
+            // extension asks again the next time it wants that.
+            Outcome::ForgetExtensionPermission(chosen) => {
+                hosts.forget_permission(session, &chosen);
+            }
+            // The user answered an extension's permission request. The request
+            // itself has been waiting in `hosts` since it was asked about; this is
+            // what finally sends it a reply.
+            Outcome::ExtensionConsent { allow } => {
+                let mut files = match remote.as_mut() {
+                    Some(client) => crate::extensions::Files::Remote(client),
+                    None => crate::extensions::Files::Here,
+                };
+                hosts.answer_consent(session, allow, &mut files);
+            }
             Outcome::SearchInFiles { query, options } if remote.is_some() => {
                 let client = remote.as_mut().expect("a remote session");
                 match client.search(&query, options) {
@@ -715,6 +730,11 @@ impl Driver {
                 // An extension's command, whose identifier is whatever is
                 // installed rather than anything written down here. Asked
                 // last so that no core command can be shadowed by one.
+                // Offered before the extension commands are looked at, because it
+                // is deco's own command rather than one an extension registered.
+                "deco.extensions.forgetPermission" => {
+                    hosts.offer_permissions(session);
+                }
                 other if hosts.run_command(session, other) => {}
                 other => {
                     session.status = Some(format!("{other} is not implemented yet"));
@@ -817,6 +837,10 @@ pub fn frontend_commands() -> Vec<deco_editor::commands::PaletteEntry> {
         ("editor.action.formatSelection", "Format Selection"),
         ("workbench.action.quickOpen", "Go to File"),
         ("workbench.action.findInFiles", "Find in Files"),
+        (
+            "deco.extensions.forgetPermission",
+            "Extensions: Forget a Permission Decision",
+        ),
     ]
     .iter()
     .map(|(id, title)| deco_editor::commands::PaletteEntry::new(id, title))

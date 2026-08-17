@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 
 use deco_editor::commands::PaletteEntry;
 use deco_editor::Session;
-use deco_ext::capability::{Broker, DefaultPolicy, GrantStore, ResolutionContext};
+use deco_ext::capability::{Broker, Decision, DefaultPolicy, GrantStore, ResolutionContext};
 use deco_ext::catalogue::Catalogue;
 use deco_ext::connection::{dispatch, Dispatch, Host, HostEvent};
 use deco_ext::host::{HostConfig, HostLimits};
@@ -233,6 +233,45 @@ impl Files<'_> {
     }
 }
 
+/// What an extension is asking for, in the words a person has to decide about.
+///
+/// The capability's own `Debug` names its variant and its bound, which is exactly
+/// the wrong register for a prompt: `ReadFile { scope: Workspace }` is a Rust
+/// value, not a question.
+fn describe(capability: &deco_ext::capability::Capability, method: &str) -> String {
+    use deco_ext::capability::{Capability, PathScope};
+    let where_ = |scope: &PathScope| match scope {
+        PathScope::Workspace => "in this workspace".to_owned(),
+        PathScope::ExtensionStorage => "in its own storage".to_owned(),
+        PathScope::ExtensionInstall => "in its own directory".to_owned(),
+        PathScope::Subtree { path } => format!("under {}", path.display()),
+    };
+    match capability {
+        Capability::ReadFile { scope } => format!("read files {}", where_(scope)),
+        Capability::WriteFile { scope } => format!("change files {}", where_(scope)),
+        Capability::Network { host } => format!("connect to {host}"),
+        Capability::Process { program } => format!("run {program}"),
+        Capability::Env { name } => format!("read the environment variable {name}"),
+        Capability::Clipboard => "use the clipboard".to_owned(),
+        Capability::Secrets => "store and read secrets".to_owned(),
+        Capability::OpenExternal => "open a link in your browser".to_owned(),
+        // Unreachable while every variant is listed, and a description that names
+        // the method beats one that says nothing if a variant is ever added.
+        #[allow(unreachable_patterns)]
+        _ => format!("do {method}"),
+    }
+}
+
+/// A request held while the user is asked about it.
+struct Asking {
+    /// Which extension asked.
+    extension: String,
+    /// The request itself, to answer once there is a decision.
+    request: deco_ext::protocol::Request,
+    /// What the broker wants a decision about.
+    capability: deco_ext::capability::Capability,
+}
+
 pub struct Hosts {
     catalogue: Catalogue,
     running: BTreeMap<String, Running>,
@@ -242,6 +281,21 @@ pub struct Hosts {
     problems: Vec<String>,
     bootstrap: Option<PathBuf>,
     node: Option<PathBuf>,
+    /// What the last-offered list of decisions stood for, in the order it was
+    /// offered.
+    ///
+    /// The choice carries an index into this rather than a spelling of the
+    /// extension and capability: encoding them into a string would mean parsing
+    /// one back out, and a capability's `Debug` is not a format anything should
+    /// have to read.
+    decisions: Vec<(String, deco_ext::capability::Capability)>,
+    /// The one permission question that is open, if any.
+    ///
+    /// One at a time, deliberately: two prompts cannot be on screen at once, and
+    /// a queue of them would mean answering a question about an extension whose
+    /// request has long since been abandoned. A second extension asking while
+    /// one is open is refused with that as the reason.
+    asking: Option<Asking>,
     /// The workspace folders a `workspace`-scoped capability stands for.
     ///
     /// Without them a grant of `readFile: workspace` covers no concrete path at
@@ -268,6 +322,8 @@ impl Hosts {
             problems,
             bootstrap: find_bootstrap(),
             node: find_node(std::env::var_os("PATH").as_deref()),
+            asking: None,
+            decisions: Vec::new(),
             workspace_roots,
         }
     }
@@ -404,12 +460,8 @@ impl Hosts {
             Sandbox::Container => READY_TIMEOUT_CONTAINER,
             Sandbox::Process => READY_TIMEOUT,
         };
-        // The user's setting, not a constant. `extensions.permissions.default`
-        // has existed and been parsed since the broker did, and this was passing
-        // `Deny` regardless — so a person who wrote `"allow"` got a refusal and
-        // no explanation of why their setting did nothing. The default is
-        // `prompt`, which still refuses, because there is nowhere to ask yet;
-        // what changes is that saying `allow` now means something.
+        // The user's setting, not a constant: `prompt` asks, `allow` serves a
+        // declared capability without asking, and `deny` refuses without asking.
         let policy = session
             .settings
             .get(deco_ext::capability::DEFAULT_POLICY_KEY)
@@ -493,6 +545,9 @@ impl Hosts {
         let mut notes: Vec<String> = Vec::new();
         let mut statuses: Vec<String> = Vec::new();
         let mut dead = false;
+        // Collected rather than stored directly, because the host being drained is
+        // borrowed out of `self` for the length of this loop.
+        let mut pending: Option<Asking> = None;
 
         let Some(running) = self.running.get_mut(id) else {
             return;
@@ -525,16 +580,32 @@ impl Hosts {
                         // a prompt that does not exist must not become a silent
                         // yes. Refused, and said out loud so the reason is not a
                         // mystery when the extension misbehaves.
+                        // Held rather than answered: the extension is waiting on
+                        // a promise, so there is nothing to send until there is a
+                        // decision. Its host stays alive and its other requests
+                        // keep being served.
+                        Dispatch::Consent { capability } if pending.is_none() => {
+                            pending = Some(Asking {
+                                extension: id.to_owned(),
+                                request: request.clone(),
+                                capability,
+                            });
+                            continue;
+                        }
+                        // A second question while one is open. Refused rather than
+                        // queued, and the reason names the situation: a queue would
+                        // mean asking about a request the extension abandoned long
+                        // before anyone read the prompt.
                         Dispatch::Consent { capability } => {
                             notes.push(format!(
-                                "{label}: {} needs your decision about {capability:?}, and deco \
-                                 cannot ask yet — refused",
+                                "{label}: {} needs a decision about {capability:?}, and another \
+                                 permission question is already open — refused",
                                 request.method
                             ));
                             Response::err(
                                 request.id,
                                 ErrorCode::PermissionDenied,
-                                "deco cannot ask for consent yet, so this is refused",
+                                "another permission question is open, so this is refused",
                             )
                         }
                         Dispatch::Allowed => Self::mediated(
@@ -653,7 +724,154 @@ impl Hosts {
             dead = true;
         }
 
+        // Asked here rather than inside the drain loop, where the host is
+        // borrowed. A question raised by a host that has since died is dropped:
+        // there is nothing left to answer.
+        if let (Some(asking), false) = (pending, dead) {
+            let what = format!(
+                "{label} wants to {}",
+                describe(&asking.capability, &asking.request.method)
+            );
+            self.asking = Some(asking);
+            session.ask_extension_consent(&what);
+        }
+
         self.finish(id, dead, notes, statuses, session);
+    }
+
+    /// Offers every decision made in this session, newest extension first.
+    ///
+    /// The point is a mistaken answer. A `deny` chosen in a hurry otherwise means
+    /// that extension quietly fails for the rest of the session, with nothing to
+    /// undo it and no hint that a decision is the reason.
+    pub fn offer_permissions(&mut self, session: &mut Session) -> bool {
+        self.decisions.clear();
+        let mut entries = Vec::new();
+        for (id, running) in &self.running {
+            let label = self
+                .catalogue
+                .by_id(id)
+                .map(|entry| entry.label.clone())
+                .unwrap_or_else(|| id.clone());
+            let grants = running.broker.grants();
+            for (capability, decided) in grants
+                .allowed
+                .iter()
+                .map(|c| (c, "allowed"))
+                .chain(grants.denied.iter().map(|c| (c, "refused")))
+            {
+                entries.push(deco_editor::commands::PaletteEntry::new(
+                    &self.decisions.len().to_string(),
+                    &format!("{label}: {decided} — {}", describe(capability, "")),
+                ));
+                self.decisions.push((id.clone(), capability.clone()));
+            }
+        }
+        // The message is put on the status bar here rather than returned for
+        // somebody to forward: this is invoked from a palette entry, whose caller
+        // has no outcome to hand onward, so a returned message would be dropped
+        // and the command would do nothing visible at all.
+        match session.offer_extension_permissions(entries) {
+            deco_editor::commands::Outcome::Handled => true,
+            deco_editor::commands::Outcome::Message(said) => {
+                session.status = Some(said);
+                false
+            }
+            _ => false,
+        }
+    }
+
+    /// Takes back the decision the user picked out of that list.
+    pub fn forget_permission(&mut self, session: &mut Session, chosen: &str) {
+        let Some((id, capability)) = chosen
+            .parse::<usize>()
+            .ok()
+            .and_then(|index| self.decisions.get(index))
+            .cloned()
+        else {
+            return;
+        };
+        let label = self
+            .catalogue
+            .by_id(&id)
+            .map(|entry| entry.label.clone())
+            .unwrap_or_else(|| id.clone());
+        let Some(running) = self.running.get_mut(&id) else {
+            session.status = Some(format!("{label} is not running any more"));
+            return;
+        };
+        running.broker.forget(&capability);
+        // Said in the terms the decision was made in, and what happens next: the
+        // extension is not re-asked now, because nothing is asking now.
+        session.status = Some(format!(
+            "{label} will ask again about {}",
+            describe(&capability, "")
+        ));
+        self.note(&format!(
+            "{label}: forgot the decision about {}",
+            describe(&capability, "")
+        ));
+    }
+
+    /// Applies the user's answer to the request that was waiting on it.
+    ///
+    /// The decision is remembered on that extension's broker, so a second request
+    /// covered by the same grant is not asked about again — and a refusal is
+    /// remembered too, which is what stops an extension asking in a loop.
+    pub fn answer_consent(&mut self, session: &mut Session, allow: bool, files: &mut Files<'_>) {
+        let Some(asking) = self.asking.take() else {
+            return;
+        };
+        let label = self
+            .catalogue
+            .by_id(&asking.extension)
+            .map(|entry| entry.label.clone())
+            .unwrap_or_else(|| asking.extension.clone());
+        let Some(running) = self.running.get_mut(&asking.extension) else {
+            // The host died while the question was on screen.
+            self.note(&format!("{label} was gone by the time you answered"));
+            return;
+        };
+        running.broker.remember(
+            asking.capability.clone(),
+            if allow {
+                Decision::Allow
+            } else {
+                Decision::Deny
+            },
+        );
+
+        let mut notes: Vec<String> = Vec::new();
+        let mut statuses: Vec<String> = Vec::new();
+        // Re-dispatched rather than served directly: the answer is a grant, and
+        // whether the grant covers this request is the broker's decision to make
+        // a second time. Anything else would let a "yes" to one path serve a
+        // request for another.
+        let reply = match dispatch(&running.broker, &asking.request) {
+            Dispatch::Allowed => Self::mediated(
+                running,
+                &asking.request,
+                &label,
+                &mut notes,
+                &mut statuses,
+                files,
+            ),
+            Dispatch::Refused(response) => response,
+            // Answered and still asking: nothing sensible remains but to refuse,
+            // and it would mean the grant did not cover what was asked.
+            Dispatch::Consent { .. } => Response::err(
+                asking.request.id,
+                ErrorCode::PermissionDenied,
+                "that permission does not cover this request",
+            ),
+        };
+        let dead = running.host.send(&Message::Response(reply)).is_err();
+        notes.push(format!(
+            "{label}: {} was {}",
+            asking.request.method,
+            if allow { "allowed" } else { "refused" }
+        ));
+        self.finish(&asking.extension, dead, notes, statuses, session);
     }
 
     /// Records what one poll produced, and drops the host if it is gone.

@@ -240,3 +240,272 @@ module.exports = { activate };
     hosts.shutdown();
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// An extension that reads `path` and says what happened.
+///
+/// `name` picks its directory, and every caller must pass a different one:
+/// `install` clears the directory before writing it, so two tests sharing a name
+/// delete each other's manifest halfway through being read. That showed up as
+/// "the manifest does not declare this capability" — and only in CI, which runs
+/// these in parallel.
+fn reader(name: &str, path: &Path) -> PathBuf {
+    install(
+        name,
+        r#"{
+  "name": "tools",
+  "publisher": "acme",
+  "displayName": "Acme Tools",
+  "main": "./extension.js",
+  "contributes": { "commands": [{ "command": "acme.read", "title": "Read" }] },
+  "deco": {
+    "capabilities": [
+      { "capability": "readFile", "scope": { "kind": "workspace" } }
+    ]
+  }
+}"#,
+        &format!(
+            r#"'use strict';
+const vscode = require('vscode');
+function activate(context) {{
+  context.subscriptions.push(
+    vscode.commands.registerCommand('acme.read', async () => {{
+      try {{
+        return `read ${{await vscode.workspace.fs.readFile({path:?})}}`;
+      }} catch (error) {{
+        return `refused: ${{error && error.message}}`;
+      }}
+    }}),
+  );
+}}
+module.exports = {{ activate }};
+"#
+        ),
+    )
+}
+
+#[test]
+#[ignore = "needs node; run through `cargo xtask host-test`"]
+fn a_declared_capability_is_asked_about_rather_than_refused() {
+    // The default policy is `prompt`, and until there was somewhere to prompt
+    // that meant every declared capability was refused. What should happen is
+    // this: the extension waits, and the user is asked in words naming who is
+    // asking and for what.
+    let workspace = std::env::temp_dir().join(format!("deco-consent-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&workspace);
+    std::fs::create_dir_all(&workspace).expect("a workspace");
+    let file = workspace.join("notes.txt");
+    std::fs::write(&file, "the contents\n").expect("a file");
+
+    let root = reader("consent-allow", &file);
+    point_at_the_host();
+    let mut session = session();
+    let catalogue = discover(std::slice::from_ref(&root));
+    session.frontend_commands.extend(rows(&catalogue));
+    let mut hosts = Hosts::rooted(catalogue, vec![workspace.clone()]);
+
+    assert!(hosts.run_command(&mut session, "acme.read"));
+    until(&mut hosts, &mut session, "the question", |_, session| {
+        session.prompt.is_some()
+    });
+
+    let prompt = session.prompt.as_ref().expect("a prompt");
+    let offered: Vec<String> = prompt.visible().iter().map(|e| e.title.clone()).collect();
+    let asked = offered.join(" | ");
+    // Who is asking and for what, in words rather than in a `Debug` of a Rust
+    // value: `ReadFile { scope: Workspace }` is not a question anyone can answer.
+    assert!(asked.contains("Acme Tools"), "{asked}");
+    // The file it actually asked for, not the `workspace` scope its manifest
+    // declared. The broker asks about the request, and the request is the more
+    // useful of the two to be shown: "may read files in this workspace" is a
+    // decision about everything, and this is a decision about one file.
+    assert!(asked.contains("read files under"), "{asked}");
+    assert!(asked.contains("notes.txt"), "{asked}");
+    assert!(asked.contains("Allow") && asked.contains("Deny"), "{asked}");
+    // And nothing has been served while the question is open.
+    assert!(
+        !session
+            .status
+            .as_deref()
+            .unwrap_or_default()
+            .contains("the contents"),
+        "the read was served before it was allowed: {:?}",
+        session.status
+    );
+
+    // Answered the way the prompt's own submit answers it.
+    hosts.answer_consent(&mut session, true, &mut deco_tui::extensions::Files::Here);
+    until(&mut hosts, &mut session, "the read", |_, session| {
+        session
+            .status
+            .as_deref()
+            .is_some_and(|said| said.contains("the contents") || said.contains("refused"))
+    });
+    let said = session.status.clone().unwrap_or_default();
+    assert!(said.contains("the contents"), "{said}");
+
+    hosts.shutdown();
+    let _ = std::fs::remove_dir_all(&workspace);
+}
+
+#[test]
+#[ignore = "needs node; run through `cargo xtask host-test`"]
+fn a_decision_can_be_taken_back_from_the_palette() {
+    // The reason this exists: a `deny` chosen in a hurry otherwise means that
+    // extension quietly fails for the rest of the session, with nothing to undo
+    // it and no hint that a decision is why.
+    let workspace = std::env::temp_dir().join(format!("deco-consent-undo-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&workspace);
+    std::fs::create_dir_all(&workspace).expect("a workspace");
+    let file = workspace.join("notes.txt");
+    std::fs::write(&file, "the contents\n").expect("a file");
+
+    let root = reader("consent-undo", &file);
+    point_at_the_host();
+    let mut session = session();
+    let catalogue = discover(std::slice::from_ref(&root));
+    session.frontend_commands.extend(rows(&catalogue));
+    let mut hosts = Hosts::rooted(catalogue, vec![workspace.clone()]);
+
+    // Refused by mistake.
+    assert!(hosts.run_command(&mut session, "acme.read"));
+    until(&mut hosts, &mut session, "the question", |_, session| {
+        session.prompt.is_some()
+    });
+    hosts.answer_consent(&mut session, false, &mut deco_tui::extensions::Files::Here);
+    until(&mut hosts, &mut session, "the refusal", |_, session| {
+        session
+            .status
+            .as_deref()
+            .is_some_and(|s| s.contains("refused"))
+    });
+
+    // The decision is listed, in the words it was made in.
+    session.prompt = None;
+    assert!(hosts.offer_permissions(&mut session));
+    let listed = session
+        .prompt
+        .as_ref()
+        .expect("a list")
+        .visible()
+        .iter()
+        .map(|entry| (entry.id.clone(), entry.title.clone()))
+        .collect::<Vec<_>>();
+    let shown = listed
+        .iter()
+        .map(|(_, title)| title.clone())
+        .collect::<Vec<_>>()
+        .join(" | ");
+    assert!(shown.contains("Acme Tools"), "{shown}");
+    assert!(shown.contains("refused"), "{shown}");
+    assert!(shown.contains("notes.txt"), "{shown}");
+
+    // Taken back, and the extension asks again rather than being refused from
+    // memory.
+    let (chosen, _) = listed.first().expect("a decision").clone();
+    session.prompt = None;
+    hosts.forget_permission(&mut session, &chosen);
+
+    session.status = None;
+    assert!(hosts.run_command(&mut session, "acme.read"));
+    until(
+        &mut hosts,
+        &mut session,
+        "the second question",
+        |_, session| session.prompt.is_some(),
+    );
+    hosts.answer_consent(&mut session, true, &mut deco_tui::extensions::Files::Here);
+    until(&mut hosts, &mut session, "the read", |_, session| {
+        session
+            .status
+            .as_deref()
+            .is_some_and(|said| said.contains("the contents") || said.contains("refused"))
+    });
+    let said = session.status.clone().unwrap_or_default();
+    assert!(said.contains("the contents"), "{said}");
+
+    hosts.shutdown();
+    let _ = std::fs::remove_dir_all(&workspace);
+}
+
+#[test]
+fn with_nothing_decided_the_palette_says_so_rather_than_offering_an_empty_list() {
+    // No host, no decisions: an empty picker is a puzzle, and this is the one
+    // scenario here that needs no Node at all.
+    let mut session = session();
+    let mut hosts = Hosts::new(discover(&[]));
+    assert!(!hosts.offer_permissions(&mut session));
+    assert!(session.prompt.is_none());
+    assert!(
+        session
+            .status
+            .as_deref()
+            .unwrap_or_default()
+            .contains("no extension permission"),
+        "{:?}",
+        session.status
+    );
+}
+
+#[test]
+#[ignore = "needs node; run through `cargo xtask host-test`"]
+fn a_refusal_is_remembered_so_an_extension_cannot_ask_in_a_loop() {
+    let workspace = std::env::temp_dir().join(format!("deco-consent-no-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&workspace);
+    std::fs::create_dir_all(&workspace).expect("a workspace");
+    let file = workspace.join("notes.txt");
+    std::fs::write(&file, "the contents\n").expect("a file");
+
+    let root = reader("consent-deny", &file);
+    point_at_the_host();
+    let mut session = session();
+    let catalogue = discover(std::slice::from_ref(&root));
+    session.frontend_commands.extend(rows(&catalogue));
+    let mut hosts = Hosts::rooted(catalogue, vec![workspace.clone()]);
+
+    assert!(hosts.run_command(&mut session, "acme.read"));
+    until(&mut hosts, &mut session, "the question", |_, session| {
+        session.prompt.is_some()
+    });
+    hosts.answer_consent(&mut session, false, &mut deco_tui::extensions::Files::Here);
+    until(&mut hosts, &mut session, "the refusal", |_, session| {
+        session
+            .status
+            .as_deref()
+            .is_some_and(|said| said.contains("refused") || said.contains("the contents"))
+    });
+    assert!(
+        !session
+            .status
+            .as_deref()
+            .unwrap_or_default()
+            .contains("the contents"),
+        "a refused read must not be served: {:?}",
+        session.status
+    );
+
+    // Asked again, and *not* asked about again: a refusal that is not remembered
+    // is a prompt loop, which is how a user ends up clicking allow to make it
+    // stop.
+    session.prompt = None;
+    session.status = None;
+    assert!(hosts.run_command(&mut session, "acme.read"));
+    until(
+        &mut hosts,
+        &mut session,
+        "the second refusal",
+        |_, session| {
+            session
+                .status
+                .as_deref()
+                .is_some_and(|s| s.contains("refused"))
+        },
+    );
+    assert!(
+        session.prompt.is_none(),
+        "the same question was asked twice: {:?}",
+        session.prompt.as_ref().map(|p| p.kind())
+    );
+
+    hosts.shutdown();
+    let _ = std::fs::remove_dir_all(&workspace);
+}

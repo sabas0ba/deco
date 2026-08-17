@@ -310,16 +310,33 @@ Three things, all of which only touch state deco already owns and shows you:
 | `commands.registerCommand` | Recorded, so the command can be run |
 | `window.showInformationMessage` and its warning, error and status-bar siblings | The message reaches the status bar |
 | `log.append` | Kept in deco's own record of what extensions did |
+| `fs.readFile` and `fs.writeFile` | The file, read or written where the session's files are — over the connection in a remote session |
 
-**Everything else is refused by name.** An extension that asks to read a file gets an
-error saying deco does not implement it yet — not an empty file, not an empty list of
-open editors. An extension told "no" can cope; one told "here is your empty answer"
-cannot, and neither can the person reading its behaviour.
+**Everything else is refused by name.** An extension that asks to spawn a process
+gets an error saying deco does not implement it yet — not a fake exit code, not an
+empty list of open editors. An extension told "no" can cope; one told "here is your
+empty answer" cannot, and neither can the person reading its behaviour.
 
-A capability the manifest *did* declare but that needs your decision is also refused
-for now, because deco cannot ask yet: a consent prompt that does not exist must not
-become a silent yes. The refusal is recorded with the capability's name, so an
-extension that misbehaves for this reason says why rather than merely failing.
+A capability the manifest declared and nobody has ruled on **is asked about**. The
+extension waits — its request is held rather than answered — and the question names
+the extension and what it wants in words: *"Acme Tools wants to read files under
+/home/u/project/notes.txt"*, not a Rust value. The answer is remembered for the
+session, refusals included, because a refusal that is not remembered is a prompt
+loop and a prompt loop is how someone ends up allowing something to make it stop.
+
+Only one question is open at a time. A second extension asking while one is on
+screen is refused, with that as the reason: a queue would mean answering about a
+request that was abandoned long before anyone read it.
+
+A decision can be taken back. **Extensions: Forget a Permission Decision** in the
+command palette lists what has been decided — *"Acme Tools: refused — read files
+under /home/u/project/notes.txt"* — and choosing one makes that extension ask
+again the next time it wants it. Without that, a `deny` chosen in a hurry means
+the extension quietly fails for the rest of the session, with nothing to undo it
+and no hint that a decision is the reason.
+
+Decisions last for the session and are not written down yet, so restarting the
+editor asks again.
 
 `deco --print-config` prints which sandbox you would get, including the resolved
 runtime and the pinned image — or the reason there is none, which is the state in

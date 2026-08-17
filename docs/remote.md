@@ -126,14 +126,10 @@ kinds, and its UI-side extensions reach workspace files exactly this way.
 ### Permissions
 
 `extensions.permissions.default` decides what happens to a capability the
-manifest declared and nobody has ruled on. It defaults to `prompt`, and there is
-nowhere to prompt yet, so a declared capability is still refused — with the reason
-said rather than looking like an extension that does not work. Setting it to
-`allow` serves declared capabilities without asking, which is the deliberate
-downgrade the setting describes: declaration becomes the only check.
-
-Until this change deco passed `deny` regardless of that setting, so writing
-`allow` did nothing and did not say so.
+manifest declared and nobody has ruled on. `prompt` — the default — asks, and the
+extension waits for the answer. `allow` serves it without asking, which is the
+deliberate downgrade the setting describes: declaration becomes the only check.
+`deny` refuses without asking.
 
 ## Language servers
 
