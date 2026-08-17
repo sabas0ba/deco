@@ -244,6 +244,10 @@ pub enum DefaultPolicy {
     Allow,
 }
 
+/// The setting that chooses what happens to a declared capability nobody has
+/// decided about yet.
+pub const DEFAULT_POLICY_KEY: &str = "extensions.permissions.default";
+
 impl DefaultPolicy {
     /// Parses the `extensions.permissions.default` setting.
     pub fn parse(text: &str) -> Option<Self> {

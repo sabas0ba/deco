@@ -348,6 +348,10 @@ impl Driver {
             Some(remote) => remote.location.clone(),
             None => crate::lsp::Location::Here,
         };
+        let workspace_roots = match &location {
+            crate::lsp::Location::Remote { workspace, .. } => Some(workspace.clone()),
+            crate::lsp::Location::Here => workspace_root(started_with.as_deref()),
+        };
         let remote = remote.map(|remote| remote.client);
         let mut lsp =
             Lsp::with_location(session, workspace_root(started_with.as_deref()), location);
@@ -368,7 +372,15 @@ impl Driver {
 
         Self {
             lsp,
-            hosts: crate::extensions::Hosts::new(catalogue),
+            hosts: crate::extensions::Hosts::rooted(
+                catalogue,
+                // The workspace as the machine holding it spells it, which in a
+                // remote session is a directory on the far end. An extension
+                // granted `readFile: workspace` gets exactly the directory the
+                // session is editing, and nothing when there is no workspace at
+                // all.
+                workspace_roots.into_iter().collect(),
+            ),
             remote,
             started_with,
             extension_roots,
@@ -411,7 +423,16 @@ impl Driver {
     /// Collects whatever the language server and the extension hosts have said.
     pub fn poll(&mut self, session: &mut Session) {
         self.dirty |= self.lsp.poll(session);
-        self.hosts.poll(session);
+        // Destructured so the hosts can be advanced while the connection is
+        // borrowed: an extension's file request is served through the same
+        // connection the editor reads and writes with, because in a remote
+        // session that is where the files are.
+        let Self { hosts, remote, .. } = self;
+        let mut files = match remote.as_mut() {
+            Some(client) => crate::extensions::Files::Remote(client),
+            None => crate::extensions::Files::Here,
+        };
+        hosts.poll(session, &mut files);
     }
 
     /// A moment with no keystroke in it: the same poll, plus the auto-save clock.

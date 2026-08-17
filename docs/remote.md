@@ -25,8 +25,12 @@ home directory.
 One thing is turned off rather than left to do the wrong thing, and it says so
 rather than failing silently:
 
-- **Extensions are local.** A host started by a remote session runs here, in the
-  same container sandbox as always, and reaches the remote's files not at all.
+- **Extension hosts run here, and their file access goes over the connection.**
+  A host started by a remote session is still a local Node process in the same
+  container sandbox as always — but `vscode.workspace.fs.readFile` and its
+  neighbours are answered through the session's connection, so an extension reads
+  the files being edited rather than whatever is at that path on this machine.
+  See below.
 
 Saving is the one place where a failure is *not* fatal: a connection can drop
 while the editor is perfectly able to keep your text and try again. A failed
@@ -89,6 +93,47 @@ willing to download from is its own decision, not one to slip in here.
 The remote is assumed to have a POSIX shell and `uname`, `mkdir`, `dd`, `chmod`
 and `mv` — the same assumption already made by running `deco --server` over
 `ssh`.
+
+## Extensions
+
+The host stays on this machine. What changes in a remote session is where its
+file requests are served from: `readFile` and `writeFile` go through the same
+connection the editor uses, so an extension sees the workspace being edited.
+
+Reading around the connection is the failure this is shaped to prevent. The path
+an extension asks for exists on the remote; a local read at the same path would
+answer from a different checkout, or from nothing, and the reply would look
+identical either way. So the server's rules apply to an extension too — a path
+outside the workspace is refused by name, exactly as it is for the editor.
+
+Two consequences worth stating:
+
+- **`process` does not follow the files.** An extension granted permission to run
+  `eslint` runs it *here*, where the project is not. Nothing else could be done
+  without a host on the remote, and a linter pointed at files that are not there
+  produces wrong answers rather than an error — so this is the one capability
+  where a remote session is honestly worse than a local one.
+- **Clipboard, secrets and `openExternal` stay local, and that is right**: they
+  belong where the person is, not where the files are.
+
+A host *on* the remote is the other design, and it is a different decision rather
+than more of this one: it needs Node over there, which deco does not provision,
+and it moves the capability broker — the thing standing between a cloned
+repository's extension and your machine — onto a machine you may share. What is
+here does not have to be undone to get there; VS Code's remote support has both
+kinds, and its UI-side extensions reach workspace files exactly this way.
+
+### Permissions
+
+`extensions.permissions.default` decides what happens to a capability the
+manifest declared and nobody has ruled on. It defaults to `prompt`, and there is
+nowhere to prompt yet, so a declared capability is still refused — with the reason
+said rather than looking like an extension that does not work. Setting it to
+`allow` serves declared capabilities without asking, which is the deliberate
+downgrade the setting describes: declaration becomes the only check.
+
+Until this change deco passed `deny` regardless of that setting, so writing
+`allow` did nothing and did not say so.
 
 ## Language servers
 
