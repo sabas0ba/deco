@@ -137,6 +137,42 @@ impl Scenario {
         self
     }
 
+    /// Installs a language server for `language` that this scenario can rely on.
+    ///
+    /// The server is [`examples/language_server.rs`], a real program on a real
+    /// pipe speaking real LSP — not a stub the editor is handed. `role` is
+    /// `argv[1]` and selects what it offers; `"full"` answers everything.
+    ///
+    /// Written the way a user writes it, into `deco.lsp.servers`, so the
+    /// configuration path is on the way in too. Turns [`Scenario::language_servers`]
+    /// on, because a machine with a server on it is one where they are enabled.
+    ///
+    /// [`examples/language_server.rs`]: https://github.com/sabas0ba/deco/blob/main/crates/deco-e2e/examples/language_server.rs
+    pub fn language_server(mut self, language: &str, role: &str) -> Self {
+        self.language_servers = true;
+        let program = fake_server();
+        // Through `serde_json` rather than `format!`: on Windows the path is
+        // full of backslashes, every one of which has to be escaped to survive
+        // being read back as JSON.
+        let definition = serde_json::json!({
+            "deco.lsp.servers": {
+                "fake": {
+                    "languages": [language],
+                    "command": program.to_string_lossy(),
+                    "args": [role],
+                },
+            },
+        });
+        let text = serde_json::to_string_pretty(&definition).expect("serialisable");
+        // Spliced into whatever the scenario already asked for, so a scenario can
+        // have both a server and settings of its own.
+        self.user_settings = Some(match self.user_settings.take() {
+            Some(existing) => splice(&text, &existing),
+            None => text,
+        });
+        self
+    }
+
     /// deco's own `keybindings.json`.
     pub fn user_keybindings(self, json: &str) -> Self {
         let path = self.deco_paths().keybindings;
@@ -446,6 +482,48 @@ fn with_defaults(defaults: &[&str], own: Option<&str>) -> String {
         None => json.push_str("\n}"),
     }
     json
+}
+
+/// The `language_server` example, built alongside the tests that use it.
+///
+/// `cargo test` puts examples in `target/<profile>/examples/` and the test
+/// binary in `target/<profile>/deps/`, so it is two levels up and across. There
+/// is no `CARGO_BIN_EXE_*` for an example, which is why this is derived rather
+/// than looked up.
+fn fake_server() -> PathBuf {
+    let test_binary = std::env::current_exe().expect("the test binary's own path");
+    let profile = test_binary
+        .parent()
+        .and_then(|deps| deps.parent())
+        .expect("target/<profile>/deps/<binary>");
+    let path = profile
+        .join("examples")
+        .join(format!("language_server{}", std::env::consts::EXE_SUFFIX));
+    assert!(
+        path.is_file(),
+        "the language_server example was not built at {}.\n\
+         `cargo test -p deco-e2e` builds it; a bare `cargo test --test <name>` may not.",
+        path.display()
+    );
+    path
+}
+
+/// One JSON object's keys in front of another's.
+///
+/// Textual rather than parsed and merged, for the reason `with_defaults` is: a
+/// scenario's settings are JSONC with comments in them, and a merge through a
+/// JSON value would throw those away. `first` wins only where `second` does not
+/// repeat the key, since a repeated key takes its last value.
+fn splice(first: &str, second: &str) -> String {
+    let first = first.trim().trim_end_matches('}').trim_end();
+    let second = second.trim();
+    let rest = second
+        .strip_prefix('{')
+        .unwrap_or_else(|| panic!("settings must be a JSON object, got {second}"));
+    if rest.trim_start().starts_with('}') {
+        return format!("{first}\n}}");
+    }
+    format!("{first},{rest}")
 }
 
 /// Writes a configuration file, creating its directory.

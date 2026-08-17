@@ -21,6 +21,9 @@ deco-config.workspace = true
 deco-core.workspace = true
 deco-editor.workspace = true
 deco-keymap.workspace = true
+# Scenarios about a language server assert on the positions and diagnostics it
+# sent, which are this crate's types.
+deco-lsp.workspace = true
 # For `launch_remote`: a scenario about a remote session starts a real server and
 # talks to it, rather than standing in a fake for the half being tested.
 deco-remote.workspace = true
@@ -31,3 +34,7 @@ deco-tui.workspace = true
 crossterm.workspace = true
 # Startup returns one, and a scenario about a startup that fails has to hold it.
 anyhow.workspace = true
+# The scenario knob that installs a language server writes its definition into
+# `settings.json`, and a Windows path is full of backslashes that have to be
+# escaped to survive being read back.
+serde_json.workspace = true
