@@ -242,9 +242,15 @@ module.exports = { activate };
 }
 
 /// An extension that reads `path` and says what happened.
-fn reader(path: &Path) -> PathBuf {
+///
+/// `name` picks its directory, and every caller must pass a different one:
+/// `install` clears the directory before writing it, so two tests sharing a name
+/// delete each other's manifest halfway through being read. That showed up as
+/// "the manifest does not declare this capability" — and only in CI, which runs
+/// these in parallel.
+fn reader(name: &str, path: &Path) -> PathBuf {
     install(
-        "consent",
+        name,
         r#"{
   "name": "tools",
   "publisher": "acme",
@@ -290,7 +296,7 @@ fn a_declared_capability_is_asked_about_rather_than_refused() {
     let file = workspace.join("notes.txt");
     std::fs::write(&file, "the contents\n").expect("a file");
 
-    let root = reader(&file);
+    let root = reader("consent-allow", &file);
     point_at_the_host();
     let mut session = session();
     let catalogue = discover(std::slice::from_ref(&root));
@@ -350,7 +356,7 @@ fn a_refusal_is_remembered_so_an_extension_cannot_ask_in_a_loop() {
     let file = workspace.join("notes.txt");
     std::fs::write(&file, "the contents\n").expect("a file");
 
-    let root = reader(&file);
+    let root = reader("consent-deny", &file);
     point_at_the_host();
     let mut session = session();
     let catalogue = discover(std::slice::from_ref(&root));
