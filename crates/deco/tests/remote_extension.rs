@@ -192,6 +192,162 @@ fn read_through(world: &World, path: &Path, files: &mut Files<'_>) -> String {
     said
 }
 
+/// An extension that stats `file` and lists `directory`, and reports both.
+fn inspector(world: &World, file: &Path, directory: &Path) -> PathBuf {
+    // `installed` rather than `directory`: the parameter above is what the
+    // extension will *list*, and a local of the same name silently shadowed it —
+    // the generated extension asked about its own install directory and the
+    // refusal that produced looked like a broker bug.
+    let installed = world.root.join("inspector/acme.inspector-1.0.0");
+    std::fs::create_dir_all(&installed).expect("a directory");
+    std::fs::write(
+        installed.join("package.json"),
+        r#"{
+  "name": "inspector",
+  "publisher": "acme",
+  "displayName": "Acme Inspector",
+  "main": "./extension.js",
+  "contributes": { "commands": [{ "command": "acme.inspect", "title": "Inspect" }] },
+  "deco": {
+    "capabilities": [
+      { "capability": "readFile", "scope": { "kind": "workspace" } }
+    ]
+  }
+}"#,
+    )
+    .expect("a manifest");
+    std::fs::write(
+        installed.join("extension.js"),
+        format!(
+            r#"'use strict';
+const vscode = require('vscode');
+function activate(context) {{
+  context.subscriptions.push(
+    vscode.commands.registerCommand('acme.inspect', async () => {{
+      try {{
+        const stat = await vscode.workspace.fs.stat({file:?});
+        const entries = await vscode.workspace.fs.readDirectory({directory:?});
+        const names = entries.map(([name, kind]) => `${{name}}:${{kind}}`).join(',');
+        return `type=${{stat.type}} size=${{stat.size}} entries=${{names}}`;
+      }} catch (error) {{
+        return `refused: ${{error && error.message}}`;
+      }}
+    }}),
+  );
+}}
+module.exports = {{ activate }};
+"#,
+            file = file.display().to_string(),
+            directory = directory.display().to_string()
+        ),
+    )
+    .expect("an extension");
+    world.root.join("inspector")
+}
+
+#[test]
+#[ignore = "needs Node; run by `cargo xtask host-test`"]
+fn an_extension_stats_and_lists_the_far_end_rather_than_this_machine() {
+    // The read side of the filesystem API, over the connection. The list is what
+    // makes this checkable: the far end's workspace holds `notes.txt`, and the
+    // directory this machine would list at the same path holds the same thing —
+    // so the assertion that matters is the one below, where the two disagree.
+    let world = world("inspect");
+    std::fs::write(world.workspace.join("notes.txt"), "from the far end\n").expect("a file");
+    let extensions = inspector(
+        &world,
+        &world.workspace.join("notes.txt"),
+        &world.workspace.clone(),
+    );
+    point_at_the_host();
+
+    let mut client = serve(&world.workspace);
+    let mut session = session();
+    let catalogue = discover(std::slice::from_ref(&extensions));
+    session.frontend_commands.extend(rows(&catalogue));
+    let mut hosts = Hosts::rooted(catalogue, vec![world.workspace.clone()]);
+    assert!(hosts.run_command(&mut session, "acme.inspect"));
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < deadline {
+        hosts.poll(&mut session, &mut Files::Remote(&mut client));
+        if session
+            .status
+            .as_deref()
+            .is_some_and(|said| said.contains("type=") || said.contains("refused"))
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let said = session.status.clone().unwrap_or_default();
+    // VS Code's numbering, unchanged on the way through: 1 is a file.
+    assert!(
+        said.contains("type=1"),
+        "{said}\nlog:\n{}",
+        hosts.log().collect::<Vec<_>>().join("\n")
+    );
+    assert!(said.contains("size=17"), "{said}");
+    assert!(said.contains("notes.txt:1"), "{said}");
+    hosts.shutdown();
+
+    let _ = std::fs::remove_dir_all(&world.root);
+}
+
+#[test]
+#[ignore = "needs Node; run by `cargo xtask host-test`"]
+fn a_stat_in_a_remote_session_goes_through_the_server_and_not_around_it() {
+    // The same disagreement the read test uses, for the other half of the API.
+    // `private.txt` sits outside the directory the server serves, and the
+    // session's workspace root is the whole world — so the broker allows it and
+    // only the server's own rule can stop it.
+    let world = world("stat-around");
+    let extensions = inspector(&world, &world.outside.clone(), &world.root.clone());
+    point_at_the_host();
+
+    let inspect = |files: &mut Files<'_>| -> String {
+        let mut session = session();
+        let catalogue = discover(std::slice::from_ref(&extensions));
+        session.frontend_commands.extend(rows(&catalogue));
+        let mut hosts = Hosts::rooted(catalogue, vec![world.root.clone()]);
+        assert!(hosts.run_command(&mut session, "acme.inspect"));
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while Instant::now() < deadline {
+            hosts.poll(&mut session, files);
+            if session
+                .status
+                .as_deref()
+                .is_some_and(|said| said.contains("type=") || said.contains("refused"))
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let said = session.status.clone().unwrap_or_default();
+        hosts.shutdown();
+        said
+    };
+
+    // Served here, it works.
+    let locally = inspect(&mut Files::Here);
+    assert!(locally.contains("type=1"), "{locally}");
+
+    // Served through the connection, the server refuses it by name — which is
+    // what proves the stat crossed the connection rather than going around it.
+    let mut client = serve(&world.workspace);
+    let remotely = inspect(&mut Files::Remote(&mut client));
+    assert!(
+        !remotely.contains("type=1"),
+        "a remote session must not stat around the server: {remotely}"
+    );
+    assert!(
+        remotely.contains("refused") && remotely.contains("outside the workspace"),
+        "and it should say why: {remotely}"
+    );
+
+    let _ = std::fs::remove_dir_all(&world.root);
+}
+
 #[test]
 #[ignore = "needs Node; run by `cargo xtask host-test`"]
 fn an_extension_reads_the_far_ends_file_through_the_connection() {

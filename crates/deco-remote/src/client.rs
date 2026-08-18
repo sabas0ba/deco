@@ -279,6 +279,41 @@ impl Client {
             .unwrap_or_default())
     }
 
+    /// What the remote says about one path.
+    ///
+    /// The value is passed through as the server sent it — VS Code's `FileStat`
+    /// shape — because the only consumer is an extension expecting exactly that,
+    /// and a type here would be a third spelling of the same four fields.
+    pub fn stat(&mut self, path: &str) -> Result<Value, ClientError> {
+        let said = self.request("fs.stat", json!({ "path": path }))?;
+        said.get("stat").cloned().ok_or(ClientError::Malformed {
+            method: "fs.stat".to_owned(),
+            field: "stat",
+        })
+    }
+
+    /// What is directly inside one directory on the remote.
+    ///
+    /// Not [`Client::list`], which walks the whole workspace for quick open. This
+    /// is one level, which is what a `readDirectory` means.
+    pub fn read_directory(&mut self, path: &str) -> Result<Vec<(String, u32)>, ClientError> {
+        let said = self.request("fs.dir", json!({ "path": path }))?;
+        Ok(said["entries"]
+            .as_array()
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|entry| {
+                        Some((
+                            entry["name"].as_str()?.to_owned(),
+                            entry["kind"].as_u64().unwrap_or(0) as u32,
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
     /// Searches the remote's workspace for `needle`.
     ///
     /// The matching happens on the far end because the files do. What comes back

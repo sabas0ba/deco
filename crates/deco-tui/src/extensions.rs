@@ -224,6 +224,50 @@ impl Files<'_> {
         }
     }
 
+    /// What is known about `path` without reading it, in VS Code's `FileStat`
+    /// shape.
+    fn stat(&mut self, path: &str) -> Result<serde_json::Value, String> {
+        match self {
+            Self::Here => {
+                // `symlink_metadata`, so a link is reported as a link. Following
+                // it here would report on a file that may be somewhere the
+                // extension was never granted.
+                let metadata =
+                    std::fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+                Ok(stat_of(&metadata))
+            }
+            Self::Remote(client) => client.stat(path).map_err(|error| error.to_string()),
+        }
+    }
+
+    /// What is directly inside the directory at `path`, as VS Code returns it:
+    /// pairs of name and kind.
+    fn read_directory(&mut self, path: &str) -> Result<Vec<(String, u32)>, String> {
+        match self {
+            Self::Here => {
+                let mut listed = Vec::new();
+                for entry in std::fs::read_dir(path).map_err(|error| error.to_string())? {
+                    let Ok(entry) = entry else { continue };
+                    let Ok(metadata) = entry.metadata() else {
+                        continue;
+                    };
+                    listed.push((
+                        entry.file_name().to_string_lossy().into_owned(),
+                        kind_of(&metadata),
+                    ));
+                }
+                // Sorted for the same reason the server sorts: `read_dir` promises
+                // no order, and a list that reshuffles between calls is one
+                // nothing can be compared against.
+                listed.sort();
+                Ok(listed)
+            }
+            Self::Remote(client) => client
+                .read_directory(path)
+                .map_err(|error| error.to_string()),
+        }
+    }
+
     /// Writes `text` to `path`.
     fn write(&mut self, path: &str, text: &str) -> Result<(), String> {
         match self {
@@ -260,6 +304,38 @@ fn describe(capability: &deco_ext::capability::Capability, method: &str) -> Stri
         #[allow(unreachable_patterns)]
         _ => format!("do {method}"),
     }
+}
+
+/// What kind of thing something is, in VS Code's numbering.
+///
+/// `File = 1`, `Directory = 2`, and `SymbolicLink = 64` added to whichever it
+/// points at. The same numbering the remote server uses, and for the same reason:
+/// the API these reach is VS Code's.
+fn kind_of(metadata: &std::fs::Metadata) -> u32 {
+    let mut kind = if metadata.is_dir() { 2 } else { 1 };
+    if metadata.is_symlink() {
+        kind += 64;
+    }
+    kind
+}
+
+/// A local file's stat in the shape VS Code's `FileStat` has.
+///
+/// Milliseconds since the epoch, which is what JavaScript counts in. A time the
+/// platform will not give up is 0 rather than a guess.
+fn stat_of(metadata: &std::fs::Metadata) -> serde_json::Value {
+    let millis = |time: std::io::Result<std::time::SystemTime>| -> u64 {
+        time.ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|since| since.as_millis() as u64)
+            .unwrap_or(0)
+    };
+    serde_json::json!({
+        "type": kind_of(metadata),
+        "ctime": millis(metadata.created()),
+        "mtime": millis(metadata.modified()),
+        "size": metadata.len(),
+    })
 }
 
 /// A request held while the user is asked about it.
@@ -1077,6 +1153,51 @@ impl Hosts {
                         request.id,
                         ErrorCode::InvalidParams,
                         format!("could not write {path}: {reason}"),
+                    ),
+                }
+            }
+            "fs.stat" => {
+                let path = text("path");
+                if path.is_empty() {
+                    return Response::err(
+                        request.id,
+                        ErrorCode::InvalidParams,
+                        "a stat needs a path",
+                    );
+                }
+                match files.stat(&path) {
+                    Ok(stat) => Response::ok(request.id, stat),
+                    Err(reason) => Response::err(
+                        request.id,
+                        ErrorCode::InvalidParams,
+                        format!("could not stat {path}: {reason}"),
+                    ),
+                }
+            }
+            "fs.readDirectory" => {
+                let path = text("path");
+                if path.is_empty() {
+                    return Response::err(
+                        request.id,
+                        ErrorCode::InvalidParams,
+                        "a listing needs a path",
+                    );
+                }
+                match files.read_directory(&path) {
+                    // Pairs of name and kind, which is exactly what VS Code's
+                    // `readDirectory` resolves to — an extension written for it
+                    // destructures this without knowing deco is underneath.
+                    Ok(entries) => Response::ok(
+                        request.id,
+                        serde_json::json!(entries
+                            .into_iter()
+                            .map(|(name, kind)| serde_json::json!([name, kind]))
+                            .collect::<Vec<_>>()),
+                    ),
+                    Err(reason) => Response::err(
+                        request.id,
+                        ErrorCode::InvalidParams,
+                        format!("could not list {path}: {reason}"),
                     ),
                 }
             }

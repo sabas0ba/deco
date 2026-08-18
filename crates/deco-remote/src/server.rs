@@ -237,7 +237,15 @@ impl Server {
                 "workspace": self.root.display().to_string(),
                 // What this server can do, so a client need not discover it by
                 // being refused.
-                "methods": ["fs.read", "fs.write", "fs.list", "fs.search", "$/shutdown"],
+                "methods": [
+                    "fs.read",
+                    "fs.write",
+                    "fs.list",
+                    "fs.search",
+                    "fs.stat",
+                    "fs.dir",
+                    "$/shutdown"
+                ],
             })),
             "fs.read" => {
                 let asked = path("path")?;
@@ -278,6 +286,47 @@ impl Server {
                 let asked = params["path"].as_str().unwrap_or(".").to_owned();
                 let resolved = self.resolve(&asked)?;
                 Ok(json!({ "files": self.list(&resolved) }))
+            }
+            "fs.stat" => {
+                let asked = path("path")?;
+                let resolved = self.resolve(&asked)?;
+                let metadata = std::fs::symlink_metadata(&resolved).map_err(|error| {
+                    ServerError::Unreadable {
+                        path: asked.clone(),
+                        reason: error.to_string(),
+                    }
+                })?;
+                Ok(json!({ "stat": stat_of(&metadata) }))
+            }
+            "fs.dir" => {
+                let asked = path("path")?;
+                let resolved = self.resolve(&asked)?;
+                let entries =
+                    std::fs::read_dir(&resolved).map_err(|error| ServerError::Unreadable {
+                        path: asked.clone(),
+                        reason: error.to_string(),
+                    })?;
+                let mut listed: Vec<serde_json::Value> = Vec::new();
+                for entry in entries.flatten() {
+                    if listed.len() >= MAX_LISTED {
+                        break;
+                    }
+                    // `symlink_metadata`, so a link is reported as a link rather
+                    // than as whatever it points at — which may be outside the
+                    // workspace, and is a thing the client should learn about
+                    // before it follows it.
+                    let Ok(metadata) = entry.metadata() else {
+                        continue;
+                    };
+                    listed.push(json!({
+                        "name": entry.file_name().to_string_lossy(),
+                        "kind": kind_of(&metadata),
+                    }));
+                }
+                // Sorted, because `read_dir` promises no order and a list that
+                // reshuffles between calls is one nothing can be compared against.
+                listed.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+                Ok(json!({ "entries": listed }))
             }
             "fs.search" => {
                 let needle = params["needle"]
@@ -419,6 +468,42 @@ pub const MAX_MATCHES: usize = 500;
 /// *open*. A minified bundle or a checked-in database is not what anyone means by
 /// "search my project", and reading it is most of what the search would cost.
 pub const MAX_SEARCHED_BYTES: u64 = 1 << 20;
+
+/// What kind of thing a directory entry is, in VS Code's numbering.
+///
+/// `Unknown = 0`, `File = 1`, `Directory = 2`, `SymbolicLink = 64`, and a link is
+/// the *sum* — 65 for a link to a file. deco's own protocol carries VS Code's
+/// numbers rather than a spelling of its own, because the extension API these
+/// eventually reach is VS Code's and translating twice is one translation too
+/// many.
+fn kind_of(metadata: &std::fs::Metadata) -> u32 {
+    let mut kind = if metadata.is_dir() { 2 } else { 1 };
+    if metadata.is_symlink() {
+        kind += 64;
+    }
+    kind
+}
+
+/// A file's stat, in the shape VS Code's `FileStat` has.
+///
+/// Times in milliseconds since the epoch, which is what JavaScript counts in. A
+/// time the platform will not give up becomes 0 rather than a guess: an extension
+/// comparing timestamps should see an obviously absent one, not a plausible wrong
+/// one.
+fn stat_of(metadata: &std::fs::Metadata) -> serde_json::Value {
+    let millis = |time: std::io::Result<std::time::SystemTime>| -> u64 {
+        time.ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|since| since.as_millis() as u64)
+            .unwrap_or(0)
+    };
+    json!({
+        "type": kind_of(metadata),
+        "ctime": millis(metadata.created()),
+        "mtime": millis(metadata.modified()),
+        "size": metadata.len(),
+    })
+}
 
 /// A relative path with `/` separators, whatever this platform uses.
 ///
@@ -902,6 +987,88 @@ mod tests {
         // And a missing needle is a bad request rather than an empty answer: the
         // client asked something this cannot interpret.
         assert!(ask(&mut server, "fs.search", json!({})).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_stat_reports_what_a_thing_is_in_the_numbering_the_editor_uses() {
+        let root = workspace("stat");
+        let mut server = Server::new(&root).expect("a server");
+
+        let file = ask(&mut server, "fs.stat", json!({ "path": "src/main.rs" })).expect("a stat");
+        // VS Code's `FileType`: 1 is a file, 2 is a directory. Carried rather
+        // than translated, because the API these reach is VS Code's.
+        assert_eq!(file["stat"]["type"], 1);
+        assert_eq!(file["stat"]["size"], 13);
+        assert!(file["stat"]["mtime"].as_u64().unwrap_or(0) > 0);
+
+        let directory = ask(&mut server, "fs.stat", json!({ "path": "src" })).expect("a stat");
+        assert_eq!(directory["stat"]["type"], 2);
+
+        // And the confinement rule is the same one every other method follows.
+        let error = ask(&mut server, "fs.stat", json!({ "path": "../secrets.txt" }))
+            .expect_err("a refusal");
+        assert!(error.contains("outside the workspace"), "{error}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_directory_listing_is_one_level_and_in_a_settled_order() {
+        let root = workspace("dir");
+        std::fs::create_dir_all(root.join("src/deeper")).expect("a directory");
+        std::fs::write(root.join("src/a.rs"), "x").expect("a file");
+        let mut server = Server::new(&root).expect("a server");
+
+        let listed = ask(&mut server, "fs.dir", json!({ "path": "src" })).expect("a listing");
+        let entries: Vec<(String, u64)> = listed["entries"]
+            .as_array()
+            .expect("entries")
+            .iter()
+            .map(|entry| {
+                (
+                    entry["name"].as_str().unwrap_or_default().to_owned(),
+                    entry["kind"].as_u64().unwrap_or(0),
+                )
+            })
+            .collect();
+        // One level: `deeper` is named, and what is inside it is not. And sorted,
+        // because `read_dir` promises no order.
+        assert_eq!(
+            entries,
+            [
+                ("a.rs".to_owned(), 1),
+                ("deeper".to_owned(), 2),
+                ("main.rs".to_owned(), 1),
+            ]
+        );
+
+        let error =
+            ask(&mut server, "fs.dir", json!({ "path": "src/main.rs" })).expect_err("a refusal");
+        // A file is not a directory, and the operating system's own words say so
+        // better than a paraphrase would.
+        assert!(error.contains("cannot be read"), "{error}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symbolic_link_is_reported_as_one_rather_than_as_what_it_points_at() {
+        // Following it would report on a file that may be outside the workspace
+        // entirely, which is the one thing this server exists to be careful about.
+        let root = workspace("link");
+        std::os::unix::fs::symlink(root.join("src/main.rs"), root.join("src/link.rs"))
+            .expect("a symlink");
+        let mut server = Server::new(&root).expect("a server");
+
+        let listed = ask(&mut server, "fs.dir", json!({ "path": "src" })).expect("a listing");
+        let link = listed["entries"]
+            .as_array()
+            .expect("entries")
+            .iter()
+            .find(|entry| entry["name"] == "link.rs")
+            .expect("the link");
+        // 65: a symbolic link (64) to a file (1).
+        assert_eq!(link["kind"], 65);
         let _ = std::fs::remove_dir_all(&root);
     }
 }

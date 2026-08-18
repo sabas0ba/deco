@@ -311,6 +311,7 @@ Three things, all of which only touch state deco already owns and shows you:
 | `window.showInformationMessage` and its warning, error and status-bar siblings | The message reaches the status bar |
 | `log.append` | Kept in deco's own record of what extensions did |
 | `fs.readFile` and `fs.writeFile` | The file, read or written where the session's files are — over the connection in a remote session |
+| `fs.stat` and `fs.readDirectory` | What something is and what is directly in it, from the same place, in VS Code's own `FileStat` and `[name, type]` shapes |
 
 **Everything else is refused by name.** An extension that asks to spawn a process
 gets an error saying deco does not implement it yet — not a fake exit code, not an
@@ -360,10 +361,18 @@ which extensions refuse to start.
 
 ## What is still not connected
 
-The mediated surface is three calls wide, and the table above is the whole of it. No
-consent prompt, so no capability that needs one can be granted. No activation on
-opening a file or on startup. No `workspace.fs`, no editor state, no quick pick, no
-tree views, no webviews, no debug adapters.
+The table above is the whole mediated surface. `workspace.fs` is **read-only**:
+nothing creates, deletes, renames or copies yet, and `workspace.applyEdit` is not
+wired — each of those is a *write* through a path the broker checks, which is a
+larger thing to get right than a read. No activation on opening a file or on
+startup. No editor state, no quick pick, no tree views, no webviews, no debug
+adapters. `process`, `net`, `env`, `secrets` and `openExternal` are declared and
+brokered and then refused by name at the last step, because nothing implements
+them.
+
+A symbolic link is reported as a link rather than as what it points at — 65 for a
+link to a file, in VS Code's numbering — because following one is how a listing
+starts describing files outside the scope that was granted.
 
 ## Zero npm dependencies
 
