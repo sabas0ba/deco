@@ -314,6 +314,29 @@ impl Client {
             .unwrap_or_default())
     }
 
+    /// Creates a directory on the remote, and any parent it needs.
+    pub fn create_directory(&mut self, path: &str) -> Result<(), ClientError> {
+        self.request("fs.mkdir", json!({ "path": path }))?;
+        Ok(())
+    }
+
+    /// Removes a path on the remote.
+    ///
+    /// `recursive` is the caller's own word, passed through: without it a
+    /// directory with anything in it is refused by the operating system, which is
+    /// the distinction between "delete this" and "delete everything under this".
+    pub fn delete(&mut self, path: &str, recursive: bool) -> Result<(), ClientError> {
+        self.request("fs.delete", json!({ "path": path, "recursive": recursive }))?;
+        Ok(())
+    }
+
+    /// Moves or copies one path to another, both on the remote.
+    pub fn transfer(&mut self, source: &str, target: &str, copy: bool) -> Result<(), ClientError> {
+        let method = if copy { "fs.copy" } else { "fs.rename" };
+        self.request(method, json!({ "source": source, "target": target }))?;
+        Ok(())
+    }
+
     /// Searches the remote's workspace for `needle`.
     ///
     /// The matching happens on the far end because the files do. What comes back

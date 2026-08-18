@@ -97,9 +97,9 @@ and `mv` — the same assumption already made by running `deco --server` over
 ## Extensions
 
 The host stays on this machine. What changes in a remote session is where its
-file requests are served from: `readFile`, `writeFile`, `stat` and
-`readDirectory` all go through the same connection the editor uses, so an
-extension sees the workspace being edited.
+file requests are served from: reading, writing, `stat`, `readDirectory`, and
+creating, deleting, renaming and copying all go through the same connection the
+editor uses, so an extension sees — and changes — the workspace being edited.
 
 Reading around the connection is the failure this is shaped to prevent. The path
 an extension asks for exists on the remote; a local read at the same path would

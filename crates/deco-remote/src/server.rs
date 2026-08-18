@@ -90,6 +90,18 @@ pub enum ServerError {
         /// What was asked for.
         path: String,
     },
+    /// The path is inside the workspace and could not be written.
+    ///
+    /// Its own variant rather than reusing the read one: a failed write reported
+    /// as "cannot be read" sends whoever is diagnosing it to look at permissions
+    /// on the wrong operation.
+    #[error("{path} cannot be written: {reason}")]
+    Unwritable {
+        /// What was asked for.
+        path: String,
+        /// What the operating system said.
+        reason: String,
+    },
     /// The method is not one this server has.
     #[error("this server does not implement {method}")]
     UnknownMethod {
@@ -244,6 +256,10 @@ impl Server {
                     "fs.search",
                     "fs.stat",
                     "fs.dir",
+                    "fs.mkdir",
+                    "fs.delete",
+                    "fs.rename",
+                    "fs.copy",
                     "$/shutdown"
                 ],
             })),
@@ -276,7 +292,7 @@ impl Server {
                         what: "a `text` string".to_owned(),
                     })?;
                 let resolved = self.resolve(&asked)?;
-                std::fs::write(&resolved, text).map_err(|error| ServerError::Unreadable {
+                std::fs::write(&resolved, text).map_err(|error| ServerError::Unwritable {
                     path: asked,
                     reason: error.to_string(),
                 })?;
@@ -327,6 +343,85 @@ impl Server {
                 // reshuffles between calls is one nothing can be compared against.
                 listed.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
                 Ok(json!({ "entries": listed }))
+            }
+            "fs.mkdir" => {
+                let asked = path("path")?;
+                let resolved = self.resolve_for_creation(&asked)?;
+                std::fs::create_dir_all(&resolved).map_err(|error| ServerError::Unwritable {
+                    path: asked,
+                    reason: error.to_string(),
+                })?;
+                Ok(json!({ "created": true }))
+            }
+            "fs.delete" => {
+                let asked = path("path")?;
+                // Confined first, which is also what refuses a link pointing out
+                // of the workspace: `resolve` follows the last component.
+                self.resolve(&asked)?;
+                // And then removed *as it was named*, not as it resolved. Those
+                // are different paths for a symbolic link inside the workspace,
+                // and deleting the resolved one removes the file the link points
+                // at while leaving the link — which is the wrong file, silently.
+                let resolved = self.named(&asked)?;
+                let recursive = params["recursive"].as_bool().unwrap_or(false);
+                let metadata = std::fs::symlink_metadata(&resolved).map_err(|error| {
+                    ServerError::Unreadable {
+                        path: asked.clone(),
+                        reason: error.to_string(),
+                    }
+                })?;
+                // A directory is only removed when the caller said `recursive`.
+                // `remove_dir_all` on a request that did not ask for it would turn
+                // "delete this" into "delete everything under this", and the
+                // caller's own word is the only thing that distinguishes them.
+                let outcome = if metadata.is_dir() && !metadata.is_symlink() {
+                    if recursive {
+                        std::fs::remove_dir_all(&resolved)
+                    } else {
+                        std::fs::remove_dir(&resolved)
+                    }
+                } else {
+                    // A symbolic link is removed as a link, never followed: what
+                    // it points at may be somewhere this server would refuse to
+                    // touch, and deleting through one would be a way around that.
+                    std::fs::remove_file(&resolved)
+                };
+                outcome.map_err(|error| ServerError::Unwritable {
+                    path: asked,
+                    reason: error.to_string(),
+                })?;
+                Ok(json!({ "deleted": true }))
+            }
+            "fs.rename" | "fs.copy" => {
+                // Both ends resolved, and both therefore confined: a rename whose
+                // source was outside the workspace would be a way to reach in, and
+                // one whose target was outside would be a way to reach out.
+                let from = params["source"]
+                    .as_str()
+                    .ok_or_else(|| ServerError::BadParams {
+                        method: method.to_owned(),
+                        what: "a `source` string".to_owned(),
+                    })?
+                    .to_owned();
+                let to = params["target"]
+                    .as_str()
+                    .ok_or_else(|| ServerError::BadParams {
+                        method: method.to_owned(),
+                        what: "a `target` string".to_owned(),
+                    })?
+                    .to_owned();
+                let source = self.resolve(&from)?;
+                let target = self.resolve(&to)?;
+                let outcome = if method == "fs.rename" {
+                    std::fs::rename(&source, &target).map(|()| 0)
+                } else {
+                    std::fs::copy(&source, &target)
+                };
+                outcome.map_err(|error| ServerError::Unwritable {
+                    path: to,
+                    reason: error.to_string(),
+                })?;
+                Ok(json!({ "moved": true }))
             }
             "fs.search" => {
                 let needle = params["needle"]
@@ -385,6 +480,101 @@ impl Server {
         }
         found.sort();
         found
+    }
+
+    /// The path as it was named, with everything above the last component
+    /// resolved and confined.
+    ///
+    /// [`Server::resolve`] answers "what does this end up being", which is the
+    /// right question for reading and writing and the wrong one for deleting: a
+    /// link resolves to its target, and a delete means the link. So the parent is
+    /// canonicalised — that is what stops an intermediate link from leading
+    /// outside — and the final name is put back on untouched.
+    fn named(&self, path: &str) -> Result<PathBuf, ServerError> {
+        let asked = Path::new(path);
+        let joined = if asked.is_absolute() {
+            asked.to_path_buf()
+        } else {
+            self.root.join(asked)
+        };
+        let (Some(parent), Some(name)) = (joined.parent(), joined.file_name()) else {
+            // No last component to preserve, so there is nothing this does that
+            // `resolve` does not.
+            return self.resolve(path);
+        };
+        let parent = parent
+            .canonicalize()
+            .map_err(|error| ServerError::Unreadable {
+                path: path.to_owned(),
+                reason: error.to_string(),
+            })?;
+        if !parent.starts_with(&self.root) {
+            return Err(ServerError::OutsideWorkspace {
+                path: path.to_owned(),
+            });
+        }
+        Ok(parent.join(name))
+    }
+
+    /// Resolves a path that does not exist yet, and whose parents may not either.
+    ///
+    /// [`Server::resolve`] canonicalises the parent, which a nested
+    /// `createDirectory` does not have. So the deepest ancestor that *does* exist
+    /// is canonicalised and confined, and the missing tail is appended to it.
+    ///
+    /// The tail cannot climb back out: the path is folded first, so a `..` has
+    /// already been resolved against the components before it and cannot survive
+    /// into the part that is appended after the confinement check.
+    fn resolve_for_creation(&self, path: &str) -> Result<PathBuf, ServerError> {
+        let asked = Path::new(path);
+        let joined = if asked.is_absolute() {
+            asked.to_path_buf()
+        } else {
+            self.root.join(asked)
+        };
+        // Folded lexically: `a/../b` becomes `b`, and a `..` with nothing before
+        // it stays put so the confinement check below sees it and refuses.
+        let mut folded = PathBuf::new();
+        for component in joined.components() {
+            match component {
+                std::path::Component::CurDir => {}
+                std::path::Component::ParentDir => {
+                    if !folded.pop() {
+                        folded.push(component);
+                    }
+                }
+                other => folded.push(other),
+            }
+        }
+
+        // The deepest ancestor that exists, which is what can be canonicalised.
+        let mut existing = folded.clone();
+        let mut tail: Vec<std::ffi::OsString> = Vec::new();
+        while !existing.exists() {
+            let Some(name) = existing.file_name().map(|name| name.to_owned()) else {
+                break;
+            };
+            tail.push(name);
+            if !existing.pop() {
+                break;
+            }
+        }
+        let base = existing
+            .canonicalize()
+            .map_err(|error| ServerError::Unwritable {
+                path: path.to_owned(),
+                reason: error.to_string(),
+            })?;
+        if !base.starts_with(&self.root) {
+            return Err(ServerError::OutsideWorkspace {
+                path: path.to_owned(),
+            });
+        }
+        let mut resolved = base;
+        for name in tail.into_iter().rev() {
+            resolved.push(name);
+        }
+        Ok(resolved)
     }
 
     /// Searches every file in the workspace for `needle`.
@@ -1069,6 +1259,137 @@ mod tests {
             .expect("the link");
         // 65: a symbolic link (64) to a file (1).
         assert_eq!(link["kind"], 65);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_directory_is_created_and_a_file_is_moved_and_removed() {
+        let root = workspace("writes");
+        let mut server = Server::new(&root).expect("a server");
+
+        ask(&mut server, "fs.mkdir", json!({ "path": "made/deeper" })).expect("a directory");
+        assert!(root.join("made/deeper").is_dir());
+
+        ask(
+            &mut server,
+            "fs.rename",
+            json!({ "source": "src/main.rs", "target": "made/moved.rs" }),
+        )
+        .expect("a rename");
+        assert!(!root.join("src/main.rs").exists());
+        assert_eq!(
+            std::fs::read_to_string(root.join("made/moved.rs")).expect("the file"),
+            "fn main() {}\n"
+        );
+
+        ask(
+            &mut server,
+            "fs.copy",
+            json!({ "source": "made/moved.rs", "target": "made/copy.rs" }),
+        )
+        .expect("a copy");
+        assert!(root.join("made/moved.rs").exists());
+        assert!(root.join("made/copy.rs").exists());
+
+        ask(&mut server, "fs.delete", json!({ "path": "made/copy.rs" })).expect("a delete");
+        assert!(!root.join("made/copy.rs").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_directory_with_something_in_it_needs_the_caller_to_say_recursive() {
+        // The distinction between "delete this" and "delete everything under
+        // this" is the caller's own word, and nothing here supplies it for them.
+        let root = workspace("delete-recursive");
+        let mut server = Server::new(&root).expect("a server");
+
+        let error = ask(&mut server, "fs.delete", json!({ "path": "src" })).expect_err("a refusal");
+        assert!(error.contains("cannot be written"), "{error}");
+        assert!(
+            root.join("src/main.rs").exists(),
+            "nothing should have gone"
+        );
+
+        ask(
+            &mut server,
+            "fs.delete",
+            json!({ "path": "src", "recursive": true }),
+        )
+        .expect("a recursive delete");
+        assert!(!root.join("src").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_move_is_confined_at_both_ends() {
+        // A rename whose source is outside would be a way to reach in, and one
+        // whose target is outside a way to reach out. Both are refused by name.
+        let root = workspace("move-outside");
+        std::fs::write(
+            root.parent().expect("a parent").join("outside-move.txt"),
+            "secret\n",
+        )
+        .expect("a file");
+        let mut server = Server::new(&root).expect("a server");
+
+        let error = ask(
+            &mut server,
+            "fs.rename",
+            json!({ "source": "src/main.rs", "target": "../escaped.rs" }),
+        )
+        .expect_err("a refusal");
+        assert!(error.contains("outside the workspace"), "{error}");
+
+        let error = ask(
+            &mut server,
+            "fs.rename",
+            json!({ "source": "../outside-move.txt", "target": "src/taken.rs" }),
+        )
+        .expect_err("a refusal");
+        assert!(error.contains("outside the workspace"), "{error}");
+
+        assert!(root.join("src/main.rs").exists());
+        assert!(!root.join("src/taken.rs").exists());
+        assert!(root
+            .parent()
+            .expect("a parent")
+            .join("outside-move.txt")
+            .exists());
+        let _ = std::fs::remove_file(root.parent().expect("a parent").join("outside-move.txt"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_out_of_the_workspace_cannot_be_deleted_through() {
+        // Stricter than it strictly has to be, and deliberately: removing the
+        // link itself would only touch a directory entry inside the workspace,
+        // but every path this server acts on is confined *after* being
+        // canonicalised, and carving out an exception for one operation is how a
+        // confinement rule stops being one rule.
+        //
+        // The thing that would be unforgivable is deleting what the link points
+        // at, and that is what this pins.
+        let root = workspace("delete-link");
+        let outside = root.parent().expect("a parent").join("kept.txt");
+        std::fs::write(&outside, "still here\n").expect("a file");
+        std::os::unix::fs::symlink(&outside, root.join("src/link.txt")).expect("a symlink");
+        let mut server = Server::new(&root).expect("a server");
+
+        let error = ask(&mut server, "fs.delete", json!({ "path": "src/link.txt" }))
+            .expect_err("a refusal");
+        assert!(error.contains("outside the workspace"), "{error}");
+        assert!(outside.exists(), "the link's target must be untouched");
+
+        // And a link that stays inside is removed as a link, leaving what it
+        // points at where it is.
+        std::os::unix::fs::symlink(root.join("src/main.rs"), root.join("src/inside.rs"))
+            .expect("a symlink");
+        ask(&mut server, "fs.delete", json!({ "path": "src/inside.rs" })).expect("a delete");
+        assert!(!root.join("src/inside.rs").exists());
+        assert!(root.join("src/main.rs").exists());
+
+        let _ = std::fs::remove_file(&outside);
         let _ = std::fs::remove_dir_all(&root);
     }
 }
