@@ -101,6 +101,11 @@ pub struct ConfigPaths {
     pub extensions: PathBuf,
     /// User snippets.
     pub snippets: PathBuf,
+    /// `permissions.json`: what extensions have been allowed and refused.
+    ///
+    /// deco's own, with no VS Code equivalent — there a capability decision does
+    /// not exist, because an extension has whatever Node has.
+    pub permissions: PathBuf,
 }
 
 impl ConfigPaths {
@@ -114,6 +119,7 @@ impl ConfigPaths {
             keybindings: root.join("keybindings.json"),
             extensions: root.join("extensions"),
             snippets: root.join("snippets"),
+            permissions: root.join("permissions.json"),
             root,
         }
     }
@@ -135,6 +141,9 @@ impl ConfigPaths {
             settings: user.join("settings.json"),
             keybindings: user.join("keybindings.json"),
             snippets: user.join("snippets"),
+            // VS Code has no equivalent, so there is nothing to import: this path
+            // exists on the struct and is never read for a VS Code layout.
+            permissions: user.join("permissions.json"),
             extensions,
             root: user,
         })

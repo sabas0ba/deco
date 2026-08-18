@@ -335,8 +335,24 @@ again the next time it wants it. Without that, a `deny` chosen in a hurry means
 the extension quietly fails for the rest of the session, with nothing to undo it
 and no hint that a decision is the reason.
 
-Decisions last for the session and are not written down yet, so restarting the
-editor asks again.
+### Where a decision lives
+
+`permissions.json`, next to `settings.json`, `0600` on Unix. Nothing in it is
+secret; what matters is the other direction — anything that can write that file
+can grant capabilities to code that runs as you, so it must not be one another
+account can edit. It is written after every answer rather than at shutdown,
+because being killed is an ordinary way for an editor to end.
+
+**A stored decision is a decision about one version of one extension.** Each entry
+records the version it was made for, and after an update the user is asked again —
+with the reason said, so it does not look like deco forgot. A grant on disk
+otherwise outlives the reason it was given: an extension allowed to read the
+workspace at 1.0.0 is different code at 1.1.0, and carrying the answer across
+would be allowing something without having seen what it now does. An update
+therefore costs a prompt, which is the intended price.
+
+A damaged permissions file is reported and treated as empty. Refusing to start an
+editor over one would be the worse failure; being asked again is recoverable.
 
 `deco --print-config` prints which sandbox you would get, including the resolved
 runtime and the pinned image — or the reason there is none, which is the state in

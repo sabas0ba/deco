@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 
 use deco_editor::commands::PaletteEntry;
 use deco_editor::Session;
-use deco_ext::capability::{Broker, Decision, DefaultPolicy, GrantStore, ResolutionContext};
+use deco_ext::capability::{Broker, Decision, DefaultPolicy, ResolutionContext};
 use deco_ext::catalogue::Catalogue;
 use deco_ext::connection::{dispatch, Dispatch, Host, HostEvent};
 use deco_ext::host::{HostConfig, HostLimits};
@@ -281,6 +281,13 @@ pub struct Hosts {
     problems: Vec<String>,
     bootstrap: Option<PathBuf>,
     node: Option<PathBuf>,
+    /// Where decisions are written down, and what is written there.
+    ///
+    /// `None` means this session remembers nothing past its own end — which is
+    /// what a test wants, and what deco does when it cannot work out where its
+    /// configuration lives.
+    permissions_file: Option<PathBuf>,
+    permissions: deco_ext::permissions::Permissions,
     /// What the last-offered list of decisions stood for, in the order it was
     /// offered.
     ///
@@ -323,9 +330,27 @@ impl Hosts {
             bootstrap: find_bootstrap(),
             node: find_node(std::env::var_os("PATH").as_deref()),
             asking: None,
+            permissions_file: None,
+            permissions: deco_ext::permissions::Permissions::default(),
             decisions: Vec::new(),
             workspace_roots,
         }
+    }
+
+    /// Remembers decisions in `path`, and starts from what is already there.
+    ///
+    /// A file that cannot be read is reported and treated as empty: refusing to
+    /// start an editor because a permissions file is damaged would be the worse
+    /// failure, and asking again is a recoverable one.
+    pub fn remembering(mut self, path: PathBuf) -> Self {
+        match deco_ext::permissions::Permissions::load(&path) {
+            Ok(permissions) => self.permissions = permissions,
+            Err(error) => self.problems.push(format!(
+                "extension permissions: {error}; deco will ask again"
+            )),
+        }
+        self.permissions_file = Some(path);
+        self
     }
 
     /// Nothing installed and nothing running.
@@ -468,9 +493,29 @@ impl Hosts {
             .and_then(|value| value.as_str())
             .and_then(DefaultPolicy::parse)
             .unwrap_or(DefaultPolicy::Prompt);
+        // What was decided before, if it was decided about this same version. An
+        // update deliberately means asking again — see `deco_ext::permissions`.
+        let version = self
+            .catalogue
+            .by_id(id)
+            .map(|entry| entry.version.clone())
+            .unwrap_or_default();
+        let remembered = self
+            .permissions
+            .for_extension(id, &version)
+            .cloned()
+            .unwrap_or_default();
+        if let Some(older) = self.permissions.stale_for(id, &version) {
+            // Said out loud, because "deco forgot my answer" and "this extension
+            // changed since you answered" look identical from a prompt.
+            self.note(&format!(
+                "{id} was decided about at {older} and is now {version}, so its permissions are \
+                 being asked again"
+            ));
+        }
         let broker = Broker::new(
             self.declared(id),
-            GrantStore::default(),
+            remembered,
             policy,
             ResolutionContext {
                 workspace_roots: self.workspace_roots.clone(),
@@ -801,6 +846,7 @@ impl Hosts {
             return;
         };
         running.broker.forget(&capability);
+        self.write_down(&id);
         // Said in the terms the decision was made in, and what happens next: the
         // extension is not re-asked now, because nothing is asking now.
         session.status = Some(format!(
@@ -811,6 +857,35 @@ impl Hosts {
             "{label}: forgot the decision about {}",
             describe(&capability, "")
         ));
+    }
+
+    /// Writes down what is now decided about `id`, if anything is being written
+    /// down at all.
+    ///
+    /// After every change rather than at shutdown: being killed is an ordinary way
+    /// for an editor to end, and a decision that only survives a clean exit is one
+    /// the user gets asked about again for no reason they can see.
+    fn write_down(&mut self, id: &str) {
+        let Some(path) = self.permissions_file.clone() else {
+            return;
+        };
+        let Some(running) = self.running.get(id) else {
+            return;
+        };
+        let grants = running.broker.grants().clone();
+        let version = self
+            .catalogue
+            .by_id(id)
+            .map(|entry| entry.version.clone())
+            .unwrap_or_default();
+        self.permissions.set(id, &version, grants);
+        if let Err(error) = self.permissions.save(&path) {
+            // Reported rather than swallowed: the decision still holds for this
+            // session, and what is lost is only that it will be asked again.
+            self.note(&format!(
+                "extension permissions: {error}; this session's answers still hold"
+            ));
+        }
     }
 
     /// Applies the user's answer to the request that was waiting on it.
@@ -840,6 +915,10 @@ impl Hosts {
                 Decision::Deny
             },
         );
+        self.write_down(&asking.extension);
+        let Some(running) = self.running.get_mut(&asking.extension) else {
+            return;
+        };
 
         let mut notes: Vec<String> = Vec::new();
         let mut statuses: Vec<String> = Vec::new();

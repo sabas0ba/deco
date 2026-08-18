@@ -428,6 +428,100 @@ fn a_decision_can_be_taken_back_from_the_palette() {
 }
 
 #[test]
+#[ignore = "needs node; run through `cargo xtask host-test`"]
+fn an_answer_is_remembered_across_sessions_until_the_extension_changes() {
+    // The claim this feature makes, and the rule that bounds it. Two `Hosts` in a
+    // row stand in for two runs of the editor: they share a permissions file and
+    // nothing else.
+    let workspace = std::env::temp_dir().join(format!("deco-consent-keep-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&workspace);
+    std::fs::create_dir_all(&workspace).expect("a workspace");
+    let file = workspace.join("notes.txt");
+    std::fs::write(&file, "the contents\n").expect("a file");
+    let remembered = workspace.join("permissions.json");
+
+    let root = reader("consent-keep", &file);
+    point_at_the_host();
+
+    // First run: asked, allowed.
+    {
+        let mut session = session();
+        let catalogue = discover(std::slice::from_ref(&root));
+        session.frontend_commands.extend(rows(&catalogue));
+        let mut hosts =
+            Hosts::rooted(catalogue, vec![workspace.clone()]).remembering(remembered.clone());
+        assert!(hosts.run_command(&mut session, "acme.read"));
+        until(&mut hosts, &mut session, "the question", |_, session| {
+            session.prompt.is_some()
+        });
+        hosts.answer_consent(&mut session, true, &mut deco_tui::extensions::Files::Here);
+        until(&mut hosts, &mut session, "the read", |_, session| {
+            session
+                .status
+                .as_deref()
+                .is_some_and(|s| s.contains("the contents"))
+        });
+        hosts.shutdown();
+    }
+    assert!(
+        remembered.exists(),
+        "the answer should have been written down"
+    );
+
+    // Second run: not asked at all.
+    {
+        let mut session = session();
+        let catalogue = discover(std::slice::from_ref(&root));
+        session.frontend_commands.extend(rows(&catalogue));
+        let mut hosts =
+            Hosts::rooted(catalogue, vec![workspace.clone()]).remembering(remembered.clone());
+        assert!(hosts.run_command(&mut session, "acme.read"));
+        until(&mut hosts, &mut session, "the read", |_, session| {
+            session
+                .status
+                .as_deref()
+                .is_some_and(|s| s.contains("the contents") || s.contains("refused"))
+        });
+        assert!(
+            session.prompt.is_none(),
+            "a remembered answer should not be asked about again"
+        );
+        let said = session.status.clone().unwrap_or_default();
+        assert!(said.contains("the contents"), "{said}");
+        hosts.shutdown();
+    }
+
+    // Third run, after an update: asked again. A grant on disk otherwise outlives
+    // the reason it was given — 1.0.0 was allowed to read this, and 2.0.0 is
+    // different code nobody has looked at.
+    let manifest = root.join("acme.tools-1.0.0/package.json");
+    let updated = std::fs::read_to_string(&manifest)
+        .expect("a manifest")
+        .replace("\"publisher\"", "\"version\": \"2.0.0\",\n  \"publisher\"");
+    std::fs::write(&manifest, updated).expect("an updated manifest");
+    {
+        let mut session = session();
+        let catalogue = discover(std::slice::from_ref(&root));
+        session.frontend_commands.extend(rows(&catalogue));
+        let mut hosts =
+            Hosts::rooted(catalogue, vec![workspace.clone()]).remembering(remembered.clone());
+        assert!(hosts.run_command(&mut session, "acme.read"));
+        until(
+            &mut hosts,
+            &mut session,
+            "the question again",
+            |_, session| session.prompt.is_some(),
+        );
+        // And it says why it is asking, so this does not look like deco forgetting.
+        let log = hosts.log().collect::<Vec<_>>().join("\n");
+        assert!(log.contains("being asked again"), "{log}");
+        hosts.shutdown();
+    }
+
+    let _ = std::fs::remove_dir_all(&workspace);
+}
+
+#[test]
 fn with_nothing_decided_the_palette_says_so_rather_than_offering_an_empty_list() {
     // No host, no decisions: an empty picker is a puzzle, and this is the one
     // scenario here that needs no Node at all.

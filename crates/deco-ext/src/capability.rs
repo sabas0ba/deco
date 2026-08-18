@@ -295,7 +295,7 @@ pub enum DenyReason {
 }
 
 /// Remembered decisions for one extension.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GrantStore {
     /// Capabilities the user has allowed.
     #[serde(default)]
