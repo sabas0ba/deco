@@ -3,7 +3,10 @@
 //! The premium runners are held back to a release tag and to a deliberate
 //! request (see the header of `.github/workflows/ci.yml`), which would leave
 //! every other push with no signal at all about the platforms most of deco's
-//! users are on. Two things a Linux runner can do give most of it back:
+//! users are on. Two things a Linux runner can do give most of it back, and CI
+//! runs both of them once a day on main rather than on every push — what they
+//! catch is a dependency or a target moving, which happens on its own schedule
+//! and not on the repository's:
 //!
 //! * **A type check per shipped triple.** `cargo check` stops before the link
 //!   step, so it needs no MSVC toolchain and no Apple SDK — only the target's
