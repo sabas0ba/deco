@@ -337,7 +337,25 @@ for a release tag, for `workflow_dispatch`, and for a pull request labelled
 `ci:full` — nothing is ever *shipped* unbuilt or untested on the platform it
 ships to.
 
-Between tags, `cargo xtask cross` stands in for them from a Linux runner:
+Actions also bills each job's wall clock rounded up to the minute, which for
+checks that take twenty seconds is most of the bill. So each check runs on the
+rarest event that still answers the question it asks, and checks that share an
+event share a job:
+
+| When | What runs |
+| --- | --- |
+| every push to a pull request | `check` — fmt, clippy, rustdoc, commit messages, `docs --check` — and `test` — the workspace suite and the extension host |
+| a merge to `main` | `test` alone. A pull request's jobs already ran against the merge of its head and its base, so the only new question is whether `main` moved underneath the branch, and only the tests can see a conflict that merged cleanly |
+| daily, on `main` | `cargo xtask cross`, the three Linux `dist` targets, the MSRV check and `cargo deny`. None of these turns red because a function was renamed; they turn red when a dependency, a target or the advisory database moves |
+| a pull request labelled `ci:full`, or `workflow_dispatch` | all of the above, plus the real macOS and Windows runners |
+| a release tag | all of the above, except the packaging jobs — the release workflow builds all seven targets from the same `cargo xtask dist` on the same tag, and its copy is the one that ships |
+
+Label a pull request `ci:full` for anything platform-specific, and for a
+dependency bump — that is what moves the MSRV floor and the supply-chain
+policy.
+
+Between tags, `cargo xtask cross` stands in for the premium runners from a
+Linux runner:
 
 - **A type check of all four shipped Apple and Windows triples.** `cargo check`
   stops before the link step, so it needs no MSVC toolchain and no Apple SDK —
@@ -354,9 +372,10 @@ Between tags, `cargo xtask cross` stands in for them from a Linux runner:
 
 That is a substitute, not an equal. macOS gets a compile check and no runtime
 check at all; Wine runs the GNU ABI rather than MSVC, and where Wine's Win32
-differs from Microsoft's a test can pass here and fail there. A regression
-confined to those can reach `main` and surface only at the tag. Label a pull
-request `ci:full` to buy the real runners early, which is worth doing for
+differs from Microsoft's a test can pass here and fail there. It also runs
+daily rather than on every push, so a regression it *would* catch can sit on
+`main` for a day, and one only a real runner catches can wait until the tag.
+Label a pull request `ci:full` to buy both early, which is worth doing for
 anything platform-specific: a path, a terminal or process API, a `#[cfg]`, or a
 dependency with per-platform code.
 
