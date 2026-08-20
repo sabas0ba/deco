@@ -9,6 +9,9 @@
 //! A tag with no section is an error rather than an empty release — a release
 //! that says nothing is worse than a failed workflow, because the workflow can
 //! be run again and a published release cannot be unpublished.
+//!
+//! The tag also decides whether the release is a pre-release, for the same
+//! reason: it is the one input the person cutting the release chose on purpose.
 
 use std::path::Path;
 
@@ -17,6 +20,21 @@ use anyhow::{bail, Context, Result};
 /// The version a tag names: `v0.1.0` and `0.1.0` both mean `0.1.0`.
 pub fn version_of(tag: &str) -> &str {
     tag.strip_prefix('v').unwrap_or(tag)
+}
+
+/// Whether `tag` names a pre-release, by semver's rule: a `-` after the version.
+///
+/// Asked of the tag rather than left to whatever the release form happened to
+/// have checked. A release marked pre-release is skipped by
+/// `/releases/latest/`, which is the URL the README hands people — so getting
+/// this from a checkbox means the documented way to install can be switched off
+/// by a click, with the 404 turning up only for whoever tries it next.
+///
+/// `0.1.0` is not a pre-release. Being early is what the version number and the
+/// notes are for; it is not the same claim as "this build is a candidate for a
+/// release that has not happened yet".
+pub fn is_prerelease(tag: &str) -> bool {
+    version_of(tag).contains('-')
 }
 
 /// The changelog section for `version`, without its heading.
@@ -55,6 +73,22 @@ pub fn run(root: &Path, tag: &str, out: &Path) -> Result<()> {
     std::fs::write(out, format!("{section}\n"))
         .with_context(|| format!("writing {}", out.display()))?;
     println!("{}", out.display());
+
+    // The workflow reads this back as the step's output. Decided here rather
+    // than in a YAML expression, for the reason the workflow's own header
+    // gives: what a release *is* should be ordinary Rust with tests, not a
+    // line that can only be exercised by pushing a tag.
+    let prerelease = is_prerelease(tag);
+    println!("prerelease: {prerelease}");
+    if let Some(path) = std::env::var_os("GITHUB_OUTPUT") {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .with_context(|| format!("opening {}", Path::new(&path).display()))?;
+        writeln!(file, "prerelease={prerelease}")
+            .with_context(|| format!("writing {}", Path::new(&path).display()))?;
+    }
     Ok(())
 }
 
@@ -88,6 +122,21 @@ Older.
         assert_eq!(version_of("0.1.0"), "0.1.0");
         // A `v` inside the version is not a prefix to strip.
         assert_eq!(version_of("v1.0.0-rc.1"), "1.0.0-rc.1");
+    }
+
+    #[test]
+    fn the_tag_says_whether_it_is_a_prerelease_and_an_ordinary_version_is_not_one() {
+        // The one this exists for. 0.1.0 shipped marked pre-release, and
+        // `/releases/latest/` skips those — so the README's own install
+        // commands returned 404 for anyone who ran them.
+        assert!(!is_prerelease("v0.1.0"));
+        assert!(!is_prerelease("0.1.0"));
+        assert!(!is_prerelease("v1.0.0"));
+        // Semver's rule, and the only thing that should switch it on.
+        assert!(is_prerelease("v1.0.0-rc.1"));
+        assert!(is_prerelease("v0.2.0-beta"));
+        // The `v` is a prefix, not a hyphen to find: stripping happens first.
+        assert!(!is_prerelease("v0.1.0"));
     }
 
     #[test]
