@@ -172,9 +172,11 @@ sessions to their own protocol tests. Both gaps were where the next defects were
   nothing there, because typing is decided by matching `Key::Char`. Fixed:
   `space` is one key with one representation, the character.
 - **A refused server is not mentioned when the user has one of their own.**
-  `Lsp::attach` collects refusals and reports them after the loop, and the loop
-  returns as soon as a trusted candidate starts — so the disclosure is reached
-  only when there was nothing else to try.
+  `Lsp::attach` collected refusals and reported them after the loop, and the loop
+  returns as soon as a trusted candidate starts — so the disclosure was reached
+  only when there was nothing else to try. Fixed: the refusals are named before
+  anything is tried, and they go in the problem list, which `attach` running on
+  every tab switch cannot make repeat.
 - **Save-as in a remote session renames the document to a local path**, which
   every later save then asks the server to write, outside the workspace it
   serves. Fixed: the typed name is the far end's and the write goes through the
