@@ -67,6 +67,13 @@ Settings deco resolves into an open document's behaviour: `editor.tabSize`,
 `deco.lsp.*` (see [Language servers](language-servers.md)) and
 `deco.extensions.*` (below).
 
+`files.eol` is **the ending a new file gets**, as VS Code documents it. A file
+that already has an ending keeps it, whether or not the setting agrees: opening
+a CRLF file under `"files.eol": "\n"` does not stage a rewrite of every line in
+it. The setting decides for an untitled buffer, and for a file with no
+terminator in it at all — the two cases with no ending to keep. `auto`, the
+default, falls back to the platform's.
+
 ### Settings a workspace cannot set
 
 Most settings can be resolved by precedence and forgotten about: the

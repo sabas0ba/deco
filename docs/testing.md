@@ -69,11 +69,9 @@ Four things are deliberately real:
   cannot be done safely. Home, the platform's configuration layout, which
   platform's keybindings win and the working directory are all fields on
   `Scenario` — which is also why a scenario can be a Mac while running on Linux.
-- **No line-ending default.** A new file's ending follows the platform, so a
-  scenario asserting the bytes of a file it created names the ending it expects.
-  The harness deliberately does not pin `files.eol` for everyone: in deco that
-  setting also converts the ending of every *existing* file that is opened, so a
-  harness-wide default would quietly change what half the scenarios were testing.
+- **No line-ending default.** With `files.eol` left at `auto` a new file's ending
+  follows the platform, so a scenario asserting the bytes of a file it created
+  names the ending it expects. A scenario that cares sets `files.eol` itself.
 - **No language servers, unless asked.** A machine with `rust-analyzer` installed
   is a different machine from one without, and a scenario about saving a file
   should not start failing because of something it never mentioned. The default
@@ -139,15 +137,15 @@ one is a disagreement between two components rather than a fault in either:
 - **A one-row terminal drew two rows.** The unit test for it said in a comment
   that the status bar wins, and then asserted that both were drawn.
 
-And one it found while the suite was being made to run on Windows, recorded but
-not changed here because it is a question about what the setting means rather
-than a fault in carrying it out:
+And one it found while the suite was being made to run on Windows:
 
-- **`files.eol` converts existing files rather than only new ones.** VS Code
-  treats it as the ending a *new* file gets; deco applies it in
-  `Document::from_file`, so opening a CRLF file with `"files.eol": "\n"` in
-  settings converts it, and the next save writes every line back changed. Pinned
-  by `setting_files_eol_converts_every_existing_file_that_is_opened`.
+- **`files.eol` was wired to the wrong half of what it names.** VS Code treats it
+  as the ending a *new* file gets, leaving existing files with the ending they
+  already had. deco applied it in `Document::from_file`, so opening a CRLF file
+  with `"files.eol": "\n"` converted it and the next save wrote every line back
+  changed — while `Document::untitled` built a `Buffer::new()` and never looked at
+  the setting at all, so the one file it *should* have decided for ignored it.
+  Fixed: the setting now applies where a buffer has no ending of its own to keep.
 
 ## What the second round found
 

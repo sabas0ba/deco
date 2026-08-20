@@ -175,22 +175,13 @@ fn a_windows_file_stays_a_windows_file_through_an_edit() {
 }
 
 #[test]
-fn setting_files_eol_converts_every_existing_file_that_is_opened() {
-    // A finding, pinned rather than asserted as good.
-    //
+fn setting_files_eol_leaves_an_existing_files_own_ending_alone() {
     // `files.eol` in VS Code is the ending a *new* file gets; an existing file
-    // keeps the ending it already had. In deco the setting is applied in
-    // `Document::from_file`, so it converts on open — and the conversion reaches
-    // the disk on the next save of a file that was opened only to have a typo
-    // fixed in it.
-    //
-    // `"files.eol": "\n"` is an ordinary thing to have in a settings file. With it,
-    // editing one line of a CRLF file rewrites every line of it, which is a
-    // whole-file diff nobody asked for and one that is invisible in the editor.
-    //
-    // The unit test beside this behaviour covers `auto`, where nothing is
-    // converted. Nobody asked what the other two values do to a file that already
-    // had an ending of its own.
+    // keeps the ending it already had until it is changed deliberately. deco
+    // applied it on open, so editing one line of a CRLF file under
+    // `"files.eol": "\n"` — an ordinary thing to have in a settings file —
+    // rewrote every line of it, a whole-file diff nobody asked for and one that
+    // is invisible in the editor.
     let scenario = Scenario::new("eol-converts")
         .user_settings(r#"{ "files.eol": "\n" }"#)
         .file("dos.txt", "one\r\ntwo\r\n");
@@ -202,8 +193,27 @@ fn setting_files_eol_converts_every_existing_file_that_is_opened() {
 
     assert_eq!(
         String::from_utf8_lossy(&editor.on_disk_bytes("dos.txt")),
-        "one\ntwo\n!",
-        "every line ending in the file was rewritten, not just the edited line"
+        "one\r\ntwo\r\n!",
+        "only the edited line should have changed"
+    );
+}
+
+#[test]
+fn setting_files_eol_decides_for_a_file_that_has_no_ending_of_its_own() {
+    // The other side of the same rule: a file with no terminator in it has
+    // nothing to keep, so the setting is what there is to go on.
+    let scenario = Scenario::new("eol-no-ending")
+        .user_settings(r#"{ "files.eol": "\r\n" }"#)
+        .file("one.txt", "just one line");
+    let mut editor = scenario.launch(&["one.txt"]);
+
+    editor.press("ctrl+end");
+    editor.type_text("\nand another");
+    editor.press("ctrl+s");
+
+    assert_eq!(
+        String::from_utf8_lossy(&editor.on_disk_bytes("one.txt")),
+        "just one line\r\nand another"
     );
 }
 
