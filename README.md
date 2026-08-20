@@ -406,6 +406,33 @@ $ cargo xtask dist --target aarch64-apple-darwin
 be rehearsed without pushing a tag. It writes the archive and its `.sha256` to
 `dist/`.
 
+## Releasing
+
+A release is a tag. Two ways to make one, and they end in the same place:
+
+- **From a checkout.** `git tag -a v0.1.0 -m "deco 0.1.0" && git push origin v0.1.0`.
+- **From the Actions tab.** Run **Release** against `main` and type the tag. It
+  is created there, at the commit the run was dispatched from, and the same run
+  builds it — so cutting a release needs no terminal and no push rights beyond
+  what running a workflow already implies. A tag that already exists is released
+  as it stands rather than moved.
+
+Either way the workflow builds all seven targets with the same `cargo xtask
+dist`, merges the per-artifact hashes into one `SHA256SUMS`, and publishes with
+the body taken from this repository:
+
+```console
+$ cargo xtask release-notes --tag v0.1.0   # what the release will say
+```
+
+The notes are the `## 0.1.0` section of [CHANGELOG.md](CHANGELOG.md), not a
+second description typed into the release form — two descriptions of one version
+drift, and the one in the repository is the one a person reads at the commit
+they are standing on. **A tag with no section fails the release**, because a
+workflow can be run again and a published release cannot be unpublished. A unit
+test checks the changelog has a section for the current version on every push,
+so that failure arrives before the tag rather than after it.
+
 ## What CI runs where
 
 Everything routine runs on Linux. macOS and Windows runner minutes bill at ten
