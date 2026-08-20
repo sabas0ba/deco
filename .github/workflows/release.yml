@@ -176,6 +176,7 @@ jobs:
       #
       # Written outside `dist`, which is uploaded wholesale as assets.
       - name: Build the release notes
+        id: notes
         run: >
           cargo xtask release-notes
           --tag ${{ github.event.inputs.tag || github.ref_name }}
@@ -188,6 +189,14 @@ jobs:
           # the first release that is the entire history, which buries the
           # notes rather than adding to them.
           generate_release_notes: false
+          # Stated rather than left to whatever the release already had. A
+          # release created in the web UI carries whatever that form's
+          # pre-release box was set to, and this action preserves a field it is
+          # not given — which is how 0.1.0 shipped as a pre-release and made
+          # `/releases/latest/`, the URL the README hands people, a 404.
+          #
+          # The tag decides, by semver's rule, in `xtask/src/release.rs`.
+          prerelease: ${{ steps.notes.outputs.prerelease }}
           files: dist/*
           # A release missing the platform someone came for is worse than no
           # release, so an empty upload is a failure rather than a quiet one.
