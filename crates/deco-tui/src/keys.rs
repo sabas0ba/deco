@@ -59,7 +59,9 @@ pub fn chord_from_event(event: KeyEvent) -> Option<Chord> {
         KeyCode::PageUp => Key::Named(NamedKey::PageUp),
         KeyCode::PageDown => Key::Named(NamedKey::PageDown),
         KeyCode::F(n) if (1..=19).contains(&n) => Key::Named(NamedKey::F(n)),
-        KeyCode::Null => Key::Named(NamedKey::Space),
+        // Some terminals report Ctrl+Space as NUL under this code rather than as
+        // `Char(' ')` with Control. Either way it is the space bar.
+        KeyCode::Null => Key::Char(' '),
         _ => return None,
     };
 
@@ -137,6 +139,33 @@ mod tests {
                 "{expected}"
             );
         }
+    }
+
+    #[test]
+    fn ctrl_space_reaches_the_binding_however_the_terminal_spells_it() {
+        // crossterm's unix parser turns the NUL a terminal sends for Ctrl+Space
+        // into `Char(' ')` with CONTROL; other paths use `Null`. Both have to
+        // arrive as the chord `ctrl+space` resolves to, or the default binding
+        // for Trigger Suggest is one nothing can press.
+        for code in [KeyCode::Char(' '), KeyCode::Null] {
+            assert_eq!(
+                chord(code, KeyModifiers::CONTROL),
+                Chord::parse("ctrl+space").unwrap(),
+                "{code:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_plain_space_is_the_character_it_types() {
+        assert_eq!(
+            chord(KeyCode::Char(' '), KeyModifiers::NONE),
+            Chord::parse("space").unwrap()
+        );
+        assert_eq!(
+            chord(KeyCode::Char(' '), KeyModifiers::NONE).key,
+            Key::Char(' ')
+        );
     }
 
     #[test]

@@ -43,10 +43,14 @@ pub fn chord_from_parts(
             let c = text.chars().next()?;
             Key::Char(c.to_lowercase().next().unwrap_or(c))
         }
+        // The space bar is a character here, not a named key: a terminal has no
+        // way to report it as anything else, and a `keybindings.json` has to mean
+        // the same thing in both frontends. It is also what lets an unbound space
+        // type a space, since `Session::handle_chord` types `Key::Char`.
+        WinitKey::Named(WinitNamed::Space) => Key::Char(' '),
         WinitKey::Named(named) => Key::Named(match named {
             WinitNamed::Enter => NamedKey::Enter,
             WinitNamed::Tab => NamedKey::Tab,
-            WinitNamed::Space => NamedKey::Space,
             WinitNamed::Backspace => NamedKey::Backspace,
             WinitNamed::Delete => NamedKey::Delete,
             WinitNamed::Insert => NamedKey::Insert,
@@ -152,7 +156,6 @@ mod tests {
             (WinitNamed::PageDown, "pagedown"),
             (WinitNamed::Backspace, "backspace"),
             (WinitNamed::F5, "f5"),
-            (WinitNamed::Space, "space"),
         ] {
             assert_eq!(
                 press(WinitKey::Named(named), ModifiersState::empty()).unwrap(),
@@ -160,6 +163,24 @@ mod tests {
                 "{expected}"
             );
         }
+    }
+
+    #[test]
+    fn the_space_bar_is_the_character_it_types() {
+        // winit reports it as a named key, and a terminal cannot report it as
+        // anything but a character. The character is the representation both
+        // agree on, so a `keybindings.json` means the same thing in both — and
+        // an unbound space still types a space, which `Session::handle_chord`
+        // decides by matching `Key::Char`.
+        let chord = press(WinitKey::Named(WinitNamed::Space), ModifiersState::empty()).unwrap();
+        assert_eq!(chord, Chord::parse("space").unwrap());
+        assert_eq!(chord.key, Key::Char(' '));
+        assert!(types_text(&chord), "the space bar has to type a space");
+
+        assert_eq!(
+            press(WinitKey::Named(WinitNamed::Space), ModifiersState::CONTROL).unwrap(),
+            Chord::parse("ctrl+space").unwrap()
+        );
     }
 
     #[test]

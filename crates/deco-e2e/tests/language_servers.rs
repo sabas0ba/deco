@@ -185,8 +185,9 @@ fn go_to_symbol_lists_what_the_server_classified() {
 
 #[test]
 fn completion_offers_what_the_server_sent_and_accepting_one_types_it() {
-    // Reached through a binding of this scenario's own, because the default one
-    // cannot be pressed — see the scenario below.
+    // Reached through a binding of this scenario's own, which also covers a
+    // `keybindings.json` entry reaching the command; the default `ctrl+space` is
+    // pressed by the scenario below.
     let scenario = project("lsp-completion", "full").user_keybindings(
         r#"[{ "key": "ctrl+e", "command": "editor.action.triggerSuggest", "when": "editorTextFocus" }]"#,
     );
@@ -212,41 +213,28 @@ fn completion_offers_what_the_server_sent_and_accepting_one_types_it() {
 }
 
 #[test]
-fn ctrl_space_never_reaches_trigger_suggest_in_a_terminal() {
-    // A finding, pinned rather than asserted as good.
-    //
+fn ctrl_space_reaches_trigger_suggest_in_a_terminal() {
     // `ctrl+space` is deco's default binding for `editor.action.triggerSuggest`,
-    // and in a terminal it cannot fire. A terminal sends NUL for Ctrl+Space;
-    // crossterm 0.29 parses that byte into `KeyCode::Char(' ')` with CONTROL
-    // (`event/sys/unix/parse.rs`), and `deco_tui::keys::chord_from_event` turns
-    // that into `Key::Char(' ')`. The binding parses to `Key::Named(Space)`,
-    // which the terminal path only ever produces from `KeyCode::Null` — a code
-    // crossterm's unix parser never emits.
+    // and it used to do nothing at all in a terminal. A terminal sends NUL for
+    // Ctrl+Space; crossterm parses that byte into `KeyCode::Char(' ')` with
+    // CONTROL, which became `Key::Char(' ')` — while the binding parsed to
+    // `Key::Named(Space)`, a key the terminal path only ever produced from
+    // `KeyCode::Null`, which crossterm's unix parser never emits. The two never
+    // met, and nothing was said, which is what made it hard to diagnose.
     //
-    // So the two never meet. The scenario above shows the feature itself is
-    // fine: bound to any other key it works. The GUI frontend does map its
-    // Space to `NamedKey::Space`, so the two frontends also disagree about what
-    // the space bar is.
+    // Now `space` is one key in one representation, so the default binding is
+    // pressable and the scenario above no longer needs a binding of its own.
     let scenario = project("lsp-ctrl-space", "full");
     let mut editor = started(&scenario);
 
     editor.press("ctrl+end");
     editor.type_text("gre");
     editor.press("ctrl+space");
+    editor.settle_until("the completion list", |editor| {
+        editor.driver().lsp().suggest().is_some()
+    });
 
-    // Given real time to answer, in case it were merely slow.
-    for _ in 0..20 {
-        std::thread::sleep(std::time::Duration::from_millis(5));
-        editor.wait(5);
-    }
-    assert!(
-        editor.driver().lsp().suggest().is_none(),
-        "ctrl+space reached trigger-suggest after all — this finding is fixed \
-         and the scenario should become an assertion that it works"
-    );
-    // And nothing was said, which is what makes it hard to diagnose: the key
-    // simply does nothing.
-    assert_eq!(editor.status(), None);
+    editor.screen().assert_shows("greet_loudly");
 }
 
 #[test]
