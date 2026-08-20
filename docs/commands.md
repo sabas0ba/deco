@@ -166,7 +166,8 @@ that reports a failure. See [Language servers](language-servers.md#go-to-symbol)
 file outside the workspace — quick open only offers what it walked. The prompt is
 seeded with the current file's **directory**, not its name: the point is to open
 something else, and a seed whose last component you have to delete is a seed that
-cost you.
+cost you. This is the one seeded prompt that opens *unselected*, because its seed
+is a prefix to continue rather than an answer to replace.
 
 `~` expands and a relative path is taken against the workspace root, the same
 resolution save-as uses.
@@ -192,11 +193,10 @@ and lists what it found; `enter` opens that file at that line.
 
 The query field is seeded with the selection, the word under the cursor, or
 whatever the find bar last searched for — in that order, because that is the order
-of how recently you said it. It is a seed and not the query: `ctrl+x` clears the
-line, the way it does in every other prompt, so a search for something the cursor
-is nowhere near takes one extra keystroke rather than being impossible. An empty
-query is refused with `nothing to search for` instead of walking the workspace for
-a match everything has.
+of how recently you said it. It is a seed and not the query: it opens **selected**,
+so typing replaces it and searching for something the cursor is nowhere near is
+just typing it. An empty query is refused with `nothing to search for` instead of
+walking the workspace for a match everything has.
 
 `alt+c` and `alt+w` toggle **this search's** options while the field is open, and
 the find bar's while `ctrl+f` is open. The two are independent, as they are in VS
@@ -245,7 +245,8 @@ Both of these are the same widget, and it behaves like the find bar because it i
 built from the same one-line input:
 
 - `ctrl+v` pastes into the prompt, not into the file. `ctrl+z`, `ctrl+a` and
-  `ctrl+x` are swallowed rather than reaching a document you are not looking at.
+  `ctrl+x` are swallowed rather than reaching a document you are not looking at —
+  `ctrl+a` selects the prompt's own line, so the next key replaces it.
 - `editorTextFocus` goes false while a prompt is open, so `tab`, `ctrl+space` and
   the rest stop resolving at all. The context key is VS Code's `inQuickOpen`.
 - The caret is drawn in the prompt, because that is where typing goes.

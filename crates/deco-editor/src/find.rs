@@ -139,6 +139,17 @@ impl Find {
         &self.matches
     }
 
+    /// Whether all of the focused field's text is selected.
+    ///
+    /// For the renderer, which has to show a field whose next keystroke replaces
+    /// everything differently from one that appends.
+    pub fn text_selected(&self) -> bool {
+        match self.field {
+            Field::Query => self.query.selected(),
+            Field::Replace => self.replace.selected(),
+        }
+    }
+
     /// Where the search was started from.
     pub fn origin(&self) -> Position {
         self.origin
@@ -158,7 +169,10 @@ impl Find {
         self.field = Field::Query;
         if let Some(seed) = seed {
             if !seed.is_empty() {
-                self.query.set(seed);
+                // Selected, not appended to: the seed is the word the user chose
+                // by selecting it, so the next thing typed is either a different
+                // query or an edit to this one — never a suffix.
+                self.query.seed(seed);
             }
         }
     }
@@ -280,7 +294,21 @@ mod tests {
     use super::*;
     use crate::commands::MemoryClipboard;
 
+    /// An open bar holding `query`, with the caret at its end and nothing
+    /// selected — the state a bar is in once the query has been typed.
+    ///
+    /// Not `open(Some(query))`: a *seeded* query opens selected, so the next key
+    /// would replace it rather than edit it. That is what `seeded` below is for.
     fn find(query: &str) -> Find {
+        let mut find = seeded(query);
+        // Collapses the selection without changing the text or the caret, the
+        // same way pressing a caret key would.
+        consume(&mut find, "cursorEnd");
+        find
+    }
+
+    /// An open bar seeded from a selection, as `ctrl+f` seeds it.
+    fn seeded(query: &str) -> Find {
         let mut find = Find::new();
         find.open(Some(query.to_owned()), Position::ZERO);
         find
@@ -308,11 +336,44 @@ mod tests {
     }
 
     #[test]
-    fn opening_seeds_the_query_and_puts_the_caret_at_the_end() {
-        let find = find("foo");
+    fn opening_seeds_the_query_and_selects_all_of_it() {
+        let find = seeded("foo");
         assert!(find.visible());
         assert_eq!(find.query(), "foo");
         assert_eq!(find.caret(), 3);
+        assert!(
+            find.text_selected(),
+            "a seed is an answer to replace, not a prefix to append to"
+        );
+    }
+
+    #[test]
+    fn typing_over_a_seeded_query_replaces_it() {
+        // The bug this guards: `ctrl+f` on a selected `fn` and typing `println`
+        // searched for `fnprintln`, which is in no file anywhere.
+        let mut find = seeded("fn");
+        typed(&mut find, "println");
+        assert_eq!(find.query(), "println");
+        assert!(!find.text_selected());
+    }
+
+    #[test]
+    fn deleting_a_seeded_query_empties_it() {
+        let mut find = seeded("fn");
+        assert!(consume(&mut find, "deleteLeft"));
+        assert_eq!(find.query(), "");
+        assert_eq!(find.caret(), 0);
+    }
+
+    #[test]
+    fn moving_the_caret_in_a_seeded_query_keeps_it_and_edits_from_there() {
+        // The other half of a selection: a seed you meant to *edit* survives the
+        // moment you move into it.
+        let mut find = seeded("foo.txt");
+        consume(&mut find, "cursorHome");
+        assert!(!find.text_selected());
+        typed(&mut find, "a");
+        assert_eq!(find.query(), "afoo.txt");
     }
 
     #[test]

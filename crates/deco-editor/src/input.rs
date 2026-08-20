@@ -18,12 +18,20 @@
 //! That is why `ctrl+v` with a prompt open pastes into the prompt and not into
 //! the document, and why `ctrl+z` cannot silently rewrite the file behind one.
 //!
-//! # No selection model
+//! # One selection, and it is the whole line
 //!
-//! There is a caret but no selection, so `ctrl+a`, `ctrl+c` and `ctrl+x` act on
-//! the whole line. They are still swallowed rather than passed through: a
-//! `ctrl+x` that cut a line out of the document while the user was editing a
-//! search term would be a genuine loss.
+//! There is a caret and no ranged selection, so `ctrl+c` and `ctrl+x` act on the
+//! whole line. They are still swallowed rather than passed through: a `ctrl+x`
+//! that cut a line out of the document while the user was editing a search term
+//! would be a genuine loss.
+//!
+//! The one selection a field can be in is *all of it*, which is the state a
+//! seeded field opens in and the state `ctrl+a` puts it in. It exists because a
+//! seed the first keystroke appends to is a seed that costs the user: pressing
+//! `ctrl+shift+f` on `fn` and typing `println` searched for `fnprintln`. So the
+//! next thing typed replaces the line, the next deletion removes it, and moving
+//! the caret collapses back to an ordinary caret — the part of a selection these
+//! fields need, without the arithmetic of one that can start and end anywhere.
 
 use serde_json::Value;
 
@@ -35,6 +43,11 @@ pub struct Input {
     text: String,
     /// Caret offset, counted in characters.
     caret: usize,
+    /// Whether the whole line is selected — see the module docs.
+    ///
+    /// The only selection this field has. It is not a range because no caller
+    /// needs one: a seed is replaced whole or it is edited from the caret.
+    selected: bool,
 }
 
 impl Input {
@@ -53,16 +66,38 @@ impl Input {
         self.caret
     }
 
-    /// Replaces the text, putting the caret at the end.
+    /// Replaces the text, putting the caret at the end and selecting nothing.
     pub fn set(&mut self, text: String) {
         self.text = text;
         self.caret = self.text.chars().count();
+        self.selected = false;
+    }
+
+    /// Replaces the text and selects all of it, so the next key replaces it.
+    ///
+    /// What a field opens in when it is seeded with an answer the user is
+    /// expected to edit or discard — the save-as path, the find query, the
+    /// project-search term. Not for a seed that is a *prefix* to continue, like
+    /// the directory `ctrl+o` opens with: there the first keystroke belongs at
+    /// the end, which is what [`Input::set`] gives.
+    pub fn seed(&mut self, text: String) {
+        self.set(text);
+        self.selected = !self.text.is_empty();
+    }
+
+    /// Whether the whole line is selected.
+    ///
+    /// For the renderer: a field whose next keystroke will replace everything in
+    /// it has to look different from one that will append.
+    pub fn selected(&self) -> bool {
+        self.selected
     }
 
     /// Empties the field.
     pub fn clear(&mut self) {
         self.text.clear();
         self.caret = 0;
+        self.selected = false;
     }
 
     /// Applies a command, if it is one this field owns.
@@ -75,6 +110,28 @@ impl Input {
         args: Option<&Value>,
         clipboard: &mut dyn Clipboard,
     ) -> bool {
+        // A fully selected line behaves the way a selection does anywhere else,
+        // which is the whole point of having one: what is typed replaces it, what
+        // deletes removes all of it, and moving the caret collapses it.
+        if self.selected {
+            match command {
+                "type" | "editor.action.clipboardPasteAction" => self.clear(),
+                "deleteLeft" | "deleteRight" | "deleteWordLeft" | "deleteWordRight" => {
+                    self.clear();
+                    return true;
+                }
+                "cursorLeft" | "cursorRight" | "cursorHome" | "cursorTop" | "cursorEnd"
+                | "cursorBottom" | "cursorWordLeft" | "cursorWordEndRight" => {
+                    self.selected = false;
+                }
+                // Copy and cut already act on the whole line, and select-all is
+                // what put the field here. Anything else is not this field's, so
+                // it leaves the selection alone rather than collapsing it on a
+                // key that never reached the text.
+                _ => {}
+            }
+        }
+
         match command {
             "type" => {
                 let text = args
@@ -152,10 +209,17 @@ impl Input {
                 self.clear();
                 true
             }
-            // Swallowed rather than handled. There is nothing to select, undo or
-            // redo in one line of text — and letting these through would apply
-            // them to the document, which is not where the user is looking.
-            "editor.action.selectAll" | "undo" | "redo" => true,
+            // The whole line, since that is the only selection there is. It used
+            // to be swallowed as a no-op, which left `ctrl+a` doing nothing at
+            // all in a field the user wanted to empty.
+            "editor.action.selectAll" => {
+                self.selected = !self.text.is_empty();
+                true
+            }
+            // Swallowed rather than handled. There is nothing to undo or redo in
+            // one line of text — and letting these through would apply them to
+            // the document, which is not where the user is looking.
+            "undo" | "redo" => true,
             _ => false,
         }
     }
@@ -298,10 +362,138 @@ mod tests {
     #[test]
     fn undo_is_swallowed_so_it_cannot_reach_the_document() {
         let mut input = input("foo");
-        for command in ["undo", "redo", "editor.action.selectAll"] {
+        for command in ["undo", "redo"] {
             assert!(run(&mut input, command), "{command} should be consumed");
         }
         assert_eq!(input.text(), "foo");
+    }
+
+    /// A field seeded with `text`, which is how a prompt or the find bar opens.
+    fn seeded(text: &str) -> Input {
+        let mut input = Input::new();
+        input.seed(text.to_owned());
+        input
+    }
+
+    fn typed(input: &mut Input, text: &str) {
+        input.consume(
+            "type",
+            Some(&serde_json::json!({ "text": text })),
+            &mut MemoryClipboard::default(),
+        );
+    }
+
+    #[test]
+    fn a_seeded_field_opens_with_all_of_it_selected() {
+        let input = seeded("/home/u/a.txt");
+        assert!(input.selected());
+        assert_eq!(input.caret(), 13, "and the caret is still at the end");
+    }
+
+    #[test]
+    fn an_empty_seed_selects_nothing() {
+        // Otherwise `selected` would be true of a field with nothing in it, and
+        // the renderer would have an empty selection to draw.
+        assert!(!seeded("").selected());
+    }
+
+    #[test]
+    fn typing_over_a_selected_field_replaces_all_of_it() {
+        let mut input = seeded("/home/u/a.txt");
+        typed(&mut input, "copy.txt");
+        assert_eq!(input.text(), "copy.txt");
+        assert_eq!(input.caret(), 8);
+        assert!(!input.selected());
+    }
+
+    #[test]
+    fn pasting_over_a_selected_field_replaces_all_of_it() {
+        let mut clipboard = MemoryClipboard::default();
+        clipboard.write("pasted");
+        let mut input = seeded("original");
+        input.consume("editor.action.clipboardPasteAction", None, &mut clipboard);
+        assert_eq!(input.text(), "pasted");
+    }
+
+    #[test]
+    fn deleting_a_selected_field_empties_it_whichever_key_is_pressed() {
+        for command in [
+            "deleteLeft",
+            "deleteRight",
+            "deleteWordLeft",
+            "deleteWordRight",
+        ] {
+            let mut input = seeded("one two three");
+            assert!(run(&mut input, command), "{command}");
+            assert_eq!(input.text(), "", "{command}");
+            assert_eq!(input.caret(), 0, "{command}");
+            assert!(!input.selected(), "{command}");
+        }
+    }
+
+    #[test]
+    fn moving_the_caret_collapses_the_selection_and_keeps_the_text() {
+        let mut input = seeded("a.txt");
+        assert!(run(&mut input, "cursorHome"));
+        assert!(!input.selected());
+        assert_eq!(input.text(), "a.txt");
+        assert_eq!(input.caret(), 0);
+        typed(&mut input, "z");
+        assert_eq!(
+            input.text(),
+            "za.txt",
+            "editing from the caret, not replacing"
+        );
+    }
+
+    #[test]
+    fn select_all_selects_the_whole_line_so_the_next_key_replaces_it() {
+        // It used to be swallowed as a no-op, which left `ctrl+a` doing nothing
+        // in a field the user was trying to empty.
+        let mut typing = input("foo");
+        assert!(run(&mut typing, "editor.action.selectAll"));
+        assert!(typing.selected());
+        typed(&mut typing, "bar");
+        assert_eq!(typing.text(), "bar");
+
+        // And `ctrl+a` then backspace empties it, as it does everywhere else.
+        let mut deleting = input("foo");
+        run(&mut deleting, "editor.action.selectAll");
+        run(&mut deleting, "deleteLeft");
+        assert_eq!(deleting.text(), "");
+    }
+
+    #[test]
+    fn select_all_on_an_empty_field_selects_nothing() {
+        let mut input = Input::new();
+        assert!(run(&mut input, "editor.action.selectAll"));
+        assert!(!input.selected());
+    }
+
+    #[test]
+    fn a_command_the_field_does_not_own_leaves_the_selection_alone() {
+        // The selection belongs to this field; a key that never reached the text
+        // has no business collapsing it.
+        let mut input = seeded("foo");
+        assert!(!run(&mut input, "cursorUp"));
+        assert!(input.selected());
+    }
+
+    #[test]
+    fn cutting_a_selected_field_still_takes_the_whole_line() {
+        let mut clipboard = MemoryClipboard::default();
+        let mut input = seeded("foo");
+        input.consume("editor.action.clipboardCutAction", None, &mut clipboard);
+        assert_eq!(clipboard.read(), "foo");
+        assert_eq!(input.text(), "");
+        assert!(!input.selected());
+    }
+
+    #[test]
+    fn setting_text_outright_selects_nothing() {
+        let mut input = seeded("seeded");
+        input.set("replaced".to_owned());
+        assert!(!input.selected());
     }
 
     #[test]

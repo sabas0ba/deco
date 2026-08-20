@@ -6,7 +6,8 @@ than reporting an unknown command.
 
 ## Finding
 
-`ctrl+f` opens the bar, seeded from the selection if there is one. Typing narrows
+`ctrl+f` opens the bar, seeded from the selection if there is one — selected, so
+the next thing typed replaces it rather than appending. Typing narrows
 the query, `enter` and `F3` step forward, `shift+enter` and `shift+F3` step back,
 and both wrap. `alt+c` and `alt+w` toggle case sensitivity and whole-word
 matching; a capital letter in `[aa ww]` means the option is on.
@@ -82,8 +83,11 @@ knowing:
   bound to `editorTextFocus`. No special-casing — the context key means what it
   means in VS Code.
 
-The query has a caret but no selection, so `ctrl+a`, `ctrl+c` and `ctrl+x` act on
-the whole query. A query longer than the bar scrolls to keep the caret visible,
+The query has a caret and one possible selection: all of it. That is the state it
+opens in when `ctrl+f` seeds it from a selection, and the state `ctrl+a` puts it
+in — so the first thing typed replaces the seed instead of appending to it, and
+`ctrl+a` then backspace empties the field. `ctrl+c` and `ctrl+x` act on the whole
+query either way. A query longer than the bar scrolls to keep the caret visible,
 and on a terminal too narrow for everything the count is dropped first, the
 toggles second, and the query last: a search term you cannot see is one you
 cannot correct.

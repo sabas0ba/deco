@@ -1394,7 +1394,7 @@ impl Session {
                 text
             })
             .unwrap_or_default();
-        self.prompt = Some(Prompt::seeded(PromptKind::OpenPath, seed));
+        self.prompt = Some(Prompt::prefixed(PromptKind::OpenPath, seed));
         self.refresh_context();
         Outcome::Handled
     }

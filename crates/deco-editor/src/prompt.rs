@@ -185,11 +185,32 @@ impl Prompt {
         }
     }
 
-    /// A prompt with no list, pre-filled with `text` and the caret at its end.
+    /// A prompt with no list, pre-filled with `text` and all of it selected.
     ///
     /// For the prompts that stand in for a file dialog: typing a whole path from
-    /// nothing is worse than editing the one you are already in.
+    /// nothing is worse than editing the one you are already in. Selected because
+    /// the seed is an *answer* — the path you are in, the word you are on — so
+    /// the first key typed is either the start of a different answer or an edit
+    /// to this one, and appending to it silently is never what was meant. See
+    /// [`Prompt::prefixed`] for the other kind of seed.
     pub fn seeded(kind: PromptKind, text: String) -> Self {
+        let mut input = Input::new();
+        input.seed(text);
+        Self {
+            kind,
+            input,
+            choices: Vec::new(),
+            matching: Vec::new(),
+            selected: 0,
+        }
+    }
+
+    /// A prompt with no list, pre-filled with `text` and the caret at its end.
+    ///
+    /// For a seed that is a *prefix* the user is meant to continue — the
+    /// directory `ctrl+o` opens with — where the first keystroke belongs at the
+    /// end and selecting the seed would throw away the part that was the point.
+    pub fn prefixed(kind: PromptKind, text: String) -> Self {
         let mut input = Input::new();
         input.set(text);
         Self {
@@ -227,6 +248,11 @@ impl Prompt {
     /// Caret offset within the typed text, in characters.
     pub fn caret(&self) -> usize {
         self.input.caret()
+    }
+
+    /// Whether all of the typed text is selected, so the next key replaces it.
+    pub fn text_selected(&self) -> bool {
+        self.input.selected()
     }
 
     /// Whether this prompt offers a list at all.
