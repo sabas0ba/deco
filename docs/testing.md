@@ -168,6 +168,7 @@ sessions to their own protocol tests. Both gaps were where the next defects were
   only when there was nothing else to try.
 - **Save-as in a remote session renames the document to a local path**, which
   every later save then asks the server to write, outside the workspace it
-  serves.
+  serves. Fixed: the typed name is the far end's and the write goes through the
+  connection.
 - **Revert in a remote session reads this machine**, at the far end's relative
-  path.
+  path. Fixed: it reads through the connection too.

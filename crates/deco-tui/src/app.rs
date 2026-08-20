@@ -541,9 +541,30 @@ impl Driver {
             // The prompt named a path; writing it is this side's job, and
             // so is working out what it meant.
             Outcome::SaveAs(target) => {
-                let target =
-                    resolve_path(&target, path.as_deref(), home.as_deref(), cwd.as_deref());
-                match write_file(&target, &session.save_contents()) {
+                // In a remote session the typed name belongs to the far end, so
+                // it is left exactly as it was typed. `resolve_path` is about
+                // *this* machine — `~` expansion, this process's working
+                // directory — and a name resolved here would be one the server
+                // has never heard of. The rest of the session's paths are the
+                // far end's, relative to the workspace it serves, and a session
+                // with half its paths in each namespace can no longer save
+                // anything: the server refuses every path outside what it
+                // serves, which is what a locally resolved absolute path is.
+                //
+                // Which also answers "can save-as copy this onto my laptop":
+                // no. The workspace is one place, as `run_with` says, and half
+                // of one would make every path ambiguous.
+                let target = match remote {
+                    Some(_) => target,
+                    None => resolve_path(&target, path.as_deref(), home.as_deref(), cwd.as_deref()),
+                };
+                let written = match remote.as_mut() {
+                    Some(client) => client
+                        .write(&target.display().to_string(), &session.save_contents())
+                        .map_err(|error| format!("{}: {error}", target.display())),
+                    None => write_file(&target, &session.save_contents()),
+                };
+                match written {
                     Ok(()) => {
                         if let Outcome::Message(report) = session.rename_to(target) {
                             session.status = Some(report);
@@ -563,7 +584,21 @@ impl Driver {
             // this side's job.
             Outcome::Revert => {
                 let target = session.document.path.clone();
-                match target.as_deref().map(std::fs::read_to_string) {
+                // Read wherever the file actually is. In a remote session the
+                // document's path is the far end's, relative to the workspace it
+                // serves, so reading it here resolves it against this process's
+                // working directory instead — which either fails for a file that
+                // exists perfectly well over there, or finds an unrelated local
+                // file. Revert is the one command whose whole job is to discard
+                // unsaved work, which makes reading the wrong file the worst
+                // thing it could do.
+                let read = target.as_deref().map(|target| match remote.as_mut() {
+                    Some(client) => client
+                        .read(&target.display().to_string())
+                        .map_err(|error| std::io::Error::other(error.to_string())),
+                    None => std::fs::read_to_string(target),
+                });
+                match read {
                     Some(Ok(text)) => {
                         if let Outcome::Message(report) = session.revert_to(&text) {
                             session.status = Some(report);

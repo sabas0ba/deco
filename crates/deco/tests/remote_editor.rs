@@ -145,9 +145,10 @@ fn a_file_excluded_by_settings_is_not_offered_even_though_the_server_found_it() 
 
 #[test]
 fn saving_over_the_connection_puts_the_bytes_on_the_far_end() {
-    // The other half of opening. `Outcome::Save` does consult the connection, so
-    // this is the one that works — and it is worth pinning next to the two below
-    // that do not, because what makes those a surprise is that this one does.
+    // The other half of opening: `Outcome::Save` consults the connection, and so
+    // now do save-as and revert below. This is the arm the other two were
+    // measured against — what made their omission a surprise is that this one
+    // was right all along.
     let scenario = scenario("remote-save");
     let mut editor = scenario.launch_remote(&["notes.txt"], server());
 
@@ -182,22 +183,17 @@ fn quick_open_lists_the_far_ends_files() {
 }
 
 #[test]
-fn save_as_in_a_remote_session_leaves_the_session_pointing_at_this_machine() {
-    // A finding, pinned rather than asserted as good.
+fn save_as_in_a_remote_session_writes_the_far_end_and_keeps_its_names() {
+    // `Outcome::Save` asks the connection; `Outcome::SaveAs` did not look at it
+    // at all. It resolved the typed name against *this* machine and called the
+    // local `write_file`, then renamed the open document to that local absolute
+    // path — one the far end has never heard of.
     //
-    // `Outcome::Save` asks the connection; `Outcome::SaveAs` does not look at it
-    // at all. It resolves the typed name against *this* machine and calls the
-    // local `write_file`, then renames the open document to that local absolute
-    // path — a path the far end has never heard of.
-    //
-    // The damage is the rename. Every later save asks the server to write a path
-    // outside the workspace it serves, and the server refuses everything outside
-    // it. So "save a copy under another name" quietly converts a working remote
-    // session into one that cannot save at all.
-    //
-    // This scenario cannot show *which machine* the copy landed on, because the
-    // harness serves the scenario's own workspace as the far end — the two are
-    // one directory. What it can show is the rename and what the rename costs.
+    // The damage was the rename: every later save asked the server to write a
+    // path outside the workspace it serves, and the server refuses everything
+    // outside it. So "save a copy under another name" quietly converted a
+    // working remote session into one that could not save at all, while the
+    // status line reported a successful save throughout.
     let scenario = scenario("remote-save-as");
     let mut editor = scenario.launch_remote(&["notes.txt"], server());
 
@@ -220,35 +216,80 @@ fn save_as_in_a_remote_session_leaves_the_session_pointing_at_this_machine() {
     editor.type_text("copy.txt");
     editor.press("enter");
 
-    assert!(
-        editor.path().is_some_and(Path::is_absolute),
-        "the document was renamed to a local absolute path: {:?}",
-        editor.path()
+    // The copy is on the far end, which is the only place `on_disk` looks in a
+    // remote scenario — a local write would have gone to this process's working
+    // directory and left nothing here.
+    assert_eq!(
+        editor.on_disk("copy.txt"),
+        "the needle is here\nand not here\n"
+    );
+    // And the document is still named the way the far end spells it, so the
+    // session's paths stay in one namespace.
+    assert_eq!(
+        editor.path().map(Path::to_path_buf),
+        Some("copy.txt".into())
     );
 
-    // And now saving is broken: the path is outside what the server serves.
+    // Which is what keeps saving working afterwards.
+    editor.press("ctrl+end");
     editor.type_text("more\n");
     editor.press("ctrl+s");
-    let status = editor.status().unwrap_or_default().to_owned();
     assert!(
-        status.contains("could not save") || status.contains("outside"),
-        "saving after a save-as should have been refused by the server — if it \
-         succeeded, this finding is fixed. status: {status:?}"
+        editor.on_disk("copy.txt").contains("more"),
+        "saving after a save-as should still reach the far end: {:?}",
+        editor.status()
+    );
+    // The original is untouched.
+    assert_eq!(
+        editor.on_disk("notes.txt"),
+        "the needle is here\nand not here\n"
     );
 }
 
 #[test]
-fn reverting_in_a_remote_session_reads_this_machine_instead() {
-    // A finding, pinned rather than asserted as good, and the more dangerous of
-    // the two: `Outcome::Revert` calls `std::fs::read_to_string` on the
-    // document's path, which in a remote session is a path relative to the *far
-    // end's* workspace. On this machine that resolves against the process's
-    // working directory.
-    //
-    // So reverting throws the edits away — which is what revert is for — and
-    // fills the buffer with whatever this machine happens to have at that
-    // relative path, or reports a read error for a file that exists perfectly
-    // well on the machine the session is connected to.
+fn save_as_onto_this_machine_is_refused_rather_than_splitting_the_workspace() {
+    // The workspace is one place — `run_with` says so — and half of one would
+    // make every path ambiguous. A name that points off the far end is the
+    // server's to refuse, which it does for everything outside what it serves,
+    // and the refusal is reported rather than quietly writing a file here.
+    let scenario = scenario("remote-save-as-local");
+    let mut editor = scenario.launch_remote(&["notes.txt"], server());
+
+    editor.press("ctrl+shift+s");
+    let seeded = editor
+        .session()
+        .prompt
+        .as_ref()
+        .expect("a prompt")
+        .text()
+        .chars()
+        .count();
+    editor.press_times("backspace", seeded);
+    editor.type_text("../escaped.txt");
+    editor.press("enter");
+
+    let status = editor.status().unwrap_or_default().to_owned();
+    assert!(
+        status.contains("outside the workspace"),
+        "the refusal should say why: {status:?}"
+    );
+    // And the document is still the one it was, so nothing was renamed to a
+    // path that cannot be saved.
+    assert_eq!(
+        editor.path().map(Path::to_path_buf),
+        Some("notes.txt".into())
+    );
+}
+
+#[test]
+fn reverting_in_a_remote_session_reads_the_far_end() {
+    // The more dangerous of the two: `Outcome::Revert` called
+    // `std::fs::read_to_string` on the document's path, which in a remote
+    // session is relative to the *far end's* workspace. On this machine that
+    // resolves against the process's working directory — so reverting threw the
+    // edits away, which is what revert is for, and then filled the buffer with
+    // whatever this machine happened to have at that relative path, or reported
+    // a read error for a file that exists perfectly well over there.
     let scenario = scenario("remote-revert");
     let mut editor = scenario.launch_remote(&["notes.txt"], server());
 
@@ -261,13 +302,36 @@ fn reverting_in_a_remote_session_reads_this_machine_instead() {
         editor.on_disk("notes.txt").contains("the needle is here"),
         "the file on the far end should not have changed"
     );
-    // What the buffer holds now is not the far end's file: either the read
-    // failed, or it found something local. Either way it is not a revert.
+    // And the buffer is now that file, rather than a read error or something
+    // local that happened to be at the same relative path.
+    assert_eq!(
+        editor.text(),
+        "the needle is here\nand not here\n",
+        "status: {:?}",
+        editor.status()
+    );
+    assert!(!editor.is_dirty(), "a reverted document is not modified");
+}
+
+#[test]
+fn reverting_reports_a_far_end_read_failure_without_losing_the_edits() {
+    // The edits stay when the read fails: throwing them away because the file
+    // could not be read would lose work to a failure that had nothing to do
+    // with it.
+    let scenario = scenario("remote-revert-missing");
+    let mut editor = scenario.launch_remote(&["notes.txt"], server());
+
+    editor.press("ctrl+end");
+    editor.type_text("unsaved work\n");
+    std::fs::remove_file(editor.workspace().join("notes.txt"))
+        .expect("removing the far end's copy");
+    editor.palette("Revert File");
+
     let status = editor.status().unwrap_or_default().to_owned();
+    assert!(status.contains("could not read"), "{status:?}");
     assert!(
-        status.contains("could not read") || !editor.text().contains("the needle is here"),
-        "revert reached the far end after all — this finding is fixed. status: {status:?}, \
-         text: {:?}",
+        editor.text().contains("unsaved work"),
+        "the edits should still be there: {:?}",
         editor.text()
     );
 }
