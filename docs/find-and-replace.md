@@ -41,6 +41,10 @@ That is the opposite of `ctrl+d`, where you selected exactly the text you meant.
 the two inputs, `enter` on the replacement replaces the current match and steps to
 the next, and `ctrl+alt+enter` replaces every match **in one undo step**.
 
+The keyboard starts on whichever field is left to fill in: on the **replacement**
+when the query arrived seeded from a selection or was typed earlier, and on the
+**query** when there is nothing to replace yet.
+
 ![Opening the replace row, filling both fields, and replacing every match](img/replace.svg)
 
 | Key | Command |

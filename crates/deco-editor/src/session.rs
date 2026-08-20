@@ -3258,14 +3258,41 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_h_opens_the_bar_with_the_replacement_focused() {
+    fn ctrl_h_opens_the_bar_focused_on_the_query_when_there_is_none_yet() {
+        // Nothing selected and nothing searched for, so there is nothing to
+        // replace and the first thing typed is the query.
         let mut s = searchable("foo\n");
         press(&mut s, "ctrl+h");
         assert!(s.find.visible());
-        assert!(s.find.replacing());
+        assert!(s.find.replacing(), "the replacement row is still shown");
+        assert_eq!(s.find.field(), crate::find::Field::Query);
+        assert_eq!(s.context.get("findInputFocussed"), Some(&json!(true)));
+        assert_eq!(s.context.get("replaceInputFocussed"), Some(&json!(false)));
+    }
+
+    #[test]
+    fn ctrl_h_opens_the_bar_with_the_replacement_focused_once_there_is_a_query() {
+        let mut s = searchable("foo\n");
+        s.view.selections = deco_core::selection::SelectionSet::single(
+            deco_core::selection::Selection::new(Position::new(0, 0), Position::new(0, 3)),
+        );
+        press(&mut s, "ctrl+h");
+        assert_eq!(s.find.query(), "foo");
         assert_eq!(s.find.field(), crate::find::Field::Replace);
         assert_eq!(s.context.get("replaceInputFocussed"), Some(&json!(true)));
         assert_eq!(s.context.get("findInputFocussed"), Some(&json!(false)));
+    }
+
+    #[test]
+    fn ctrl_h_focuses_the_replacement_when_a_query_was_typed_earlier() {
+        // The query survives `close`, so a second `ctrl+h` still has something to
+        // replace even though nothing is selected.
+        let mut s = searchable("foo\n");
+        press(&mut s, "ctrl+f");
+        press_all(&mut s, &["f", "o", "o"]);
+        press(&mut s, "escape");
+        press(&mut s, "ctrl+h");
+        assert_eq!(s.find.field(), crate::find::Field::Replace);
     }
 
     #[test]
@@ -3282,9 +3309,11 @@ mod tests {
     fn typing_with_the_replacement_focused_goes_into_the_replacement() {
         let mut s = searchable("foo\n");
         press(&mut s, "ctrl+h");
+        press_all(&mut s, &["f", "o", "o"]);
+        press(&mut s, "tab");
         press_all(&mut s, &["b", "a", "r"]);
         assert_eq!(s.find.replace(), "bar");
-        assert_eq!(s.find.query(), "", "the query is untouched");
+        assert_eq!(s.find.query(), "foo", "the query is untouched");
         assert_eq!(s.document.buffer.text(), "foo\n");
     }
 
@@ -3320,10 +3349,9 @@ mod tests {
     fn enter_replaces_the_current_match_and_moves_on() {
         let mut s = searchable("foo foo\n");
         press(&mut s, "ctrl+h");
-        press_all(&mut s, &["b", "a", "r"]);
-        press(&mut s, "shift+tab");
         press_all(&mut s, &["f", "o", "o"]);
         press(&mut s, "tab");
+        press_all(&mut s, &["b", "a", "r"]);
         // The first match is current.
         assert_eq!(selected(&s), ((0, 0), (0, 3)));
         press(&mut s, "enter");
@@ -3338,10 +3366,9 @@ mod tests {
     fn a_replacement_is_one_undo_step() {
         let mut s = searchable("foo foo\n");
         press(&mut s, "ctrl+h");
-        press_all(&mut s, &["b", "a", "r"]);
-        press(&mut s, "shift+tab");
         press_all(&mut s, &["f", "o", "o"]);
         press(&mut s, "tab");
+        press_all(&mut s, &["b", "a", "r"]);
         press(&mut s, "enter");
         assert_eq!(s.document.buffer.text(), "bar foo\n");
         s.run("undo", None, 0);
@@ -3378,9 +3405,9 @@ mod tests {
     fn replace_all_changes_every_match_in_one_step() {
         let mut s = searchable("foo\nbar\nfoo\n");
         press(&mut s, "ctrl+h");
-        press_all(&mut s, &["b", "a", "z"]);
-        press(&mut s, "shift+tab");
         press_all(&mut s, &["f", "o", "o"]);
+        press(&mut s, "tab");
+        press_all(&mut s, &["b", "a", "z"]);
         let outcome = s.run("editor.action.replaceAll", None, 0);
         assert_eq!(s.document.buffer.text(), "baz\nbar\nbaz\n");
         assert_eq!(
@@ -3482,9 +3509,10 @@ mod tests {
     fn ctrl_alt_enter_replaces_everything_from_either_input() {
         let mut s = searchable("foo foo\n");
         press(&mut s, "ctrl+h");
+        press_all(&mut s, &["f", "o", "o"]);
+        press(&mut s, "tab");
         press_all(&mut s, &["b", "a", "r"]);
         press(&mut s, "shift+tab");
-        press_all(&mut s, &["f", "o", "o"]);
         // Still on the query, and the key works from here too.
         assert_eq!(s.find.field(), crate::find::Field::Query);
         press(&mut s, "ctrl+alt+enter");
@@ -3505,6 +3533,7 @@ mod tests {
     fn ctrl_f_after_ctrl_h_puts_the_keyboard_back_on_the_query() {
         let mut s = searchable("foo\n");
         press(&mut s, "ctrl+h");
+        press(&mut s, "tab");
         press_all(&mut s, &["b", "a", "r"]);
         press(&mut s, "ctrl+f");
         assert_eq!(s.find.field(), crate::find::Field::Query);

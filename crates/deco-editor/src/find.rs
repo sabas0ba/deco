@@ -163,16 +163,26 @@ impl Find {
         }
     }
 
-    /// Opens the bar with the replacement shown and focused.
+    /// Opens the bar with the replacement shown, focusing the replacement only
+    /// when there is a query to replace.
     ///
     /// `ctrl+h`. The query is seeded exactly as `ctrl+f` seeds it, so selecting a
-    /// word and pressing `ctrl+h` is one step rather than two.
+    /// word and pressing `ctrl+h` is one step rather than two — and when it was
+    /// seeded, or was already typed the last time, the replacement is what the
+    /// user has come here to write.
+    ///
+    /// With neither — nothing selected and nothing searched for yet, which is the
+    /// ordinary way `ctrl+h` is reached — there is nothing to replace, so the
+    /// first thing typed belongs in the query. VS Code focuses the search field
+    /// in that case too.
     pub fn open_replace(&mut self, seed: Option<String>, origin: Position) {
         self.open(seed, origin);
         self.replacing = true;
-        // The query is either seeded or already typed, so the replacement is what
-        // the user has come here to write.
-        self.field = Field::Replace;
+        self.field = if self.query.text().is_empty() {
+            Field::Query
+        } else {
+            Field::Replace
+        };
     }
 
     /// Closes the bar, keeping the query so that `F3` still has something to
