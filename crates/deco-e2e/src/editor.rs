@@ -383,7 +383,6 @@ fn to_event(chord: Chord) -> KeyEvent {
         Key::Named(NamedKey::PageUp) => KeyCode::PageUp,
         Key::Named(NamedKey::PageDown) => KeyCode::PageDown,
         Key::Named(NamedKey::F(n)) => KeyCode::F(n),
-        Key::Named(NamedKey::Space) => KeyCode::Char(' '),
         other => panic!("no terminal event stands for {other:?}"),
     };
     KeyEvent::new(code, modifiers)

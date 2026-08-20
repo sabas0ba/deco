@@ -76,8 +76,6 @@ pub enum NamedKey {
     Enter,
     /// Escape.
     Escape,
-    /// Space.
-    Space,
     /// Page Up.
     PageUp,
     /// Page Down.
@@ -134,7 +132,6 @@ impl NamedKey {
             "tab" => NamedKey::Tab,
             "enter" => NamedKey::Enter,
             "escape" | "esc" => NamedKey::Escape,
-            "space" => NamedKey::Space,
             "pageup" => NamedKey::PageUp,
             "pagedown" => NamedKey::PageDown,
             "end" => NamedKey::End,
@@ -184,7 +181,6 @@ impl fmt::Display for NamedKey {
             NamedKey::Tab => "tab",
             NamedKey::Enter => "enter",
             NamedKey::Escape => "escape",
-            NamedKey::Space => "space",
             NamedKey::PageUp => "pageup",
             NamedKey::PageDown => "pagedown",
             NamedKey::End => "end",
@@ -316,6 +312,15 @@ fn normalize_key(key: Key) -> Key {
 
 fn parse_key(token: &str) -> Option<Key> {
     let lower = token.to_ascii_lowercase();
+    // `space` is the one VS Code key name that stands for a character deco can
+    // also be handed directly. A terminal sends NUL for Ctrl+Space and crossterm
+    // reports it as `Char(' ')` with Control; a window system reports the space
+    // bar as a named key. One of those has to be the representation, and the
+    // character is the one that also has to type a space when nothing is bound
+    // to it — so a binding written `space` means the same key.
+    if lower == "space" {
+        return Some(Key::Char(' '));
+    }
     if let Some(named) = NamedKey::parse(&lower) {
         return Some(Key::Named(named));
     }
@@ -344,6 +349,9 @@ impl fmt::Display for Chord {
             f.write_str("cmd+")?;
         }
         match self.key {
+            // Written by name, so a chord round-trips through `keybindings.json`
+            // rather than ending in a trailing blank nothing can read back.
+            Key::Char(' ') => f.write_str("space"),
             Key::Char(c) => write!(f, "{c}"),
             Key::Named(n) => write!(f, "{n}"),
         }
@@ -457,6 +465,33 @@ mod tests {
         assert!(c.modifiers.ctrl && c.modifiers.shift);
         assert!(!c.modifiers.alt && !c.modifiers.meta);
         assert_eq!(c.key, Key::Char('p'));
+    }
+
+    #[test]
+    fn space_is_one_key_however_it_is_written() {
+        // The bug this guards: `space` parsed to a named key while both frontends
+        // could deliver the space bar as a character, so `ctrl+space` was a
+        // binding nothing could ever press.
+        assert_eq!(Chord::parse("space").unwrap().key, Key::Char(' '));
+        assert_eq!(
+            Chord::parse("ctrl+space").unwrap(),
+            Chord::new(Modifiers::CTRL, Key::Char(' '))
+        );
+    }
+
+    #[test]
+    fn a_space_chord_is_written_back_by_name() {
+        // A trailing blank is not something `keybindings.json` can be read back
+        // from, so the canonical spelling stays `space`.
+        assert_eq!(
+            Chord::parse("ctrl+space").unwrap().to_string(),
+            "ctrl+space"
+        );
+        assert_eq!(Chord::char(' ').to_string(), "space");
+        assert_eq!(
+            KeySequence::parse("ctrl+k space").unwrap().to_string(),
+            "ctrl+k space"
+        );
     }
 
     #[test]

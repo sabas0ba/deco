@@ -165,9 +165,12 @@ sessions to their own protocol tests. Both gaps were where the next defects were
   frame with a *hover* in it, and there is no way to mention a completion list to
   that function. The list was fetched, filtered, navigable and invisible. Fixed.
 - **`ctrl+space` cannot reach Trigger Suggest in a terminal.** A terminal sends
-  NUL for it; crossterm turns that into `Char(' ')` with Control; deco maps only
-  `KeyCode::Null` to `space`, and the binding is `Named(Space)`. The two never
-  meet. The GUI maps its space bar the other way, so the frontends disagree.
+  NUL for it; crossterm turns that into `Char(' ')` with Control; deco mapped
+  only `KeyCode::Null` to `space`, and the binding parsed to `Named(Space)`. The
+  two never met. The GUI mapped its space bar the other way, so the frontends
+  disagreed about what a `keybindings.json` meant — and an unbound space typed
+  nothing there, because typing is decided by matching `Key::Char`. Fixed:
+  `space` is one key with one representation, the character.
 - **A refused server is not mentioned when the user has one of their own.**
   `Lsp::attach` collects refusals and reports them after the loop, and the loop
   returns as soon as a trusted candidate starts — so the disclosure is reached
