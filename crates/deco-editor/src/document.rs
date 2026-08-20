@@ -234,6 +234,20 @@ pub struct Document {
     pub indentation_overridden: bool,
 }
 
+/// The line ending `files.eol` asks for, or `None` when it defers.
+///
+/// `auto` is the deferral, and it is the only value that does not name an
+/// ending. Callers decide when the setting gets to speak at all — see
+/// [`Document::from_file`], where it does so only for a file with no ending of
+/// its own.
+fn configured_eol(setting: deco_config::EolSetting) -> Option<LineEnding> {
+    match setting {
+        deco_config::EolSetting::Lf => Some(LineEnding::Lf),
+        deco_config::EolSetting::Crlf => Some(LineEnding::Crlf),
+        deco_config::EolSetting::Auto => None,
+    }
+}
+
 impl Document {
     /// A new, empty, untitled document.
     ///
@@ -241,8 +255,14 @@ impl Document {
     /// settings stand until something is typed. VS Code does not re-guess as you
     /// type either — the guess is about a file that already exists.
     pub fn untitled(settings: EditorSettings) -> Self {
+        let mut buffer = Buffer::new();
+        // There is no text to detect from, so `files.eol` — "the default end of
+        // line character" — is exactly what it names here.
+        if let Some(eol) = configured_eol(settings.eol) {
+            buffer.set_line_ending(eol);
+        }
         Self {
-            buffer: Buffer::new(),
+            buffer,
             history: History::default(),
             path: None,
             language_id: None,
@@ -260,11 +280,17 @@ impl Document {
     pub fn from_file(path: PathBuf, text: &str, settings: EditorSettings) -> Self {
         let language_id = language_for_path(&path).map(str::to_owned);
         let mut buffer = Buffer::from_text(text);
-        match settings.eol {
-            deco_config::EolSetting::Lf => buffer.set_line_ending(LineEnding::Lf),
-            deco_config::EolSetting::Crlf => buffer.set_line_ending(LineEnding::Crlf),
-            // `auto` keeps whatever the file already used.
-            deco_config::EolSetting::Auto => {}
+        // A file that already has an ending keeps it, whatever `files.eol` says:
+        // VS Code documents the key as the ending a *new* file gets, and applying
+        // it on open rewrites every line of a file the user came to read. The
+        // ending is changed deliberately or not at all.
+        //
+        // A file with no terminator in it — empty, or one line without a break —
+        // has nothing to keep, and that is where the setting decides.
+        if LineEnding::detected(text).is_none() {
+            if let Some(eol) = configured_eol(settings.eol) {
+                buffer.set_line_ending(eol);
+            }
         }
         let mut document = Self {
             buffer,
@@ -891,6 +917,60 @@ mod tests {
         let doc = Document::from_file(PathBuf::from("/w/a.txt"), "a\r\nb\r\n", settings());
         assert_eq!(doc.buffer.line_ending(), LineEnding::Crlf);
         assert_eq!(doc.buffer.to_disk_string(), "a\r\nb\r\n");
+    }
+
+    /// `settings()` with `files.eol` set to `eol`.
+    fn settings_with_eol(eol: deco_config::EolSetting) -> EditorSettings {
+        EditorSettings { eol, ..settings() }
+    }
+
+    #[test]
+    fn files_eol_leaves_an_existing_files_own_line_ending_alone() {
+        // The whole point: opening a CRLF file with `"files.eol": "\n"` must not
+        // stage a rewrite of every line in it.
+        let doc = Document::from_file(
+            PathBuf::from("/w/a.txt"),
+            "a\r\nb\r\n",
+            settings_with_eol(deco_config::EolSetting::Lf),
+        );
+        assert_eq!(doc.buffer.line_ending(), LineEnding::Crlf);
+        assert_eq!(doc.buffer.to_disk_string(), "a\r\nb\r\n");
+
+        let doc = Document::from_file(
+            PathBuf::from("/w/b.txt"),
+            "a\nb\n",
+            settings_with_eol(deco_config::EolSetting::Crlf),
+        );
+        assert_eq!(doc.buffer.line_ending(), LineEnding::Lf);
+        assert_eq!(doc.buffer.to_disk_string(), "a\nb\n");
+    }
+
+    #[test]
+    fn files_eol_decides_for_a_file_with_no_line_ending_to_keep() {
+        // Nothing to detect, so the setting is all there is to go on — which is
+        // what "the default end of line character" means.
+        for (text, expected) in [("", LineEnding::Crlf), ("one line", LineEnding::Crlf)] {
+            let doc = Document::from_file(
+                PathBuf::from("/w/a.txt"),
+                text,
+                settings_with_eol(deco_config::EolSetting::Crlf),
+            );
+            assert_eq!(doc.buffer.line_ending(), expected, "for {text:?}");
+        }
+    }
+
+    #[test]
+    fn files_eol_gives_an_untitled_buffer_its_line_ending() {
+        let doc = Document::untitled(settings_with_eol(deco_config::EolSetting::Crlf));
+        assert_eq!(doc.buffer.line_ending(), LineEnding::Crlf);
+        let doc = Document::untitled(settings_with_eol(deco_config::EolSetting::Lf));
+        assert_eq!(doc.buffer.line_ending(), LineEnding::Lf);
+    }
+
+    #[test]
+    fn an_untitled_buffer_falls_back_to_the_platform_under_auto() {
+        let doc = Document::untitled(settings_with_eol(deco_config::EolSetting::Auto));
+        assert_eq!(doc.buffer.line_ending(), LineEnding::platform_default());
     }
 
     #[test]

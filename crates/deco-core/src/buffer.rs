@@ -42,11 +42,22 @@ impl LineEnding {
     /// platform default. We match that so round-tripping a file through deco
     /// never rewrites every line silently.
     pub fn detect(text: &str) -> Self {
+        Self::detected(text).unwrap_or_else(Self::platform_default)
+    }
+
+    /// The line ending `text` actually shows, or `None` when it shows none.
+    ///
+    /// The distinction [`LineEnding::detect`] flattens away: a file with no
+    /// terminator in it has no ending of its own to keep, which is the one case
+    /// where `files.eol` gets to decide. Everywhere else the file's own ending
+    /// wins, because converting a file the user only opened is a whole-file
+    /// rewrite they did not ask for.
+    pub fn detected(text: &str) -> Option<Self> {
         match text.find('\n') {
-            Some(0) => LineEnding::Lf,
-            Some(idx) if text.as_bytes()[idx - 1] == b'\r' => LineEnding::Crlf,
-            Some(_) => LineEnding::Lf,
-            None => LineEnding::platform_default(),
+            Some(0) => Some(LineEnding::Lf),
+            Some(idx) if text.as_bytes()[idx - 1] == b'\r' => Some(LineEnding::Crlf),
+            Some(_) => Some(LineEnding::Lf),
+            None => None,
         }
     }
 }
@@ -375,6 +386,17 @@ mod tests {
             LineEnding::detect("no newline"),
             LineEnding::platform_default()
         );
+    }
+
+    #[test]
+    fn a_file_with_no_terminator_has_no_detected_ending() {
+        // The distinction `detect` flattens: `None` is "nothing to keep", which
+        // is where `files.eol` gets to decide.
+        assert_eq!(LineEnding::detected("a\r\nb"), Some(LineEnding::Crlf));
+        assert_eq!(LineEnding::detected("a\nb"), Some(LineEnding::Lf));
+        assert_eq!(LineEnding::detected("\na"), Some(LineEnding::Lf));
+        assert_eq!(LineEnding::detected("no newline"), None);
+        assert_eq!(LineEnding::detected(""), None);
     }
 
     #[test]

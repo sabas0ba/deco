@@ -11,26 +11,23 @@ use deco_e2e::Scenario;
 
 /// `text` followed by the line ending an untitled buffer gets on this platform.
 ///
-/// Not a choice this scenario is making — see
-/// `files_eol_is_ignored_for_a_new_untitled_buffer` below. An untitled document
-/// takes the platform's ending and `files.eol` cannot change it, so a scenario
-/// about saving one has to expect whichever ending the runner has.
+/// Not a choice these scenarios are making: with `files.eol` left at `auto` an
+/// untitled document takes the platform's ending, so a scenario about saving one
+/// has to expect whichever ending the runner has. Where the setting names an
+/// ending it is that one instead — see
+/// `files_eol_gives_a_new_untitled_buffer_its_ending` below.
 fn untitled_line(text: &str) -> String {
     let ending = if cfg!(windows) { "\r\n" } else { "\n" };
     format!("{text}{ending}")
 }
 
 #[test]
-fn files_eol_is_ignored_for_a_new_untitled_buffer() {
-    // A finding, pinned rather than asserted as good, and the other half of the
-    // one in `editing.rs`: `files.eol` is applied in `Document::from_file`, so it
-    // converts every *existing* file that is opened — and `Document::untitled`
-    // builds a `Buffer::new()`, which takes `LineEnding::platform_default()` and
-    // never looks at the setting at all.
-    //
-    // So the key is wired to exactly the wrong half. VS Code's `files.eol` is the
-    // ending a *new* file gets and leaves existing files alone; deco's leaves new
-    // ones alone and rewrites existing ones.
+fn files_eol_gives_a_new_untitled_buffer_its_ending() {
+    // The half of `files.eol` that VS Code documents: "the default end of line
+    // character" is what a *new* file gets. `Document::untitled` built a
+    // `Buffer::new()`, which took the platform's ending and never looked at the
+    // setting, so the key was wired to exactly the wrong half — it left new
+    // buffers alone and rewrote existing files instead.
     let scenario = Scenario::new("eol-untitled").user_settings(r#"{ "files.eol": "\r\n" }"#);
     let mut editor = scenario.launch(&[]);
 
@@ -41,8 +38,8 @@ fn files_eol_is_ignored_for_a_new_untitled_buffer() {
 
     assert_eq!(
         editor.on_disk_bytes("new.txt"),
-        untitled_line("one").as_bytes(),
-        "the buffer took the platform's ending, not the one `files.eol` asked for"
+        b"one\r\n",
+        "the buffer should take the ending `files.eol` asked for"
     );
 }
 
