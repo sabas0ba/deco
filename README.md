@@ -15,10 +15,81 @@ is usable for editing files. Several headline features are not built yet;
 [what is not built](#what-is-not-built-yet) is explicit about which.
 
 ```console
-$ cargo run -p deco -- src/main.rs          # terminal
-$ cargo run -p deco --features gui -- src/main.rs --frontend gui
-$ cargo run -p deco -- --print-config       # why isn't my setting applying?
+$ deco src/main.rs                # terminal
+$ deco src/main.rs --frontend gui # a window, if built with --features gui
+$ deco --print-config             # why isn't my setting applying?
 ```
+
+## Install
+
+### A prebuilt binary
+
+Every release carries an archive per platform and one `SHA256SUMS` covering all
+of them, on the
+[releases page](https://github.com/sabas0ba/deco/releases/latest).
+
+| Platform | Archive |
+| --- | --- |
+| Linux x86-64 | `deco-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux x86-64, static | `deco-x86_64-unknown-linux-musl.tar.gz` |
+| Linux ARM64 | `deco-aarch64-unknown-linux-gnu.tar.gz` |
+| macOS Apple silicon | `deco-aarch64-apple-darwin.tar.gz` |
+| macOS Intel | `deco-x86_64-apple-darwin.tar.gz` |
+| Windows x86-64 | `deco-x86_64-pc-windows-msvc.zip` |
+| Windows ARM64 | `deco-aarch64-pc-windows-msvc.zip` |
+
+Download the one for your machine, check it against `SHA256SUMS`, and put the
+binary somewhere on your `PATH`:
+
+```console
+$ curl -fsSLO https://github.com/sabas0ba/deco/releases/latest/download/deco-x86_64-unknown-linux-gnu.tar.gz
+$ curl -fsSLO https://github.com/sabas0ba/deco/releases/latest/download/SHA256SUMS
+$ sha256sum --ignore-missing -c SHA256SUMS
+$ tar xzf deco-x86_64-unknown-linux-gnu.tar.gz
+$ install -Dm755 deco-x86_64-unknown-linux-gnu/deco ~/.local/bin/deco
+```
+
+On macOS `shasum -a 256 -c SHA256SUMS` is the same check. On Windows, unzip the
+archive and compare with `Get-FileHash deco-x86_64-pc-windows-msvc.zip`.
+
+**Check the checksum.** An editor is a program you hand your source code to, and
+the archive travels over the same network as everything else. Verifying it costs
+one command.
+
+There is deliberately no `curl … | sh` installer. It would ask you to run a
+script you have not read, from a program whose whole argument is that it does
+not want that kind of trust — see
+[Extensions](#extensions-and-why-they-are-not-like-vs-codes).
+
+**Keep the archive's `extension-host/` beside the binary.** Move the whole
+extracted directory rather than the binary alone, or code extensions have no host
+to run in; `deco` looks for it next to itself and at `../share/deco/`, and
+`DECO_HOST_BOOTSTRAP` names it outright. Everything else — editing, themes,
+language servers, remote — works with the binary on its own.
+
+macOS binaries are not notarized, so Gatekeeper will quarantine a downloaded one:
+`xattr -d com.apple.quarantine deco` after you have checked the hash.
+
+### With cargo
+
+```console
+$ cargo install --locked --git https://github.com/sabas0ba/deco --tag v0.1.0 deco
+```
+
+This installs the terminal build only. It also installs the binary alone, so code
+extensions will not start unless `DECO_HOST_BOOTSTRAP` points at an
+`extension-host/src/bootstrap.js` from a checkout or a release archive. Add
+`--features gui` for the GPU frontend, which costs 111 more crates and the build
+time to match.
+
+### From a checkout
+
+```console
+$ git clone https://github.com/sabas0ba/deco && cd deco
+$ cargo run -p deco -- src/main.rs
+```
+
+See [Building](#building) for what else the repository can do.
 
 ## Documentation
 
@@ -93,7 +164,7 @@ thin painter.
 | Syntax highlighting | 19 languages, from a lexer — see [why not tree-sitter](docs/highlighting.md#why-not-tree-sitter) |
 | Command identifiers | Yes, for implemented commands |
 | Theme extensions from the marketplace | Yes — declarative, no host process; `ctrl+k ctrl+t` lists them |
-| Code extensions (`main`) | Commands run: the palette lists them, choosing one starts a sandboxed host. The surface an extension can reach is three calls wide — see [Extensions](docs/extensions.md#what-an-extension-can-reach-today) |
+| Code extensions (`main`) | Commands run: the palette lists them, choosing one starts a sandboxed host. The surface an extension can reach is registering a command, the message and status-bar calls, the `workspace.fs` family, and `workspace.applyEdit` — everything else is refused by name, see [Extensions](docs/extensions.md#what-an-extension-can-reach-today) |
 | Remote SSH / containers / WSL | Open, edit and save a file on the far end with `--remote ssh-remote+host`, `--remote-install` puts deco there if it has none, `--forward 3000` reaches a port on it, language servers run over there, `ctrl+shift+f` searches the far end, and an extension's file access goes through the connection. Extension hosts still run locally — see [Remote](docs/remote.md) |
 | Language servers (LSP) | Diagnostics, hover, go-to-definition, references, completion, symbols, semantic tokens, formatting |
 | Find and replace (`ctrl+f`, `ctrl+h`, `F3`, `ctrl+d`, `ctrl+shift+l`) | Literal search only — no regular expressions |
@@ -213,7 +284,7 @@ frontends depend on everything.
 Named plainly, because a list of what works is only useful next to one of what
 does not:
 
-- **Remote development opens, edits and saves a file, and nothing more.**
+- **Remote development runs everything except the extension host over there.**
   `deco --remote ssh-remote+myhost --workspace /home/u/project src/main.rs` starts
   `deco --server --stdio` on the far end, fetches the file, and writes it back on
   `ctrl+s`; `ctrl+p` lists the remote workspace. The server refuses everything
@@ -257,14 +328,16 @@ does not:
   language server's **semantic tokens** fill exactly that gap and are
   drawn over the lexer's colouring where a server provides them. The GPU frontend
   draws one colour per line.
-- **The extension host is not connected to the editor yet.** The wire now exists and
-  is tested end to end: `deco_ext::connection` starts the real host with the real
-  `node`, an extension activates, and `commands.registerCommand` arrives and passes the
-  capability seam — see [Starting one](docs/extensions.md#starting-one). What is
-  missing is the editor side: deciding which extensions to activate from their
-  `activationEvents`, putting their commands in the palette, and answering the mediated
-  surface from the session.
-- **Search is literal, and only within the open file.** `ctrl+f` and `ctrl+h`
+- **The extension host is connected, and the surface it can reach is small.** An
+  installed extension's commands are in the palette, choosing one starts the real
+  host under the real `node`, and the session answers its requests through the
+  broker: messages, `workspace.fs` and `workspace.applyEdit`. What is missing is
+  the rest of the API — no activation on opening a file or on startup, no editor
+  state, quick pick, tree views, webviews or debug adapters, and `process`,
+  `net`, `env`, `secrets` and `openExternal` are brokered and then refused by
+  name because nothing implements them. See
+  [What an extension can reach](docs/extensions.md#what-an-extension-can-reach-today).
+- **Search is literal — no regular expressions anywhere.** `ctrl+f` and `ctrl+h`
   open a find bar with a query, a replacement, a match count and highlighting;
   `F3`, `enter`, `ctrl+alt+enter` and `alt+c` / `alt+w` work as they do in VS
   Code, and the multi-cursor keys (`ctrl+d`, `ctrl+shift+l`, `ctrl+k ctrl+d`)

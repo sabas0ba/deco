@@ -113,9 +113,26 @@ jobs:
       - name: Collect checksums
         run: cargo xtask checksums
 
+      # The release's text is the section CHANGELOG.md already has for this
+      # version, so the repository and the release cannot describe the same
+      # version differently. A tag with no section fails here rather than
+      # publishing a release that says nothing.
+      #
+      # Written outside `dist`, which is uploaded wholesale as assets.
+      - name: Build the release notes
+        run: >
+          cargo xtask release-notes
+          --tag ${{ github.event.inputs.tag || github.ref_name }}
+
       - uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          draft: true
-          generate_release_notes: true
+          body_path: target/release-notes.md
+          # Off, because it appends every commit since the previous tag — for
+          # the first release that is the entire history, which buries the
+          # notes rather than adding to them.
+          generate_release_notes: false
           files: dist/*
+          # A release missing the platform someone came for is worse than no
+          # release, so an empty upload is a failure rather than a quiet one.
+          fail_on_unmatched_files: true

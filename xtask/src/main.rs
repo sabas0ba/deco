@@ -18,6 +18,7 @@ mod commitlint;
 mod cross;
 mod dist;
 mod docs;
+mod release;
 
 use std::path::{Path, PathBuf};
 
@@ -75,6 +76,19 @@ enum Command {
         #[arg(long, default_value = "dist")]
         dir: PathBuf,
     },
+    /// Write a tag's release notes, taken from `CHANGELOG.md`.
+    ReleaseNotes {
+        /// The tag being released, e.g. `v0.1.0`.
+        #[arg(long)]
+        tag: String,
+        /// Where to write the notes.
+        ///
+        /// Deliberately not under `dist`: the release uploads `dist/*` as
+        /// assets, and the notes are the release's text rather than a file to
+        /// download.
+        #[arg(long, default_value = "target/release-notes.md")]
+        out: PathBuf,
+    },
     /// Run the extension host's own test suite.
     HostTest,
     /// Check the dependency graph against the supply-chain policy in deny.toml.
@@ -126,6 +140,7 @@ fn main() -> Result<()> {
             println!("{}", combined.display());
             Ok(())
         }
+        Command::ReleaseNotes { tag, out } => release::run(&root, &tag, &absolute(&root, &out)),
         Command::HostTest => host_test(&root),
         Command::Deny => deny(&root),
         Command::Docs { check } => {
@@ -516,6 +531,22 @@ mod tests {
                 wine_only,
             } => assert!(!check_only && wine_only),
             other => panic!("expected cross, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn release_notes_needs_a_tag_and_writes_beside_the_artifacts() {
+        // The tag is required rather than defaulted to the version in Cargo.toml:
+        // the workflow knows which tag it is building, and guessing would let a
+        // mistyped tag publish the wrong version's notes without complaint.
+        assert!(Cli::try_parse_from(["xtask", "release-notes"]).is_err());
+        match Cli::parse_from(["xtask", "release-notes", "--tag", "v0.1.0"]).command {
+            Command::ReleaseNotes { tag, out } => {
+                assert_eq!(tag, "v0.1.0");
+                // Not under `dist`, which is uploaded wholesale as assets.
+                assert_eq!(out, PathBuf::from("target/release-notes.md"));
+            }
+            other => panic!("expected release-notes, got {other:?}"),
         }
     }
 

@@ -303,7 +303,8 @@ command reported without ending the session.
 
 ## What an extension can reach, today
 
-Three things, all of which only touch state deco already owns and shows you:
+Commands, messages, the filesystem, and edits — all of which only touch state
+deco already owns and shows you:
 
 | Call | What happens |
 | --- | --- |
@@ -323,9 +324,10 @@ empty answer" cannot, and neither can the person reading its behaviour.
 A capability the manifest declared and nobody has ruled on **is asked about**. The
 extension waits — its request is held rather than answered — and the question names
 the extension and what it wants in words: *"Acme Tools wants to read files under
-/home/u/project/notes.txt"*, not a Rust value. The answer is remembered for the
-session, refusals included, because a refusal that is not remembered is a prompt
-loop and a prompt loop is how someone ends up allowing something to make it stop.
+/home/u/project/notes.txt"*, not a Rust value. The answer is remembered — written
+down, refusals included, as [below](#where-a-decision-lives) — because a refusal
+that is not remembered is a prompt loop, and a prompt loop is how someone ends up
+allowing something to make it stop.
 
 Only one question is open at a time. A second extension asking while one is on
 screen is refused, with that as the reason: a queue would mean answering about a
@@ -335,8 +337,9 @@ A decision can be taken back. **Extensions: Forget a Permission Decision** in th
 command palette lists what has been decided — *"Acme Tools: refused — read files
 under /home/u/project/notes.txt"* — and choosing one makes that extension ask
 again the next time it wants it. Without that, a `deny` chosen in a hurry means
-the extension quietly fails for the rest of the session, with nothing to undo it
-and no hint that a decision is the reason.
+the extension quietly fails from then on — and now that decisions are written
+down, "then on" outlives the session — with nothing to undo it and no hint that a
+decision is the reason.
 
 ### Where a decision lives
 
