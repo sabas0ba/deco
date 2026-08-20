@@ -58,3 +58,8 @@
   path: remote.md
   url: /remote.html
   blurb: SSH, container and WSL authorities — and which half exists
+
+- title: Roadmap
+  path: roadmap.md
+  url: /roadmap.html
+  blurb: What VS Code has that deco does not, and the plan for each

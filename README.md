@@ -38,6 +38,7 @@ running, and is published at
 | [Extensions](docs/extensions.md) | The capability model, and why an extension gets less power here |
 | [Remote](docs/remote.md) | SSH, container and WSL authorities, and the server that answers on the far end |
 | [Testing](docs/testing.md) | Unit tests, end-to-end scenarios, and what each one is for |
+| [Roadmap](docs/roadmap.md) | What VS Code has that deco does not, and the plan for each |
 
 The animations are generated from deco's own renderer by `cargo xtask docs`, and
 `cargo xtask docs --check` runs in CI — so a demonstration cannot show a feature
@@ -211,7 +212,10 @@ frontends depend on everything.
 ## What is not built yet
 
 Named plainly, because a list of what works is only useful next to one of what
-does not:
+does not. This list is the state of what exists; the larger features that do
+not exist *at all* yet — git, an integrated terminal, tasks, a test runner,
+self-update, debugging — each have a plan in the
+[Roadmap](docs/roadmap.md):
 
 - **Remote development opens, edits and saves a file, and nothing more.**
   `deco --remote ssh-remote+myhost --workspace /home/u/project src/main.rs` starts
