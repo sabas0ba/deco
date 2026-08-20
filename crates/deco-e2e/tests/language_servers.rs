@@ -362,25 +362,17 @@ fn a_document_the_server_never_saw_is_opened_when_it_becomes_current() {
 }
 
 #[test]
-fn a_refused_server_is_not_mentioned_when_the_users_own_one_starts() {
-    // A finding, pinned rather than asserted as good.
+fn a_refused_server_is_named_even_when_the_users_own_one_starts() {
+    // The ordinary case: somebody who has configured a server of their own for a
+    // language clones a repository that defines its own. Their server starts,
+    // correctly, and the repository's is declined, also correctly — and the
+    // decline still has to be said, because "move it into your own settings if
+    // you do want it" is a decision the user cannot make without being told.
     //
-    // The refusal in the scenario above is only heard because nothing else
-    // claimed the language. Here the user has a server of their own for the same
-    // language, which is the ordinary case: somebody who has configured
-    // `rust-analyzer` clones a repository that defines its own Rust server.
-    //
-    // Their server starts, correctly, and the repository's is declined, also
-    // correctly — and nothing is said about the decline at all. `Lsp::attach`
-    // collects refusals as it walks the candidates and reports them after the
-    // loop, but the loop `return`s as soon as a trusted candidate is started or
-    // fails to start. So the report is reached only when *every* candidate was
-    // refused, which is the case where the user has no server of their own.
-    //
-    // The comment beside the refusal says it is named "so the user can decide to
-    // move it into their own settings if they do want it" — which is the thing
-    // that does not happen. The security decision is right; only the disclosure
-    // is lost.
+    // `Lsp::attach` used to collect refusals as it walked the candidates and
+    // report them after the loop, and the loop `return`s as soon as a trusted
+    // candidate starts. So the report was reached only when *every* candidate had
+    // been refused — the one case where the user has no server of their own.
     let program = std::env::current_exe()
         .expect("this test binary")
         .parent()
@@ -402,13 +394,65 @@ fn a_refused_server_is_not_mentioned_when_the_users_own_one_starts() {
         .workspace_settings(&serde_json::to_string(&hostile).expect("serialisable"));
     let editor = started(&scenario);
 
-    // The user's own server did start, which is the half that works.
+    // The user's own server did start, which is the half that always worked.
     assert!(editor.driver().lsp().is_ready());
 
-    let said = format!("{:?} {:?}", editor.status(), editor.problems());
+    let problems = editor.problems();
     assert!(
-        !said.contains("hostile"),
-        "the refusal is reported now — this finding is fixed, and the scenario \
-         should become an assertion that it is said: {said}"
+        problems.iter().any(|problem| problem.contains("hostile")),
+        "the refusal should be named in the problem list: {problems:?}"
     );
+    // The problem list and not the status bar: `attach` runs on every tab switch
+    // and language change, and a row that came back each time would push aside
+    // whatever the editor was saying about the server that *is* running.
+    assert!(
+        !editor
+            .status()
+            .is_some_and(|status| status.contains("hostile")),
+        "the status bar belongs to the running server here: {:?}",
+        editor.status()
+    );
+}
+
+#[test]
+fn a_refusal_is_recorded_once_however_often_attach_runs() {
+    // `attach` is called on every tab switch and language change. A disclosure
+    // that appended each time would fill the problem list with copies of itself
+    // and make `--print-config` unreadable.
+    let program = std::env::current_exe()
+        .expect("this test binary")
+        .parent()
+        .and_then(|deps| deps.parent())
+        .expect("target/<profile>")
+        .join("examples")
+        .join(format!("language_server{}", std::env::consts::EXE_SUFFIX));
+    let definition = serde_json::json!({
+        "deco.lsp.servers": {
+            "hostile": {
+                "languages": ["markdown"],
+                "command": program.to_string_lossy(),
+                "args": ["full"],
+            },
+        },
+    });
+
+    let scenario = Scenario::new("lsp-refused-once")
+        .language_servers(true)
+        .user_settings(r#"{ "deco.lsp.enabled": true }"#)
+        .workspace_settings(&serde_json::to_string(&definition).expect("serialisable"))
+        .file("notes.md", "# hello\n")
+        .file("more.md", "# more\n");
+    let mut editor = scenario.launch(&["notes.md", "more.md"]);
+
+    for _ in 0..4 {
+        editor.press("ctrl+tab");
+        editor.wait(5);
+    }
+
+    let mentions = editor
+        .problems()
+        .iter()
+        .filter(|problem| problem.contains("hostile"))
+        .count();
+    assert_eq!(mentions, 1, "{:?}", editor.problems());
 }

@@ -748,19 +748,41 @@ impl Lsp {
             return;
         }
 
-        // Every candidate is tried in turn. Skipping to the next on a refusal
-        // rather than stopping is what keeps a workspace from disabling a
-        // language: a repository that defines its own server gets that
-        // definition declined, and the user's own server still starts.
-        let mut refused: Vec<String> = Vec::new();
-        for config in &candidates {
-            if config.trust == Trust::Workspace {
-                // Named, so the user can decide to move it into their own
-                // settings if they do want it.
-                refused.push(config.id.clone());
-                continue;
+        // Workspace-defined servers are set aside rather than tried. Setting them
+        // aside rather than stopping at the first one is what keeps a workspace
+        // from disabling a language: a repository that defines its own server
+        // gets that definition declined, and the user's own server still starts.
+        //
+        // They are also named here, before anything is started, rather than as a
+        // loop walks past them. A loop leaves the moment a server starts or fails
+        // to, so reporting afterwards meant the disclosure was reached only when
+        // every candidate had been refused — and the ordinary case, a user who
+        // has a server of their own, was told nothing at all.
+        let (refused, trusted): (Vec<_>, Vec<_>) = candidates
+            .iter()
+            .partition(|config| config.trust == Trust::Workspace);
+        let refused: Vec<&str> = refused.iter().map(|config| config.id.as_str()).collect();
+        if !refused.is_empty() {
+            // The problem list rather than the status bar: `attach` runs on every
+            // tab switch and language change, and a row that reappeared each time
+            // would push aside whatever else the editor had to say. The list is
+            // printed once before the frontend starts and shown by
+            // `--print-config`, which is where a user goes to ask why a server is
+            // not running.
+            let problem = format!(
+                "{} defined by this workspace and not started; move the definition into your own settings to run it",
+                refused.join(", ")
+            );
+            if !session.problems.contains(&problem) {
+                session.problems.push(problem);
             }
+        }
 
+        // The best candidate deco is willing to run, and only that one: the list
+        // is in preference order, so a definition that fails to start is a
+        // broken configuration to report rather than a reason to quietly run a
+        // different server than the one asked for.
+        if let Some(config) = trusted.first() {
             // Rewritten to run wherever this session's servers run, which for a
             // remote session means the same definition wrapped in the transport.
             let config = match self.location.resolve(config) {
@@ -783,7 +805,6 @@ impl Lsp {
                     self.language = Some(language.clone());
                     self.sync_open(session, &path, &language);
                     self.sync_context(session);
-                    return;
                 }
                 Err(error) => {
                     // First line only in the status bar: a startup failure
@@ -793,11 +814,13 @@ impl Lsp {
                     let first = summary.lines().next().unwrap_or("failed to start");
                     session.status = Some(format!("{}: {first}", config.id));
                     session.problems.push(summary);
-                    return;
                 }
             }
+            return;
         }
 
+        // Nothing started, so the status bar is free to say why — and with no
+        // server for this language there is nothing else competing for the row.
         if !refused.is_empty() {
             session.status = Some(format!(
                 "{} defined by this workspace and not started",
@@ -1496,9 +1519,17 @@ mod tests {
         lsp.attach(&mut s);
 
         assert!(!lsp.is_ready());
+        // Nothing else claims the language, so the status bar is free to carry it.
         let status = s.status.expect("the refusal must be visible");
         assert!(status.contains("theirs"), "{status}");
         assert!(status.contains("workspace"), "{status}");
+        // And the problem list has it either way, which is where it stays once
+        // the status bar has moved on.
+        assert!(
+            s.problems.iter().any(|problem| problem.contains("theirs")),
+            "{:?}",
+            s.problems
+        );
     }
 
     #[test]
@@ -1614,6 +1645,38 @@ mod tests {
         // which is what the status line says.
         let status = s.status.as_deref().expect("something must be reported");
         assert!(status.starts_with("mine:"), "{status}");
+        // And `theirs` is still named, even though the loop left before reaching
+        // the end. The refusal is the user's to act on: they cannot decide to
+        // move the definition into their own settings without being told it was
+        // declined.
+        assert!(
+            s.problems.iter().any(|problem| problem.contains("theirs")),
+            "{:?}",
+            s.problems
+        );
+    }
+
+    #[test]
+    fn a_refusal_is_recorded_once_however_often_attach_runs() {
+        // `attach` runs on every tab switch and language change, so a disclosure
+        // that appended each time would fill the problem list with copies.
+        let mut s = session(settings_with(
+            Scope::Workspace,
+            r#"{"deco.lsp.servers": {"theirs": {"languages": ["toml"], "command": "./taplo"}}}"#,
+        ));
+        let mut lsp = Lsp::new(&mut s, None);
+        for _ in 0..3 {
+            lsp.attach(&mut s);
+        }
+        assert_eq!(
+            s.problems
+                .iter()
+                .filter(|problem| problem.contains("theirs"))
+                .count(),
+            1,
+            "{:?}",
+            s.problems
+        );
     }
 
     #[test]

@@ -245,6 +245,11 @@ in it. The editor says which server it declined and why, and falls back to the
 next candidate for that language — so a repository cannot disable the feature by
 defining a server you then decline.
 
+The refusal is recorded in the problem list, which `deco --print-config` prints
+and `F8` walks, whether or not another server started for that language. It also
+reaches the status bar when nothing started, because with no server running there
+is nothing else the row could be saying.
+
 There is **no "I trust this repository" to say once.** VS Code has Workspace Trust;
 deco would have to remember the answer somewhere, and it
 [does not write configuration files](configuration.md#colour-themes) by design. So
