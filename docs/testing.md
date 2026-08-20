@@ -119,7 +119,7 @@ looking.
 ## What this found
 
 The suite was written against an editor whose parts were already well tested, and
-it still turned up four defects that no unit test could have seen, because each
+it still turned up five defects that no unit test could have seen, because each
 one is a disagreement between two components rather than a fault in either:
 
 - **Workspace settings were never loaded for a relative path on the command
@@ -138,6 +138,12 @@ one is a disagreement between two components rather than a fault in either:
   prompt's list now gives up the rows it does not have.
 - **A one-row terminal drew two rows.** The unit test for it said in a comment
   that the status bar wins, and then asserted that both were drawn.
+- **A seeded prompt appended to its seed instead of replacing it.** Save As and
+  Find in Files open with an answer already in them, and the one-line input had
+  no selection — so the next key appended: `ctrl+shift+f` on `fn` and typing
+  `println` searched for `fnprintln`. The unit tests for the input and for the
+  seeding each passed; only pressing the keys in order shows what they add up
+  to. Fixed by giving the field the one selection it needs, all of it.
 
 And one it found while the suite was being made to run on Windows, recorded but
 not changed here because it is a question about what the setting means rather

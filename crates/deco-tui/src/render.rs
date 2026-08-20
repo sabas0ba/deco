@@ -517,6 +517,7 @@ fn prompt_row(prompt: &deco_editor::Prompt, width: usize, palette: &Palette) -> 
         prompt.caret(),
         &right,
         width,
+        prompt.text_selected(),
         palette,
     )
 }
@@ -612,7 +613,16 @@ fn find_bar(session: &Session, width: usize, palette: &Palette) -> (Row, usize) 
         // visible, so the end of the text is as good a window as any.
         Field::Replace => find.query().chars().count(),
     };
-    input_row(PROMPT, find.query(), caret, &right, width, palette)
+    let selected = find.field() == Field::Query && find.text_selected();
+    input_row(
+        PROMPT,
+        find.query(),
+        caret,
+        &right,
+        width,
+        selected,
+        palette,
+    )
 }
 
 /// The replacement input, and the column its caret sits in.
@@ -627,16 +637,23 @@ fn replace_bar(session: &Session, width: usize, palette: &Palette) -> (Row, usiz
         Field::Replace => find.caret(),
         Field::Query => find.replace().chars().count(),
     };
-    input_row(PROMPT, find.replace(), caret, "", width, palette)
+    let selected = find.field() == Field::Replace && find.text_selected();
+    input_row(PROMPT, find.replace(), caret, "", width, selected, palette)
 }
 
 /// One row of the bar: a prompt, an editable field, and a right-aligned readout.
+///
+/// `selected` draws the field inverted, the way the chosen row of a list is
+/// drawn. A field whose next keystroke replaces everything in it has to look
+/// different from one that appends, or the difference is something the user only
+/// discovers by losing what they typed.
 fn input_row(
     prompt: &str,
     value: &str,
     caret: usize,
     right: &str,
     width: usize,
+    selected: bool,
     palette: &Palette,
 ) -> (Row, usize) {
     let room = width
@@ -658,14 +675,45 @@ fn input_row(
     let caret_column = (columns(prompt) + field.caret_column).min(width.saturating_sub(1));
     (
         Row {
-            spans: vec![Span {
-                text,
-                fg: palette.status_fg,
-                bg: palette.status_bg,
-            }],
+            spans: highlighted(&text, prompt, &field.text, selected, palette),
         },
         caret_column,
     )
+}
+
+/// The row's spans, with the field inverted when it is selected.
+///
+/// One span unless there is a selection to show, and one span again if
+/// truncation ate the field the offsets were computed from: a highlight drawn
+/// over the wrong bytes would be worse than none, and a narrow terminal is the
+/// case where it is least useful anyway.
+fn highlighted(
+    text: &str,
+    prompt: &str,
+    field: &str,
+    selected: bool,
+    palette: &Palette,
+) -> Vec<Span> {
+    let plain = |text: &str| Span {
+        text: text.to_owned(),
+        fg: palette.status_fg,
+        bg: palette.status_bg,
+    };
+    let end = prompt.len() + field.len();
+    if !selected || field.is_empty() || text.len() < end || !text.starts_with(prompt) {
+        return vec![plain(text)];
+    }
+    vec![
+        plain(prompt),
+        Span {
+            text: field.to_owned(),
+            // Inverted against the editor's own colours, as the chosen row of a
+            // list and the status bar are.
+            fg: palette.bg,
+            bg: palette.status_fg,
+        },
+        plain(&text[end..]),
+    ]
 }
 
 /// The fewest columns the query is given before the readouts beside it are

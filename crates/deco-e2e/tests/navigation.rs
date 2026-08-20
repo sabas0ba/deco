@@ -328,19 +328,12 @@ fn a_search_result_from_a_file_that_has_since_changed_still_opens_safely() {
 }
 
 #[test]
-fn a_seeded_prompt_can_only_be_cleared_by_cutting_it() {
-    // A finding, pinned rather than asserted as good.
-    //
+fn typing_over_a_seeded_prompt_replaces_the_seed() {
     // Save As and Find in Files open with text already in them — the current
-    // path, the word under the cursor — and VS Code selects that text, so the
-    // next key replaces it. Here there is no selection model in a one-line field,
-    // so the next key *appends*: `ctrl+shift+f` on the word `fn` and then typing
-    // `println` searches for `fnprintln`, which is in no file anywhere.
-    //
-    // `ctrl+a` is swallowed and does nothing. `ctrl+x` cuts the whole field, so
-    // there is a way out — it is just not one anybody would guess, and nothing on
-    // screen mentions it. The find bar, meanwhile, is not seeded at all, so the
-    // three prompts do not even agree with each other.
+    // path, the word under the cursor. VS Code selects that text so the next key
+    // replaces it; deco used to leave the caret at the end with no selection, so
+    // the next key *appended*: `ctrl+shift+f` on the word `fn` and then typing
+    // `println` searched for `fnprintln`, which is in no file anywhere.
     let scenario = Scenario::new("prompt-seed").file("a.txt", "cat\ndog\n");
     let mut editor = scenario.launch(&["a.txt"]);
 
@@ -351,25 +344,113 @@ fn a_seeded_prompt_can_only_be_cleared_by_cutting_it() {
         "cat",
         "seeded with the word under the cursor"
     );
+    assert!(seeded.text_selected(), "and all of it selected");
 
-    // Select-all does nothing at all.
-    editor.press("ctrl+a");
     editor.type_text("dog");
     assert_eq!(
         editor.session().prompt.as_ref().expect("a prompt").text(),
-        "catdog",
-        "typing after select-all appended instead of replacing"
+        "dog",
+        "the first thing typed replaces the seed"
     );
+}
 
-    // And the one key that does clear it.
-    editor.press("ctrl+x");
+#[test]
+fn select_all_in_a_prompt_makes_the_next_key_replace_it() {
+    // `ctrl+a` used to be swallowed as a no-op, so a field the user wanted to
+    // empty could only be cleared by `ctrl+x` — a way out nobody would guess and
+    // nothing on screen mentioned.
+    let scenario = Scenario::new("prompt-select-all").file("a.txt", "cat\ndog\n");
+    let mut editor = scenario.launch(&["a.txt"]);
+
+    editor.press("ctrl+shift+f");
+    editor.type_text("bird");
+    editor.press("ctrl+a");
+    editor.press("backspace");
     assert_eq!(
         editor.session().prompt.as_ref().expect("a prompt").text(),
-        ""
+        "",
+        "ctrl+a then backspace should empty the field"
     );
+}
 
-    // The find bar, by contrast, opens empty.
-    editor.press("escape");
+#[test]
+fn a_seeded_prompt_can_still_be_edited_rather_than_replaced() {
+    // The other half of a selection: a path you meant to *edit* survives the
+    // moment you move into it, which is what makes seeding save-as worth doing.
+    let scenario = Scenario::new("prompt-edit-seed").file("a.txt", "hello\n");
+    let mut editor = scenario.launch(&["a.txt"]);
+
+    editor.press("ctrl+shift+s");
+    let seeded = editor
+        .session()
+        .prompt
+        .as_ref()
+        .expect("a prompt")
+        .text()
+        .to_owned();
+    assert!(seeded.ends_with("a.txt"), "{seeded}");
+
+    // Move into it, then edit from the end: `a.txt` becomes `a.txt.bak`.
+    editor.press("end");
+    editor.type_text(".bak");
+    editor.press("enter");
+
+    assert_eq!(editor.on_disk("a.txt.bak"), "hello\n");
+}
+
+#[test]
+fn a_selected_seed_is_drawn_as_selected() {
+    // Or the difference between replacing and appending is something the user
+    // only discovers by losing what they typed.
+    let scenario = Scenario::new("prompt-seed-drawn").file("a.txt", "cat\ndog\n");
+    let mut editor = scenario.launch(&["a.txt"]);
+
+    editor.press("ctrl+shift+f");
+    let screen = editor.screen();
+    let row = screen
+        .row_of("Search:")
+        .unwrap_or_else(|| panic!("the prompt row{}", screen.dump()));
+    let line = screen.line(row);
+    let seed = line
+        .find("cat")
+        .unwrap_or_else(|| panic!("the seed on the prompt row{}", screen.dump()));
+
+    let label = screen.colours_at(row, 1).expect("the label's colours");
+    let seeded = screen.colours_at(row, seed).expect("the seed's colours");
+    assert_ne!(
+        seeded,
+        label,
+        "the selected seed should not look like the label beside it{}",
+        screen.dump()
+    );
+    // And once it is no longer selected, it looks like the rest of the row again.
+    editor.press("end");
+    let screen = editor.screen();
+    assert_eq!(
+        screen.colours_at(row, seed),
+        Some(label),
+        "a collapsed selection should not stay highlighted{}",
+        screen.dump()
+    );
+}
+
+#[test]
+fn the_find_bar_seeds_from_a_selection_and_selects_what_it_seeded() {
+    let scenario = Scenario::new("find-seed").file("a.txt", "cat\ndog\n");
+    let mut editor = scenario.launch(&["a.txt"]);
+
+    // Nothing selected: the bar opens empty, and there is nothing to replace.
     editor.press("ctrl+f");
     assert_eq!(editor.session().find.query(), "");
+    assert!(!editor.session().find.text_selected());
+    editor.press("escape");
+
+    // A word selected: it is seeded, and typing replaces it rather than
+    // appending — the same rule the prompts follow.
+    editor.press("ctrl+shift+right");
+    editor.press("ctrl+f");
+    assert_eq!(editor.session().find.query(), "cat");
+    assert!(editor.session().find.text_selected());
+    editor.type_text("dog");
+    assert_eq!(editor.session().find.query(), "dog");
 }

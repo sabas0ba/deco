@@ -4,16 +4,14 @@
   text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "DejaVu Sans Mono", monospace; white-space: pre }
   .s { opacity: 0 }
   .c { font-size: 13px; fill: #8a8a8a }
-  .s0 { animation: s0 10.45s step-end infinite }
-  @keyframes s0 { 0% { opacity: 1 } 21.053% { opacity: 0 } }
-  .s1 { animation: s1 10.45s step-end infinite }
-  @keyframes s1 { 0% { opacity: 0 } 21.053% { opacity: 1 } 47.368% { opacity: 0 } }
-  .s2 { animation: s2 10.45s step-end infinite }
-  @keyframes s2 { 0% { opacity: 0 } 47.368% { opacity: 1 } 52.632% { opacity: 0 } }
-  .s3 { animation: s3 10.45s step-end infinite }
-  @keyframes s3 { 0% { opacity: 0 } 52.632% { opacity: 1 } 68.421% { opacity: 0 } }
-  .s4 { animation: s4 10.45s step-end infinite }
-  @keyframes s4 { 0% { opacity: 0 } 68.421% { opacity: 1 } 100.000% { opacity: 0 } }
+  .s0 { animation: s0 9.90s step-end infinite }
+  @keyframes s0 { 0% { opacity: 1 } 22.222% { opacity: 0 } }
+  .s1 { animation: s1 9.90s step-end infinite }
+  @keyframes s1 { 0% { opacity: 0 } 22.222% { opacity: 1 } 50.000% { opacity: 0 } }
+  .s2 { animation: s2 9.90s step-end infinite }
+  @keyframes s2 { 0% { opacity: 0 } 50.000% { opacity: 1 } 66.667% { opacity: 0 } }
+  .s3 { animation: s3 9.90s step-end infinite }
+  @keyframes s3 { 0% { opacity: 0 } 66.667% { opacity: 1 } 100.000% { opacity: 0 } }
 </style>
 <rect width="670" height="316" rx="6" fill="#1f1f1f"/>
 <g class="s s0">
@@ -35,8 +33,11 @@
 <text x="12.0" y="45.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  2 </text>
 <text x="46.0" y="45.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">edition = &quot;2021&quot;                                                        </text>
 <text x="12.0" y="64.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  3 </text>
-<rect x="12.0" y="240.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="254.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Save as: /demo/notes.txt                                                   </text>
+<rect x="12.0" y="240.0" width="85.0" height="19.0" fill="#181818"/>
+<text x="12.0" y="254.0" font-size="14px" fill="#cccccc" textLength="85.0" lengthAdjust="spacingAndGlyphs"> Save as: </text>
+<rect x="97.0" y="240.0" width="127.5" height="19.0" fill="#cccccc"/>
+<text x="97.0" y="254.0" font-size="14px" fill="#1f1f1f" textLength="127.5" lengthAdjust="spacingAndGlyphs">/demo/notes.txt</text>
+<rect x="224.5" y="240.0" width="433.5" height="19.0" fill="#181818"/>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
 <text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> notes.txt                               plain text  Spaces: 4  Ln 1, Col 1 </text>
 <rect x="224.5" y="240.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
@@ -50,27 +51,13 @@
 <text x="46.0" y="45.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">edition = &quot;2021&quot;                                                        </text>
 <text x="12.0" y="64.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  3 </text>
 <rect x="12.0" y="240.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="254.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Save as:                                                                   </text>
-<rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> notes.txt                               plain text  Spaces: 4  Ln 1, Col 1 </text>
-<rect x="97.0" y="240.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
-<text class="c" x="12.0" y="296.0">ctrl+x</text>
-</g>
-<g class="s s3">
-<rect width="670" height="316" rx="6" fill="#1f1f1f"/>
-<text x="12.0" y="26.0" font-size="14px" fill="#cccccc" textLength="34.0" lengthAdjust="spacingAndGlyphs">  1 </text>
-<text x="46.0" y="26.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">name = &quot;deco&quot;                                                           </text>
-<text x="12.0" y="45.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  2 </text>
-<text x="46.0" y="45.0" font-size="14px" fill="#cccccc" textLength="612.0" lengthAdjust="spacingAndGlyphs">edition = &quot;2021&quot;                                                        </text>
-<text x="12.0" y="64.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  3 </text>
-<rect x="12.0" y="240.0" width="646.0" height="19.0" fill="#181818"/>
 <text x="12.0" y="254.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Save as: /demo/Cargo.toml                                                  </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
 <text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> notes.txt                               plain text  Spaces: 4  Ln 1, Col 1 </text>
 <rect x="233.0" y="240.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>
 <text class="c" x="12.0" y="296.0">type “/demo/Cargo.toml”</text>
 </g>
-<g class="s s4">
+<g class="s s3">
 <rect width="670" height="316" rx="6" fill="#1f1f1f"/>
 <text x="12.0" y="26.0" font-size="14px" fill="#cccccc" textLength="34.0" lengthAdjust="spacingAndGlyphs">  1 </text>
 <text x="46.0" y="26.0" font-size="14px" fill="#cccccc" textLength="59.5" lengthAdjust="spacingAndGlyphs">name = </text>

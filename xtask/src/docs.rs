@@ -989,9 +989,8 @@ fn save_as() -> String {
         .capture("notes.txt — plain, and named as such", 4);
     take.press_and_hold(&["ctrl+shift+s"], 5);
 
-    // `ctrl+x` clears a one-line input, which is how the seed is replaced rather
-    // than appended to.
-    take.press(&["ctrl+x"]);
+    // The seed opens selected, so typing replaces it — which is what makes
+    // seeding the field with the current path worth doing.
     take.type_text("/demo/Cargo.toml");
 
     // What the frontend does with `Outcome::SaveAs`: resolve the path, write it,
@@ -1079,11 +1078,10 @@ fn search_in_files() -> String {
     let mut take = Take::new("main.rs", SAMPLE);
     take.at(1, 9)
         .capture("the caret is on `total`", 3)
-        // The field is seeded from the caret, and the seed is only a seed: `ctrl+x`
-        // clears it, so a search for something the cursor is nowhere near takes one
-        // keystroke rather than being impossible.
+        // The field is seeded from the caret, and the seed is only a seed: it
+        // opens selected, so searching for something the cursor is nowhere near
+        // is just typing it.
         .press_and_hold(&["ctrl+shift+f"], 5)
-        .press_and_hold(&["ctrl+x"], 3)
         .type_text("amount")
         // The prompt has one line and no room to draw the options, so the toggle
         // reports them. They are this search's own, not the find bar's.
