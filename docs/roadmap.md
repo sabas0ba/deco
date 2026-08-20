@@ -28,7 +28,7 @@ What VS Code has and deco does not, grouped by how it blocks:
 | Task runner (`tasks.json`, `ctrl+shift+b`) | the terminal, for somewhere to run |
 | Test runner | the task runner, and later the extension host |
 | Self-update | nothing — `cargo xtask dist` already builds what it would install |
-| AI features — inline completions, chat (`chat.disableAIFeatures`) | the extension host, ghost text, and the panel; the off switch depends on nothing and comes first |
+| AI features — inline completions, chat, agent mode, MCP (`chat.disableAIFeatures`) | the extension host, ghost text, and the panel; agents additionally on `WorkspaceEdit` and the terminal; the off switch depends on nothing and comes first |
 | Debugging (DAP) | the panel; by far the largest item here |
 | `WorkspaceEdit` — one undoable edit across several files | nothing; rename, code actions and replace-across-files all wait on it |
 | Regular-expression search | nothing — `deco-core::search` is deliberately literal so far |
@@ -313,6 +313,61 @@ serve both honestly because of two decisions already made: AI arrives as
    rest.
 4. A chat view as a sidebar/panel tenant, last — it is the largest surface and
    the least of the daily value.
+
+### Agent integration
+
+Completions and chat are the small half of what "AI features" now means. The
+larger half is **agents**: a model that plans, edits several files, runs
+commands and iterates — VS Code's agent mode (`chat.agent.enabled`), its MCP
+support (Model Context Protocol servers offering tools to the model), and the
+external CLI agents people run beside their editor. This is where deco's
+architecture stops being a constraint on AI and starts being the point, so it
+is planned as its own stage rather than left implied by "chat".
+
+- **An agent is the capability model's hardest customer, and its best
+  argument.** In VS Code an agent's tool calls run with the user's full
+  privileges and safety is a per-call confirmation dialog. Under deco every
+  tool an agent reaches for is already a brokered capability: file access is
+  scoped and checked on resolved paths, running a program is a declared
+  capability decided by policy, and the network is a named host. Nothing new
+  has to be invented to make an agent safe — the broker does not care whether
+  a `writeFile` was asked for by a keystroke or by a model. What agents add
+  is *volume*, which the permission UX must absorb: session-scoped grants
+  ("this agent may edit `src/` until this chat ends") rather than a dialog
+  per call, and an audit trail of what was touched.
+- **An agent's edits arrive as a `WorkspaceEdit`.** The multi-file, undoable
+  edit that rename needs is exactly the unit an agent's changes should land
+  as: applied atomically, reviewable as a diff before or after, and undone as
+  **one step** — `ctrl+z` as the recovery from a bad agent turn. This is the
+  strongest reason `WorkspaceEdit` is a foundation and not a feature.
+- **MCP fits the broker better than it fits VS Code.** An MCP server is a
+  local process speaking JSON-RPC over stdio — structurally what `deco-lsp`
+  already supervises. `mcp.json` names the servers; starting one is a
+  `process` capability, and each *tool* the server offers becomes a named,
+  individually grantable capability rather than a blanket "the model may use
+  tools". Deny-by-default then means a tool the user never approved is never
+  offered to the model at all.
+- **External CLI agents come through the terminal, not an API.** People
+  already run Claude Code and its peers beside their editor. The integrated
+  terminal is the honest first integration: the agent runs there, and the
+  editor's job is to notice what it changed — files reloading cleanly (watch
+  for external modification, which unsaved-conflict handling needs anyway)
+  and the git gutter showing the agent's diff. Deeper integration — the
+  agent driving the editor — is the same mediated surface extensions get, and
+  nothing more.
+
+**Steps (agents).**
+
+1. Session-scoped grants and an activity log in the broker — the permission
+   UX for high-volume callers, built before any agent uses it.
+2. Agent edits as `WorkspaceEdit`s: atomic apply, one-step undo, a diff view
+   of what a turn changed.
+3. MCP: supervise `mcp.json` servers with the `deco-lsp` supervisor pattern,
+   surface each tool as a grantable capability.
+4. Terminal-first support for external CLI agents: external-change reload and
+   gutter diffs are the integration.
+5. Agent mode in the chat view, last, gated by `chat.agent.enabled` and
+   inside `chat.disableAIFeatures` like everything else in this chapter.
 
 ## Debugging
 
