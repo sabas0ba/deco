@@ -20,6 +20,14 @@ Paths are relative to the workspace the server was given. Without `--workspace`
 the server serves wherever the transport lands, which for SSH is the account's
 home directory.
 
+Every path in a remote session belongs to that one workspace, including the one
+you type into **Save As**: it is taken as the far end spells it and the copy is
+written there, not onto this machine. `~` and this machine's working directory
+do not come into it, and a name that points outside what the server serves is
+refused by name rather than written somewhere else. The workspace is one place;
+half of one would make every path ambiguous. **Revert** reads over the same
+connection, for the same reason.
+
 ### What is different in a remote session
 
 One thing is turned off rather than left to do the wrong thing, and it says so
