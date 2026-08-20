@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Tag to build (must already exist)
+        description: Tag to release, e.g. v0.1.0 — created here if it does not exist
         required: true
 
 permissions:
@@ -27,8 +27,58 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
+  # Cutting a release needs a tag, and pushing one needs a checkout, a terminal
+  # and push rights. This job means it can also be done from the Actions tab:
+  # run the workflow against `main`, type the tag, and it is created here at the
+  # commit the run was dispatched from.
+  #
+  # It costs a job — about five seconds of runner, one minute of billing — on
+  # every release. Releases are rare and a release is exactly when a mistake is
+  # expensive, so the trade is worth making here and would not be elsewhere.
+  #
+  # A tag created with GITHUB_TOKEN does not start another workflow run, which
+  # is what we want: this run goes on to build it rather than a second one
+  # racing it.
+  tag:
+    name: Ensure the tag exists
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create the tag if this run was dispatched for one that is not there
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # `v*` is what the push trigger listens for, and `cargo xtask
+          # release-notes` reads the version out of the tag. A name that is
+          # neither is refused by name rather than released as something odd.
+          case "$TAG" in
+            v[0-9]*) ;;
+            *) echo "::error::'$TAG' is not a version tag — expected something like v0.1.0"; exit 1 ;;
+          esac
+
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            echo "$TAG already exists; releasing that rather than moving it."
+            exit 0
+          fi
+
+          echo "Creating $TAG at $SHA."
+          # Annotated rather than lightweight, so the tag carries who made it,
+          # when, and what it is — the same as `git tag -a` from a checkout.
+          object=$(gh api "repos/$GITHUB_REPOSITORY/git/tags" \
+            -f "tag=$TAG" -f "message=deco ${TAG#v}" \
+            -f "object=$SHA" -f "type=commit" --jq .sha)
+          gh api "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f "ref=refs/tags/$TAG" -f "sha=$object" >/dev/null
+          echo "$TAG created."
+
   build:
     name: Build ${{ matrix.target }}
+    needs: tag
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
