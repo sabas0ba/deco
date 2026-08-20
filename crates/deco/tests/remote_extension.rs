@@ -245,6 +245,107 @@ module.exports = {{ activate }};
     world.root.join("inspector")
 }
 
+/// An extension that creates, moves and deletes under the workspace.
+fn editor_extension(world: &World) -> PathBuf {
+    let installed = world.root.join("writer/acme.writer-1.0.0");
+    std::fs::create_dir_all(&installed).expect("a directory");
+    std::fs::write(
+        installed.join("package.json"),
+        r#"{
+  "name": "writer",
+  "publisher": "acme",
+  "displayName": "Acme Writer",
+  "main": "./extension.js",
+  "contributes": { "commands": [{ "command": "acme.write", "title": "Write" }] },
+  "deco": {
+    "capabilities": [
+      { "capability": "writeFile", "scope": { "kind": "workspace" } }
+    ]
+  }
+}"#,
+    )
+    .expect("a manifest");
+    std::fs::write(
+        installed.join("extension.js"),
+        format!(
+            r#"'use strict';
+const vscode = require('vscode');
+function activate(context) {{
+  const at = (name) => {workspace:?} + '/' + name;
+  context.subscriptions.push(
+    vscode.commands.registerCommand('acme.write', async () => {{
+      try {{
+        await vscode.workspace.fs.createDirectory(at('made/deeper'));
+        await vscode.workspace.fs.writeFile(at('made/deeper/one.txt'), 'written by an extension');
+        await vscode.workspace.fs.rename(at('made/deeper/one.txt'), at('made/two.txt'));
+        await vscode.workspace.fs.copy(at('made/two.txt'), at('made/three.txt'));
+        await vscode.workspace.fs.delete(at('made/three.txt'));
+        return 'done';
+      }} catch (error) {{
+        return `refused: ${{error && error.message}}`;
+      }}
+    }}),
+  );
+}}
+module.exports = {{ activate }};
+"#,
+            workspace = world.workspace.display().to_string()
+        ),
+    )
+    .expect("an extension");
+    world.root.join("writer")
+}
+
+#[test]
+#[ignore = "needs Node; run by `cargo xtask host-test`"]
+fn an_extension_creates_moves_and_deletes_on_the_far_end() {
+    // The write side, through a real host and a real server. What makes this
+    // checkable is that the assertions are about the *server's* workspace on
+    // disk: nothing here writes to it except through the connection.
+    let world = world("writes");
+    let extensions = editor_extension(&world);
+    point_at_the_host();
+
+    let mut client = serve(&world.workspace);
+    let mut session = session();
+    let catalogue = discover(std::slice::from_ref(&extensions));
+    session.frontend_commands.extend(rows(&catalogue));
+    let mut hosts = Hosts::rooted(catalogue, vec![world.workspace.clone()]);
+    assert!(hosts.run_command(&mut session, "acme.write"));
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < deadline {
+        hosts.poll(&mut session, &mut Files::Remote(&mut client));
+        if session
+            .status
+            .as_deref()
+            .is_some_and(|said| said.contains("done") || said.contains("refused"))
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let said = session.status.clone().unwrap_or_default();
+    assert!(
+        said.contains("done"),
+        "{said}\nlog:\n{}",
+        hosts.log().collect::<Vec<_>>().join("\n")
+    );
+    hosts.shutdown();
+
+    // Created, then renamed, then copied, then the copy deleted — all of it on
+    // the machine the server is serving.
+    assert!(world.workspace.join("made/deeper").is_dir());
+    assert!(!world.workspace.join("made/deeper/one.txt").exists());
+    assert_eq!(
+        std::fs::read_to_string(world.workspace.join("made/two.txt")).expect("the moved file"),
+        "written by an extension"
+    );
+    assert!(!world.workspace.join("made/three.txt").exists());
+
+    let _ = std::fs::remove_dir_all(&world.root);
+}
+
 #[test]
 #[ignore = "needs Node; run by `cargo xtask host-test`"]
 fn an_extension_stats_and_lists_the_far_end_rather_than_this_machine() {

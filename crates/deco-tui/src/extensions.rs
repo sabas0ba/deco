@@ -224,6 +224,57 @@ impl Files<'_> {
         }
     }
 
+    /// Creates a directory, and any parent it needs.
+    fn create_directory(&mut self, path: &str) -> Result<(), String> {
+        match self {
+            Self::Here => std::fs::create_dir_all(path).map_err(|error| error.to_string()),
+            Self::Remote(client) => client
+                .create_directory(path)
+                .map_err(|error| error.to_string()),
+        }
+    }
+
+    /// Removes a path, recursively only when the caller said so.
+    fn delete(&mut self, path: &str, recursive: bool) -> Result<(), String> {
+        match self {
+            Self::Here => {
+                let metadata =
+                    std::fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+                // A link is removed as a link. Following one would delete
+                // something the extension was never granted, which is the same
+                // reason a listing reports links as links.
+                if metadata.is_dir() && !metadata.is_symlink() {
+                    if recursive {
+                        std::fs::remove_dir_all(path)
+                    } else {
+                        std::fs::remove_dir(path)
+                    }
+                } else {
+                    std::fs::remove_file(path)
+                }
+                .map_err(|error| error.to_string())
+            }
+            Self::Remote(client) => client
+                .delete(path, recursive)
+                .map_err(|error| error.to_string()),
+        }
+    }
+
+    /// Moves or copies one path to another.
+    fn transfer(&mut self, source: &str, target: &str, copy: bool) -> Result<(), String> {
+        match self {
+            Self::Here => if copy {
+                std::fs::copy(source, target).map(|_| ())
+            } else {
+                std::fs::rename(source, target)
+            }
+            .map_err(|error| error.to_string()),
+            Self::Remote(client) => client
+                .transfer(source, target, copy)
+                .map_err(|error| error.to_string()),
+        }
+    }
+
     /// What is known about `path` without reading it, in VS Code's `FileStat`
     /// shape.
     fn stat(&mut self, path: &str) -> Result<serde_json::Value, String> {
@@ -279,6 +330,10 @@ impl Files<'_> {
 
 /// What an extension is asking for, in the words a person has to decide about.
 ///
+/// `method` sharpens a capability that covers several operations: a stored
+/// decision is described with an empty one, and gets the capability's full
+/// breadth — which is right, because that is what was remembered.
+///
 /// The capability's own `Debug` names its variant and its bound, which is exactly
 /// the wrong register for a prompt: `ReadFile { scope: Workspace }` is a Rust
 /// value, not a question.
@@ -292,7 +347,17 @@ fn describe(capability: &deco_ext::capability::Capability, method: &str) -> Stri
     };
     match capability {
         Capability::ReadFile { scope } => format!("read files {}", where_(scope)),
-        Capability::WriteFile { scope } => format!("change files {}", where_(scope)),
+        // The method, not just the capability: `WriteFile` covers writing,
+        // creating, deleting and moving, and "change files under X" is a fair
+        // description of a save and an understatement of a delete. What a person
+        // is being asked to allow is the thing that is about to happen.
+        Capability::WriteFile { scope } => match method {
+            "fs.delete" => format!("delete files {}", where_(scope)),
+            "fs.rename" => format!("move files {}", where_(scope)),
+            "fs.copy" => format!("copy files {}", where_(scope)),
+            "fs.createDirectory" => format!("create directories {}", where_(scope)),
+            _ => format!("change files {}", where_(scope)),
+        },
         Capability::Network { host } => format!("connect to {host}"),
         Capability::Process { program } => format!("run {program}"),
         Capability::Env { name } => format!("read the environment variable {name}"),
@@ -1198,6 +1263,95 @@ impl Hosts {
                         request.id,
                         ErrorCode::InvalidParams,
                         format!("could not list {path}: {reason}"),
+                    ),
+                }
+            }
+            "fs.createDirectory" => {
+                let path = text("path");
+                if path.is_empty() {
+                    return Response::err(
+                        request.id,
+                        ErrorCode::InvalidParams,
+                        "a directory needs a path",
+                    );
+                }
+                match files.create_directory(&path) {
+                    Ok(()) => Response::ok(request.id, serde_json::Value::Null),
+                    Err(reason) => Response::err(
+                        request.id,
+                        ErrorCode::InvalidParams,
+                        format!("could not create {path}: {reason}"),
+                    ),
+                }
+            }
+            "fs.delete" => {
+                let path = text("path");
+                if path.is_empty() {
+                    return Response::err(
+                        request.id,
+                        ErrorCode::InvalidParams,
+                        "a delete needs a path",
+                    );
+                }
+                let options = &request.params["options"];
+                // deco has no trash. Refused rather than deleted permanently:
+                // an extension that asked for something recoverable and got an
+                // unrecoverable deletion instead is the worst outcome available
+                // here, and it would look like success.
+                if options["useTrash"].as_bool() == Some(true) {
+                    return Response::err(
+                        request.id,
+                        ErrorCode::InvalidParams,
+                        "deco has no trash, and will not delete permanently instead",
+                    );
+                }
+                match files.delete(&path, options["recursive"].as_bool().unwrap_or(false)) {
+                    Ok(()) => Response::ok(request.id, serde_json::Value::Null),
+                    Err(reason) => Response::err(
+                        request.id,
+                        ErrorCode::InvalidParams,
+                        format!("could not delete {path}: {reason}"),
+                    ),
+                }
+            }
+            "fs.rename" | "fs.copy" => {
+                let source = text("source");
+                let target = text("target");
+                if source.is_empty() || target.is_empty() {
+                    return Response::err(
+                        request.id,
+                        ErrorCode::InvalidParams,
+                        "a move needs a source and a target",
+                    );
+                }
+                // The broker checked the *target*, because that is the one
+                // capability a request can carry. The source is a write too —
+                // moving a file out of a directory changes that directory — so it
+                // is checked here, and has to be already covered: a second
+                // question cannot be asked while this request is the one being
+                // held for the first.
+                let wanted = deco_ext::capability::Capability::WriteFile {
+                    scope: deco_ext::capability::PathScope::Subtree {
+                        path: PathBuf::from(&source),
+                    },
+                };
+                if running.broker.check(&wanted) != deco_ext::capability::CheckResult::Allowed {
+                    notes.push(format!(
+                        "{label}: refused {} — {source} is not covered",
+                        request.method
+                    ));
+                    return Response::err(
+                        request.id,
+                        ErrorCode::PermissionDenied,
+                        format!("{source} is outside every granted scope"),
+                    );
+                }
+                match files.transfer(&source, &target, request.method == "fs.copy") {
+                    Ok(()) => Response::ok(request.id, serde_json::Value::Null),
+                    Err(reason) => Response::err(
+                        request.id,
+                        ErrorCode::InvalidParams,
+                        format!("could not move {source} to {target}: {reason}"),
                     ),
                 }
             }

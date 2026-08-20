@@ -312,6 +312,7 @@ Three things, all of which only touch state deco already owns and shows you:
 | `log.append` | Kept in deco's own record of what extensions did |
 | `fs.readFile` and `fs.writeFile` | The file, read or written where the session's files are — over the connection in a remote session |
 | `fs.stat` and `fs.readDirectory` | What something is and what is directly in it, from the same place, in VS Code's own `FileStat` and `[name, type]` shapes |
+| `fs.createDirectory`, `fs.delete`, `fs.rename`, `fs.copy` | The change, made where the session's files are |
 
 **Everything else is refused by name.** An extension that asks to spawn a process
 gets an error saying deco does not implement it yet — not a fake exit code, not an
@@ -361,14 +362,32 @@ which extensions refuse to start.
 
 ## What is still not connected
 
-The table above is the whole mediated surface. `workspace.fs` is **read-only**:
-nothing creates, deletes, renames or copies yet, and `workspace.applyEdit` is not
-wired — each of those is a *write* through a path the broker checks, which is a
-larger thing to get right than a read. No activation on opening a file or on
-startup. No editor state, no quick pick, no tree views, no webviews, no debug
-adapters. `process`, `net`, `env`, `secrets` and `openExternal` are declared and
-brokered and then refused by name at the last step, because nothing implements
-them.
+The table above is the whole mediated surface. `workspace.applyEdit` is not wired,
+which is the one `workspace.fs` gap left: an edit applied through the editor is a
+write that also has to reach the open document, and neither half is the other's.
+No activation on opening a file or on startup. No editor state, no quick pick, no
+tree views, no webviews, no debug adapters. `process`, `net`, `env`, `secrets` and
+`openExternal` are declared and brokered and then refused by name at the last
+step, because nothing implements them.
+
+### What a write refuses
+
+- **`useTrash` is refused, not ignored.** deco has no trash, and an extension
+  that asked for something recoverable and got an unrecoverable deletion instead
+  would have no way to tell.
+- **A directory with anything in it needs `recursive`**, which is the caller's own
+  word. Nothing here supplies it for them, because that is the difference between
+  "delete this" and "delete everything under this".
+- **A rename or copy is checked at both ends.** The broker checks the target,
+  which is the one capability a request can carry; the source is a write too —
+  moving a file out of a directory changes that directory — so deco checks it as
+  well, and it has to be already covered rather than newly asked about.
+- **A link is removed as a link.** Deleting resolves the path only to check where
+  it is, then removes the name that was given: resolving *and then deleting* would
+  remove the file a link points at and leave the link, which is the wrong file and
+  says nothing about it. On the remote a link pointing out of the workspace cannot
+  be deleted through at all — every path there is confined after being
+  canonicalised, and one exception is how a rule stops being one.
 
 A symbolic link is reported as a link rather than as what it points at — 65 for a
 link to a file, in VS Code's numbering — because following one is how a listing
