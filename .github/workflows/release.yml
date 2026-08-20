@@ -97,7 +97,13 @@ jobs:
     permissions:
       contents: write
     steps:
+      # The same ref the build job used. The release's notes are read out of this
+      # checkout's CHANGELOG.md, so a `workflow_dispatch` rebuild of an older tag
+      # has to stand on that tag rather than on the default branch — otherwise it
+      # would publish the newest version's notes under an old tag's name.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
           toolchain: stable
