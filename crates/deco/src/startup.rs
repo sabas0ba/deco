@@ -63,7 +63,7 @@ impl Boot {
 /// Configuration failures land in `session.problems` rather than stopping
 /// startup: a `settings.json` with a typo in it is a reason to say so, not a
 /// reason to refuse to open the file somebody asked for.
-pub fn session(cli: &Cli, boot: &Boot) -> Session {
+pub fn session(cli: &Cli, boot: &Boot, remote_settings: Option<&str>) -> Session {
     // The first file names the workspace; a mixed invocation has to pick one,
     // and the first is the one the user led with.
     //
@@ -82,13 +82,21 @@ pub fn session(cli: &Cli, boot: &Boot) -> Session {
         .as_deref()
         .and_then(crate::config::workspace_root_for);
     let loaded = if cli.clean {
+        // `--clean` means no configuration, and the remote's is configuration:
+        // a flag for "start with nothing" that still adopted another machine's
+        // settings would not be the flag it says it is.
         crate::config::LoadedConfig {
             settings: deco_config::Settings::with_defaults(),
             keybindings: None,
             problems: Vec::new(),
         }
     } else {
-        crate::config::load(&boot.env, boot.layout, workspace.as_deref())
+        crate::config::load(
+            &boot.env,
+            boot.layout,
+            workspace.as_deref(),
+            remote_settings,
+        )
     };
 
     let mut session = Session::new(

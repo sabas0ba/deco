@@ -166,7 +166,7 @@ thin painter.
 | Command identifiers | Yes, for implemented commands |
 | Theme extensions from the marketplace | Yes — declarative, no host process; `ctrl+k ctrl+t` lists them |
 | Code extensions (`main`) | Commands run: the palette lists them, choosing one starts a sandboxed host. The surface an extension can reach is registering a command, the message and status-bar calls, the `workspace.fs` family, and `workspace.applyEdit` — everything else is refused by name, see [Extensions](docs/extensions.md#what-an-extension-can-reach-today) |
-| Remote SSH / containers / WSL | Open, edit and save a file on the far end with `--remote ssh-remote+host`, `--remote-install` puts deco there if it has none, `--forward 3000` reaches a port on it, language servers run over there, `ctrl+shift+f` searches the far end, and an extension's file access goes through the connection. Extension hosts still run locally — see [Remote](docs/remote.md) |
+| Remote SSH / containers / WSL | Open, edit and save a file on the far end with `--remote ssh-remote+host`, `--remote-install` puts deco there if it has none, `--forward 3000` reaches a port on it, language servers run over there, `ctrl+shift+f` searches the far end, an extension's file access goes through the connection, and the machine's own `machine-settings.json` layers in as `remote` scope. Extension hosts still run locally — see [Remote](docs/remote.md) |
 | Language servers (LSP) | Diagnostics, hover, go-to-definition, references, completion, symbols, semantic tokens, formatting |
 | Find and replace (`ctrl+f`, `ctrl+h`, `F3`, `ctrl+d`, `ctrl+shift+l`) | Literal search only — no regular expressions |
 | Search in files (`ctrl+shift+f`) | Yes — bounded and synchronous, and it says so |
@@ -300,7 +300,9 @@ self-update, debugging — each have a plan in the
   Language servers run on the remote, from the same `deco.lsp.servers`
   definitions with the far end's paths on the wire, and project search runs on
   the machine holding the files, and an extension's `readFile`/`writeFile` are
-  answered through the connection rather than from this machine's disk. What is
+  answered through the connection rather than from this machine's disk. The
+  remote's own `machine-settings.json` becomes the `remote` settings layer —
+  untrusted, so a language server it names is confirmed before it runs. What is
   missing: the extension *host* still runs locally, so a capability to run a
   program runs it here — which the docs say rather than leaving to be discovered. Provisioning a *different* platform
   is refused rather than guessed at, because it needs somewhere deco is willing

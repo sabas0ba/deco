@@ -48,3 +48,7 @@ deco-e2e = { path = "../deco-e2e", version = "0.1.0" }
 # For the remote-extension scenario, which sets the sandbox key by name rather
 # than by copying its spelling into a string literal.
 deco-ext.workspace = true
+# For the remote-settings scenarios, which check the *trust* a server definition
+# from the remote layer carries — the thing that decides whether connecting to a
+# machine is enough to run a program it names.
+deco-lsp.workspace = true

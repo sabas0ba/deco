@@ -40,7 +40,7 @@ fn main() -> Result<()> {
     // keybindings, and reading a `settings.json` on the remote to decide how to
     // answer `fs.read` would be an authority nobody asked it to have.
     if cli.server {
-        return serve(cli.workspace.as_deref());
+        return serve(cli.workspace.as_deref(), cli.machine_settings.as_deref());
     }
     // Likewise: this process is one end of a socket, not an editor.
     if let Some(target) = cli.forward_to.as_deref() {
@@ -48,17 +48,28 @@ fn main() -> Result<()> {
     }
 
     let boot = Boot::from_process();
-    let mut session = startup::session(&cli, &boot);
 
     // A remote session: the files are on the other machine, so they are fetched
     // rather than read, and the same connection is what saves them later.
-    let (mut remote, server_path) = match cli.remote.as_deref() {
+    //
+    // Before the session rather than after it, which it did not used to be. The
+    // connection carries the remote's own machine settings, and those are a
+    // *layer* — they have to be in place before the theme is resolved and the
+    // keymap is built, or the editor would come up wearing one configuration
+    // and then be holding another.
+    let mut connecting = Vec::new();
+    let (mut remote, server_path, remote_settings) = match cli.remote.as_deref() {
         Some(authority) => {
-            let (client, path) = connect(authority, &cli, &mut session)?;
-            (Some(client), Some(path))
+            let (client, path, settings) = connect(authority, &cli, &mut connecting)?;
+            (Some(client), Some(path), settings)
         }
-        None => (None, None),
+        None => (None, None, None),
     };
+
+    let mut session = startup::session(&cli, &boot, remote_settings.as_deref());
+    // After the configuration's own problems, so the list reads in the order
+    // things happened.
+    session.problems.extend(connecting);
     // Held for as long as the editor runs: dropping these stops the listeners,
     // so binding them to the session rather than to the process is what makes a
     // forward end when the session does.
@@ -123,8 +134,8 @@ fn run_gui(_session: &mut Session) -> Result<()> {
 fn connect(
     authority: &str,
     cli: &cli::Cli,
-    session: &mut Session,
-) -> Result<(deco_tui::RemoteSession, String)> {
+    problems: &mut Vec<String>,
+) -> Result<(deco_tui::RemoteSession, String, Option<String>)> {
     let authority = deco_remote::Authority::parse(authority)
         .with_context(|| format!("`{authority}` is not a remote deco understands"))?;
     let workspace = cli
@@ -142,7 +153,7 @@ fn connect(
     // decision described in `deco_remote::install`.
     let server_path = if cli.remote_install {
         let installed = provision(&authority, cli, options.clone())?;
-        session.problems.push(match &installed {
+        problems.push(match &installed {
             deco_remote::Installed::AlreadyThere { path, version } => {
                 format!("remote session: {version} was already at {path}")
             }
@@ -183,10 +194,36 @@ fn connect(
     })?;
     // Worth saying once: it names the machine's own idea of where it is, which is
     // the thing a mistyped `--workspace` gets wrong invisibly.
-    session.problems.push(format!(
+    problems.push(format!(
         "remote session: {} is serving {}",
         command.program, hello.workspace
     ));
+
+    // The remote's own settings, which become the `remote` layer. Asked for
+    // only when the handshake says the server has the method: a server that
+    // predates it would refuse, and a refusal has to stay distinguishable from
+    // a machine that simply has no settings.
+    //
+    // A failure here is a problem message, not a failed startup. Being unable
+    // to read one optional layer is not a reason to refuse to open a file, and
+    // saying so is what stops it looking like the setting was applied.
+    let remote_settings = if hello.serves("settings.read") {
+        match client.machine_settings() {
+            Ok((path, Some(text))) => {
+                problems.push(format!("remote session: settings from {path}"));
+                Some(text)
+            }
+            Ok((_, None)) => None,
+            Err(error) => {
+                problems.push(format!(
+                    "remote session: could not read the remote's settings: {error}"
+                ));
+                None
+            }
+        }
+    } else {
+        None
+    };
     // The workspace as the *far end* spells it, which is what every URI a
     // language server over there sees has to be built from — and the one thing
     // this machine cannot work out for itself.
@@ -195,7 +232,11 @@ fn connect(
         options,
         workspace: PathBuf::from(&hello.workspace),
     };
-    Ok((deco_tui::RemoteSession { client, location }, server_path))
+    Ok((
+        deco_tui::RemoteSession { client, location },
+        server_path,
+        remote_settings,
+    ))
 }
 
 /// Where the remote's deco is, once everything that can change the answer has.
@@ -331,13 +372,18 @@ fn provision(
 /// deco --server --stdio` with no `--workspace` means: serve where you landed.
 /// Nothing outside it can be read or written, whatever is asked — see
 /// [`deco_remote::server`].
-fn serve(workspace: Option<&Path>) -> Result<()> {
+fn serve(workspace: Option<&Path>, machine_settings: Option<&Path>) -> Result<()> {
     let root = match workspace {
         Some(path) => path.to_path_buf(),
         None => std::env::current_dir().context("no working directory to serve")?,
     };
     let mut server = deco_remote::Server::new(&root)
         .with_context(|| format!("cannot serve {}", root.display()))?;
+    // Only when told. Left alone, the server finds this machine's own file the
+    // way the editor would.
+    if let Some(path) = machine_settings {
+        server = server.serving_machine_settings(Some(path.to_path_buf()));
+    }
 
     // Locked once rather than per frame, and stdout is *only* written by the
     // protocol from here on: a stray `println!` would be read by the client as a

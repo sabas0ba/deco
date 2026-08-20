@@ -67,6 +67,19 @@ pub struct Cli {
     /// The directory a server serves, or the one an editor treats as the
     /// workspace root.
     pub workspace: Option<PathBuf>,
+    /// The file a server hands over as this machine's settings.
+    ///
+    /// Server-side only, and normally left alone: the default is this machine's
+    /// own `machine-settings.json`, worked out from the same rules the editor
+    /// uses for a configuration directory. Named here for whoever *starts* the
+    /// server — a packager placing it elsewhere, or a test that cannot change
+    /// the process environment without changing it for everything running
+    /// beside it.
+    ///
+    /// This is not a way for a client to choose a file. `settings.read` takes
+    /// no path; the decision is made where the server is launched, which is on
+    /// the remote and by whoever runs it.
+    pub machine_settings: Option<PathBuf>,
     /// A remote authority to open the files on, as `ssh-remote+host`.
     ///
     /// Present means every file named on the command line lives there, and the
@@ -170,6 +183,8 @@ Options:
       --server               Run as the headless remote server, not as an editor
       --stdio                Speak the remote protocol over stdin and stdout
       --workspace <DIR>      The directory to serve [default: the current one]
+      --machine-settings <PATH>
+                             The file a server serves as this machine's settings
       --remote <AUTHORITY>   Open the files on a remote, as ssh-remote+host
       --remote-server-path <PATH>
                              Where deco is on the remote [default: found on its PATH]
@@ -215,6 +230,12 @@ where
             // flag the transport command already passes would make the two halves
             // of this repository disagree.
             "--stdio" => {}
+            "--machine-settings" => {
+                let value = args
+                    .next()
+                    .ok_or(CliError::MissingValue("--machine-settings"))?;
+                cli.machine_settings = Some(PathBuf::from(value.as_ref()));
+            }
             "--workspace" => {
                 let value = args.next().ok_or(CliError::MissingValue("--workspace"))?;
                 cli.workspace = Some(PathBuf::from(value.as_ref()));
@@ -245,6 +266,8 @@ where
             _ => {
                 if let Some(value) = arg.strip_prefix("--frontend=") {
                     cli.frontend = Frontend::parse(value)?;
+                } else if let Some(value) = arg.strip_prefix("--machine-settings=") {
+                    cli.machine_settings = Some(PathBuf::from(value));
                 } else if let Some(value) = arg.strip_prefix("--workspace=") {
                     cli.workspace = Some(PathBuf::from(value));
                 } else if let Some(value) = arg.strip_prefix("--forward=") {
@@ -460,6 +483,7 @@ mod tests {
     #[test]
     fn flags_and_a_file_mix_in_any_order() {
         let expected = Cli {
+            machine_settings: None,
             files: vec![PathBuf::from("a.rs")],
             frontend: Frontend::Gui,
             print_config: false,

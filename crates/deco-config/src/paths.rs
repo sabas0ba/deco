@@ -106,6 +106,22 @@ pub struct ConfigPaths {
     /// deco's own, with no VS Code equivalent — there a capability decision does
     /// not exist, because an extension has whatever Node has.
     pub permissions: PathBuf,
+    /// `machine-settings.json`: settings that belong to *this machine*.
+    ///
+    /// Read by a client connected to this machine as its [`Scope::Remote`]
+    /// layer, and by nothing else — deco running here reads `settings`, not
+    /// this. VS Code has the same split, and for the same reason: a remote's
+    /// interpreter paths and toolchain locations are facts about the machine,
+    /// while the colour theme is a fact about the person.
+    ///
+    /// Separate from `settings` deliberately. Serving that file instead would
+    /// mean connecting to a machine quietly adopted whatever the account there
+    /// had set for its own editing — a theme, a font, a keybinding — and would
+    /// make an ordinary local configuration into something a visitor's session
+    /// has to treat as untrusted.
+    ///
+    /// [`Scope::Remote`]: crate::Scope::Remote
+    pub machine_settings: PathBuf,
 }
 
 impl ConfigPaths {
@@ -120,6 +136,7 @@ impl ConfigPaths {
             extensions: root.join("extensions"),
             snippets: root.join("snippets"),
             permissions: root.join("permissions.json"),
+            machine_settings: root.join("machine-settings.json"),
             root,
         }
     }
@@ -141,9 +158,13 @@ impl ConfigPaths {
             settings: user.join("settings.json"),
             keybindings: user.join("keybindings.json"),
             snippets: user.join("snippets"),
-            // VS Code has no equivalent, so there is nothing to import: this path
-            // exists on the struct and is never read for a VS Code layout.
+            // Neither has a VS Code equivalent *here*: capability decisions do
+            // not exist there at all, and its machine settings live under
+            // `~/.vscode-server` on the remote rather than beside the user's.
+            // Both paths exist on the struct and are never read for a VS Code
+            // layout.
             permissions: user.join("permissions.json"),
+            machine_settings: user.join("machine-settings.json"),
             extensions,
             root: user,
         })
