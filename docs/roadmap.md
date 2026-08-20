@@ -28,6 +28,7 @@ What VS Code has and deco does not, grouped by how it blocks:
 | Task runner (`tasks.json`, `ctrl+shift+b`) | the terminal, for somewhere to run |
 | Test runner | the task runner, and later the extension host |
 | Self-update | nothing — `cargo xtask dist` already builds what it would install |
+| AI features — inline completions, chat (`chat.disableAIFeatures`) | the extension host, ghost text, and the panel; the off switch depends on nothing and comes first |
 | Debugging (DAP) | the panel; by far the largest item here |
 | `WorkspaceEdit` — one undoable edit across several files | nothing; rename, code actions and replace-across-files all wait on it |
 | Regular-expression search | nothing — `deco-core::search` is deliberately literal so far |
@@ -261,6 +262,57 @@ detected and refused with the right command named instead.
 3. Atomic replace, per platform, with tests where tests can run (Wine covers
    the Windows path daily).
 4. The read-only-install detection and its refusal message.
+
+## AI features
+
+**What VS Code has.** Copilot woven into the core rather than shipped beside
+it: inline completions as ghost text, a chat view, an agent mode that edits
+files — and, for the people who want none of that, `chat.disableAIFeatures`,
+the one setting that hides all of it.
+
+**What deco has.** Nothing — no AI code, no account, and nothing that phones
+home. Which is not only a gap: for one of the two camps this chapter has to
+serve, it is the feature, and the plan below is written so that building for
+the other camp never takes it away.
+
+**The plan.** Opinion genuinely splits here — some people want AI assistance in
+the editor, and some want it provably absent, not merely hidden. deco can
+serve both honestly because of two decisions already made: AI arrives as
+**extensions**, never as a built-in, and an extension has no ambient authority.
+
+- **The off switch is read first, and it means more here.**
+  `chat.disableAIFeatures: true` — VS Code's own key — is honoured as a hard
+  gate: no AI-declaring extension activates, no AI surface renders. And where
+  VS Code's switch hides features that are still installed, deco's sits on top
+  of the capability broker: an extension can only reach a model through a
+  declared `network` capability, so with the gate closed there is no path to a
+  model at all — *provably absent* rather than out of sight. With nothing AI
+  shipped by default, a fresh deco already behaves as if the switch were on.
+- **Using AI is an explicit grant, not a default.** An AI extension declares
+  the host it talks to — `{"capability": "network", "host": "api.anthropic.com"}`
+  — which is visible before anything runs and decided under
+  `extensions.permissions.default` like every other capability. A local model
+  is the same declaration with a loopback host (an Ollama on `localhost`), and
+  the difference between "my code goes to a vendor" and "my code stays on this
+  machine" is readable off the manifest instead of taken on faith.
+- **The surfaces are the ordinary ones.** Inline completions are ghost text —
+  a rendering concern worth building once, since parameter hints and inlay
+  hints want it too. Chat is a sidebar or panel tenant like the views before
+  it. Both are fed through the host's mediated API
+  (`InlineCompletionItemProvider`, the chat participant surface), so an AI
+  extension is not a special kind of extension — it is an extension with an
+  unusually interesting `network` declaration.
+
+**Steps.**
+
+1. Read `chat.disableAIFeatures` and enforce it in the broker — a gate an
+   extension cannot argue with, not a UI preference; refuse activation of
+   extensions whose manifest declares AI surfaces while it is set.
+2. Ghost-text rendering in both frontends, as its own feature.
+3. `InlineCompletionItemProvider` through the host shim, brokered like the
+   rest.
+4. A chat view as a sidebar/panel tenant, last — it is the largest surface and
+   the least of the daily value.
 
 ## Debugging
 
