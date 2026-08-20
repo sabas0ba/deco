@@ -403,6 +403,18 @@ fn stat_of(metadata: &std::fs::Metadata) -> serde_json::Value {
     })
 }
 
+/// What one poll has to say, collected rather than written as it goes.
+///
+/// One struct because the two travel together everywhere and a function taking
+/// both plus everything else has more arguments than anyone can read.
+#[derive(Default)]
+struct Said {
+    /// For deco's own record of what extensions did.
+    notes: Vec<String>,
+    /// For the status bar; the last one wins.
+    statuses: Vec<String>,
+}
+
 /// A request held while the user is asked about it.
 struct Asking {
     /// Which extension asked.
@@ -720,16 +732,17 @@ impl Hosts {
     ///
     /// Called from the event loop, like the language-server client, because a host
     /// that started a minute ago is ready now and nothing else would notice.
-    pub fn poll(&mut self, session: &mut Session, files: &mut Files<'_>) {
+    pub fn poll(&mut self, session: &mut Session, files: &mut Files<'_>, now_ms: u64) {
         let ids: Vec<String> = self.running.keys().cloned().collect();
         for id in ids {
-            self.poll_one(&id, session, files);
+            self.poll_one(&id, session, files, now_ms);
         }
     }
 
-    fn poll_one(&mut self, id: &str, session: &mut Session, files: &mut Files<'_>) {
-        let mut notes: Vec<String> = Vec::new();
-        let mut statuses: Vec<String> = Vec::new();
+    /// `now_ms` is the editor's own clock, for the undo step an applied edit
+    /// records — the same value a keystroke would have carried.
+    fn poll_one(&mut self, id: &str, session: &mut Session, files: &mut Files<'_>, now_ms: u64) {
+        let mut reported = Said::default();
         let mut dead = false;
         // Collected rather than stored directly, because the host being drained is
         // borrowed out of `self` for the length of this loop.
@@ -751,7 +764,7 @@ impl Hosts {
                 Some(HostEvent::Message(Message::Request(request))) => {
                     let reply = match dispatch(&running.broker, &request) {
                         Dispatch::Refused(response) => {
-                            notes.push(format!(
+                            reported.notes.push(format!(
                                 "{label}: refused {} — {}",
                                 request.method,
                                 response
@@ -783,7 +796,7 @@ impl Hosts {
                         // mean asking about a request the extension abandoned long
                         // before anyone read the prompt.
                         Dispatch::Consent { capability } => {
-                            notes.push(format!(
+                            reported.notes.push(format!(
                                 "{label}: {} needs a decision about {capability:?}, and another \
                                  permission question is already open — refused",
                                 request.method
@@ -798,9 +811,10 @@ impl Hosts {
                             running,
                             &request,
                             &label,
-                            &mut notes,
-                            &mut statuses,
+                            &mut reported,
                             files,
+                            session,
+                            now_ms,
                         ),
                     };
                     if running.host.send(&Message::Response(reply)).is_err() {
@@ -816,7 +830,9 @@ impl Hosts {
                             let what = asked.unwrap_or_else(|| {
                                 method.clone().unwrap_or_else(|| "a request".to_owned())
                             });
-                            statuses.push(format!("{label}: {what} failed — {}", error.message));
+                            reported
+                                .statuses
+                                .push(format!("{label}: {what} failed — {}", error.message));
                         }
                         (Some("$/activate"), None) => {
                             running.state = State::Active;
@@ -832,7 +848,7 @@ impl Hosts {
                                 .and_then(|value| value.as_str())
                                 .map(str::to_owned);
                             let what = asked.unwrap_or_else(|| "a command".to_owned());
-                            statuses.push(match said {
+                            reported.statuses.push(match said {
                                 Some(text) if !text.is_empty() => format!("{label}: {text}"),
                                 _ => format!("{label}: {what} ran"),
                             });
@@ -844,7 +860,7 @@ impl Hosts {
                 {
                     "$/ready" => {
                         if let Err(error) = deco_ext::connection::agrees_on_protocol(&note) {
-                            notes.push(format!("{label}: {error}"));
+                            reported.notes.push(format!("{label}: {error}"));
                             dead = true;
                             break;
                         }
@@ -852,13 +868,15 @@ impl Hosts {
                     }
                     "log.append" => {
                         if let Some(message) = note.params["message"].as_str() {
-                            notes.push(format!("{label}: {message}"));
+                            reported.notes.push(format!("{label}: {message}"));
                         }
                     }
                     _ => {}
                 },
                 Some(HostEvent::Garbled(line)) => {
-                    notes.push(format!("{label}: unreadable line — {line}"));
+                    reported
+                        .notes
+                        .push(format!("{label}: unreadable line — {line}"));
                 }
                 Some(HostEvent::Closed) => {
                     dead = true;
@@ -878,9 +896,11 @@ impl Hosts {
                 extension.main.clone(),
                 running.prepared.seen_by_host(&extension.root),
             ) else {
-                notes.push(format!("{label}: its directory is not visible to the host"));
+                reported
+                    .notes
+                    .push(format!("{label}: its directory is not visible to the host"));
                 dead = true;
-                self.finish(id, dead, notes, statuses, session);
+                self.finish(id, dead, reported, session);
                 return;
             };
             match running.host.activate(&path, &main) {
@@ -888,7 +908,9 @@ impl Hosts {
                     running.asked.insert(id, "activate".to_owned());
                 }
                 Err(error) => {
-                    notes.push(format!("{label}: could not be activated — {error}"));
+                    reported
+                        .notes
+                        .push(format!("{label}: could not be activated — {error}"));
                     dead = true;
                 }
             }
@@ -902,7 +924,7 @@ impl Hosts {
         }
 
         if !dead && running.state != State::Active && running.started.elapsed() > running.timeout {
-            notes.push(format!(
+            reported.notes.push(format!(
                 "{label} did not start within {}s; stderr:\n{}",
                 running.timeout.as_secs(),
                 running.host.errors()
@@ -922,7 +944,7 @@ impl Hosts {
             session.ask_extension_consent(&what);
         }
 
-        self.finish(id, dead, notes, statuses, session);
+        self.finish(id, dead, reported, session);
     }
 
     /// Offers every decision made in this session, newest extension first.
@@ -1034,7 +1056,13 @@ impl Hosts {
     /// The decision is remembered on that extension's broker, so a second request
     /// covered by the same grant is not asked about again — and a refusal is
     /// remembered too, which is what stops an extension asking in a loop.
-    pub fn answer_consent(&mut self, session: &mut Session, allow: bool, files: &mut Files<'_>) {
+    pub fn answer_consent(
+        &mut self,
+        session: &mut Session,
+        allow: bool,
+        files: &mut Files<'_>,
+        now_ms: u64,
+    ) {
         let Some(asking) = self.asking.take() else {
             return;
         };
@@ -1061,8 +1089,7 @@ impl Hosts {
             return;
         };
 
-        let mut notes: Vec<String> = Vec::new();
-        let mut statuses: Vec<String> = Vec::new();
+        let mut reported = Said::default();
         // Re-dispatched rather than served directly: the answer is a grant, and
         // whether the grant covers this request is the broker's decision to make
         // a second time. Anything else would let a "yes" to one path serve a
@@ -1072,9 +1099,10 @@ impl Hosts {
                 running,
                 &asking.request,
                 &label,
-                &mut notes,
-                &mut statuses,
+                &mut reported,
                 files,
+                session,
+                now_ms,
             ),
             Dispatch::Refused(response) => response,
             // Answered and still asking: nothing sensible remains but to refuse,
@@ -1086,27 +1114,20 @@ impl Hosts {
             ),
         };
         let dead = running.host.send(&Message::Response(reply)).is_err();
-        notes.push(format!(
+        reported.notes.push(format!(
             "{label}: {} was {}",
             asking.request.method,
             if allow { "allowed" } else { "refused" }
         ));
-        self.finish(&asking.extension, dead, notes, statuses, session);
+        self.finish(&asking.extension, dead, reported, session);
     }
 
     /// Records what one poll produced, and drops the host if it is gone.
-    fn finish(
-        &mut self,
-        id: &str,
-        dead: bool,
-        notes: Vec<String>,
-        statuses: Vec<String>,
-        session: &mut Session,
-    ) {
-        for note in notes {
+    fn finish(&mut self, id: &str, dead: bool, said: Said, session: &mut Session) {
+        for note in said.notes {
             self.note(&note);
         }
-        if let Some(last) = statuses.last() {
+        if let Some(last) = said.statuses.last() {
             session.status = Some(last.clone());
         }
         if dead {
@@ -1138,10 +1159,12 @@ impl Hosts {
         running: &mut Running,
         request: &deco_ext::protocol::Request,
         label: &str,
-        notes: &mut Vec<String>,
-        statuses: &mut Vec<String>,
+        said: &mut Said,
         files: &mut Files<'_>,
+        session: &mut Session,
+        now_ms: u64,
     ) -> Response {
+        let (notes, statuses) = (&mut said.notes, &mut said.statuses);
         let text = |key: &str| {
             request.params[key]
                 .as_str()
@@ -1352,6 +1375,90 @@ impl Hosts {
                         request.id,
                         ErrorCode::InvalidParams,
                         format!("could not move {source} to {target}: {reason}"),
+                    ),
+                }
+            }
+            // An edit through the editor rather than past it. The broker has
+            // already checked it as a write, because that is what it is.
+            "workspace.applyEdit" => {
+                let path = text("path");
+                if path.is_empty() {
+                    return Response::err(
+                        request.id,
+                        ErrorCode::InvalidParams,
+                        "an edit needs a path",
+                    );
+                }
+                let edits = deco_lsp::TextEdit::list_from_json(&request.params["edits"]);
+                if edits.is_empty() {
+                    // Nothing to do is a success. An extension that computed no
+                    // changes has not failed, and saying so would make it look
+                    // like it had.
+                    return Response::ok(request.id, serde_json::json!(true));
+                }
+                // The open document first, if this is one. Writing the file
+                // instead would be overwritten by the next save of a buffer that
+                // never learned about the edit — an edit that silently did not
+                // happen.
+                if let Some(applied) = session.apply_edits_to_path(Path::new(&path), &edits, now_ms)
+                {
+                    return match applied {
+                        Ok(count) => {
+                            statuses.push(format!("{label}: {count} edits applied to {path}"));
+                            Response::ok(request.id, serde_json::json!(true))
+                        }
+                        Err(error) => Response::err(
+                            request.id,
+                            ErrorCode::InvalidParams,
+                            format!("could not edit {path}: {error}"),
+                        ),
+                    };
+                }
+                // Not open, so the file itself is the document. Read, apply, write
+                // — through the same `Files`, so a remote session edits the file
+                // on the machine holding it.
+                let edited = files.read(&path).and_then(|text| {
+                    let mut buffer = deco_core::buffer::Buffer::from_text(&text);
+                    let changes: Vec<deco_core::Change> = edits
+                        .iter()
+                        .filter(|edit| !edit.is_noop())
+                        .map(|edit| {
+                            deco_core::Change::replace(
+                                deco_core::position::Range::new(
+                                    buffer.clamp_position(edit.range.start),
+                                    buffer.clamp_position(edit.range.end),
+                                ),
+                                edit.new_text.clone(),
+                            )
+                        })
+                        .collect();
+                    if changes.is_empty() {
+                        return Ok(None);
+                    }
+                    // The same refusal the editor makes: overlapping edits have no
+                    // defined result, and guessing would corrupt the file quietly.
+                    let transaction = deco_core::Transaction::new(changes)
+                        .map_err(|_| "the edits overlap".to_owned())?;
+                    buffer.apply(&transaction);
+                    Ok(Some(buffer.text()))
+                });
+                match edited {
+                    Ok(None) => Response::ok(request.id, serde_json::json!(true)),
+                    Ok(Some(text)) => match files.write(&path, &text) {
+                        Ok(()) => {
+                            statuses.push(format!("{label}: edited {path}"));
+                            Response::ok(request.id, serde_json::json!(true))
+                        }
+                        Err(reason) => Response::err(
+                            request.id,
+                            ErrorCode::InvalidParams,
+                            format!("could not write {path}: {reason}"),
+                        ),
+                    },
+                    Err(reason) => Response::err(
+                        request.id,
+                        ErrorCode::InvalidParams,
+                        format!("could not edit {path}: {reason}"),
                     ),
                 }
             }

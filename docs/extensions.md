@@ -303,7 +303,8 @@ command reported without ending the session.
 
 ## What an extension can reach, today
 
-Three things, all of which only touch state deco already owns and shows you:
+Commands, messages, the filesystem, and edits — all of which only touch state
+deco already owns and shows you:
 
 | Call | What happens |
 | --- | --- |
@@ -313,6 +314,7 @@ Three things, all of which only touch state deco already owns and shows you:
 | `fs.readFile` and `fs.writeFile` | The file, read or written where the session's files are — over the connection in a remote session |
 | `fs.stat` and `fs.readDirectory` | What something is and what is directly in it, from the same place, in VS Code's own `FileStat` and `[name, type]` shapes |
 | `fs.createDirectory`, `fs.delete`, `fs.rename`, `fs.copy` | The change, made where the session's files are |
+| `workspace.applyEdit` | The edits, applied to the open document's buffer when it is open, and to the file when it is not |
 
 **Everything else is refused by name.** An extension that asks to spawn a process
 gets an error saying deco does not implement it yet — not a fake exit code, not an
@@ -322,9 +324,10 @@ empty answer" cannot, and neither can the person reading its behaviour.
 A capability the manifest declared and nobody has ruled on **is asked about**. The
 extension waits — its request is held rather than answered — and the question names
 the extension and what it wants in words: *"Acme Tools wants to read files under
-/home/u/project/notes.txt"*, not a Rust value. The answer is remembered for the
-session, refusals included, because a refusal that is not remembered is a prompt
-loop and a prompt loop is how someone ends up allowing something to make it stop.
+/home/u/project/notes.txt"*, not a Rust value. The answer is remembered — written
+down, refusals included, as [below](#where-a-decision-lives) — because a refusal
+that is not remembered is a prompt loop, and a prompt loop is how someone ends up
+allowing something to make it stop.
 
 Only one question is open at a time. A second extension asking while one is on
 screen is refused, with that as the reason: a queue would mean answering about a
@@ -334,8 +337,9 @@ A decision can be taken back. **Extensions: Forget a Permission Decision** in th
 command palette lists what has been decided — *"Acme Tools: refused — read files
 under /home/u/project/notes.txt"* — and choosing one makes that extension ask
 again the next time it wants it. Without that, a `deny` chosen in a hurry means
-the extension quietly fails for the rest of the session, with nothing to undo it
-and no hint that a decision is the reason.
+the extension quietly fails from then on — and now that decisions are written
+down, "then on" outlives the session — with nothing to undo it and no hint that a
+decision is the reason.
 
 ### Where a decision lives
 
@@ -362,13 +366,31 @@ which extensions refuse to start.
 
 ## What is still not connected
 
-The table above is the whole mediated surface. `workspace.applyEdit` is not wired,
-which is the one `workspace.fs` gap left: an edit applied through the editor is a
-write that also has to reach the open document, and neither half is the other's.
-No activation on opening a file or on startup. No editor state, no quick pick, no
+The table above is the whole mediated surface. No activation on opening a file or
+on startup. No editor state, no quick pick, no
 tree views, no webviews, no debug adapters. `process`, `net`, `env`, `secrets` and
 `openExternal` are declared and brokered and then refused by name at the last
 step, because nothing implements them.
+
+### An edit goes through the editor, not past it
+
+`workspace.applyEdit` takes a path and a list of LSP-shaped edits, and where they
+land depends on whether that file is open:
+
+- **Open** — in any tab, not only the one on screen — and the edits go to its
+  *buffer*. They become one undo step, the document goes unsaved, and nothing is
+  written. That is VS Code's behaviour and it is also the only correct one: a
+  document with unsaved changes would overwrite anything written past it the next
+  time it was saved, so an edit that went to the file would be an edit that
+  silently did not happen.
+- **Not open**, and the file is the document: read, edited and written through the
+  same connection as everything else.
+
+Overlapping edits are refused rather than guessed at, exactly as they are when a
+language server sends them: the specification forbids them, so a sender that
+emits them is broken, and picking one to honour would corrupt the file quietly.
+An empty list is a success — an extension that computed no changes has not
+failed.
 
 ### What a write refuses
 

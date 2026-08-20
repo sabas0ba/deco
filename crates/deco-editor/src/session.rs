@@ -291,6 +291,64 @@ pub struct Session {
     pub problems: Vec<String>,
 }
 
+/// Applies `edits` to one document and its view.
+///
+/// A free function because both callers reach a different pair: the active
+/// document and its view, and a background tab's. Everything it does — clamping,
+/// refusing overlaps, recording one undo step, marking dirty — belongs to the
+/// document rather than to whichever of them is on screen.
+fn apply_edits_to(
+    document: &mut Document,
+    view: &mut View,
+    edits: &[deco_lsp::TextEdit],
+    now_ms: u64,
+) -> Result<usize, EditError> {
+    use deco_core::{Change, EditKind, Transaction};
+
+    // A server routinely answers an already-formatted document with a no-op
+    // edit. Applying one would mark the file dirty and add an undo step for
+    // nothing.
+    let changes: Vec<Change> = edits
+        .iter()
+        .filter(|edit| !edit.is_noop())
+        .map(|edit| {
+            Change::replace(
+                deco_core::position::Range::new(
+                    document.buffer.clamp_position(edit.range.start),
+                    document.buffer.clamp_position(edit.range.end),
+                ),
+                edit.new_text.clone(),
+            )
+        })
+        .collect();
+
+    if changes.is_empty() {
+        return Ok(0);
+    }
+
+    let applied = changes.len();
+    // Overlapping edits have no well-defined result. The specification
+    // forbids them, so a server sending them is broken — and guessing which
+    // to honour would corrupt the file silently, which is worse than
+    // refusing and saying so.
+    let transaction = Transaction::new(changes).map_err(|_| EditError::Overlapping)?;
+
+    let before = view.selections.clone();
+    let inverse = document.apply(&transaction);
+
+    let cursor = document.buffer.clamp_position(before.primary().active);
+    let after = deco_core::SelectionSet::caret(cursor);
+    view.selections = after.clone();
+    document
+        .history
+        .record(inverse, EditKind::Discrete, before, after, now_ms);
+    document.dirty = true;
+    // Revealed even for a background tab: when it is switched to, the cursor
+    // should be where the edit left it rather than wherever it was parked.
+    view.reveal_cursor(&document.buffer, &document.settings);
+    Ok(applied)
+}
+
 impl Session {
     /// Builds a session from the user's configuration.
     ///
@@ -2003,50 +2061,38 @@ impl Session {
         edits: &[deco_lsp::TextEdit],
         now_ms: u64,
     ) -> Result<usize, EditError> {
-        use deco_core::{Change, EditKind, Transaction};
-
-        // A server routinely answers an already-formatted document with a no-op
-        // edit. Applying one would mark the file dirty and add an undo step for
-        // nothing.
-        let changes: Vec<Change> = edits
-            .iter()
-            .filter(|edit| !edit.is_noop())
-            .map(|edit| {
-                Change::replace(
-                    deco_core::position::Range::new(
-                        self.document.buffer.clamp_position(edit.range.start),
-                        self.document.buffer.clamp_position(edit.range.end),
-                    ),
-                    edit.new_text.clone(),
-                )
-            })
-            .collect();
-
-        if changes.is_empty() {
-            return Ok(0);
+        let applied = apply_edits_to(&mut self.document, &mut self.view, edits, now_ms)?;
+        if applied > 0 {
+            self.refresh_context();
         }
-
-        let applied = changes.len();
-        // Overlapping edits have no well-defined result. The specification
-        // forbids them, so a server sending them is broken — and guessing which
-        // to honour would corrupt the file silently, which is worse than
-        // refusing and saying so.
-        let transaction = Transaction::new(changes).map_err(|_| EditError::Overlapping)?;
-
-        let before = self.view.selections.clone();
-        let inverse = self.document.apply(&transaction);
-
-        let cursor = self.document.buffer.clamp_position(before.primary().active);
-        let after = deco_core::SelectionSet::caret(cursor);
-        self.view.selections = after.clone();
-        self.document
-            .history
-            .record(inverse, EditKind::Discrete, before, after, now_ms);
-        self.document.dirty = true;
-        self.view
-            .reveal_cursor(&self.document.buffer, &self.document.settings);
-        self.refresh_context();
         Ok(applied)
+    }
+
+    /// The same, for whichever open tab holds `path`.
+    ///
+    /// `None` when no tab does, which is the caller's cue that the file has to be
+    /// changed on disk instead. Edits must reach the *buffer* of an open document
+    /// rather than its file: a document with unsaved changes would overwrite them
+    /// the next time it was saved, so an edit written past it is an edit that
+    /// silently did not happen.
+    pub fn apply_edits_to_path(
+        &mut self,
+        path: &Path,
+        edits: &[deco_lsp::TextEdit],
+        now_ms: u64,
+    ) -> Option<Result<usize, EditError>> {
+        if self.document.path.as_deref() == Some(path) {
+            return Some(self.apply_edits(edits, now_ms));
+        }
+        let tab = self
+            .left
+            .iter_mut()
+            .chain(self.right.iter_mut())
+            .find(|tab| tab.document.path.as_deref() == Some(path))?;
+        let applied = apply_edits_to(&mut tab.document, &mut tab.view, edits, now_ms);
+        // No `refresh_context`: the context keys describe the document on screen,
+        // and this one is not it.
+        Some(applied)
     }
 
     /// The formatting options a language server should be told about.
