@@ -141,9 +141,8 @@ fn replace_all_changes_every_match_and_saves_what_it_changed() {
     let mut editor = scenario.launch(&["a.txt"]);
 
     editor.press("ctrl+h");
-    // `ctrl+h` opens with the *replacement* field focused, so getting to the
-    // query means toggling first — see the finding below.
-    editor.press("tab");
+    // Nothing was selected, so `ctrl+h` opens with an empty query and the
+    // keyboard on it; `tab` moves to the replacement.
     editor.type_text("cat");
     editor.press("tab");
     editor.type_text("bird");
@@ -155,19 +154,11 @@ fn replace_all_changes_every_match_and_saves_what_it_changed() {
 }
 
 #[test]
-fn ctrl_h_puts_the_keyboard_in_the_replacement_field_over_an_empty_query() {
-    // A finding, pinned rather than asserted as good.
-    //
-    // `Find::open_replace` focuses the replacement on the stated grounds that
-    // "the query is either seeded or already typed". When neither is true — no
-    // selection, nothing searched for yet, which is the ordinary way `ctrl+h` is
-    // reached — the premise is false and the keyboard is in the wrong box: the
-    // first thing typed becomes the *replacement* for an empty query. VS Code
-    // focuses the search field in that case.
-    //
-    // The unit test next to `open_replace` asserts the field is the replacement,
-    // which is what the code means to do. Only pressing the keys in order shows
-    // that what it means to do is wrong when its premise does not hold.
+fn ctrl_h_focuses_the_query_when_there_is_nothing_to_replace_yet() {
+    // `ctrl+h` seeds the query only from a selection, so reaching it with nothing
+    // selected and nothing searched for yet leaves nothing to replace. The first
+    // thing typed is the word being searched for, and it has to land in the
+    // query — the field VS Code focuses in the same situation.
     let scenario = Scenario::new("replace-focus").file("a.txt", "cat\ndog\n");
     let mut editor = scenario.launch(&["a.txt"]);
 
@@ -176,26 +167,43 @@ fn ctrl_h_puts_the_keyboard_in_the_replacement_field_over_an_empty_query() {
 
     assert_eq!(
         editor.session().find.query(),
-        "",
-        "the query should be what a user typing `cat` after ctrl+h was aiming at"
+        "cat",
+        "typing `cat` after ctrl+h should search for it"
     );
     assert_eq!(
         editor.session().find.replace(),
-        "cat",
-        "instead it landed in the replacement field"
+        "",
+        "the replacement is not what the user came here to write first"
     );
-    // And the screen shows exactly that: an empty `Find:` above a `With:` holding
-    // the word the user thought they were searching for.
+    // And the screen shows the query filled in with the replacement row still
+    // open and empty, ready for `tab`.
     let screen = editor.screen();
-    screen.assert_shows("With: cat");
+    screen.assert_shows("With:");
     assert!(
-        screen
-            .lines()
-            .iter()
-            .any(|line| line.trim_end().ends_with("[aa ww]") && line.contains("Find:")),
-        "the query should still be empty{}",
+        screen.lines().iter().any(|line| line.contains("Find: cat")),
+        "the query should hold the typed word{}",
         screen.dump()
     );
+}
+
+#[test]
+fn ctrl_h_focuses_the_replacement_when_the_query_is_seeded() {
+    // The premise the replacement-first focus rests on: with a word selected the
+    // query arrives already filled in, so the replacement is the only thing left
+    // to type and the keyboard belongs there.
+    let scenario = Scenario::new("replace-focus-seeded").file("a.txt", "cat\ndog\n");
+    let mut editor = scenario.launch(&["a.txt"]);
+
+    editor.press("ctrl+shift+right");
+    editor.press("ctrl+h");
+    editor.type_text("bird");
+
+    assert_eq!(
+        editor.session().find.query(),
+        "cat",
+        "seeded from the selection"
+    );
+    assert_eq!(editor.session().find.replace(), "bird");
 }
 
 #[test]
