@@ -435,9 +435,8 @@ fn replace() -> String {
         .capture("press ctrl+h to replace", 2)
         .press(&["ctrl+h"])
         .type_text("sum")
-        .press(&["shift+tab"])
-        .type_text("total")
         .press_and_hold(&["tab"], 3)
+        .type_text("total")
         .press_and_hold(&["ctrl+alt+enter"], 5);
     take.finish()
 }
