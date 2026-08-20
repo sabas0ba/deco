@@ -172,7 +172,7 @@ fn read_through(world: &World, path: &Path, files: &mut Files<'_>) -> String {
 
     let deadline = Instant::now() + Duration::from_secs(30);
     while Instant::now() < deadline {
-        hosts.poll(&mut session, files);
+        hosts.poll(&mut session, files, 0);
         if session
             .status
             .as_deref()
@@ -315,7 +315,7 @@ fn an_extension_creates_moves_and_deletes_on_the_far_end() {
 
     let deadline = Instant::now() + Duration::from_secs(30);
     while Instant::now() < deadline {
-        hosts.poll(&mut session, &mut Files::Remote(&mut client));
+        hosts.poll(&mut session, &mut Files::Remote(&mut client), 0);
         if session
             .status
             .as_deref()
@@ -371,7 +371,7 @@ fn an_extension_stats_and_lists_the_far_end_rather_than_this_machine() {
 
     let deadline = Instant::now() + Duration::from_secs(30);
     while Instant::now() < deadline {
-        hosts.poll(&mut session, &mut Files::Remote(&mut client));
+        hosts.poll(&mut session, &mut Files::Remote(&mut client), 0);
         if session
             .status
             .as_deref()
@@ -414,7 +414,7 @@ fn a_stat_in_a_remote_session_goes_through_the_server_and_not_around_it() {
         assert!(hosts.run_command(&mut session, "acme.inspect"));
         let deadline = Instant::now() + Duration::from_secs(30);
         while Instant::now() < deadline {
-            hosts.poll(&mut session, files);
+            hosts.poll(&mut session, files, 0);
             if session
                 .status
                 .as_deref()

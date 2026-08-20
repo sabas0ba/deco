@@ -231,7 +231,7 @@ pub fn run_with(
             driver.idle(session, elapsed_ms(started))?;
             continue;
         }
-        driver.poll(session);
+        driver.poll(session, elapsed_ms(started));
 
         match event::read()? {
             Event::Key(key) => {
@@ -445,7 +445,7 @@ impl Driver {
     }
 
     /// Collects whatever the language server and the extension hosts have said.
-    pub fn poll(&mut self, session: &mut Session) {
+    pub fn poll(&mut self, session: &mut Session, now_ms: u64) {
         self.dirty |= self.lsp.poll(session);
         // Destructured so the hosts can be advanced while the connection is
         // borrowed: an extension's file request is served through the same
@@ -456,7 +456,7 @@ impl Driver {
             Some(client) => crate::extensions::Files::Remote(client),
             None => crate::extensions::Files::Here,
         };
-        hosts.poll(session, &mut files);
+        hosts.poll(session, &mut files, now_ms);
     }
 
     /// A moment with no keystroke in it: the same poll, plus the auto-save clock.
@@ -464,7 +464,7 @@ impl Driver {
     /// Checked on the idle path only. A save while keys are still arriving would be
     /// a write per keystroke, which is the thing the delay exists to avoid.
     pub fn idle(&mut self, session: &mut Session, now_ms: u64) -> Result<()> {
-        self.poll(session);
+        self.poll(session, now_ms);
         let Some(at) = self.edited_at else {
             return Ok(());
         };
@@ -600,7 +600,7 @@ impl Driver {
                     Some(client) => crate::extensions::Files::Remote(client),
                     None => crate::extensions::Files::Here,
                 };
-                hosts.answer_consent(session, allow, &mut files);
+                hosts.answer_consent(session, allow, &mut files, now_ms);
             }
             Outcome::SearchInFiles { query, options } if remote.is_some() => {
                 let client = remote.as_mut().expect("a remote session");

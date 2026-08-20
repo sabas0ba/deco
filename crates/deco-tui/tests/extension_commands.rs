@@ -74,7 +74,7 @@ fn until(
 ) {
     let deadline = Instant::now() + Duration::from_secs(30);
     while Instant::now() < deadline {
-        hosts.poll(session, &mut deco_tui::extensions::Files::Here);
+        hosts.poll(session, &mut deco_tui::extensions::Files::Here, 0);
         if done(hosts, session) {
             return;
         }
@@ -333,7 +333,12 @@ fn a_declared_capability_is_asked_about_rather_than_refused() {
     );
 
     // Answered the way the prompt's own submit answers it.
-    hosts.answer_consent(&mut session, true, &mut deco_tui::extensions::Files::Here);
+    hosts.answer_consent(
+        &mut session,
+        true,
+        &mut deco_tui::extensions::Files::Here,
+        0,
+    );
     until(&mut hosts, &mut session, "the read", |_, session| {
         session
             .status
@@ -371,7 +376,12 @@ fn a_decision_can_be_taken_back_from_the_palette() {
     until(&mut hosts, &mut session, "the question", |_, session| {
         session.prompt.is_some()
     });
-    hosts.answer_consent(&mut session, false, &mut deco_tui::extensions::Files::Here);
+    hosts.answer_consent(
+        &mut session,
+        false,
+        &mut deco_tui::extensions::Files::Here,
+        0,
+    );
     until(&mut hosts, &mut session, "the refusal", |_, session| {
         session
             .status
@@ -413,7 +423,12 @@ fn a_decision_can_be_taken_back_from_the_palette() {
         "the second question",
         |_, session| session.prompt.is_some(),
     );
-    hosts.answer_consent(&mut session, true, &mut deco_tui::extensions::Files::Here);
+    hosts.answer_consent(
+        &mut session,
+        true,
+        &mut deco_tui::extensions::Files::Here,
+        0,
+    );
     until(&mut hosts, &mut session, "the read", |_, session| {
         session
             .status
@@ -454,7 +469,12 @@ fn an_answer_is_remembered_across_sessions_until_the_extension_changes() {
         until(&mut hosts, &mut session, "the question", |_, session| {
             session.prompt.is_some()
         });
-        hosts.answer_consent(&mut session, true, &mut deco_tui::extensions::Files::Here);
+        hosts.answer_consent(
+            &mut session,
+            true,
+            &mut deco_tui::extensions::Files::Here,
+            0,
+        );
         until(&mut hosts, &mut session, "the read", |_, session| {
             session
                 .status
@@ -560,7 +580,12 @@ fn a_refusal_is_remembered_so_an_extension_cannot_ask_in_a_loop() {
     until(&mut hosts, &mut session, "the question", |_, session| {
         session.prompt.is_some()
     });
-    hosts.answer_consent(&mut session, false, &mut deco_tui::extensions::Files::Here);
+    hosts.answer_consent(
+        &mut session,
+        false,
+        &mut deco_tui::extensions::Files::Here,
+        0,
+    );
     until(&mut hosts, &mut session, "the refusal", |_, session| {
         session
             .status
@@ -601,5 +626,133 @@ fn a_refusal_is_remembered_so_an_extension_cannot_ask_in_a_loop() {
     );
 
     hosts.shutdown();
+    let _ = std::fs::remove_dir_all(&workspace);
+}
+
+/// An extension that applies one edit to `path`.
+fn editor_of(name: &str, path: &Path) -> PathBuf {
+    install(
+        name,
+        r#"{
+  "name": "tools",
+  "publisher": "acme",
+  "displayName": "Acme Tools",
+  "main": "./extension.js",
+  "contributes": { "commands": [{ "command": "acme.edit", "title": "Edit" }] },
+  "deco": {
+    "capabilities": [
+      { "capability": "writeFile", "scope": { "kind": "workspace" } }
+    ]
+  }
+}"#,
+        &format!(
+            r#"'use strict';
+const vscode = require('vscode');
+function activate(context) {{
+  context.subscriptions.push(
+    vscode.commands.registerCommand('acme.edit', async () => {{
+      try {{
+        await vscode.workspace.applyEdit({{
+          path: {path:?},
+          edits: [{{
+            range: {{ start: {{ line: 0, character: 0 }}, end: {{ line: 0, character: 5 }} }},
+            newText: 'EDITED',
+          }}],
+        }});
+        return 'edited';
+      }} catch (error) {{
+        return `refused: ${{error && error.message}}`;
+      }}
+    }}),
+  );
+}}
+module.exports = {{ activate }};
+"#
+        ),
+    )
+}
+
+/// Runs `acme.edit` against `session` and returns what the extension said.
+fn edit_through(root: &Path, workspace: &Path, session: &mut Session) -> String {
+    point_at_the_host();
+    let catalogue = discover(std::slice::from_ref(&root.to_path_buf()));
+    session.frontend_commands.extend(rows(&catalogue));
+    let mut hosts = Hosts::rooted(catalogue, vec![workspace.to_path_buf()]);
+    assert!(hosts.run_command(session, "acme.edit"));
+
+    // `writeFile` is a declared capability nobody has ruled on, so the first
+    // thing that happens is the question — and the request waits behind it. A
+    // scenario that only watched the status would wait forever, which is how
+    // this test first failed.
+    until(&mut hosts, session, "the question", |_, session| {
+        session.prompt.is_some()
+    });
+    hosts.answer_consent(session, true, &mut deco_tui::extensions::Files::Here, 0);
+
+    until(&mut hosts, session, "the edit", |_, session| {
+        session
+            .status
+            .as_deref()
+            .is_some_and(|said| said.contains("edited") || said.contains("refused"))
+    });
+    let said = session.status.clone().unwrap_or_default();
+    hosts.shutdown();
+    said
+}
+
+#[test]
+#[ignore = "needs node; run through `cargo xtask host-test`"]
+fn an_edit_to_the_open_document_reaches_the_buffer_and_not_the_file() {
+    // The distinction the whole method turns on. A document with unsaved changes
+    // would overwrite anything written past it the next time it was saved, so an
+    // edit that went to the file would be an edit that silently did not happen.
+    let workspace = std::env::temp_dir().join(format!("deco-edit-open-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&workspace);
+    std::fs::create_dir_all(&workspace).expect("a workspace");
+    let file = workspace.join("notes.txt");
+    std::fs::write(&file, "hello there\n").expect("a file");
+
+    let root = editor_of("apply-open", &file);
+    let mut session = session();
+    session.open(file.clone(), "hello there\n");
+
+    let said = edit_through(&root, &workspace, &mut session);
+    assert!(said.contains("edited"), "{said}");
+
+    // In the buffer, marked unsaved, and undoable — an edit like any other.
+    assert_eq!(session.document.buffer.text(), "EDITED there\n");
+    assert!(session.document.dirty);
+    // And *not* on disk: nothing asked for it to be saved.
+    assert_eq!(
+        std::fs::read_to_string(&file).expect("the file"),
+        "hello there\n"
+    );
+
+    session.run("undo", None, 0);
+    assert_eq!(session.document.buffer.text(), "hello there\n");
+
+    let _ = std::fs::remove_dir_all(&workspace);
+}
+
+#[test]
+#[ignore = "needs node; run through `cargo xtask host-test`"]
+fn an_edit_to_a_file_that_is_not_open_reaches_the_file() {
+    // The other half: no buffer to put it in, so the file is the document.
+    let workspace = std::env::temp_dir().join(format!("deco-edit-closed-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&workspace);
+    std::fs::create_dir_all(&workspace).expect("a workspace");
+    let file = workspace.join("closed.txt");
+    std::fs::write(&file, "hello there\n").expect("a file");
+
+    let root = editor_of("apply-closed", &file);
+    let mut session = session();
+
+    let said = edit_through(&root, &workspace, &mut session);
+    assert!(said.contains("edited"), "{said}");
+    assert_eq!(
+        std::fs::read_to_string(&file).expect("the file"),
+        "EDITED there\n"
+    );
+
     let _ = std::fs::remove_dir_all(&workspace);
 }
