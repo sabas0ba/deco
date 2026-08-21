@@ -18,6 +18,15 @@ deco-core.workspace = true
 # the same rules the editor uses for a configuration directory, so the file a
 # person edits on the remote is the file a connected session is served.
 deco-config.workspace = true
+# For `--remote-install-download`: the checksum of a downloaded release is
+# computed here rather than by whatever `sha256sum` is on the PATH. The transfer
+# and the decompression are chores that can be delegated; deciding whether the
+# bytes are the ones the project published is the question being asked, and an
+# editor that asked something else whether it had checked would not be checking.
+#
+# The same crate `cargo xtask dist` writes SHA256SUMS with, so the hash is
+# produced and verified by one implementation.
+sha2 = "0.11"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

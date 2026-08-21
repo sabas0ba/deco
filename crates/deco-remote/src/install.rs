@@ -14,8 +14,9 @@
 //! - **Only when asked.** There is no code path that installs without the
 //!   caller having decided to.
 //! - **Never a binary that cannot run.** The remote is asked what it is before
-//!   anything is sent, and a platform that does not match this machine's is a
-//!   refusal rather than an upload that fails later with `Exec format error`.
+//!   anything is sent, so a platform that does not match this machine's is
+//!   answered — by a refusal, or by fetching the build that does run there —
+//!   rather than by an upload that fails later with `Exec format error`.
 //! - **Never over something that is not a deco.** If the destination already
 //!   holds a program that does not identify itself as deco, it is left alone.
 //!   `--remote-server-path /usr/bin/vim` is a typo, not an instruction.
@@ -24,14 +25,18 @@
 //!   install leaves the old deco — or nothing — rather than a truncated file
 //!   that is executable and broken.
 //!
-//! # What it cannot do yet
+//! # When the remote is a different platform
 //!
-//! It uploads *this* machine's binary, so it works when both ends are the same
-//! platform: Linux to Linux, and every WSL and container case. A macOS laptop
-//! provisioning a Linux server is exactly the case it refuses, because the fix
-//! is fetching a release built for the remote rather than sending the wrong
-//! file, and where deco is willing to download from is its own decision to make
-//! rather than one to slip in here.
+//! Uploading *this* machine's binary works when both ends match: Linux to Linux,
+//! and every WSL and container case. A macOS laptop provisioning a Linux server
+//! needs a binary this machine does not have, and getting one means reaching the
+//! network — which is a larger authority than "copy the file I am already
+//! running", and so is asked for separately.
+//!
+//! [`ForOther`] is that ask, and it is a parameter rather than a setting: the
+//! only way to reach [`fetch`](crate::fetch) from here is for a caller to have
+//! passed [`ForOther::Download`], which `--remote-install` alone does not.
+//! Without it a mismatch is still refused, exactly as before.
 //!
 //! The remote is assumed to have a POSIX shell and `uname`, `mkdir`, `dd`,
 //! `chmod` and `mv`. That is the same assumption already made by running
@@ -153,8 +158,9 @@ pub enum InstallError {
     /// The remote is a different platform from this machine.
     #[error(
         "this deco is built for {local} and the remote is {remote}, so sending it there \
-         would produce a binary that cannot run. Install a deco built for {remote} on it \
-         and point `--remote-server-path` at that."
+         would produce a binary that cannot run. `--remote-install-download` fetches the \
+         release built for {remote} and checks it before sending it; or install one there \
+         yourself and point `--remote-server-path` at it."
     )]
     PlatformMismatch {
         /// This machine, as `os-arch`.
@@ -184,6 +190,9 @@ pub enum InstallError {
     /// The local binary could not be read to send.
     #[error("could not read this deco to send it: {0}")]
     LocalBinary(#[from] std::io::Error),
+    /// A deco for the remote's platform could not be obtained.
+    #[error(transparent)]
+    Fetch(#[from] crate::fetch::FetchError),
     /// The uploaded binary did not run on the remote.
     #[error("the deco that was installed at `{path}` does not run there: {detail}")]
     Unusable {
@@ -379,11 +388,32 @@ impl Installed {
 /// local file to send, which the caller gets from `std::env::current_exe`
 /// rather than this module reaching for it, so that a test can send something
 /// it chose.
+/// What to do when the remote is not the platform this deco was built for.
+///
+/// An enum rather than a `bool` because the two arms are different authorities,
+/// and a `true` at a call site says which one was chosen far less clearly than a
+/// name does.
+pub enum ForOther<'a> {
+    /// Refuse, naming both platforms. What `--remote-install` does on its own.
+    Refuse,
+    /// Download the release built for it, check it, and send that.
+    ///
+    /// Reaching the network is the part being asked for here, and the only way
+    /// to ask is to construct this.
+    Download {
+        /// How the bytes are retrieved.
+        fetcher: &'a mut dyn crate::fetch::Fetcher,
+        /// A directory this may write the checked binary into.
+        into: &'a std::path::Path,
+    },
+}
+
 pub fn ensure(
     runner: &mut dyn Runner,
     path: Option<&str>,
     binary: &std::path::Path,
     version: &str,
+    for_other: ForOther<'_>,
 ) -> Result<Installed, InstallError> {
     let platform = probe(runner)?;
     let destination = match path {
@@ -407,13 +437,26 @@ pub fn ensure(
         AtPath::Nothing => None,
     };
 
+    // Which file gets uploaded. Everything after this point treats the two cases
+    // identically — by the time a download has been checked, it is just a local
+    // binary, and the staging, the rename and the does-it-run check are the ones
+    // that were already here.
     let local = Platform::local();
-    if !platform.matches(&local) {
-        return Err(InstallError::PlatformMismatch {
-            local: local.name(),
-            remote: platform.name(),
-        });
-    }
+    let sending = if platform.matches(&local) {
+        std::borrow::Cow::Borrowed(binary)
+    } else {
+        match for_other {
+            ForOther::Refuse => {
+                return Err(InstallError::PlatformMismatch {
+                    local: local.name(),
+                    remote: platform.name(),
+                })
+            }
+            ForOther::Download { fetcher, into } => std::borrow::Cow::Owned(
+                crate::fetch::binary_for(fetcher, &platform, version, into)?,
+            ),
+        }
+    };
 
     let (directory, _) = destination
         .rsplit_once('/')
@@ -428,7 +471,7 @@ pub fn ensure(
     // Beside the destination rather than in a temporary directory, so the rename
     // below cannot cross a filesystem and stop being atomic.
     let staged = format!("{destination}.incoming");
-    let mut file = std::fs::File::open(binary)?;
+    let mut file = std::fs::File::open(sending.as_ref())?;
     step(
         runner,
         "sending the binary",
@@ -629,7 +672,8 @@ mod tests {
     #[test]
     fn a_remote_that_is_a_different_platform_is_refused_before_anything_is_sent() {
         let mut fake = Fake::answering(vec![("uname", ok("Linux\nsparc64\n/home/u\n"))]);
-        let error = ensure(&mut fake, None, &binary(), "0.1.0").expect_err("a refusal");
+        let error =
+            ensure(&mut fake, None, &binary(), "0.1.0", ForOther::Refuse).expect_err("a refusal");
         assert!(
             matches!(&error, InstallError::PlatformMismatch { remote, .. } if remote == "linux-sparc64"),
             "{error}"
@@ -654,8 +698,14 @@ mod tests {
             ("uname", same_platform()),
             ("--version", ok("VIM - Vi IMproved 9.1")),
         ]);
-        let error = ensure(&mut fake, Some("/usr/bin/vim"), &binary(), "0.1.0")
-            .expect_err("a refusal to overwrite");
+        let error = ensure(
+            &mut fake,
+            Some("/usr/bin/vim"),
+            &binary(),
+            "0.1.0",
+            ForOther::Refuse,
+        )
+        .expect_err("a refusal to overwrite");
         assert!(
             matches!(&error, InstallError::NotDeco { path } if path == "/usr/bin/vim"),
             "{error}"
@@ -673,7 +723,8 @@ mod tests {
             ("uname", same_platform()),
             ("--version", ok("deco 0.1.0")),
         ]);
-        let outcome = ensure(&mut fake, None, &binary(), "0.1.0").expect("already there");
+        let outcome =
+            ensure(&mut fake, None, &binary(), "0.1.0", ForOther::Refuse).expect("already there");
         assert_eq!(
             outcome,
             Installed::AlreadyThere {
@@ -693,7 +744,8 @@ mod tests {
         // The version answer is fixed, so the check after the upload sees the old
         // string too; what this pins is that a differing version is a replace
         // rather than a refusal, and that the old one is reported.
-        let outcome = ensure(&mut fake, None, &binary(), "0.1.0").expect("a replacement");
+        let outcome =
+            ensure(&mut fake, None, &binary(), "0.1.0", ForOther::Refuse).expect("a replacement");
         assert!(
             matches!(&outcome, Installed::Sent { replaced, .. } if replaced.as_deref() == Some("deco 0.0.9")),
             "{outcome:?}"
@@ -703,7 +755,14 @@ mod tests {
     #[test]
     fn an_install_stages_beside_the_destination_and_renames_it_into_place() {
         let mut fake = Fake::answering(vec![("uname", same_platform())]);
-        ensure(&mut fake, Some("/opt/deco/bin/deco"), &binary(), "0.1.0").expect("an install");
+        ensure(
+            &mut fake,
+            Some("/opt/deco/bin/deco"),
+            &binary(),
+            "0.1.0",
+            ForOther::Refuse,
+        )
+        .expect("an install");
 
         assert_eq!(
             fake.programs(),
@@ -751,8 +810,14 @@ mod tests {
             ("uname", same_platform()),
             ("--version", fails(126, "Permission denied")),
         ]);
-        let error = ensure(&mut fake, Some("/home/u/notes.txt"), &binary(), "0.1.0")
-            .expect_err("a refusal to overwrite");
+        let error = ensure(
+            &mut fake,
+            Some("/home/u/notes.txt"),
+            &binary(),
+            "0.1.0",
+            ForOther::Refuse,
+        )
+        .expect_err("a refusal to overwrite");
         assert!(matches!(error, InstallError::NotDeco { .. }), "{error}");
         assert!(
             !fake.programs().contains(&"dd"),
@@ -770,7 +835,8 @@ mod tests {
                 fails(1, "dd: writing to 'x': No space left on device"),
             ),
         ]);
-        let error = ensure(&mut fake, None, &binary(), "0.1.0").expect_err("a failure");
+        let error =
+            ensure(&mut fake, None, &binary(), "0.1.0", ForOther::Refuse).expect_err("a failure");
         let said = error.to_string();
         assert!(said.contains("sending the binary"), "{said}");
         assert!(said.contains("No space left on device"), "{said}");
@@ -786,21 +852,24 @@ mod tests {
             ("uname", same_platform()),
             ("--version", fails(126, "Permission denied")),
         ]);
-        let error = ensure(&mut fake, None, &binary(), "0.1.0").expect_err("a failure");
+        let error =
+            ensure(&mut fake, None, &binary(), "0.1.0", ForOther::Refuse).expect_err("a failure");
         assert!(matches!(error, InstallError::Unusable { .. }), "{error}");
     }
 
     #[test]
     fn a_remote_that_answers_nothing_useful_is_not_guessed_at() {
         let mut fake = Fake::answering(vec![("uname", ok("Linux\n"))]);
-        let error = ensure(&mut fake, None, &binary(), "0.1.0").expect_err("a refusal");
+        let error =
+            ensure(&mut fake, None, &binary(), "0.1.0", ForOther::Refuse).expect_err("a refusal");
         assert!(
             matches!(error, InstallError::Unrecognised { .. }),
             "{error}"
         );
 
         let mut fake = Fake::answering(vec![("uname", fails(127, "sh: uname: not found"))]);
-        let error = ensure(&mut fake, None, &binary(), "0.1.0").expect_err("a refusal");
+        let error =
+            ensure(&mut fake, None, &binary(), "0.1.0", ForOther::Refuse).expect_err("a refusal");
         assert!(error.to_string().contains("uname: not found"), "{error}");
     }
 

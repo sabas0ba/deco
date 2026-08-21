@@ -22,7 +22,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use deco_remote::client::Client;
-use deco_remote::install::{self, InstallError, Output, Runner};
+use deco_remote::install::{self, ForOther, InstallError, Output, Runner};
 use deco_remote::transport::Command;
 use deco_remote::Installed;
 
@@ -93,7 +93,8 @@ fn an_install_puts_a_binary_there_that_actually_runs_and_serves() {
     let home = remote_home("round-trip");
     let mut runner = LocalRunner { home: home.clone() };
 
-    let outcome = install::ensure(&mut runner, None, this_deco(), version()).expect("an install");
+    let outcome = install::ensure(&mut runner, None, this_deco(), version(), ForOther::Refuse)
+        .expect("an install");
     let expected = home.join(".deco/bin/deco");
     assert_eq!(
         outcome,
@@ -140,14 +141,15 @@ fn a_second_install_of_the_same_version_sends_nothing() {
     let home = remote_home("idempotent");
     let mut runner = LocalRunner { home: home.clone() };
 
-    install::ensure(&mut runner, None, this_deco(), version()).expect("an install");
+    install::ensure(&mut runner, None, this_deco(), version(), ForOther::Refuse)
+        .expect("an install");
     let installed = home.join(".deco/bin/deco");
     let stamp = std::fs::metadata(&installed)
         .and_then(|meta| meta.modified())
         .expect("a timestamp");
 
-    let outcome =
-        install::ensure(&mut runner, None, this_deco(), version()).expect("a second install");
+    let outcome = install::ensure(&mut runner, None, this_deco(), version(), ForOther::Refuse)
+        .expect("a second install");
     let expected = format!("deco {}", version());
     assert!(
         matches!(&outcome, Installed::AlreadyThere { version, .. } if version == &expected),
@@ -181,6 +183,7 @@ fn a_real_file_that_is_not_deco_survives_being_pointed_at() {
         Some(&notes.display().to_string()),
         this_deco(),
         version(),
+        ForOther::Refuse,
     )
     .expect_err("a refusal");
     assert!(matches!(error, InstallError::NotDeco { .. }), "{error}");
@@ -208,6 +211,7 @@ fn an_install_that_cannot_be_completed_fails_rather_than_half_happening() {
         Some(&blocker.join("deco").display().to_string()),
         this_deco(),
         version(),
+        ForOther::Refuse,
     )
     .expect_err("a failure");
     // It says which step, because "could not put deco on the remote" alone
@@ -222,5 +226,219 @@ fn an_install_that_cannot_be_completed_fails_rather_than_half_happening() {
         "in the way\n"
     );
 
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// A [`LocalRunner`] that claims to be a machine this one is not.
+///
+/// Only the probe is intercepted; everything after it runs for real, so what is
+/// exercised below is the actual staging, upload, `chmod`, rename and
+/// does-it-run check — with the *download* path chosen instead of "send the
+/// binary I am running".
+struct ForeignRunner {
+    inner: LocalRunner,
+    os: &'static str,
+    arch: &'static str,
+}
+
+impl Runner for ForeignRunner {
+    fn run(
+        &mut self,
+        argv: &[String],
+        stdin: Option<&mut dyn Read>,
+    ) -> Result<Output, std::io::Error> {
+        if argv.iter().any(|part| part.contains("uname -s")) {
+            return Ok(Output {
+                status: Some(0),
+                stdout: format!(
+                    "{}\n{}\n{}\n",
+                    if self.os == "macos" {
+                        "Darwin"
+                    } else {
+                        "Linux"
+                    },
+                    self.arch,
+                    self.inner.home.display()
+                ),
+                stderr: String::new(),
+            });
+        }
+        self.inner.run(argv, stdin)
+    }
+}
+
+/// A [`Fetcher`](deco_remote::fetch::Fetcher) answering from a table.
+struct Canned(Vec<(String, Vec<u8>)>);
+
+impl deco_remote::fetch::Fetcher for Canned {
+    fn get(&mut self, url: &str) -> Result<Vec<u8>, String> {
+        self.0
+            .iter()
+            .find(|(at, _)| at == url)
+            .map(|(_, bytes)| bytes.clone())
+            .ok_or_else(|| format!("no such release asset: {url}"))
+    }
+}
+
+/// A release archive holding a "deco" that answers `--version`.
+fn release_archive(root: &Path, target: &str) -> Vec<u8> {
+    let stage = root.join(format!("deco-{target}"));
+    std::fs::create_dir_all(&stage).expect("a directory");
+    std::fs::write(
+        stage.join("deco"),
+        format!("#!/bin/sh\necho 'deco {}'\n", version()),
+    )
+    .expect("a file");
+    let archive = root.join("release.tar.gz");
+    assert!(std::process::Command::new("tar")
+        .arg("czf")
+        .arg(&archive)
+        .arg("-C")
+        .arg(root)
+        .arg(format!("deco-{target}"))
+        .status()
+        .expect("tar runs")
+        .success());
+    let bytes = std::fs::read(&archive).expect("the archive");
+    let _ = std::fs::remove_file(&archive);
+    let _ = std::fs::remove_dir_all(&stage);
+    bytes
+}
+
+#[test]
+fn a_different_platform_is_still_refused_unless_the_download_was_asked_for() {
+    // The rule the separate flag exists for. `--remote-install` alone reaches
+    // nothing: it sends the file already running here, or it refuses.
+    let home = remote_home("mismatch-refused");
+    let mut runner = ForeignRunner {
+        inner: LocalRunner { home: home.clone() },
+        // A platform this machine is not, whichever machine is running the test.
+        os: if cfg!(target_os = "macos") {
+            "linux"
+        } else {
+            "macos"
+        },
+        arch: "aarch64",
+    };
+
+    let error = install::ensure(&mut runner, None, this_deco(), version(), ForOther::Refuse)
+        .expect_err("a refusal");
+    assert!(
+        matches!(error, InstallError::PlatformMismatch { .. }),
+        "{error}"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn a_download_for_the_remotes_platform_is_checked_and_then_installed() {
+    // The whole path, with only the network replaced: probe says another
+    // platform, the checksums and archive come from the table, the checksum is
+    // verified here, the member is taken out of the archive, and what lands on
+    // the "remote" runs and reports its version.
+    let home = remote_home("downloaded");
+    let scratch = home.join("scratch");
+    std::fs::create_dir_all(&scratch).expect("a directory");
+
+    let (os, arch, target) = if cfg!(target_os = "macos") {
+        ("linux", "aarch64", "aarch64-unknown-linux-gnu")
+    } else {
+        ("macos", "aarch64", "aarch64-apple-darwin")
+    };
+    let asset = deco_remote::fetch::asset_for(target);
+    let archive = release_archive(&scratch, target);
+    let sums = format!("{}  {asset}\n", deco_remote::fetch::digest_of(&archive));
+
+    let mut fetcher = Canned(vec![
+        (
+            deco_remote::fetch::checksums_url(version()),
+            sums.into_bytes(),
+        ),
+        (deco_remote::fetch::asset_url(version(), &asset), archive),
+    ]);
+    let mut runner = ForeignRunner {
+        inner: LocalRunner { home: home.clone() },
+        os,
+        arch,
+    };
+
+    let outcome = install::ensure(
+        &mut runner,
+        None,
+        this_deco(),
+        version(),
+        ForOther::Download {
+            fetcher: &mut fetcher,
+            into: &scratch,
+        },
+    )
+    .expect("an install");
+
+    let Installed::Sent {
+        path,
+        version: reported,
+        ..
+    } = outcome
+    else {
+        panic!("expected a send, got {outcome:?}");
+    };
+    // What arrived is the downloaded binary, not this machine's own.
+    assert_eq!(reported, format!("deco {}", version()));
+    let landed = std::fs::read_to_string(&path).expect("the installed file");
+    assert!(landed.starts_with("#!/bin/sh"), "{landed}");
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn a_download_that_does_not_match_its_checksum_installs_nothing() {
+    // The refusal that matters. The bytes arrive, they are not what the release
+    // vouches for, and the destination is left as it was — empty.
+    let home = remote_home("bad-checksum");
+    let scratch = home.join("scratch");
+    std::fs::create_dir_all(&scratch).expect("a directory");
+
+    let (os, arch, target) = if cfg!(target_os = "macos") {
+        ("linux", "aarch64", "aarch64-unknown-linux-gnu")
+    } else {
+        ("macos", "aarch64", "aarch64-apple-darwin")
+    };
+    let asset = deco_remote::fetch::asset_for(target);
+    let archive = release_archive(&scratch, target);
+    let sums = format!(
+        "{}  {asset}\n",
+        deco_remote::fetch::digest_of(b"a different archive entirely")
+    );
+
+    let mut fetcher = Canned(vec![
+        (
+            deco_remote::fetch::checksums_url(version()),
+            sums.into_bytes(),
+        ),
+        (deco_remote::fetch::asset_url(version(), &asset), archive),
+    ]);
+    let mut runner = ForeignRunner {
+        inner: LocalRunner { home: home.clone() },
+        os,
+        arch,
+    };
+
+    let error = install::ensure(
+        &mut runner,
+        None,
+        this_deco(),
+        version(),
+        ForOther::Download {
+            fetcher: &mut fetcher,
+            into: &scratch,
+        },
+    )
+    .expect_err("a refusal");
+    assert!(
+        error.to_string().contains("does not match the checksum"),
+        "{error}"
+    );
+    // Nothing was installed: the default destination is untouched.
+    assert!(!home.join(".deco/bin/deco").exists());
     let _ = std::fs::remove_dir_all(&home);
 }
