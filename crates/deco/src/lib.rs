@@ -16,7 +16,8 @@
 //!     _ => return,
 //! };
 //! let boot = Boot::from_process();
-//! let mut session = startup::session(&cli, &boot);
+//! // `None`: a local session has no remote machine settings to layer in.
+//! let mut session = startup::session(&cli, &boot, None);
 //! startup::open_local(&mut session, &cli.files, &boot).unwrap();
 //! ```
 

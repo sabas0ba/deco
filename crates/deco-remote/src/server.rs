@@ -20,12 +20,27 @@
 //! would make `project/link-to-etc/passwd` legal, which is exactly the shape of
 //! the mistake this is here to prevent.
 //!
+//! ## The one exception, and why it is not one
+//!
+//! `settings.read` answers about a file outside the workspace: this machine's
+//! `machine-settings.json`. It takes **no path**. A client cannot name a file,
+//! only ask for "this machine's settings", and receives whatever is at the one
+//! path the server computes for itself. The rule above is about what a client
+//! can *reach*, and by that measure nothing changed — there is still exactly
+//! one directory it can steer a read into.
+//!
+//! The server also does not *act* on what it returns. It resolves no theme,
+//! starts no language server, and nothing in that file changes how `fs.read`
+//! answers. It hands over bytes; the client decides, and treats them as
+//! untrusted. A server that obeyed a settings file would be taking an authority
+//! nobody gave it, which is the thing being avoided — not the reading itself.
+//!
 //! # What it does not do yet
 //!
 //! No port forwarding, no provisioning (the binary has to be there already), no
 //! language servers or extensions on the remote, and no watching for changes. The
-//! methods below are what opening, listing and saving a file need, and nothing
-//! else is claimed.
+//! methods below are what opening, listing and saving a file need, plus the one
+//! that hands over this machine's settings, and nothing else is claimed.
 
 use std::io::{BufRead, Write};
 use std::path::{Component, Path, PathBuf};
@@ -124,6 +139,13 @@ pub struct Server {
     /// The canonical workspace root. Every path is resolved against it and must
     /// stay inside it.
     root: PathBuf,
+    /// Where `settings.read` looks, decided at startup.
+    ///
+    /// Held rather than computed per request so that the answer to "which file
+    /// does this server serve as its machine settings" is fixed for the life of
+    /// the connection — a path that could change under a running session would
+    /// be one a client could be told two different things about.
+    machine_settings: Option<PathBuf>,
 }
 
 impl Server {
@@ -135,7 +157,18 @@ impl Server {
     pub fn new(root: impl AsRef<Path>) -> std::io::Result<Self> {
         Ok(Self {
             root: root.as_ref().canonicalize()?,
+            machine_settings: machine_settings_path(),
         })
+    }
+
+    /// The same server, serving `path` as its machine settings.
+    ///
+    /// For tests, and for anyone embedding this: the default reads the process
+    /// environment, which a test cannot change without changing it for every
+    /// other test running beside it.
+    pub fn serving_machine_settings(mut self, path: Option<PathBuf>) -> Self {
+        self.machine_settings = path;
+        self
     }
 
     /// The directory this server serves.
@@ -260,9 +293,52 @@ impl Server {
                     "fs.delete",
                     "fs.rename",
                     "fs.copy",
+                    "settings.read",
                     "$/shutdown"
                 ],
             })),
+            // The machine's own settings, handed over rather than acted on.
+            //
+            // This is the one method that answers about a path outside the
+            // workspace, and it is shaped so that it does not weaken the rule
+            // above: it takes **no path**. A client cannot ask for a file of
+            // its choosing, only for "this machine's settings", and gets
+            // whatever is at the one path this server computes. So the
+            // property that matters — an unauthenticated client cannot roam
+            // the filesystem — is untouched.
+            //
+            // Nor does the server *use* what it reads. It does not resolve a
+            // theme, start a language server, or let the file change how
+            // `fs.read` answers; it returns bytes and the client decides. That
+            // distinction is the whole reason this is allowed to exist: a
+            // server that obeyed a settings file would be taking an authority
+            // nobody gave it, and this one does not obey it.
+            //
+            // The client treats the result as an untrusted layer, which is why
+            // a server definition arriving this way still has to be confirmed.
+            "settings.read" => {
+                let paths = self.machine_settings.clone();
+                let path = paths
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_default();
+                // A missing file is `null` rather than an error: having no
+                // machine settings is the ordinary state, and the path is
+                // reported either way so `--print-config` can say where this
+                // server looked.
+                let text = match paths.as_ref().map(std::fs::read_to_string) {
+                    Some(Ok(text)) => Some(text),
+                    Some(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => None,
+                    Some(Err(error)) => {
+                        return Err(ServerError::Unreadable {
+                            path: path.clone(),
+                            reason: error.to_string(),
+                        })
+                    }
+                    None => None,
+                };
+                Ok(json!({ "path": path, "text": text }))
+            }
             "fs.read" => {
                 let asked = path("path")?;
                 let resolved = self.resolve(&asked)?;
@@ -659,6 +735,23 @@ pub const MAX_MATCHES: usize = 500;
 /// "search my project", and reading it is most of what the search would cost.
 pub const MAX_SEARCHED_BYTES: u64 = 1 << 20;
 
+/// Where this machine's settings for a connected session live.
+///
+/// The one path in this file not derived from `--workspace`, and the reason
+/// `settings.read` takes no argument: the server computes it, so the client
+/// cannot name it. `machine-settings.json` rather than `settings.json` — see
+/// [`deco_config::paths::ConfigPaths::machine_settings`] for why the two are
+/// separate.
+///
+/// `None` on a machine with no home directory, where a server is being run in
+/// an environment stripped of the variables the rules need. That is not an
+/// error: it is the same answer as having no machine settings, which is also
+/// the ordinary case.
+fn machine_settings_path() -> Option<PathBuf> {
+    use deco_config::paths::{ConfigPaths, Env, Layout};
+    ConfigPaths::deco(&Env::from_process(), Layout::host()).map(|paths| paths.machine_settings)
+}
+
 /// What kind of thing a directory entry is, in VS Code's numbering.
 ///
 /// `Unknown = 0`, `File = 1`, `Directory = 2`, `SymbolicLink = 64`, and a link is
@@ -779,6 +872,88 @@ mod tests {
             }) => Err(error),
             other => panic!("expected a reply, got {other:?}"),
         }
+    }
+
+    /// A server whose machine settings are a file this test controls.
+    fn with_machine_settings(root: &Path, name: &str, text: Option<&str>) -> Server {
+        let path = root.join(format!("{name}-machine-settings.json"));
+        match text {
+            Some(text) => std::fs::write(&path, text).expect("a file"),
+            None => {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+        Server::new(root)
+            .expect("a server")
+            .serving_machine_settings(Some(path))
+    }
+
+    #[test]
+    fn machine_settings_are_handed_over_with_the_path_they_came_from() {
+        let root = workspace("machine-settings");
+        let mut server = with_machine_settings(&root, "present", Some(r#"{"a": 1}"#));
+        let said = ask(&mut server, "settings.read", json!({})).expect("a reply");
+        assert_eq!(said["text"], r#"{"a": 1}"#);
+        // The path too, so `--print-config` can say where the far end looked
+        // rather than leaving "why is my remote setting not applying" to
+        // guesswork.
+        assert!(
+            said["path"]
+                .as_str()
+                .expect("a path")
+                .ends_with("present-machine-settings.json"),
+            "{said}"
+        );
+    }
+
+    #[test]
+    fn a_machine_with_no_settings_is_null_rather_than_an_error() {
+        // The ordinary case. An error here would make every connection to an
+        // unconfigured machine look like a broken one.
+        let root = workspace("machine-settings-absent");
+        let mut server = with_machine_settings(&root, "absent", None);
+        let said = ask(&mut server, "settings.read", json!({})).expect("a reply");
+        assert!(said["text"].is_null(), "{said}");
+        assert!(!said["path"].as_str().expect("a path").is_empty());
+    }
+
+    #[test]
+    fn a_server_with_nowhere_to_look_answers_the_same_as_one_with_nothing_there() {
+        // No home directory, so no configuration directory. Not an error: it
+        // holds no machine settings, which is what the client needs to know.
+        let root = workspace("machine-settings-nowhere");
+        let mut server = Server::new(&root)
+            .expect("a server")
+            .serving_machine_settings(None);
+        let said = ask(&mut server, "settings.read", json!({})).expect("a reply");
+        assert!(said["text"].is_null(), "{said}");
+        assert_eq!(said["path"], "");
+    }
+
+    #[test]
+    fn reading_machine_settings_takes_no_path_from_the_client() {
+        // The property that lets this method exist at all. Every other method
+        // is confined to the workspace; this one reaches outside it, so it must
+        // not be steerable. A `path` in the params is ignored rather than
+        // honoured — and the file that would have been reached is one the
+        // workspace rule would refuse.
+        let root = workspace("machine-settings-unsteerable");
+        let outside = root.join("..").join("secret.json");
+        std::fs::write(&outside, r#"{"stolen": true}"#).expect("a file");
+        let mut server = with_machine_settings(&root, "fixed", Some(r#"{"a": 1}"#));
+
+        let said = ask(
+            &mut server,
+            "settings.read",
+            json!({ "path": outside.display().to_string() }),
+        )
+        .expect("a reply");
+        assert_eq!(said["text"], r#"{"a": 1}"#, "the client steered the read");
+        assert!(said["path"]
+            .as_str()
+            .expect("a path")
+            .ends_with("fixed-machine-settings.json"));
+        let _ = std::fs::remove_file(&outside);
     }
 
     #[test]

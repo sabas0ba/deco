@@ -39,6 +39,9 @@ pub struct Scenario {
     /// A workspace for the far end that is not this machine's, once a scenario
     /// has put a file on it — see [`Scenario::remote_file`].
     remote: Option<PathBuf>,
+    /// The file the far end serves as its own machine settings, if a scenario
+    /// set one — see [`Scenario::remote_machine_settings`].
+    machine_settings: Option<PathBuf>,
 }
 
 impl Scenario {
@@ -70,6 +73,7 @@ impl Scenario {
             vscode_settings: None,
             language_servers: false,
             remote: None,
+            machine_settings: None,
         }
     }
 
@@ -209,6 +213,20 @@ impl Scenario {
             .unwrap_or_else(|| self.workspace.clone())
     }
 
+    /// The far end's own `machine-settings.json`.
+    ///
+    /// The settings a *machine* has, as opposed to the ones a person has: what
+    /// a session connected to that machine picks up as its `remote` layer.
+    /// Written into the scenario's directory and named to the server on its
+    /// command line, because the server is a separate process and a test cannot
+    /// change its environment without changing every other test's too.
+    pub fn remote_machine_settings(mut self, json: &str) -> Self {
+        let path = self.root.join("remote-machine-settings.json");
+        write_config(&path, json);
+        self.machine_settings = Some(path);
+        self
+    }
+
     /// deco's own `keybindings.json`.
     pub fn user_keybindings(self, json: &str) -> Self {
         let path = self.deco_paths().keybindings;
@@ -318,12 +336,19 @@ impl Scenario {
 
         let mut client = deco_remote::Client::start(&deco_remote::transport::Command {
             program: server_binary.display().to_string(),
-            args: vec![
-                "--server".to_owned(),
-                "--stdio".to_owned(),
-                "--workspace".to_owned(),
-                self.served_workspace().display().to_string(),
-            ],
+            args: {
+                let mut args = vec![
+                    "--server".to_owned(),
+                    "--stdio".to_owned(),
+                    "--workspace".to_owned(),
+                    self.served_workspace().display().to_string(),
+                ];
+                if let Some(path) = &self.machine_settings {
+                    args.push("--machine-settings".to_owned());
+                    args.push(path.display().to_string());
+                }
+                args
+            },
         })
         .unwrap_or_else(|error| panic!("the server should start: {error}"));
         let hello = client

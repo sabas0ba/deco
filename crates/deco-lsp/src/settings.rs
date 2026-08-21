@@ -48,9 +48,18 @@ fn trust_of(scope: Scope) -> Trust {
         // Defaults ship with deco. The user's own file is theirs.
         Scope::Default => Trust::BuiltIn,
         Scope::User => Trust::User,
-        // A remote supplies these, and connecting to a remote is already a
-        // decision the user made about a machine they trust.
-        Scope::Remote => Trust::User,
+        // Not the user's, even though connecting was the user's decision.
+        //
+        // Choosing to connect to a machine is not the same as vouching for
+        // every file on it: a remote layer is written where anyone with an
+        // account there can write it, which is the same shape of problem as a
+        // `.vscode/settings.json` arriving with a clone. The rest of deco
+        // already treats this scope as untrusted — `deco_ext::sandbox` will not
+        // let it choose the extension sandbox — and a definition here is a
+        // *program to execute*, which is the case that matters most.
+        //
+        // So it asks, exactly as a workspace's does.
+        Scope::Remote => Trust::Workspace,
         // Both arrive with the project's files, so both need agreement.
         Scope::Workspace | Scope::Folder => Trust::Workspace,
     }
@@ -152,6 +161,43 @@ mod tests {
     }
 
     #[test]
+    fn a_remote_definition_needs_confirmation_like_a_workspaces() {
+        // Connecting to a machine is a decision about the machine, not a vouch
+        // for every file on it: a remote layer sits where anyone with an
+        // account there can write it. `deco_ext::sandbox` already refuses this
+        // scope the extension sandbox; a server definition is a *program to
+        // execute*, so it cannot be the looser of the two.
+        let (registry, _) = registry(&settings(&[(
+            Scope::Remote,
+            r#"{"deco.lsp.servers": {"theirs": {"languages": ["rust"], "command": "./ra"}}}"#,
+        )]));
+        assert!(registry.get("theirs").unwrap().trust.needs_confirmation());
+    }
+
+    #[test]
+    fn a_remote_override_of_a_user_server_still_needs_confirmation() {
+        // The laundering path, by the layer that sits directly above the user's
+        // own: `remote` wins on precedence, and must not inherit the trust of
+        // the entry it displaced.
+        let (registry, _) = registry(&settings(&[
+            (
+                Scope::User,
+                r#"{"deco.lsp.servers": {"ra": {"languages": ["rust"], "command": "rust-analyzer"}}}"#,
+            ),
+            (
+                Scope::Remote,
+                r#"{"deco.lsp.servers": {"ra": {"languages": ["rust"], "command": "./evil"}}}"#,
+            ),
+        ]));
+        let server = registry.get("ra").expect("defined");
+        assert_eq!(server.command.program, "./evil", "the override applies");
+        assert!(
+            server.trust.needs_confirmation(),
+            "and it is still not trusted"
+        );
+    }
+
+    #[test]
     fn a_workspace_override_of_a_user_server_still_needs_confirmation() {
         // Otherwise shadowing a familiar id — `rust-analyzer`, say — would
         // launder an untrusted command into a trusted slot.
@@ -245,7 +291,11 @@ mod tests {
         // a new scope must be classified deliberately rather than defaulting.
         for scope in Scope::ALL {
             let trust = trust_of(scope);
-            let expected_confirmation = matches!(scope, Scope::Workspace | Scope::Folder);
+            // Everything that does not come from deco or from the user's own
+            // file has to ask. `Remote` is here because a machine you connect
+            // to is not a file you wrote.
+            let expected_confirmation =
+                matches!(scope, Scope::Workspace | Scope::Folder | Scope::Remote);
             assert_eq!(
                 trust.needs_confirmation(),
                 expected_confirmation,

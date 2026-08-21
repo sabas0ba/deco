@@ -34,7 +34,19 @@ fn read_optional(path: &Path, problems: &mut Vec<String>) -> Option<String> {
 /// `settings.json`, VS Code's is read instead so an existing setup works
 /// without being copied. Nothing is ever written back to VS Code's directory —
 /// the import is one-way on purpose.
-pub fn load(env: &Env, layout: Layout, workspace: Option<&Path>) -> LoadedConfig {
+///
+/// `remote_settings` is the connected machine's own `machine-settings.json`,
+/// already fetched over the connection because this machine cannot read it.
+/// It becomes the [`Scope::Remote`] layer: above the user's, below the
+/// workspace's, exactly where VS Code puts it — and **untrusted**, so a
+/// language server defined there still has to be confirmed and the extension
+/// sandbox will not take its word.
+pub fn load(
+    env: &Env,
+    layout: Layout,
+    workspace: Option<&Path>,
+    remote_settings: Option<&str>,
+) -> LoadedConfig {
     let mut problems = Vec::new();
     let mut settings = Settings::with_defaults();
 
@@ -63,6 +75,15 @@ pub fn load(env: &Env, layout: Layout, workspace: Option<&Path>) -> LoadedConfig
                 .as_ref()
                 .and_then(|p| read_optional(&p.keybindings, &mut problems))
         });
+
+    // Between the user's and the workspace's, which is the order VS Code uses
+    // and the order `Scope` already declares. Loaded before the workspace layer
+    // below so that a project can still override a machine-wide setting.
+    if let Some(source) = remote_settings {
+        if let Err(error) = settings.load_layer(Scope::Remote, source) {
+            problems.push(format!("the remote's machine-settings.json: {error}"));
+        }
+    }
 
     if let Some(root) = workspace {
         for candidate in deco_config::paths::workspace_settings_candidates(root) {
@@ -112,7 +133,7 @@ mod tests {
             home: Some(PathBuf::from("/nonexistent-home")),
             ..Default::default()
         };
-        let loaded = load(&env, Layout::Xdg, None);
+        let loaded = load(&env, Layout::Xdg, None, None);
         assert!(loaded.problems.is_empty(), "{:?}", loaded.problems);
         // The built-in defaults are still there.
         assert_eq!(loaded.settings.get_u64("editor.tabSize", None), Some(4));

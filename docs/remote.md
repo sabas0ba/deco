@@ -102,6 +102,77 @@ The remote is assumed to have a POSIX shell and `uname`, `mkdir`, `dd`, `chmod`
 and `mv` — the same assumption already made by running `deco --server` over
 `ssh`.
 
+## Settings that belong to the machine
+
+Some settings are facts about a *machine* rather than about a person: where the
+toolchain is on the build box, which interpreter that container has. VS Code
+calls these machine settings and keeps them on the remote; deco does the same,
+in `machine-settings.json` beside the remote's own `settings.json`:
+
+```jsonc
+// ~/.config/deco/machine-settings.json, on the remote
+{
+  "deco.lsp.servers": {
+    "rust-analyzer": { "languages": ["rust"], "command": "/opt/rust/bin/rust-analyzer" }
+  }
+}
+```
+
+Connect, and it becomes the **`remote` layer**: above your own `settings.json`,
+below the project's, exactly where VS Code puts it. `deco --print-config` names
+the file it came from.
+
+**It is a separate file from that machine's `settings.json`, deliberately.**
+Serving the account's own editor configuration would mean connecting quietly
+adopted somebody else's theme, font and keybindings — and would turn an ordinary
+local setup into something a visitor's session has to treat as suspect. A
+machine-settings file is written on purpose, by someone who meant it to be seen
+by whoever connects.
+
+### It is not trusted, and that is the point
+
+`machine-settings.json` sits where anyone with an account on that machine can
+write it. Choosing to connect to a machine is a decision about the machine; it
+is not a signature on every file that happens to be on it. So this layer is
+treated like a cloned repository's `.vscode/settings.json`:
+
+- **A language server defined there is confirmed before it runs.** A definition
+  is a program to execute, and connecting must not be enough to execute one.
+  This is the same rule that already applies to a workspace's, for the same
+  reason — see [Language servers](language-servers.md).
+- **It cannot choose the extension sandbox.** `deco.extensions.sandbox` and its
+  neighbours are read from deco's defaults and your own file only, and an
+  attempt from here is reported rather than dropped in silence.
+- **`--clean` ignores it**, along with everything else. A flag meaning "start
+  with nothing" that still adopted another machine's settings would not be the
+  flag it says it is.
+
+Everything else — tab size, rulers, word wrap, a colour theme — applies
+normally. Those change what you see, not what runs.
+
+### How it gets here
+
+The server has one method for it, `settings.read`, and that method **takes no
+path**. A client cannot ask for a file of its choosing; it asks for "this
+machine's settings" and receives whatever is at the one path the server works
+out for itself. So the [confinement rule](#one-directory-and-no-way-out-of-it)
+is untouched: there is still exactly one directory a client can steer a read
+into.
+
+The server does not read the file to *decide* anything either. It hands over
+bytes; this end parses them, places them in the layer, and applies the trust
+rules above. A server that obeyed a settings file would be taking an authority
+nobody gave it — reading one to pass along is not that.
+
+A server too old to have the method says so in its handshake, and this end does
+not ask. A machine with no `machine-settings.json` is the ordinary case and is
+not an error; a file that cannot be read *is* reported, because a layer that
+silently did not apply is how "why is my setting being ignored" starts.
+
+Whoever starts the server can point it elsewhere with `--machine-settings
+<path>`. That is a decision made where the server is launched — on the remote,
+by whoever runs it — and not one a client can make.
+
 ## Extensions
 
 The host stays on this machine. What changes in a remote session is where its
@@ -189,11 +260,13 @@ early says so.
 
 Two things are worth knowing:
 
-- **`files.exclude` is applied here, not there.** The server reads no settings —
-  deliberately, since answering `fs.read` by consulting a `settings.json` on the
-  remote would be an authority nobody gave it — so the only end that can apply
-  your excludes is this one. The server still skips `.git`, `node_modules` and
-  `target` on its own, which is where most of the cost of a walk is.
+- **`files.exclude` is applied here, not there.** The server does not *act* on
+  settings — answering `fs.read` by consulting a file on the remote would be an
+  authority nobody gave it — so the only end that can apply your excludes is
+  this one. (It will hand over the machine's settings when asked; that is
+  [a different thing](#settings-that-belong-to-the-machine), and it still does
+  not obey them.) The server still skips `.git`, `node_modules` and `target` on
+  its own, which is where most of the cost of a walk is.
 - **The count shown is the count after filtering**, which can be fewer than the
   server found.
 
@@ -340,16 +413,26 @@ That command is not written by hand — `deco_remote::server_command` builds it 
 `command_for` wraps it in the transport — but it is exactly what runs, and a test
 asserts that what one half builds is what the other half parses.
 
-The server answers four methods: a handshake naming the protocol version and the
-workspace, `fs.read`, `fs.write`, and `fs.list`. That is what opening, listing and
-saving a file needs. It reads no settings, loads no theme, and starts no language
-server or extension: a server deciding how to answer `fs.read` by reading a
-`settings.json` on the remote would have an authority nobody asked it to have.
+The server answers a handshake naming the protocol version and the workspace,
+the `fs.*` family, and `settings.read`. That is what opening, listing, searching
+and saving a file needs, plus the machine's own settings.
+
+It **acts on** none of it. No theme is loaded, no language server or extension is
+started, and nothing it hands over changes how it answers anything else: a server
+deciding how to answer `fs.read` by reading a `settings.json` on the remote would
+have an authority nobody asked it to have. Returning bytes for the client to
+judge is not that.
 
 ### One directory, and no way out of it
 
 Every path is resolved and confined to the `--workspace` directory. Anything
 outside it is refused **by name**, in both directions — reading and writing.
+
+`settings.read` is the one answer about a file outside it, and it is shaped so
+the rule still holds: it takes **no path**. A client cannot name a file, only ask
+for "this machine's settings", and gets whatever is at the one path the server
+computes for itself. What a client can *steer* a read into is still exactly one
+directory.
 
 This is stricter than VS Code, whose remote server will open any path the account
 can reach. The reason to be stricter is what the client is: whatever is on the

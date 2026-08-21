@@ -98,6 +98,19 @@ pub struct Handshake {
     pub methods: Vec<String>,
 }
 
+impl Handshake {
+    /// Whether the server answers `method`.
+    ///
+    /// The handshake lists what a server has so a client need not discover it
+    /// by being refused — which matters once a refusal and an ordinary "no"
+    /// would look the same. `settings.read` on a server that predates it is
+    /// the case: asking and catching the refusal would also swallow a genuine
+    /// failure to read the file.
+    pub fn serves(&self, method: &str) -> bool {
+        self.methods.iter().any(|known| known == method)
+    }
+}
+
 /// One place a search term was found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Match {
@@ -143,6 +156,13 @@ pub struct Client {
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     next_id: u64,
+    /// What the handshake said this server has, once it has been asked.
+    ///
+    /// Kept so that a caller which did not perform the handshake can still ask
+    /// what the far end supports. Without it, "does this server have
+    /// `settings.read`?" could only be answered by calling it and reading the
+    /// refusal — which is indistinguishable from the file being unreadable.
+    served: Vec<String>,
 }
 
 impl Client {
@@ -175,6 +195,7 @@ impl Client {
             stdin,
             stdout: BufReader::new(stdout),
             next_id: 1,
+            served: Vec::new(),
         })
     }
 
@@ -233,7 +254,7 @@ impl Client {
         if theirs != PROTOCOL_VERSION {
             return Err(ClientError::Protocol { theirs });
         }
-        Ok(Handshake {
+        let hello = Handshake {
             workspace: said["workspace"].as_str().unwrap_or_default().to_owned(),
             methods: said["methods"]
                 .as_array()
@@ -244,7 +265,17 @@ impl Client {
                         .collect()
                 })
                 .unwrap_or_default(),
-        })
+        };
+        self.served.clone_from(&hello.methods);
+        Ok(hello)
+    }
+
+    /// Whether the handshake said this server has `method`.
+    ///
+    /// False before the handshake, which is the safe direction: nothing optional
+    /// should be attempted against a server that has not said what it is.
+    pub fn serves(&self, method: &str) -> bool {
+        self.served.iter().any(|known| known == method)
     }
 
     /// Reads a file from the server's workspace.
@@ -290,6 +321,32 @@ impl Client {
             method: "fs.stat".to_owned(),
             field: "stat",
         })
+    }
+
+    /// The remote machine's own settings, and the path they came from.
+    ///
+    /// `None` for the text when the machine has no `machine-settings.json`,
+    /// which is the ordinary case — the path is still returned, so
+    /// `--print-config` can say where the far end looked rather than leaving
+    /// "why is my remote setting not applying" to guesswork.
+    ///
+    /// **What comes back is not trusted.** It is written where anyone with an
+    /// account on that machine can write it, so it is loaded as
+    /// [`Scope::Remote`] and everything that treats that scope as untrusted —
+    /// the extension sandbox, and language-server definitions, which have to be
+    /// confirmed — keeps doing so.
+    ///
+    /// Ask [`Handshake::serves`] before calling this: a server too old to know
+    /// the method would refuse it, and a refusal here is a real failure worth
+    /// reporting rather than something to read as "no settings".
+    ///
+    /// [`Scope::Remote`]: https://docs.rs/deco-config
+    pub fn machine_settings(&mut self) -> Result<(String, Option<String>), ClientError> {
+        let said = self.request("settings.read", json!({}))?;
+        Ok((
+            said["path"].as_str().unwrap_or_default().to_owned(),
+            said["text"].as_str().map(str::to_owned),
+        ))
     }
 
     /// What is directly inside one directory on the remote.

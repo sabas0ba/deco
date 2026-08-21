@@ -14,6 +14,10 @@ authors.workspace = true
 # of what counts as a match would drift, and a search that finds different
 # things depending on which machine the files are on is worse than none.
 deco-core.workspace = true
+# For `settings.read`: the server resolves *its own* machine-settings path with
+# the same rules the editor uses for a configuration directory, so the file a
+# person edits on the remote is the file a connected session is served.
+deco-config.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

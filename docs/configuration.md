@@ -35,6 +35,12 @@ Layers apply in VS Code's order, each overriding the one before:
 Default  <  User  <  Remote  <  Workspace  <  Folder
 ```
 
+**Remote** is filled only in a remote session, from `machine-settings.json` on
+the machine you connected to — settings that are facts about that machine rather
+than about you. It is fetched over the connection, since this machine cannot
+read it, and it is **not trusted**: see
+[Settings that belong to the machine](remote.md#settings-that-belong-to-the-machine).
+
 Language-specific overrides work as they do in VS Code, and are resolved against
 the open document's language:
 

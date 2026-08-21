@@ -245,6 +245,14 @@ in it. The editor says which server it declined and why, and falls back to the
 next candidate for that language — so a repository cannot disable the feature by
 defining a server you then decline.
 
+**The same goes for one a remote defines.** A remote session's `machine-settings.json`
+is written where anyone with an account on that machine can write it, and
+choosing to connect somewhere is a decision about the machine, not a signature on
+every file on it. So a definition arriving that way is confirmed like a
+workspace's — which is a nuisance exactly once, and is the difference between
+connecting to a build box and running whatever it nominates. See
+[Settings that belong to the machine](remote.md#settings-that-belong-to-the-machine).
+
 The refusal is recorded in the problem list, which `deco --print-config` prints
 and `F8` walks, whether or not another server started for that language. It also
 reaches the status bar when nothing started, because with no server running there

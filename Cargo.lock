@@ -565,6 +565,7 @@ dependencies = [
  "deco-ext",
  "deco-gui",
  "deco-keymap",
+ "deco-lsp",
  "deco-remote",
  "deco-theme",
  "deco-tui",
@@ -675,6 +676,7 @@ dependencies = [
 name = "deco-remote"
 version = "0.1.0"
 dependencies = [
+ "deco-config",
  "deco-core",
  "serde",
  "serde_json",

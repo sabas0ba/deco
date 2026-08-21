@@ -335,3 +335,75 @@ fn reverting_reports_a_far_end_read_failure_without_losing_the_edits() {
         editor.text()
     );
 }
+
+#[test]
+fn the_far_ends_own_settings_reach_the_session() {
+    // The wiring, end to end: a real `deco --server` reads its machine settings,
+    // the client fetches them over the connection, and the editor resolves them
+    // as a layer. Every part of this was unit-tested separately and none of
+    // those tests could tell whether the layer was ever applied.
+    //
+    // `editor.tabSize` because it is unambiguous and visible from the session.
+    let scenario =
+        scenario("remote-machine-settings").remote_machine_settings(r#"{ "editor.tabSize": 7 }"#);
+    let editor = scenario.launch_remote(&["notes.txt"], server());
+
+    assert_eq!(
+        editor.session().settings.get_u64("editor.tabSize", None),
+        Some(7),
+        "the remote's machine settings should have become the `remote` layer"
+    );
+}
+
+#[test]
+fn this_machines_settings_beat_the_far_ends_where_a_project_disagrees() {
+    // The layer's position, which is the other half of getting it right: VS
+    // Code puts `remote` above the user's own and below the workspace's, and a
+    // layer applied in the wrong place is worse than one not applied at all —
+    // it changes settings the user thought they had decided.
+    let scenario = scenario("remote-machine-settings-order")
+        .user_settings(r#"{ "editor.tabSize": 2, "editor.insertSpaces": false }"#)
+        .remote_machine_settings(r#"{ "editor.tabSize": 7 }"#);
+    let editor = scenario.launch_remote(&["notes.txt"], server());
+
+    let settings = &editor.session().settings;
+    // The remote is above the user, so it wins where both speak.
+    assert_eq!(settings.get_u64("editor.tabSize", None), Some(7));
+    // And says nothing about the rest, which the user's own file still decides.
+    assert_eq!(settings.get_bool("editor.insertSpaces", None), Some(false));
+}
+
+#[test]
+fn a_language_server_the_far_end_defines_is_not_launched_on_its_word() {
+    // The reason the layer is untrusted. A machine-settings file sits where
+    // anyone with an account on that machine can write it, and a server
+    // definition is a program to run — so connecting must not be enough to
+    // execute one, exactly as cloning a repository is not.
+    let scenario = scenario("remote-machine-settings-lsp").remote_machine_settings(
+        r#"{ "deco.lsp.servers": { "theirs": { "languages": ["plaintext"], "command": "./evil" } } }"#,
+    );
+    let editor = scenario.launch_remote(&["notes.txt"], server());
+
+    let (registry, _) = deco_lsp::settings::registry(&editor.session().settings);
+    let server = registry.get("theirs").expect("the definition is read");
+    assert!(
+        server.trust.needs_confirmation(),
+        "a server defined by the remote must be confirmed, not trusted: {:?}",
+        server.trust
+    );
+}
+
+#[test]
+fn a_far_end_with_no_settings_of_its_own_changes_nothing() {
+    // The ordinary case, and the one that must not become an error: most
+    // machines have no machine-settings.json at all.
+    let scenario =
+        scenario("remote-machine-settings-absent").user_settings(r#"{ "editor.tabSize": 3 }"#);
+    let mut editor = scenario.launch_remote(&["notes.txt"], server());
+
+    assert_eq!(
+        editor.session().settings.get_u64("editor.tabSize", None),
+        Some(3)
+    );
+    editor.screen().assert_shows("the needle is here");
+}

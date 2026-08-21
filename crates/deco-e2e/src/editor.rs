@@ -45,7 +45,16 @@ impl Editor {
         mut remote: Option<deco_tui::RemoteSession>,
     ) -> anyhow::Result<Self> {
         let boot = scenario.boot();
-        let mut session = deco::startup::session(&cli, &boot);
+        // The same order the binary uses: the remote's machine settings are a
+        // *layer*, so they have to be fetched before the session resolves a
+        // theme and builds a keymap out of them.
+        let remote_settings = match remote.as_mut() {
+            Some(remote) if remote.client.serves("settings.read") => {
+                remote.client.machine_settings()?.1
+            }
+            _ => None,
+        };
+        let mut session = deco::startup::session(&cli, &boot, remote_settings.as_deref());
         if let Some(remote) = remote.as_mut() {
             // Fetched through the connection rather than read from disk, which is
             // what the binary does in a remote session — and what makes the
