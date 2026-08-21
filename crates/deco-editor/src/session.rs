@@ -590,7 +590,7 @@ impl Session {
         // Code: opening find in another file shows the same query, and `F3` in a
         // tab you have not searched yet looks for the last thing you looked for.
         let carried_query = active.find.query().to_owned();
-        let mut all: Vec<Tab> = self.left.drain(..).collect();
+        let mut all: Vec<Tab> = std::mem::take(&mut self.left);
         all.push(active);
         all.append(&mut self.right);
 
