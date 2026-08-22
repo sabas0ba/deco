@@ -357,13 +357,35 @@ fn provision(
 ) -> Result<deco_remote::Installed> {
     let binary = std::env::current_exe().context("cannot find this deco to send it")?;
     let mut runner = deco_remote::TransportRunner::new(authority.clone(), options);
-    deco_remote::install::ensure(
+    let mut curl = deco_remote::fetch::Curl;
+    // Beside this binary rather than in the system temporary directory, which on
+    // a shared machine is writable by everyone: a path another account can
+    // replace between the check and the upload would undo the check.
+    let downloads = binary
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join(".deco-download");
+    let for_other = if cli.remote_install_download {
+        deco_remote::install::ForOther::Download {
+            fetcher: &mut curl,
+            into: &downloads,
+        }
+    } else {
+        deco_remote::install::ForOther::Refuse
+    };
+    let installed = deco_remote::install::ensure(
         &mut runner,
         cli.remote_server_path.as_deref(),
         &binary,
         env!("CARGO_PKG_VERSION"),
+        for_other,
     )
-    .context("could not put deco on the remote")
+    .context("could not put deco on the remote");
+    // Whatever happened, the downloaded copy has been sent or refused and is not
+    // wanted here. Left behind it would be an unversioned executable in a
+    // directory nobody looks at.
+    let _ = std::fs::remove_dir_all(&downloads);
+    installed
 }
 
 /// Runs as the remote server, speaking the framed protocol over stdin and stdout.

@@ -74,9 +74,11 @@ exists rather than the behaviour being automatic:
 
 - **Nothing happens unless asked.** A session that finds no `deco` fails and
   mentions `--remote-install`. It does not helpfully fix it.
-- **A different platform is refused.** The remote is asked what it is *before*
-  anything is sent, and a mismatch names both sides rather than uploading a
-  binary that cannot run there.
+- **A different platform needs a second, larger yes.** The remote is asked what
+  it is *before* anything is sent. `--remote-install` on its own reaches
+  nothing — it copies the file already running here — so a mismatch names both
+  sides rather than uploading a binary that cannot run there. Downloading one
+  that can is `--remote-install-download`, below.
 - **Anything that is not deco is left alone.** Existence and runnability are
   asked separately, so a `--remote-server-path` typo landing on a `notes.txt` —
   which exists but answers no `--version` — is a refusal, not an overwrite.
@@ -90,17 +92,59 @@ exists rather than the behaviour being automatic:
 A deco of the same version already at the destination is left where it is, so
 this is not an upload on every start.
 
-### What it cannot do yet
+### When the remote is another platform
 
-It sends *this* machine's binary, which means both ends must be the same
-platform: Linux to Linux, and every WSL and container case. **A macOS laptop
-provisioning a Linux server is refused**, because the fix is fetching a release
-built for the remote rather than sending the wrong file — and where deco is
-willing to download from is its own decision, not one to slip in here.
+`--remote-install` sends *this* machine's binary, so both ends must match: Linux
+to Linux, and every WSL and container case. A macOS laptop provisioning a Linux
+server needs a binary this machine does not have.
+
+`--remote-install-download` fetches one:
+
+```console
+$ deco --remote ssh-remote+buildbox --remote-install-download src/main.rs
+```
+
+It is a **separate flag on purpose**. Copying the file you are already running
+reaches nothing; fetching an executable over the network is a different thing to
+be allowed to do, and a flag that quietly grew that power would be the kind of
+convenience this project keeps refusing. `--remote-install` alone still refuses
+a mismatch exactly as it did.
+
+What it fetches is the release for this deco's *own* version — the same archive
+and the same `SHA256SUMS` the [README's install
+section](../README.md#a-prebuilt-binary) tells a person to download by hand.
+
+- **The checksum is checked here, by deco.** The archive is hashed in deco's own
+  code and compared with the line `SHA256SUMS` carries for it. A mismatch is
+  discarded, naming both hashes, and nothing is written.
+- **An archive nothing vouches for is refused before it is downloaded.** The
+  checksums come first; if they list no line for the asset, the archive is never
+  asked for. There is no path where unverified bytes are used because they had
+  already arrived.
+- **Nothing from the archive touches the filesystem as a tree.** The one member
+  holding the binary is read out with `tar xzO`, so a path with `..` in it or a
+  symlink pointing somewhere it should not has nowhere to land.
+- **The transfer and the unpacking are `curl` and `tar`.** Both ship with every
+  platform this runs on, and both are missing-by-name failures rather than
+  silent ones. Only the check is deco's own — see
+  [Dependencies](../README.md#dependencies) for why that line is drawn there and
+  not somewhere cheaper.
+
+Once the binary is in hand it is uploaded by exactly the path above: staged
+beside the destination, made executable, renamed, and then asked for its version.
+
+**A platform with no published build is still refused by name.** The releases
+carry four POSIX targets — Linux and macOS, x86-64 and ARM64 — and anything else
+is told so rather than given the nearest thing.
+
+`uname` cannot tell glibc from musl, so an Alpine remote is sent the `-gnu`
+build. That is not silently wrong: the installed binary is asked for its version
+and one that cannot run does not answer, so it surfaces as a refusal at the end
+rather than as a session that mysteriously never connects.
 
 The remote is assumed to have a POSIX shell and `uname`, `mkdir`, `dd`, `chmod`
 and `mv` — the same assumption already made by running `deco --server` over
-`ssh`.
+`ssh`. The download adds nothing to that list: it all happens on this end.
 
 ## Settings that belong to the machine
 

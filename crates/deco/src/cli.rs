@@ -96,6 +96,14 @@ pub struct Cli {
     /// Off unless asked for. Pointing an editor at a machine is not the same as
     /// authorising it to install software there — see [`deco_remote::install`].
     pub remote_install: bool,
+    /// Also download a build for the remote when it is a different platform.
+    ///
+    /// Separate from `remote_install` because it is a larger thing to allow:
+    /// sending the binary already running here reaches nothing, and this
+    /// fetches an executable over the network. Implies `--remote-install`, since
+    /// downloading a deco for a machine you were not going to install one on
+    /// would do nothing.
+    pub remote_install_download: bool,
     /// Ports on the remote to make reachable from here, as `3000` or `8080:3000`.
     pub forwards: Vec<deco_remote::PortSpec>,
     /// Run as one end of a forwarded connection rather than as an editor.
@@ -189,6 +197,9 @@ Options:
       --remote-server-path <PATH>
                              Where deco is on the remote [default: found on its PATH]
       --remote-install       Send this machine's deco to the remote first, if it needs one
+      --remote-install-download
+                             ...and if the remote is another platform, download the
+                             release built for it and check it against SHA256SUMS
       --forward <PORT>       Reach a port on the remote here, as 3000 or 8080:3000
       --forward-to <ADDR>    Pipe stdin and stdout to a loopback address; the remote half
   -h, --help                 Print help
@@ -251,6 +262,11 @@ where
                 cli.remote_server_path = Some(value.as_ref().to_owned());
             }
             "--remote-install" => cli.remote_install = true,
+            // Implies the install: the download exists to make one possible.
+            "--remote-install-download" => {
+                cli.remote_install = true;
+                cli.remote_install_download = true;
+            }
             "--forward" => {
                 let value = args.next().ok_or(CliError::MissingValue("--forward"))?;
                 cli.forwards.push(port_spec(value.as_ref())?);
@@ -493,6 +509,7 @@ mod tests {
             remote: None,
             remote_server_path: None,
             remote_install: false,
+            remote_install_download: false,
             forwards: Vec::new(),
             forward_to: None,
         };

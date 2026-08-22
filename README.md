@@ -120,7 +120,7 @@ behaving in a way the code does not.
 ## Why these choices
 
 **Rust, not Electron.** The editor is a native binary with a rope-backed text
-model. The terminal build pulls in 44 third-party crates in total, and the
+model. The terminal build pulls in 52 third-party crates in total, and the
 extension host pulls in no npm packages at all — see
 [Dependencies](#dependencies).
 
@@ -293,8 +293,8 @@ self-update, debugging — each have a plan in the
   `deco --server --stdio` on the far end, fetches the file, and writes it back on
   `ctrl+s`; `ctrl+p` lists the remote workspace. The server refuses everything
   outside the directory it was given, symlinks included. `--remote-install` sends
-  this machine's binary to a remote that has none — only when asked, only to a
-  matching platform, and never over something that is not deco. `--forward 3000`
+  this machine's binary to a remote that has none — only when asked, and never
+  over something that is not deco. `--forward 3000`
   reaches a port over there, using the remote's own deco as the tunnel so that it
   works over containers and WSL and not only SSH; both ends are loopback-only.
   Language servers run on the remote, from the same `deco.lsp.servers`
@@ -302,11 +302,14 @@ self-update, debugging — each have a plan in the
   the machine holding the files, and an extension's `readFile`/`writeFile` are
   answered through the connection rather than from this machine's disk. The
   remote's own `machine-settings.json` becomes the `remote` settings layer —
-  untrusted, so a language server it names is confirmed before it runs. What is
-  missing: the extension *host* still runs locally, so a capability to run a
-  program runs it here — which the docs say rather than leaving to be discovered. Provisioning a *different* platform
-  is refused rather than guessed at, because it needs somewhere deco is willing
-  to download a build from.
+  untrusted, so a language server it names is confirmed before it runs.
+  `--remote-install-download` provisions a remote of a *different* platform by
+  fetching that release and checking it against the release's own `SHA256SUMS`
+  before sending it — a separate flag from `--remote-install`, because reaching
+  the network is a larger thing to allow than copying the file already running.
+  What is missing: the extension *host* still runs locally, so a capability to
+  run a program runs it here — which the docs say rather than leaving it to be
+  discovered.
 - **Rename and code actions are not wired.** Diagnostics, hover
   (`ctrl+k ctrl+i`), go-to-definition (`F12`), references (`shift+f12`),
   document symbols (`ctrl+shift+o`), completion (`ctrl+space`), semantic tokens
@@ -602,15 +605,26 @@ on purpose, and the size is checked rather than assumed:
 
 | Build | Third-party crates |
 | --- | --- |
-| `deco` (terminal only, what releases ship) | 44 |
-| `deco --features gui` | 155 |
+| `deco` (terminal only, what releases ship) | 52 |
+| `deco --features gui` | 163 |
 | `xtask` (build tooling, never shipped) | 49 |
 | extension host (Node) | **0** |
 
 Everything in the terminal build is a crate with a long publishing history and
 more than one maintainer's worth of use behind it: `ropey` for the text rope,
 `crossterm` for the terminal, `serde`/`serde_json`, `thiserror`/`anyhow`,
-`regex` (rust-lang), and the `unicode-*` crates from the unicode-rs project.
+`regex` (rust-lang), the `unicode-*` crates from the unicode-rs project, and
+`sha2` from RustCrypto.
+
+`sha2` is there for one job: `--remote-install-download` checks a release
+archive against the `SHA256SUMS` that release publishes, and **that check is
+deco's own code**. The download itself and the unpacking are handed to `curl`
+and `tar`, which every platform this runs on already ships. That split is the
+whole reason the number above is 52 and not 93: an in-process HTTPS client costs
+about forty crates and a vendored TLS stack. Delegating a transfer is delegating
+a chore; delegating the checksum would be asking something else whether it had
+checked, which is not checking. See
+[`crates/deco-remote/src/fetch.rs`](crates/deco-remote/src/fetch.rs).
 There are no git dependencies and no vendored forks — every entry in
 `Cargo.lock` resolves to crates.io, and `cargo deny` fails the build if that
 stops being true.
