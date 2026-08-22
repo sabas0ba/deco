@@ -60,7 +60,9 @@ pub use client::{Client, ClientEvent, LspError, Outgoing};
 pub use diagnostics::{Diagnostic, DiagnosticStore, Severity};
 pub use jsonrpc::{Message, Notification, Request, RequestId, Response};
 pub use process::{Consent, ServerProcess, SpawnError};
-pub use requests::{FormattingOptions, Hover, Location, TextEdit};
+pub use requests::{
+    DocumentEdits, FormattingOptions, Hover, Location, TextEdit, WorkspaceEdit, WorkspaceEditError,
+};
 pub use server::{ServerConfig, ServerRegistry, Trust};
 pub use settings::{ENABLED_KEY, SERVERS_KEY};
 pub use supervisor::{Supervisor, SupervisorError, Update};

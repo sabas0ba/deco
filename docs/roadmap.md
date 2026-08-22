@@ -399,11 +399,15 @@ Three smaller items block or shrink the chapters above and are worth doing
 first; they are listed in the README's "what is not built yet" and repeated
 here because the plans above lean on them.
 
-- **`WorkspaceEdit`.** One undoable action across several documents, open or
-  not. Unblocks LSP rename and code actions (the keys already refuse by name),
-  replace-across-files, and the file tree's mutations. The shape: a plan of
-  per-document invertible edit groups, validated against document versions
-  before any write, applied all-or-nothing, undone as one step.
+- **~~`WorkspaceEdit`~~ — built.** A plan of per-document edits, validated
+  against document versions before any write, applied all-or-nothing, and undone
+  as one step; files no tab holds are opened rather than written. LSP rename
+  (`F2`) is its first user and is documented in
+  [Language servers](language-servers.md#rename). What still waits on a *caller*
+  rather than on the mechanism: code actions (`ctrl+.` needs
+  `textDocument/codeAction` and a list to choose from), replace-across-files, and
+  the file tree's mutations. An agent's turn is the same shape — see
+  [Agent integration](#agent-integration).
 - **Regular-expression search.** `deco-core::search` is literal on purpose;
   regex needs its own escaping rules and its own error reporting for a bad
   pattern (`alt+r` says so today). Decision to make: a regex crate dependency

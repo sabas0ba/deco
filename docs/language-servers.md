@@ -206,6 +206,55 @@ previous edit moved. Overlapping edits are refused rather than guessed at: the
 specification forbids them, so a server sending them is broken, and picking which
 to honour would corrupt the file silently.
 
+## Rename
+
+![F2 renaming a symbol across two files, one of them not open, undone with ctrl+z](img/rename.svg)
+
+`F2` renames the symbol under the caret everywhere the server says it appears.
+The key is gated on `editorHasRenameProvider`, so with a server that cannot
+rename it does not resolve at all. The prompt opens with the current name
+selected — typing replaces it, `end` keeps it to add a suffix — and accepting it
+unchanged is refused rather than sent, because an edit per occurrence that
+changes nothing would mark every file mentioning the symbol dirty for no reason.
+
+A rename is the first thing in deco to arrive as a **`WorkspaceEdit`**: one
+change spread across however many documents. What makes it different from every
+other edit is that partly done is worse than not done at all — half a rename
+leaves a project that does not build. So the whole thing is checked before any
+of it is applied:
+
+- **Every URI must resolve to a file.** A server's synthetic scheme, or an
+  `untitled:` document, refuses the edit rather than being skipped past.
+- **Every version the server stated must still be current.** Positions only mean
+  something against the text they were computed for, so an answer that arrives
+  after a keystroke has moved the lines is refused and says so. A server using
+  the older `changes` spelling states no versions at all; there is nothing to
+  check, and that edit is applied on trust.
+- **Every document's edits must be applicable**, which is where overlapping
+  ranges are caught — in the same batched, back-to-front transaction that
+  formatting uses.
+
+Only then is anything written, and from that point nothing can fail.
+
+**Files that are not open are opened, not written.** Most of a rename lands in
+files nobody is looking at. VS Code writes those to disk; deco opens them as tabs
+holding unsaved changes, and the status line says how many. Two reasons: nothing
+in deco's core performs I/O — which is what makes the whole editable surface
+testable without a terminal or a filesystem — and an editor that rewrites files
+you have never seen, without being asked to save, is doing the one thing the rest
+of deco is careful not to. `ctrl+k s` writes them; `ctrl+z` takes them back.
+
+**One `ctrl+z` undoes all of it**, from any of the files involved, because every
+document records its share under one shared step. Type something in one of them
+first and that keystroke undoes on its own: the shared step is still underneath,
+and comes out when the edits on top of it have.
+
+A server that wants a file **created, renamed or deleted** as part of the change —
+rust-analyzer does this when you rename a module — is refused, naming the
+operation. Those arrive mixed in with text edits that only make sense together
+with them, so applying the half deco can do would leave the project worse than
+not renaming at all.
+
 ## Configuring a server
 
 `deco.lsp.servers` is keyed by a server identifier, and each definition says
@@ -266,11 +315,19 @@ settings, having read it — which is the step Workspace Trust makes it easy to 
 
 ## Not built yet
 
-Rename and code actions are parsed but not wired. Applying a rename means editing
-files that are not open — possible now that there are tabs, but it needs a
-`WorkspaceEdit` applied across several documents as one undoable action, which
-does not exist yet. Those keys say the feature is not implemented rather than
-pretending.
+Code actions are parsed but not wired. The applying half is done — `ctrl+.` needs
+`textDocument/codeAction` and a list to choose from, and then it lands through
+the same `WorkspaceEdit` path [rename](#rename) uses. The key says the feature is
+not implemented rather than pretending.
+
+`textDocument/prepareRename` is not sent. It is the request that asks a server
+whether a position can be renamed *before* the user is asked for a new name; deco
+asks for the name first and reports the server's refusal if there is one, which
+costs a prompt in the case where the answer was no.
+
+Only the document on screen is synchronised with the server. A rename that opens
+other files leaves those tabs unsaved and unknown to the server, so its answers
+about them are based on what is still on disk until you save.
 
 Changes are sent as full-document syncs; the incremental path exists in
 `deco-lsp` but the editor does not yet track applied ranges. Semantic tokens are

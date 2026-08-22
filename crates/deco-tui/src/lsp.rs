@@ -90,6 +90,8 @@ pub struct Lsp {
     completion_request: Option<RequestId>,
     /// The formatting request in flight.
     format_request: Option<RequestId>,
+    /// The rename request in flight.
+    rename_request: Option<RequestId>,
 }
 
 /// A hover being displayed.
@@ -343,6 +345,7 @@ impl Lsp {
             suggest: None,
             completion_request: None,
             format_request: None,
+            rename_request: None,
         }
     }
 
@@ -589,6 +592,96 @@ impl Lsp {
             }
             Ok(None) => {
                 session.status = Some("this server does not offer formatting".to_owned());
+            }
+            Err(error) => self.report(session, error.to_string()),
+        }
+    }
+
+    /// Opens the rename prompt, if this server can rename at all.
+    ///
+    /// Checked before asking rather than after: a prompt that appears, takes a
+    /// name, and only then reports that renaming is not on offer has wasted the
+    /// one thing it asked for.
+    pub fn offer_rename(&mut self, session: &mut Session) {
+        let Some(supervisor) = self.supervisor.as_ref() else {
+            session.status = Some("no language server for this file".to_owned());
+            return;
+        };
+        if supervisor.capabilities().rename.is_none() {
+            session.status = Some("this server does not offer rename".to_owned());
+            return;
+        }
+        session.offer_rename();
+    }
+
+    /// Asks the server what renaming the symbol under the cursor would change.
+    pub fn request_rename(&mut self, session: &mut Session, new_name: &str) {
+        let (Some(path), Some(supervisor)) =
+            (session.document.path.clone(), self.supervisor.as_mut())
+        else {
+            return;
+        };
+        let position = session.view.selections.primary().active;
+        match supervisor.rename(&path, position, new_name) {
+            Ok(Some(id)) => {
+                self.rename_request = Some(id);
+                // A rename reads every file in the project on some servers, so
+                // this is the one request where silence is long enough to look
+                // like a key that did nothing.
+                session.status = Some(format!("Renaming to `{new_name}`…"));
+            }
+            Ok(None) => {
+                session.status = Some("this server does not offer rename".to_owned());
+            }
+            Err(error) => self.report(session, error.to_string()),
+        }
+    }
+
+    /// Applies what the server said a rename would change.
+    ///
+    /// The reading of files is here because this is the layer with a filesystem;
+    /// every decision about *whether* to apply is in `deco_editor::workspace`,
+    /// which is where it can be tested without one.
+    fn apply_rename(&mut self, session: &mut Session, edit: deco_lsp::WorkspaceEdit) {
+        if edit.is_empty() {
+            session.status = Some("nothing to rename here".to_owned());
+            return;
+        }
+        let Some(supervisor) = self.supervisor.as_ref() else {
+            // The server went away between asking and answering.
+            return;
+        };
+        let paths = supervisor.paths();
+
+        let planned = session
+            .plan_workspace_edit(
+                &edit,
+                |uri| paths.from_uri(uri).ok(),
+                |path| supervisor.version_of(path),
+            )
+            .and_then(|plan| {
+                plan.with_contents(|path| {
+                    std::fs::read_to_string(path).map_err(|error| error.to_string())
+                })
+            });
+
+        let plan = match planned {
+            Ok(plan) => plan,
+            Err(error) => {
+                self.report(session, error.to_string());
+                return;
+            }
+        };
+
+        match session.apply_workspace_edit(plan, 0) {
+            Ok(applied) => {
+                session.status = Some(applied.summary("Renamed"));
+                // This answer arrived through the poll rather than through a
+                // keypress, so the loop's own "tell the server what the text is
+                // now" has already run for this turn. Without this the server
+                // would keep answering about the old name until the next
+                // keystroke — including about the rename that just happened.
+                self.changed(session);
             }
             Err(error) => self.report(session, error.to_string()),
         }
@@ -973,6 +1066,7 @@ impl Lsp {
                     self.suggest = None;
                     self.completion_request = None;
                     self.format_request = None;
+                    self.rename_request = None;
                     // The features that were on offer went with the server.
                     self.sync_context(session);
                     return true;
@@ -1109,6 +1203,20 @@ impl Lsp {
                             session.status = Some(format!("{short}: {error}"));
                             session.problems.push(format!("{method}: {error}"));
                         }
+                    }
+                    changed = true;
+                }
+                Update::Renamed { id, edit } => {
+                    if self.rename_request.as_ref() != Some(&id) {
+                        continue;
+                    }
+                    self.rename_request = None;
+                    match edit {
+                        Ok(edit) => self.apply_rename(session, edit),
+                        // A server asking for something deco cannot do — a file
+                        // created, renamed or deleted. Nothing was changed, and
+                        // the message says which operation it was.
+                        Err(error) => self.report(session, error.to_string()),
                     }
                     changed = true;
                 }
@@ -1332,6 +1440,7 @@ impl Lsp {
         self.suggest = None;
         self.completion_request = None;
         self.format_request = None;
+        self.rename_request = None;
     }
 
     fn report(&mut self, session: &mut Session, message: String) {
@@ -1970,6 +2079,39 @@ mod tests {
         assert!(lsp.hover().is_none());
         assert!(lsp.hover_request.is_none());
         assert!(lsp.definition_request.is_none());
+    }
+
+    #[test]
+    fn renaming_without_a_server_says_why_no_prompt_opened() {
+        // Unlike a key that was never bound, this one *was* asked for: the
+        // command came from the palette, where it is offered unconditionally.
+        let mut s = session(Settings::with_defaults());
+        let mut lsp = Lsp::new(&mut s, None);
+        lsp.offer_rename(&mut s);
+        assert_eq!(
+            s.status.as_deref(),
+            Some("no language server for this file")
+        );
+        assert!(s.prompt.is_none(), "and nothing to type into");
+    }
+
+    #[test]
+    fn requesting_a_rename_without_a_server_does_nothing_visible() {
+        let mut s = session(Settings::with_defaults());
+        let mut lsp = Lsp::new(&mut s, None);
+        lsp.request_rename(&mut s, "whatever");
+        assert_eq!(s.status, None);
+    }
+
+    #[test]
+    fn detaching_forgets_a_rename_request() {
+        // Its answer can never arrive now, and applying a stale one would edit
+        // several files against positions the server no longer stands behind.
+        let mut s = session(Settings::with_defaults());
+        let mut lsp = Lsp::new(&mut s, None);
+        lsp.rename_request = Some(deco_lsp::RequestId::Number(1));
+        lsp.detach();
+        assert!(lsp.rename_request.is_none());
     }
 
     #[test]

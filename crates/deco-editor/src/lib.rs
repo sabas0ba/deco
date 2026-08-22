@@ -15,9 +15,11 @@ pub mod input;
 pub mod layout;
 pub mod prompt;
 pub mod session;
+pub mod workspace;
 
 pub use commands::{Clipboard, Context, MemoryClipboard, Outcome};
 pub use document::{Document, View};
 pub use find::Find;
 pub use prompt::{Prompt, PromptKind};
 pub use session::{Pane, Session};
+pub use workspace::{Applied, Plan, WorkspaceError};

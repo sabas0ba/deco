@@ -289,6 +289,11 @@ pub struct Session {
     /// Problems found while loading the user's configuration, kept so the
     /// frontend can show them rather than failing to start.
     pub problems: Vec<String>,
+    /// The number the next multi-document edit will be tagged with.
+    ///
+    /// Handed out here because this is the layer that can see more than one
+    /// document; a buffer's history only holds the number it was given.
+    next_group: u64,
 }
 
 /// Applies `edits` to one document and its view.
@@ -303,7 +308,25 @@ fn apply_edits_to(
     edits: &[deco_lsp::TextEdit],
     now_ms: u64,
 ) -> Result<usize, EditError> {
-    use deco_core::{Change, EditKind, Transaction};
+    let Some(transaction) = build_transaction(document, edits)? else {
+        return Ok(0);
+    };
+    Ok(commit(document, view, &transaction, now_ms, None))
+}
+
+/// Turns a server's edits into the one transaction that performs them, or says
+/// why they cannot be performed at all.
+///
+/// `Ok(None)` means there was nothing to do. Separated from [`commit`] so that a
+/// caller changing several documents can find out whether *all* of them can be
+/// changed before changing any: everything that can refuse an edit — a range
+/// that is not there, two edits over the same text — refuses here, with every
+/// buffer still untouched.
+fn build_transaction(
+    document: &Document,
+    edits: &[deco_lsp::TextEdit],
+) -> Result<Option<deco_core::Transaction>, EditError> {
+    use deco_core::{Change, Transaction};
 
     // A server routinely answers an already-formatted document with a no-op
     // edit. Applying one would mark the file dirty and add an undo step for
@@ -323,30 +346,52 @@ fn apply_edits_to(
         .collect();
 
     if changes.is_empty() {
-        return Ok(0);
+        return Ok(None);
     }
 
-    let applied = changes.len();
     // Overlapping edits have no well-defined result. The specification
     // forbids them, so a server sending them is broken — and guessing which
     // to honour would corrupt the file silently, which is worse than
     // refusing and saying so.
-    let transaction = Transaction::new(changes).map_err(|_| EditError::Overlapping)?;
+    Transaction::new(changes)
+        .map(Some)
+        .map_err(|_| EditError::Overlapping)
+}
 
+/// Applies a prepared transaction, recording one undo step, and returns how many
+/// replacements it made.
+///
+/// `group` tags that step as part of a change several documents share, which is
+/// what lets one `ctrl+z` take all of them back together.
+fn commit(
+    document: &mut Document,
+    view: &mut View,
+    transaction: &deco_core::Transaction,
+    now_ms: u64,
+    group: Option<deco_core::Group>,
+) -> usize {
+    use deco_core::EditKind;
+
+    let applied = transaction.changes().len();
     let before = view.selections.clone();
-    let inverse = document.apply(&transaction);
+    let inverse = document.apply(transaction);
 
     let cursor = document.buffer.clamp_position(before.primary().active);
     let after = deco_core::SelectionSet::caret(cursor);
     view.selections = after.clone();
-    document
-        .history
-        .record(inverse, EditKind::Discrete, before, after, now_ms);
+    match group {
+        Some(group) => document
+            .history
+            .record_in_group(inverse, before, after, now_ms, group),
+        None => document
+            .history
+            .record(inverse, EditKind::Discrete, before, after, now_ms),
+    }
     document.dirty = true;
     // Revealed even for a background tab: when it is switched to, the cursor
     // should be where the edit left it rather than wherever it was parked.
     view.reveal_cursor(&document.buffer, &document.settings);
-    Ok(applied)
+    applied
 }
 
 impl Session {
@@ -404,6 +449,7 @@ impl Session {
             right: Vec::new(),
             recent: Vec::new(),
             problems,
+            next_group: 0,
         };
         session.report_unsupported();
         session.refresh_context();
@@ -1068,6 +1114,22 @@ impl Session {
             "editor.action.marker.prev" | "editor.action.marker.prevInFiles" => {
                 self.goto_marker(Direction::Prev)
             }
+            // An undo of something that happened to several documents at once
+            // has to reach all of them. Intercepted here rather than in
+            // `commands` for the usual reason: a command there sees one document
+            // and this is the layer that can see the rest.
+            //
+            // Only when the step on top is a shared one. Ordinary editing —
+            // which is almost every `ctrl+z` — falls through to the same
+            // single-document undo it always used.
+            "undo" if self.document.history.undo_group().is_some() => {
+                let group = self.document.history.undo_group().expect("just checked");
+                self.undo_group(group, false)
+            }
+            "redo" if self.document.history.redo_group().is_some() => {
+                let group = self.document.history.redo_group().expect("just checked");
+                self.undo_group(group, true)
+            }
             // Needs the view as well as the document: whether the editor is
             // wrapping depends on how wide the window is, which is the view's.
             "editor.action.toggleWordWrap" => self.toggle_word_wrap(),
@@ -1184,6 +1246,7 @@ impl Session {
             // here rather than left to fall through as `NotFound`, so a typo in
             // a keybinding is still reported as unknown.
             "editor.action.showHover"
+            | "editor.action.rename"
             | "editor.action.revealDefinition"
             | "editor.action.goToReferences"
             | "workbench.action.gotoSymbol"
@@ -1637,6 +1700,27 @@ impl Session {
                 Outcome::SearchInFiles {
                     query: typed.to_owned(),
                     options: self.search_options,
+                }
+            }
+            PromptKind::Rename => {
+                let typed = prompt.text().trim();
+                if typed.is_empty() {
+                    return Outcome::Message("no new name given".to_owned());
+                }
+                // The prompt opens with the current name in it, so accepting it
+                // unchanged is what happens when somebody presses F2 and then
+                // enter. A round trip to the server for a rename to the same
+                // name would come back as a diff of nothing, or — from a server
+                // that does not check — as an edit per occurrence, marking every
+                // file that mentions it dirty for no change at all.
+                if self
+                    .seed_from_document()
+                    .is_some_and(|(name, _)| name == typed)
+                {
+                    return Outcome::Message(format!("`{typed}` is already its name"));
+                }
+                Outcome::Rename {
+                    new_name: typed.to_owned(),
                 }
             }
             PromptKind::SaveAs => {
@@ -2095,6 +2179,264 @@ impl Session {
         Some(applied)
     }
 
+    /// Asks what to call the symbol under the cursor instead.
+    ///
+    /// Opened by the frontend rather than by `editor.action.rename` reaching
+    /// here, because whether a rename is possible at all depends on a language
+    /// server, which the frontend owns: a prompt that appears and then reports
+    /// that this server cannot rename is a worse answer than not appearing.
+    ///
+    /// Seeded with the current name and with all of it selected, the way VS
+    /// Code's rename box opens — so typing replaces it, and `end` keeps it to
+    /// add a suffix.
+    pub fn offer_rename(&mut self) -> Outcome {
+        let Some((name, _)) = self.seed_from_document() else {
+            return Outcome::Message("put the cursor on a name to rename it".to_owned());
+        };
+        self.prompt = Some(Prompt::seeded(PromptKind::Rename, name));
+        self.refresh_context();
+        Outcome::Handled
+    }
+
+    /// Resolves a server's [`deco_lsp::WorkspaceEdit`] against what is open.
+    ///
+    /// Nothing is changed. The plan that comes back names the files it still
+    /// needs read — see [`crate::workspace::Plan::missing`] — and it is
+    /// [`Session::apply_workspace_edit`] that acts on it.
+    ///
+    /// `resolve` turns one of the server's URIs into a path on the machine
+    /// holding the files, and `version_of` answers with the version last sent to
+    /// that server for a path. Both are callbacks because both belong to the LSP
+    /// client, which lives in a frontend; the rules about what an unresolvable
+    /// URI and a mismatched version *mean* live here, so that every frontend
+    /// gets the same ones.
+    pub fn plan_workspace_edit(
+        &self,
+        edit: &deco_lsp::WorkspaceEdit,
+        resolve: impl Fn(&deco_lsp::uri::Uri) -> Option<PathBuf>,
+        version_of: impl Fn(&Path) -> Option<i64>,
+    ) -> Result<crate::workspace::Plan, crate::workspace::WorkspaceError> {
+        crate::workspace::Plan::build(
+            edit,
+            resolve,
+            |path| self.tab_of(path).is_some(),
+            version_of,
+        )
+    }
+
+    /// Applies a planned workspace edit to every document it names, or to none.
+    ///
+    /// # Order
+    ///
+    /// Every transaction is built before any is applied. Building is where an
+    /// edit can still be refused — overlapping ranges are caught there — so a
+    /// refusal happens with every buffer still as it was. Only once all of them
+    /// have been built does anything get written, and from that point nothing
+    /// can fail.
+    ///
+    /// Files no tab holds are opened as background tabs from the text
+    /// [`crate::workspace::Plan::with_contents`] supplied, and they are opened
+    /// *after* the same check, so a refusal does not leave tabs behind either.
+    ///
+    /// Every document records its step under one shared group, which is what
+    /// [`Session::run`] reads to undo the whole change at once.
+    pub fn apply_workspace_edit(
+        &mut self,
+        mut plan: crate::workspace::Plan,
+        now_ms: u64,
+    ) -> Result<crate::workspace::Applied, crate::workspace::WorkspaceError> {
+        use crate::workspace::WorkspaceError;
+
+        // Documents this edit brings in, built here rather than opened, so that
+        // a refusal below leaves the session with the tabs it started with.
+        let mut opened: Vec<(Document, View)> = Vec::new();
+        // For each planned document: where to find it when committing, and the
+        // transaction to commit. `None` for a document with nothing to do.
+        let mut prepared: Vec<(usize, Option<deco_core::Transaction>)> = Vec::new();
+
+        for (index, planned) in plan.documents_mut().iter().enumerate() {
+            let transaction = if planned.open {
+                let document = self
+                    .document_at_path(&planned.path)
+                    .expect("planned as open, and nothing has closed a tab since");
+                build_transaction(document, &planned.edits)
+            } else {
+                let text =
+                    planned
+                        .contents
+                        .as_deref()
+                        .ok_or_else(|| WorkspaceError::Unreadable {
+                            path: planned.path.clone(),
+                            reason: "its text was never supplied".to_owned(),
+                        })?;
+                let language = crate::document::language_for_path(&planned.path);
+                let settings = EditorSettings::resolve(&self.settings, language);
+                let document = Document::from_file(planned.path.clone(), text, settings);
+                let built = build_transaction(&document, &planned.edits);
+                opened.push((
+                    document,
+                    View {
+                        height: self.view.height,
+                        width: self.view.width,
+                        ..Default::default()
+                    },
+                ));
+                built
+            };
+
+            let transaction = transaction.map_err(|_| WorkspaceError::Overlapping {
+                path: planned.path.clone(),
+            })?;
+            prepared.push((index, transaction));
+        }
+
+        // Past here nothing can refuse.
+        let group = self.take_group();
+        let mut applied = crate::workspace::Applied {
+            documents: 0,
+            edits: 0,
+            opened: 0,
+        };
+        let mut newly_opened = opened.into_iter();
+
+        for (index, transaction) in prepared {
+            let planned = &plan.documents_mut()[index];
+            let path = planned.path.clone();
+            let was_open = planned.open;
+
+            let (document, view) = if was_open {
+                self.document_and_view_at_path(&path)
+                    .expect("checked while planning")
+            } else {
+                let (document, view) = newly_opened
+                    .next()
+                    .expect("one was built for every document that was not open");
+                // Pushed even when it had nothing to change: the file the server
+                // named is part of what the user asked about, and a tab that
+                // appears only sometimes is harder to reason about than one that
+                // always does. `edits` below counts the real work.
+                self.right.push(Tab {
+                    document,
+                    view,
+                    diagnostics: Vec::new(),
+                    semantic: Vec::new(),
+                    find: Find::new(),
+                });
+                applied.opened += 1;
+                let tab = self.right.last_mut().expect("just pushed");
+                (&mut tab.document, &mut tab.view)
+            };
+
+            if let Some(transaction) = transaction {
+                let count = commit(document, view, &transaction, now_ms, Some(group));
+                applied.documents += 1;
+                applied.edits += count;
+            }
+        }
+
+        self.relayout();
+        self.refresh_context();
+        Ok(applied)
+    }
+
+    /// The next group number, and never this one again.
+    fn take_group(&mut self) -> deco_core::Group {
+        let group = deco_core::Group(self.next_group);
+        // Saturating rather than wrapping: reusing a number would join two
+        // unrelated changes into one undo step. At one group per refactor,
+        // reaching the end of a `u64` is not a case that arises — but wrapping
+        // silently into a *wrong* answer is not the way to handle it if it did.
+        self.next_group = self.next_group.saturating_add(1);
+        group
+    }
+
+    /// The document holding `path`, active tab or background.
+    fn document_at_path(&self, path: &Path) -> Option<&Document> {
+        let wanted = normalise(path);
+        let matches =
+            |document: &Document| document.path.as_deref().map(normalise) == Some(wanted.clone());
+        if matches(&self.document) {
+            return Some(&self.document);
+        }
+        self.left
+            .iter()
+            .chain(self.right.iter())
+            .map(|tab| &tab.document)
+            .find(|document| matches(document))
+    }
+
+    /// The same, with the view that goes with it.
+    fn document_and_view_at_path(&mut self, path: &Path) -> Option<(&mut Document, &mut View)> {
+        let wanted = normalise(path);
+        let matches =
+            |document: &Document| document.path.as_deref().map(normalise) == Some(wanted.clone());
+        if matches(&self.document) {
+            return Some((&mut self.document, &mut self.view));
+        }
+        self.left
+            .iter_mut()
+            .chain(self.right.iter_mut())
+            .find(|tab| matches(&tab.document))
+            .map(|tab| (&mut tab.document, &mut tab.view))
+    }
+
+    /// Undoes a change several documents share, in every document that took part.
+    ///
+    /// Called instead of the ordinary undo when the step on top of the active
+    /// document's history is tagged. Every other document whose *next* step
+    /// carries the same tag is undone with it — "next" being the point: a file
+    /// edited by hand since the rename keeps that edit, and its share of the
+    /// rename stays where it is in its own history, to come out when the edits
+    /// on top of it have.
+    fn undo_group(&mut self, group: deco_core::Group, redo: bool) -> Outcome {
+        let mut documents = 0usize;
+        for (document, view) in self.documents_and_views() {
+            let next = if redo {
+                document.history.redo_group()
+            } else {
+                document.history.undo_group()
+            };
+            if next != Some(group) {
+                continue;
+            }
+            // The history applies its own transaction rather than going through
+            // `Document::apply`, so the caches have to be dropped wholesale.
+            document.invalidate();
+            let selections = if redo {
+                document.history.redo(&mut document.buffer)
+            } else {
+                document.history.undo(&mut document.buffer)
+            };
+            if let Some(selections) = selections {
+                view.selections = selections;
+                document.dirty = true;
+                view.reveal_cursor(&document.buffer, &document.settings);
+                documents += 1;
+            }
+        }
+
+        self.relayout();
+        let what = if redo { "Redone" } else { "Undone" };
+        Outcome::Message(format!(
+            "{what} across {}",
+            if documents == 1 {
+                "1 file".to_owned()
+            } else {
+                format!("{documents} files")
+            }
+        ))
+    }
+
+    /// Every open document and its view, active tab included.
+    fn documents_and_views(&mut self) -> impl Iterator<Item = (&mut Document, &mut View)> {
+        std::iter::once((&mut self.document, &mut self.view)).chain(
+            self.left
+                .iter_mut()
+                .chain(self.right.iter_mut())
+                .map(|tab| (&mut tab.document, &mut tab.view)),
+        )
+    }
+
     /// The formatting options a language server should be told about.
     ///
     /// The user's own, resolved for the open document's language — so a server
@@ -2337,6 +2679,351 @@ mod tests {
 
     fn press(session: &mut Session, key: &str) -> Outcome {
         session.handle_chord(Chord::parse(key).unwrap(), 0)
+    }
+
+    /// A rename-shaped workspace edit: one replacement per named file.
+    ///
+    /// Each `(uri, line, from_len, to)` replaces `from_len` characters at the
+    /// start of `line`, which is enough shape to tell whether the right text in
+    /// the right file changed.
+    fn workspace_edit(documents: &[(&str, u32, u32, &str)]) -> deco_lsp::WorkspaceEdit {
+        let mut changes: Vec<deco_lsp::DocumentEdits> = Vec::new();
+        for (uri, line, from_len, to) in documents {
+            let edit = deco_lsp::TextEdit {
+                range: deco_core::Range::new(
+                    Position::new(*line, 0),
+                    Position::new(*line, *from_len),
+                ),
+                new_text: (*to).to_owned(),
+            };
+            match changes.iter_mut().find(|d| d.uri.as_str() == *uri) {
+                Some(seen) => seen.edits.push(edit),
+                None => changes.push(deco_lsp::DocumentEdits {
+                    uri: deco_lsp::uri::Uri::from_string(*uri),
+                    version: None,
+                    edits: vec![edit],
+                }),
+            }
+        }
+        deco_lsp::WorkspaceEdit { changes }
+    }
+
+    /// Plans and applies in one go, reading missing files from `on_disk`.
+    fn apply_workspace(
+        session: &mut Session,
+        edit: &deco_lsp::WorkspaceEdit,
+        on_disk: &[(&str, &str)],
+    ) -> Result<crate::workspace::Applied, crate::workspace::WorkspaceError> {
+        let plan = session
+            .plan_workspace_edit(
+                edit,
+                |uri| uri.to_path(deco_lsp::uri::PathStyle::Unix).ok(),
+                |_| None,
+            )?
+            .with_contents(|path| {
+                on_disk
+                    .iter()
+                    .find(|(name, _)| Path::new(name) == path)
+                    .map(|(_, text)| (*text).to_owned())
+                    .ok_or_else(|| "no such file".to_owned())
+            })?;
+        session.apply_workspace_edit(plan, 0)
+    }
+
+    #[test]
+    fn the_rename_prompt_opens_with_the_current_name_in_it() {
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "fn greet() {}\n");
+        s.view.selections = deco_core::SelectionSet::caret(Position::new(0, 5));
+
+        assert_eq!(s.offer_rename(), Outcome::Handled);
+        let prompt = s.prompt.as_ref().expect("a prompt");
+        assert_eq!(prompt.kind(), crate::prompt::PromptKind::Rename);
+        assert_eq!(prompt.text(), "greet");
+    }
+
+    #[test]
+    fn accepting_the_rename_prompt_unchanged_asks_for_nothing() {
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "fn greet() {}\n");
+        s.view.selections = deco_core::SelectionSet::caret(Position::new(0, 5));
+        s.offer_rename();
+
+        let outcome = s.run("workbench.action.acceptSelectedQuickOpenItem", None, 0);
+        assert_eq!(
+            outcome,
+            Outcome::Message("`greet` is already its name".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_new_name_asks_the_frontend_to_carry_it_out() {
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "fn greet() {}\n");
+        s.view.selections = deco_core::SelectionSet::caret(Position::new(0, 5));
+        s.offer_rename();
+        for key in ["h", "i"] {
+            press(&mut s, key);
+        }
+
+        assert_eq!(
+            s.run("workbench.action.acceptSelectedQuickOpenItem", None, 0),
+            Outcome::Rename {
+                new_name: "hi".to_owned()
+            },
+            "the seed is selected, so typing replaces it"
+        );
+    }
+
+    #[test]
+    fn rename_needs_something_under_the_cursor() {
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "   \n");
+        s.view.selections = deco_core::SelectionSet::caret(Position::new(0, 1));
+
+        assert_eq!(
+            s.offer_rename(),
+            Outcome::Message("put the cursor on a name to rename it".to_owned())
+        );
+        assert!(s.prompt.is_none());
+    }
+
+    #[test]
+    fn a_workspace_edit_reaches_every_open_document() {
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "old();\n");
+        s.open(PathBuf::from("/w/b.rs"), "old();\n");
+
+        let applied = apply_workspace(
+            &mut s,
+            &workspace_edit(&[
+                ("file:///w/a.rs", 0, 3, "new"),
+                ("file:///w/b.rs", 0, 3, "new"),
+            ]),
+            &[],
+        )
+        .expect("both are open");
+
+        assert_eq!(applied.documents, 2);
+        assert_eq!(applied.edits, 2);
+        assert_eq!(applied.opened, 0, "nothing had to be opened");
+        assert_eq!(s.document.buffer.text(), "new();\n");
+        assert_eq!(
+            s.document_at_path(Path::new("/w/a.rs"))
+                .unwrap()
+                .buffer
+                .text(),
+            "new();\n",
+            "the background tab too"
+        );
+    }
+
+    #[test]
+    fn a_file_no_tab_holds_is_opened_rather_than_written() {
+        // Unsaved, so that nothing reaches the disk without the user saying so,
+        // and visible, so that they know it is there to save.
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "old();\n");
+        let tabs_before = s.tab_count();
+
+        let applied = apply_workspace(
+            &mut s,
+            &workspace_edit(&[
+                ("file:///w/a.rs", 0, 3, "new"),
+                ("file:///w/far.rs", 0, 3, "new"),
+            ]),
+            &[("/w/far.rs", "old();\n")],
+        )
+        .expect("the missing file was supplied");
+
+        assert_eq!(applied.opened, 1);
+        assert_eq!(s.tab_count(), tabs_before + 1);
+        let opened = s
+            .document_at_path(Path::new("/w/far.rs"))
+            .expect("opened as a tab");
+        assert_eq!(opened.buffer.text(), "new();\n");
+        assert!(opened.dirty, "unsaved, so ctrl+k s is what writes it");
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_changes_nothing_at_all() {
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "old();\n");
+        let tabs_before = s.tab_count();
+
+        let error = apply_workspace(
+            &mut s,
+            &workspace_edit(&[
+                ("file:///w/a.rs", 0, 3, "new"),
+                ("file:///w/gone.rs", 0, 3, "new"),
+            ]),
+            &[],
+        )
+        .expect_err("one of the files is not there");
+
+        assert!(matches!(
+            error,
+            crate::workspace::WorkspaceError::Unreadable { .. }
+        ));
+        assert_eq!(
+            s.document.buffer.text(),
+            "old();\n",
+            "the half that could have been applied was not"
+        );
+        assert_eq!(s.tab_count(), tabs_before, "and no tab was left behind");
+        assert!(!s.document.dirty);
+    }
+
+    #[test]
+    fn overlapping_edits_change_nothing_at_all() {
+        // The refusal has to happen before the *other* document is written, which
+        // is the whole reason the transactions are built up front.
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "old();\n");
+        s.open(PathBuf::from("/w/b.rs"), "old();\n");
+
+        let mut edit = workspace_edit(&[("file:///w/a.rs", 0, 3, "new")]);
+        edit.changes.push(deco_lsp::DocumentEdits {
+            uri: deco_lsp::uri::Uri::from_string("file:///w/b.rs"),
+            version: None,
+            edits: vec![
+                deco_lsp::TextEdit {
+                    range: deco_core::Range::new(Position::new(0, 0), Position::new(0, 3)),
+                    new_text: "one".to_owned(),
+                },
+                deco_lsp::TextEdit {
+                    range: deco_core::Range::new(Position::new(0, 1), Position::new(0, 4)),
+                    new_text: "two".to_owned(),
+                },
+            ],
+        });
+
+        let error = apply_workspace(&mut s, &edit, &[]).expect_err("b's edits overlap");
+        assert!(matches!(
+            error,
+            crate::workspace::WorkspaceError::Overlapping { ref path } if path == Path::new("/w/b.rs")
+        ));
+        assert_eq!(
+            s.document_at_path(Path::new("/w/a.rs"))
+                .unwrap()
+                .buffer
+                .text(),
+            "old();\n",
+            "the file whose edits were fine is untouched"
+        );
+    }
+
+    #[test]
+    fn one_undo_takes_the_whole_edit_back() {
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "old();\n");
+        s.open(PathBuf::from("/w/b.rs"), "old();\n");
+        apply_workspace(
+            &mut s,
+            &workspace_edit(&[
+                ("file:///w/a.rs", 0, 3, "new"),
+                ("file:///w/b.rs", 0, 3, "new"),
+            ]),
+            &[],
+        )
+        .expect("both are open");
+
+        s.run("undo", None, 0);
+
+        assert_eq!(s.document.buffer.text(), "old();\n");
+        assert_eq!(
+            s.document_at_path(Path::new("/w/a.rs"))
+                .unwrap()
+                .buffer
+                .text(),
+            "old();\n",
+            "the file that was not on screen came back too"
+        );
+    }
+
+    #[test]
+    fn redo_puts_the_whole_edit_back() {
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "old();\n");
+        s.open(PathBuf::from("/w/b.rs"), "old();\n");
+        apply_workspace(
+            &mut s,
+            &workspace_edit(&[
+                ("file:///w/a.rs", 0, 3, "new"),
+                ("file:///w/b.rs", 0, 3, "new"),
+            ]),
+            &[],
+        )
+        .expect("both are open");
+        s.run("undo", None, 0);
+        s.run("redo", None, 0);
+
+        assert_eq!(s.document.buffer.text(), "new();\n");
+        assert_eq!(
+            s.document_at_path(Path::new("/w/a.rs"))
+                .unwrap()
+                .buffer
+                .text(),
+            "new();\n"
+        );
+    }
+
+    #[test]
+    fn typing_after_a_workspace_edit_undoes_on_its_own() {
+        // The keystroke is this document's business. Only once it is undone is
+        // the shared step next, and only then does undo reach the other files.
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "old();\n");
+        s.open(PathBuf::from("/w/b.rs"), "old();\n");
+        apply_workspace(
+            &mut s,
+            &workspace_edit(&[
+                ("file:///w/a.rs", 0, 3, "new"),
+                ("file:///w/b.rs", 0, 3, "new"),
+            ]),
+            &[],
+        )
+        .expect("both are open");
+
+        press(&mut s, "x");
+        s.run("undo", None, 0);
+        assert_eq!(
+            s.document.buffer.text(),
+            "new();\n",
+            "the keystroke came out"
+        );
+        assert_eq!(
+            s.document_at_path(Path::new("/w/a.rs"))
+                .unwrap()
+                .buffer
+                .text(),
+            "new();\n",
+            "and the other file was left alone"
+        );
+
+        s.run("undo", None, 0);
+        assert_eq!(
+            s.document_at_path(Path::new("/w/a.rs"))
+                .unwrap()
+                .buffer
+                .text(),
+            "old();\n",
+            "the shared step was next, and reached both"
+        );
+    }
+
+    #[test]
+    fn an_ordinary_undo_is_still_one_document() {
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "");
+        s.open(PathBuf::from("/w/b.rs"), "");
+        press(&mut s, "x");
+        assert_eq!(
+            s.run("undo", None, 0),
+            Outcome::Handled,
+            "not a group report"
+        );
+        assert_eq!(s.document.buffer.text(), "");
     }
 
     #[test]

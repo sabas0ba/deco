@@ -26,7 +26,7 @@ pub mod wrap;
 
 pub use buffer::{Buffer, LineEnding};
 pub use edit::{Change, Transaction};
-pub use history::{EditKind, History, HistoryOptions};
+pub use history::{EditKind, Group, History, HistoryOptions};
 pub use movement::{
     Granularity, HorizontalDirection, VerticalDirection, WordCategory, DEFAULT_WORD_SEPARATORS,
 };

@@ -105,6 +105,23 @@ pub enum Outcome {
         /// How to match, this search's own.
         options: deco_core::search::SearchOptions,
     },
+    /// The symbol under the cursor should be renamed to `new_name`, everywhere.
+    ///
+    /// Only a frontend can carry this out: it takes a language server to find
+    /// out what "everywhere" is, and a filesystem to read the files that answer
+    /// names. The frontend asks the server, hands the reply to
+    /// [`Session::plan_workspace_edit`](crate::Session::plan_workspace_edit),
+    /// reads whatever files the plan asks for, and applies it with
+    /// [`Session::apply_workspace_edit`](crate::Session::apply_workspace_edit).
+    ///
+    /// Carries no position: the cursor has not moved since the prompt opened —
+    /// the prompt has the keyboard — and a copy kept here would be a second
+    /// answer to keep in step with the first.
+    Rename {
+        /// What the user typed. Never empty, and never the current name: the
+        /// session refuses both before this is produced.
+        new_name: String,
+    },
     /// The document should be re-read from disk, throwing away the edits.
     ///
     /// The frontend reads `session.document.path` and hands the text back with
@@ -255,9 +272,8 @@ pub const PENDING: &[(&str, &str)] = &[
         "workbench.action.openGlobalKeybindings",
         "Open Keyboard Shortcuts",
     ),
-    // Needs a `WorkspaceEdit` applied across several documents as one undoable
-    // action — see docs/language-servers.md.
-    ("editor.action.rename", "Rename Symbol"),
+    // Needs the code-action request, and a list to choose from — the applying
+    // half is `Session::apply_workspace_edit`, which rename already uses.
     ("editor.action.quickFix", "Quick Fix"),
     // `deco --server` exists now; what does not is the client half — nothing in
     // the editor opens a file through a transport, so a menu would offer a list of
