@@ -635,6 +635,162 @@ impl TextEdit {
     }
 }
 
+/// Parameters for `textDocument/rename`.
+pub fn rename_params(uri: &Uri, position: Position, new_name: &str) -> serde_json::Value {
+    let mut params = text_document_position(uri, position);
+    params["newName"] = serde_json::Value::String(new_name.to_owned());
+    params
+}
+
+/// Every edit one document takes as part of a [`WorkspaceEdit`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentEdits {
+    /// Which document.
+    pub uri: Uri,
+    /// The version the server had when it computed these, when it said so.
+    ///
+    /// Only `documentChanges` carries it. `None` means the server did not tell
+    /// us which text it was looking at, not that it was looking at the current
+    /// text — a distinction the applying end has to make, since it decides what
+    /// to do about an edit computed against text that has since changed.
+    pub version: Option<i64>,
+    /// What to change, in the coordinates of that version.
+    pub edits: Vec<TextEdit>,
+}
+
+/// Everything a server wants changed, across however many documents.
+///
+/// The unit a rename, a code action and a replace-across-files all arrive as.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct WorkspaceEdit {
+    /// One entry per document, in the order the server listed them.
+    pub changes: Vec<DocumentEdits>,
+}
+
+/// Why a `WorkspaceEdit` could not be read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkspaceEditError {
+    /// The server wants a file created, renamed or deleted as part of the edit.
+    ///
+    /// Carries the `kind` it sent. Reported rather than skipped: these arrive
+    /// mixed in with text edits that only make sense together with them —
+    /// renaming a Rust module renames its file *and* rewrites the paths that
+    /// name it — so dropping the half deco cannot do would leave a project that
+    /// no longer builds and an undo history that cannot put it back.
+    FileOperation(String),
+}
+
+impl std::fmt::Display for WorkspaceEditError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::FileOperation(kind) => {
+                write!(
+                    f,
+                    "the server wants to {kind} a file, which deco cannot do yet"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for WorkspaceEditError {}
+
+impl WorkspaceEdit {
+    /// Reads a `WorkspaceEdit` result.
+    ///
+    /// `null` — how a server declines a rename it cannot perform — reads as an
+    /// edit with nothing in it, which the caller reports as "nothing to do"
+    /// rather than as a failure.
+    ///
+    /// # The two spellings
+    ///
+    /// The protocol has carried the same information twice for years.
+    /// `documentChanges` is the newer one and the better one: it is ordered and
+    /// it carries the document version each edit was computed against.
+    /// `changes` is a bare `uri -> edits` map with neither. When a server sends
+    /// both — several do, for older clients — `documentChanges` wins, exactly as
+    /// the specification instructs, because throwing away the versions would
+    /// mean applying edits to text nobody checked was still the text they were
+    /// computed for.
+    pub fn from_json(value: &serde_json::Value) -> Result<Self, WorkspaceEditError> {
+        if let Some(changes) = value.get("documentChanges").and_then(|v| v.as_array()) {
+            return Self::from_document_changes(changes);
+        }
+        let Some(map) = value.get("changes").and_then(|v| v.as_object()) else {
+            return Ok(Self::default());
+        };
+        Ok(Self {
+            changes: map
+                .iter()
+                .map(|(uri, edits)| DocumentEdits {
+                    uri: Uri::from_string(uri.as_str()),
+                    version: None,
+                    edits: TextEdit::list_from_json(edits),
+                })
+                .filter(|document| !document.edits.is_empty())
+                .collect(),
+        })
+    }
+
+    fn from_document_changes(changes: &[serde_json::Value]) -> Result<Self, WorkspaceEditError> {
+        let mut documents: Vec<DocumentEdits> = Vec::new();
+        for change in changes {
+            // A file operation is the one member of this array that is not a
+            // `TextDocumentEdit`, and `kind` is how it says so.
+            if let Some(kind) = change.get("kind").and_then(|v| v.as_str()) {
+                return Err(WorkspaceEditError::FileOperation(kind.to_owned()));
+            }
+            let Some(document) = change.get("textDocument") else {
+                continue;
+            };
+            let Some(uri) = document.get("uri").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let edits = change
+                .get("edits")
+                .map(TextEdit::list_from_json)
+                .unwrap_or_default();
+            if edits.is_empty() {
+                continue;
+            }
+            // `version` is nullable even here — that is the server saying it did
+            // not track one, which is not the same as it being absent.
+            let version = document.get("version").and_then(|v| v.as_i64());
+
+            // A document may appear more than once, and the entries are ordered.
+            // Concatenating in the order they arrived keeps that order; whether
+            // the result can be applied at all is the applying end's question,
+            // and it already refuses edits that overlap.
+            match documents.iter_mut().find(|seen| seen.uri.as_str() == uri) {
+                Some(seen) => seen.edits.extend(edits),
+                None => documents.push(DocumentEdits {
+                    uri: Uri::from_string(uri),
+                    version,
+                    edits,
+                }),
+            }
+        }
+        Ok(Self { changes: documents })
+    }
+
+    /// Whether the server asked for no changes at all.
+    pub fn is_empty(&self) -> bool {
+        self.changes
+            .iter()
+            .all(|document| document.edits.is_empty())
+    }
+
+    /// How many documents take part.
+    pub fn documents(&self) -> usize {
+        self.changes.len()
+    }
+
+    /// How many replacements there are in total.
+    pub fn edits(&self) -> usize {
+        self.changes.iter().map(|d| d.edits.len()).sum()
+    }
+}
+
 /// One semantically classified run of text.
 ///
 /// Positions are already absolute and in the negotiated encoding, so a caller
@@ -903,6 +1059,124 @@ mod tests {
                 "position": {"line": 3, "character": 7},
             })
         );
+    }
+
+    #[test]
+    fn rename_params_carry_the_new_name() {
+        let params = rename_params(&uri(), Position::new(2, 4), "widget");
+        assert_eq!(params["newName"], json!("widget"));
+        assert_eq!(params["position"], json!({"line": 2, "character": 4}));
+        assert_eq!(params["textDocument"]["uri"], json!("file:///w/a.rs"));
+    }
+
+    #[test]
+    fn a_declined_rename_reads_as_nothing_to_do() {
+        // How a server says "there is nothing renameable here". Not a failure:
+        // the caller says so and changes nothing.
+        let edit = WorkspaceEdit::from_json(&json!(null)).expect("null is not an error");
+        assert!(edit.is_empty());
+        assert_eq!(edit.documents(), 0);
+    }
+
+    #[test]
+    fn the_changes_map_reads_one_entry_per_document() {
+        let edit = WorkspaceEdit::from_json(&json!({
+            "changes": {
+                "file:///w/a.rs": [
+                    {"range": range(1, 0, 1, 3), "newText": "new"},
+                    {"range": range(9, 0, 9, 3), "newText": "new"},
+                ],
+                "file:///w/b.rs": [{"range": range(0, 4, 0, 7), "newText": "new"}],
+            }
+        }))
+        .expect("no file operations");
+
+        assert_eq!(edit.documents(), 2);
+        assert_eq!(edit.edits(), 3);
+        // No versions in this spelling — which the applying end has to know, so
+        // that it does not mistake "unstated" for "current".
+        assert!(edit.changes.iter().all(|d| d.version.is_none()));
+    }
+
+    #[test]
+    fn document_changes_win_over_changes() {
+        // Servers send both for older clients. Reading `changes` would throw the
+        // versions away, and the versions are the whole reason to prefer the
+        // other spelling.
+        let edit = WorkspaceEdit::from_json(&json!({
+            "changes": {
+                "file:///w/stale.rs": [{"range": range(0, 0, 0, 1), "newText": "x"}],
+            },
+            "documentChanges": [{
+                "textDocument": {"uri": "file:///w/a.rs", "version": 4},
+                "edits": [{"range": range(1, 0, 1, 3), "newText": "new"}],
+            }],
+        }))
+        .expect("no file operations");
+
+        assert_eq!(edit.documents(), 1);
+        assert_eq!(edit.changes[0].uri.as_str(), "file:///w/a.rs");
+        assert_eq!(edit.changes[0].version, Some(4));
+    }
+
+    #[test]
+    fn a_document_listed_twice_keeps_the_servers_order() {
+        let edit = WorkspaceEdit::from_json(&json!({
+            "documentChanges": [
+                {
+                    "textDocument": {"uri": "file:///w/a.rs", "version": 1},
+                    "edits": [{"range": range(0, 0, 0, 1), "newText": "first"}],
+                },
+                {
+                    "textDocument": {"uri": "file:///w/a.rs", "version": 1},
+                    "edits": [{"range": range(5, 0, 5, 1), "newText": "second"}],
+                },
+            ],
+        }))
+        .expect("no file operations");
+
+        assert_eq!(edit.documents(), 1, "one document, not two");
+        let texts: Vec<&str> = edit.changes[0]
+            .edits
+            .iter()
+            .map(|e| e.new_text.as_str())
+            .collect();
+        assert_eq!(texts, ["first", "second"]);
+    }
+
+    #[test]
+    fn a_file_operation_refuses_the_whole_edit() {
+        // rust-analyzer renaming a module sends exactly this: the file rename and
+        // the text edits that point at it. Half of it is worse than none of it.
+        let error = WorkspaceEdit::from_json(&json!({
+            "documentChanges": [
+                {
+                    "textDocument": {"uri": "file:///w/a.rs", "version": 1},
+                    "edits": [{"range": range(0, 0, 0, 1), "newText": "new"}],
+                },
+                {"kind": "rename", "oldUri": "file:///w/a.rs", "newUri": "file:///w/b.rs"},
+            ],
+        }))
+        .expect_err("a rename of a file cannot be honoured");
+
+        assert_eq!(
+            error,
+            WorkspaceEditError::FileOperation("rename".to_owned())
+        );
+        assert!(
+            error.to_string().contains("rename a file"),
+            "the message names what it cannot do: {error}"
+        );
+    }
+
+    #[test]
+    fn a_document_with_no_edits_is_left_out() {
+        let edit = WorkspaceEdit::from_json(&json!({
+            "changes": {"file:///w/a.rs": []},
+        }))
+        .expect("no file operations");
+        assert!(edit.is_empty());
+        assert_eq!(edit.documents(), 0, "nothing to open and nothing to change");
     }
 
     #[test]

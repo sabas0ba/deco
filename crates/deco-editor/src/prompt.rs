@@ -43,6 +43,8 @@ pub enum PromptKind {
     OpenPath,
     /// `ctrl+shift+f`: what to look for across the workspace.
     SearchQuery,
+    /// `F2`: what to call the symbol under the cursor instead.
+    Rename,
     /// An extension asked for a capability nobody has decided about yet.
     ///
     /// Not opened by a key: it appears because an extension asked, which is the
@@ -68,6 +70,7 @@ impl PromptKind {
             Self::SaveAs => "Save as:",
             Self::OpenPath => "Open file:",
             Self::SearchQuery => "Search:",
+            Self::Rename => "Rename to:",
             Self::ExtensionConsent => "Extension permission:",
             Self::ExtensionPermissions => "Forget which decision?",
         }
@@ -83,6 +86,8 @@ impl PromptKind {
             (Self::GoToLine, _) => "",
             // Nothing to count: a path is typed, not chosen from a list.
             (Self::SaveAs, _) | (Self::OpenPath, _) | (Self::SearchQuery, _) => "",
+            // Typed, not chosen: a new name is not on any list.
+            (Self::Rename, _) => "",
             (Self::Commands, 1) => "command",
             (Self::Commands, _) => "commands",
             (Self::Files, 1) => "file",
@@ -119,6 +124,7 @@ impl PromptKind {
             Self::SaveAs => "save as",
             Self::OpenPath => "open file",
             Self::SearchQuery => "search in files",
+            Self::Rename => "rename symbol",
             Self::ExtensionConsent => "an extension's permission request",
             Self::ExtensionPermissions => "the list of permission decisions",
         }

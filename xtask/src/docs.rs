@@ -107,6 +107,10 @@ fn demos() -> Vec<Demo> {
             build: hover,
         },
         Demo {
+            name: "rename",
+            build: rename,
+        },
+        Demo {
             name: "completion",
             build: completion,
         },
@@ -468,6 +472,82 @@ fn diagnostics() -> String {
         .press_and_hold(&["f8"], 4)
         .press_and_hold(&["f8"], 4);
     take.finish()
+}
+
+/// Two files that both mention `greet`, only one of which is open.
+const RENAME_MAIN: &str = "fn main() {\n    greet(\"world\");\n}\n\nfn greet(who: &str) {\n    println!(\"hello {who}\");\n}\n";
+const RENAME_HELPER: &str = "fn again() {\n    greet(\"again\");\n}\n";
+
+fn rename() -> String {
+    let mut take = Take::new("main.rs", RENAME_MAIN);
+    take.at(1, 4).capture("the caret is on `greet`", 3);
+
+    // `f2` is gated on `editorHasRenameProvider`, which is set from what a
+    // server announced — so the prompt is opened the way the frontend opens it
+    // once that check has passed, rather than by pressing a key that would be
+    // unbound with no server running.
+    take.session.offer_rename();
+    take.resize_for_chrome();
+    take.capture("f2", 4);
+
+    take.type_text("welcome");
+    take.session
+        .run("workbench.action.acceptSelectedQuickOpenItem", None, 0);
+
+    // The server's answer, injected for the same reason the diagnostics above
+    // are: a demonstration must not need a language server installed to build.
+    // This is the `WorkspaceEdit` a rename provider returns, and everything from
+    // here on is the editor's own code deciding what to do with it.
+    let edit = deco_lsp::WorkspaceEdit {
+        changes: vec![
+            document_edits("file:///demo/main.rs", &[(1, 4, 9), (4, 3, 8)], "welcome"),
+            document_edits("file:///demo/helper.rs", &[(1, 4, 9)], "welcome"),
+        ],
+    };
+    let plan = take
+        .session
+        .plan_workspace_edit(
+            &edit,
+            |uri| uri.to_path(deco_lsp::uri::PathStyle::Unix).ok(),
+            |_| None,
+        )
+        .expect("the demonstration's own URIs")
+        .with_contents(|_| Ok(RENAME_HELPER.to_owned()))
+        .expect("helper.rs is right here");
+    let applied = take
+        .session
+        .apply_workspace_edit(plan, 0)
+        .expect("nothing overlaps");
+    // The sentence the terminal frontend puts there, built the same way, so the
+    // frame shows the status line a user would actually get.
+    take.session.status = Some(applied.summary("Renamed"));
+
+    take.resize_for_chrome();
+    // The tab bar is the part worth pausing on: `helper.rs` was not open a
+    // moment ago, and the status line says how much is now unsaved.
+    take.capture("enter", 7);
+
+    take.press_and_hold(&["ctrl+z"], 6);
+    take.finish()
+}
+
+/// One document's edits, each replacing `line[from..to]` with `new_text`.
+fn document_edits(
+    uri: &str,
+    ranges: &[(u32, u32, u32)],
+    new_text: &str,
+) -> deco_lsp::DocumentEdits {
+    deco_lsp::DocumentEdits {
+        uri: deco_lsp::uri::Uri::from_string(uri),
+        version: None,
+        edits: ranges
+            .iter()
+            .map(|(line, from, to)| deco_lsp::TextEdit {
+                range: Range::new(Position::new(*line, *from), Position::new(*line, *to)),
+                new_text: new_text.to_owned(),
+            })
+            .collect(),
+    }
 }
 
 fn hover() -> String {

@@ -168,6 +168,114 @@ fn references_are_listed_and_choosing_one_goes_there() {
     editor.screen().assert_fits();
 }
 
+/// The same project, plus a second file that mentions `greet`.
+///
+/// Never opened by any of these scenarios: it is there so that a rename has
+/// somewhere to reach that the user is not looking at, which is the case the
+/// whole workspace-edit path exists for.
+fn rename_project(name: &str, role: &str) -> Scenario {
+    project(name, role).file("src/helper.rs", "fn call() {\n    greet(\"x\");\n}\n")
+}
+
+/// Puts the caret on `greet` in the call on line 2.
+fn on_the_symbol(editor: &mut Editor) {
+    editor.press("ctrl+home");
+    editor.press("down");
+    editor.press_times("right", 5);
+}
+
+#[test]
+fn f2_renames_across_files_and_one_undo_takes_it_back() {
+    let scenario = rename_project("lsp-rename", "full");
+    let mut editor = started(&scenario);
+    on_the_symbol(&mut editor);
+
+    editor.press("f2");
+    assert!(
+        editor.session().prompt.is_some(),
+        "f2 should open the rename prompt: {:?}",
+        editor.status()
+    );
+    editor.type_text("hello");
+    editor.press("enter");
+    editor.settle_until("the rename to land", |editor| {
+        editor
+            .status()
+            .is_some_and(|line| line.starts_with("Renamed"))
+    });
+
+    // The file on screen: both occurrences, and nothing else touched.
+    assert_eq!(
+        editor.text(),
+        "fn main() {\n    hello(\"world\");\n}\n\nfn hello(who: &str) {}\n"
+    );
+
+    // The file nobody opened: changed, held unsaved, and *not* written.
+    let unsaved = editor.session().unsaved();
+    let helper = unsaved
+        .iter()
+        .find(|(path, _)| path.ends_with("helper.rs"))
+        .map(|(_, text)| text.clone())
+        .expect("the rename should have opened helper.rs and left it dirty");
+    assert_eq!(helper, "fn call() {\n    hello(\"x\");\n}\n");
+    assert_eq!(
+        editor.on_disk("src/helper.rs"),
+        "fn call() {\n    greet(\"x\");\n}\n",
+        "nothing should reach the disk until the user saves"
+    );
+
+    // And one keystroke takes the whole thing back, in both files.
+    editor.press("ctrl+z");
+    assert_eq!(
+        editor.text(),
+        "fn main() {\n    greet(\"world\");\n}\n\nfn greet(who: &str) {}\n"
+    );
+    let after_undo = editor.session().unsaved();
+    let helper = after_undo
+        .iter()
+        .find(|(path, _)| path.ends_with("helper.rs"))
+        .map(|(_, text)| text.clone());
+    assert_eq!(
+        helper.as_deref(),
+        Some("fn call() {\n    greet(\"x\");\n}\n"),
+        "the file that was not on screen should have come back too"
+    );
+    editor.screen().assert_fits();
+}
+
+#[test]
+fn renaming_to_the_same_name_asks_the_server_nothing() {
+    // The prompt opens with the current name selected, so enter on its own is an
+    // ordinary slip. Answering it with an edit per occurrence would mark every
+    // file that mentions the symbol dirty for no change at all.
+    let scenario = rename_project("lsp-rename-same", "full");
+    let mut editor = started(&scenario);
+    on_the_symbol(&mut editor);
+
+    editor.press("f2");
+    editor.press("enter");
+
+    assert_eq!(editor.status(), Some("`greet` is already its name"));
+    assert!(!editor.is_dirty(), "nothing should have been changed");
+}
+
+#[test]
+fn a_server_offering_no_rename_leaves_f2_doing_nothing_quietly() {
+    let scenario = rename_project("lsp-rename-absent", "no-rename");
+    let mut editor = started(&scenario);
+    on_the_symbol(&mut editor);
+
+    editor.press("f2");
+
+    // The `when` clause is `editorHasRenameProvider`, so the key resolves to
+    // nothing at all — not to a command that then apologises.
+    assert!(
+        editor.session().prompt.is_none(),
+        "no prompt should open without a rename provider"
+    );
+    assert!(!editor.is_dirty());
+}
+
 #[test]
 fn go_to_symbol_lists_what_the_server_classified() {
     let scenario = project("lsp-symbols", "full");

@@ -111,6 +111,15 @@ pub enum Update {
         /// found none, which is a successful answer.
         symbols: Vec<crate::requests::DocumentSymbol>,
     },
+    /// An answer to [`Supervisor::rename`].
+    Renamed {
+        /// The request this answers.
+        id: RequestId,
+        /// Everything the server wants changed, or why its answer could not be
+        /// read. An `Ok` edit with nothing in it is the server declining, which
+        /// is a successful answer and worth reporting as such.
+        edit: Result<crate::WorkspaceEdit, crate::WorkspaceEditError>,
+    },
     /// An answer to [`Supervisor::semantic_tokens`].
     SemanticTokens {
         /// The request this answers.
@@ -634,6 +643,40 @@ impl Supervisor {
             .map(Some)
     }
 
+    /// Asks for every change renaming the symbol at `position` would take.
+    ///
+    /// The answer is a `WorkspaceEdit` covering the whole project, not just this
+    /// document — see [`crate::WorkspaceEdit`] for what comes back and
+    /// `deco_editor::workspace` for the rules about applying it.
+    pub fn rename(
+        &mut self,
+        path: &Path,
+        position: deco_core::position::Position,
+        new_name: &str,
+    ) -> Result<Option<RequestId>, SupervisorError> {
+        if self.client.capabilities().rename.is_none() {
+            return Ok(None);
+        }
+        let Some(uri) = self.uri_for(path) else {
+            return Ok(None);
+        };
+        if !self.sync.is_open(&uri) {
+            return Ok(None);
+        }
+        let params = crate::requests::rename_params(&uri, position, new_name);
+        self.request("textDocument/rename", params).map(Some)
+    }
+
+    /// The version last sent to the server for `path`.
+    ///
+    /// What an incoming edit's `version` has to match. `None` for a document
+    /// this server is not tracking, which is not a mismatch — there is simply
+    /// nothing to compare against.
+    pub fn version_of(&self, path: &Path) -> Option<i64> {
+        let uri = self.uri_for(path)?;
+        self.sync.version(&uri).map(i64::from)
+    }
+
     /// Asks what refers to something.
     pub fn references(
         &mut self,
@@ -903,6 +946,10 @@ impl Supervisor {
                         locations: Location::list_from_json(&result),
                         id,
                         method,
+                    }),
+                    "textDocument/rename" => Some(Update::Renamed {
+                        id,
+                        edit: crate::WorkspaceEdit::from_json(&result),
                     }),
                     "textDocument/documentSymbol" => Some(Update::Symbols {
                         id,

@@ -637,6 +637,10 @@ impl Driver {
                 };
                 hosts.answer_consent(session, allow, &mut files, now_ms);
             }
+            // The name has been typed; asking what it would change is the
+            // language server's business, and applying the answer needs a
+            // filesystem — so both halves are here rather than in the core.
+            Outcome::Rename { new_name } => lsp.request_rename(session, &new_name),
             Outcome::SearchInFiles { query, options } if remote.is_some() => {
                 let client = remote.as_mut().expect("a remote session");
                 match client.search(&query, options) {
@@ -726,6 +730,7 @@ impl Driver {
                 "editor.action.showHover" => lsp.request_hover(session),
                 "editor.action.revealDefinition" => lsp.request_definition(session),
                 "editor.action.goToReferences" => lsp.request_references(session),
+                "editor.action.rename" => lsp.offer_rename(session),
                 "workbench.action.gotoSymbol" => lsp.request_document_symbols(session),
                 // The extension directories have to be walked from here,
                 // for the same reason the file list is.
@@ -882,6 +887,7 @@ pub fn frontend_commands() -> Vec<deco_editor::commands::PaletteEntry> {
         ("editor.action.showHover", "Show Hover"),
         ("editor.action.revealDefinition", "Go to Definition"),
         ("editor.action.goToReferences", "Go to References"),
+        ("editor.action.rename", "Rename Symbol"),
         ("workbench.action.gotoSymbol", "Go to Symbol in Editor"),
         ("workbench.action.selectTheme", "Color Theme"),
         ("editor.action.triggerSuggest", "Trigger Suggest"),

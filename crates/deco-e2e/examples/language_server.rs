@@ -49,6 +49,7 @@ fn serve(role: &str) -> i32 {
                 // at all. A server claiming more than it does would make a
                 // scenario about an unbound key impossible to write.
                 let offers_hover = role != "no-hover";
+                let offers_rename = role != "no-rename";
                 send(
                     &mut output,
                     &serde_json::json!({
@@ -63,6 +64,7 @@ fn serve(role: &str) -> i32 {
                             "definitionProvider": true,
                             "referencesProvider": true,
                             "documentSymbolProvider": true,
+                            "renameProvider": offers_rename,
                             "documentFormattingProvider": true,
                             "completionProvider": {
                                 "triggerCharacters": ["."],
@@ -137,6 +139,48 @@ fn serve(role: &str) -> i32 {
                     ],
                 }),
             ),
+            // Both occurrences of `greet` in the open file, and the one in
+            // `helper.rs` — which the editor has not opened. That second file is
+            // the point of the scenario: the answer to a rename is mostly about
+            // files nobody is looking at.
+            "textDocument/rename" => {
+                let new_name = params
+                    .get("newName")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("renamed")
+                    .to_owned();
+                let open = uri_of(&params);
+                let helper = open.replace("main.rs", "helper.rs");
+                let edit = |line: u32, from: u32, to: u32| {
+                    serde_json::json!({
+                        "range": {
+                            "start": {"line": line, "character": from},
+                            "end": {"line": line, "character": to},
+                        },
+                        "newText": new_name,
+                    })
+                };
+                send(
+                    &mut output,
+                    &serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": {"documentChanges": [
+                            {
+                                // No version: this server does not track them,
+                                // and saying so is more honest than sending a
+                                // number the editor would then check against.
+                                "textDocument": {"uri": open, "version": null},
+                                "edits": [edit(1, 4, 9), edit(4, 3, 8)],
+                            },
+                            {
+                                "textDocument": {"uri": helper, "version": null},
+                                "edits": [edit(1, 4, 9)],
+                            },
+                        ]},
+                    }),
+                );
+            }
             "textDocument/documentSymbol" => send(
                 &mut output,
                 &serde_json::json!({
