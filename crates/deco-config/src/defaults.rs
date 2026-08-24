@@ -52,6 +52,7 @@ pub const DEFAULT_SETTINGS_JSONC: &str = r#"{
     // --- Workbench ------------------------------------------------------
     "workbench.colorTheme": "Default Dark Modern",
     "workbench.editor.enablePreview": true,
+    "workbench.sideBar.location": "left",
 
     // --- Extensions -----------------------------------------------------
     // Extensions run in a separate, unprivileged Node process. These control

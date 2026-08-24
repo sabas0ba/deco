@@ -42,6 +42,22 @@ pub enum EditError {
     Overlapping,
 }
 
+/// Which region of the window has the keyboard.
+///
+/// VS Code's own division, and the reason its `when` clauses can say
+/// `sideBarFocus`: a key means one thing in the text and another in a tree, and
+/// the keymap is where that is decided rather than in each command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Focus {
+    /// The text.
+    #[default]
+    Editor,
+    /// The side bar.
+    SideBar,
+    /// The panel.
+    Panel,
+}
+
 /// Which way [`Session::goto_marker`] walks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Direction {
@@ -297,6 +313,23 @@ pub struct Session {
     replacing_in_files: bool,
     /// The query a replace-in-files is waiting to be given a replacement for.
     replace_query: String,
+    /// Whether the side bar is showing.
+    ///
+    /// Whether it *fits* is a different question, answered by
+    /// [`crate::layout::regions`] against the size of the window — so a toggle
+    /// on a narrow terminal is remembered and takes effect when the window
+    /// grows, rather than being silently refused.
+    side_bar: bool,
+    /// Whether the panel is showing.
+    panel: bool,
+    /// Which region has the keyboard.
+    focus: Focus,
+    /// The rectangle the frontend last handed over.
+    ///
+    /// Kept because toggling a region has to re-divide the same window, and the
+    /// session is the only one that knows the division changed. Without it a
+    /// toggle would have to wait for the next resize to take effect.
+    screen: (usize, usize),
     /// The number the next multi-document edit will be tagged with.
     ///
     /// Handed out here because this is the layer that can see more than one
@@ -457,6 +490,13 @@ impl Session {
             right: Vec::new(),
             recent: Vec::new(),
             problems,
+            side_bar: false,
+            panel: false,
+            focus: Focus::Editor,
+            // Replaced by the first `resize`, which every frontend does before
+            // it draws. The default matches `View`'s so a session nobody sized
+            // still lays out sensibly under test.
+            screen: (80, 24),
             next_group: 0,
             replacing_in_files: false,
             replace_query: String::new(),
@@ -1010,10 +1050,27 @@ impl Session {
         // keybindings.json should gate on the same thing.
         self.context
             .set("searchViewletVisible", self.searching_project());
+        // VS Code's own keys for the chrome. Visible and focused are separate:
+        // `ctrl+b` shows the side bar without taking the keyboard into it, so a
+        // clause gated on `sideBarVisible` and one gated on `sideBarFocus` are
+        // asking different questions.
+        let regions = self.regions();
         self.context
-            .set("editorTextFocus", !find_focus && !in_quick_open);
-        self.context.set("editorFocus", true);
-        self.context.set("textInputFocus", true);
+            .set("sideBarVisible", regions.side_bar.is_some());
+        self.context.set("panelVisible", regions.panel.is_some());
+        self.context
+            .set("sideBarFocus", self.focus == Focus::SideBar);
+        self.context.set("panelFocus", self.focus == Focus::Panel);
+        // Everything below describes the text, and while a region has the
+        // keyboard the text does not have it — which is what stops a binding
+        // gated on `editorTextFocus` from resolving in a tree.
+        let in_editor = self.focus == Focus::Editor;
+        self.context.set(
+            "editorTextFocus",
+            in_editor && !find_focus && !in_quick_open,
+        );
+        self.context.set("editorFocus", in_editor);
+        self.context.set("textInputFocus", in_editor);
         self.context.set("findWidgetVisible", find_focus);
         // Exactly one of the two inputs holds the keyboard, which is what lets
         // `enter` mean "next match" in one and "replace" in the other.
@@ -1140,6 +1197,16 @@ impl Session {
                 let group = self.document.history.redo_group().expect("just checked");
                 self.undo_group(group, true)
             }
+            // The chrome. Session-level because a region changes how much of
+            // the window the text has, which every group and the wrap depend on.
+            "workbench.action.toggleSidebarVisibility" => self.toggle_side_bar(),
+            "workbench.action.togglePanel" => self.toggle_panel(),
+            "workbench.action.closeSidebar" => self.show_side_bar(false),
+            "workbench.action.closePanel" => self.show_panel(false),
+            "workbench.action.focusSideBar" => self.focus_region(Focus::SideBar),
+            "workbench.action.focusPanel" => self.focus_region(Focus::Panel),
+            // VS Code's way back to the text from anywhere in the chrome.
+            "workbench.action.focusActiveEditorGroup" => self.focus_region(Focus::Editor),
             // Needs the view as well as the document: whether the editor is
             // wrapping depends on how wide the window is, which is the view's.
             "editor.action.toggleWordWrap" => self.toggle_word_wrap(),
@@ -1284,6 +1351,15 @@ impl Session {
             | "selectPrevSuggestion"
             | "hideSuggestWidget"
             | "closeHoverWidget" => Outcome::Frontend(command.to_owned()),
+            // The editor's own commands belong to the editor. While a region has
+            // the keyboard they are swallowed rather than run: `commands` is
+            // where typing, motion, undo and the clipboard live, and every one
+            // of them acts on the document — which is not what has focus.
+            //
+            // A guard here rather than a `when` clause on each binding, because
+            // the fallback that types an unbound printable key never went
+            // through the keymap at all, and a clause cannot reach it.
+            _ if self.focus != Focus::Editor => Outcome::Handled,
             _ => {
                 let mut ctx = Context {
                     document: &mut self.document,
@@ -2752,9 +2828,124 @@ impl Session {
         }
     }
 
+    /// `ctrl+b`: shows or hides the side bar.
+    fn toggle_side_bar(&mut self) -> Outcome {
+        self.show_side_bar(!self.side_bar)
+    }
+
+    /// `ctrl+j`: shows or hides the panel.
+    fn toggle_panel(&mut self) -> Outcome {
+        self.show_panel(!self.panel)
+    }
+
+    fn show_side_bar(&mut self, showing: bool) -> Outcome {
+        self.side_bar = showing;
+        // Hiding what has the keyboard would leave the keyboard nowhere.
+        if !showing && self.focus == Focus::SideBar {
+            self.focus = Focus::Editor;
+        }
+        self.report_region("Side bar", showing, self.regions().side_bar.is_some())
+    }
+
+    fn show_panel(&mut self, showing: bool) -> Outcome {
+        self.panel = showing;
+        if !showing && self.focus == Focus::Panel {
+            self.focus = Focus::Editor;
+        }
+        self.report_region("Panel", showing, self.regions().panel.is_some())
+    }
+
+    /// Re-divides the window and says what happened, if anything needs saying.
+    ///
+    /// Showing a region that does not fit is the one case worth a sentence: the
+    /// key was pressed, nothing appeared, and without this that reads as an
+    /// editor that ignored it. The state is kept all the same, so widening the
+    /// window shows what was asked for.
+    fn report_region(&mut self, what: &str, wanted: bool, fits: bool) -> Outcome {
+        let (width, height) = self.screen;
+        self.resize(width, height);
+        if wanted && !fits {
+            return Outcome::Message(format!(
+                "no room for the {} in this window",
+                what.to_lowercase()
+            ));
+        }
+        Outcome::Handled
+    }
+
+    /// Moves the keyboard to a region, showing it first if it is hidden.
+    ///
+    /// Focusing something invisible is the one thing this must not do. Toggling
+    /// deliberately does *not* focus — VS Code's `ctrl+b` leaves the caret in
+    /// the text, and moving it would make showing the tree cost your place.
+    fn focus_region(&mut self, focus: Focus) -> Outcome {
+        match focus {
+            Focus::SideBar if !self.side_bar => {
+                self.show_side_bar(true);
+            }
+            Focus::Panel if !self.panel => {
+                self.show_panel(true);
+            }
+            _ => {}
+        }
+
+        // A region that does not fit in this window cannot take the keyboard
+        // either, however it was asked for.
+        let regions = self.regions();
+        let showing = match focus {
+            Focus::Editor => true,
+            Focus::SideBar => regions.side_bar.is_some(),
+            Focus::Panel => regions.panel.is_some(),
+        };
+        if !showing {
+            return Outcome::Message("no room for it in this window".to_owned());
+        }
+
+        self.focus = focus;
+        self.refresh_context();
+        Outcome::Handled
+    }
+
+    /// How the window is currently divided between editor, side bar and panel.
+    ///
+    /// Recomputed rather than stored: it is a pure function of the window size
+    /// and two booleans, and a cached copy is one more thing that can be stale
+    /// while the screen says otherwise.
+    pub fn regions(&self) -> crate::layout::Regions {
+        self.regions_for(self.screen.0, self.screen.1)
+    }
+
+    /// The same division, of a rectangle the caller names.
+    ///
+    /// For a renderer, which knows the area it is drawing into and should not
+    /// have to assume it is the one the session was last resized to. The two
+    /// agree in the editor — the frontend computes one from the other — but a
+    /// renderer that took it on trust would be relying on that rather than on
+    /// what is in front of it.
+    pub fn regions_for(&self, width: usize, height: usize) -> crate::layout::Regions {
+        crate::layout::regions(
+            width,
+            height,
+            self.side_bar
+                .then(|| deco_config::SideBarLocation::resolve(&self.settings)),
+            self.panel,
+        )
+    }
+
+    /// Which region has the keyboard.
+    pub fn focus(&self) -> Focus {
+        self.focus
+    }
+
     /// Gives every group its size and the columns it leaves for text, without
     /// moving any window.
     fn lay_out(&mut self, width: usize, height: usize) {
+        self.screen = (width, height);
+        // The regions come off first: what is left is what the editor has, and
+        // it is that rectangle the groups divide and the text wraps inside.
+        let editor = self.regions().editor;
+        let (width, height) = (editor.width, editor.height);
+
         let columns = crate::layout::column_widths(width, self.group_count());
         let gutter = crate::layout::gutter_width(&self.document);
         // The active group is the second one on screen while the split has the
@@ -6260,15 +6451,161 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_b_and_ctrl_j_toggle_the_chrome() {
+        let mut s = session();
+        s.resize(80, 24);
+        assert!(s.regions().side_bar.is_none(), "hidden to start with");
+
+        press(&mut s, "ctrl+b");
+        assert!(s.regions().side_bar.is_some());
+        assert_eq!(s.context.get("sideBarVisible"), Some(&json!(true)));
+
+        press(&mut s, "ctrl+j");
+        assert!(s.regions().panel.is_some());
+        assert_eq!(s.context.get("panelVisible"), Some(&json!(true)));
+
+        press(&mut s, "ctrl+b");
+        press(&mut s, "ctrl+j");
+        assert!(s.regions().side_bar.is_none());
+        assert!(s.regions().panel.is_none());
+    }
+
+    #[test]
+    fn showing_a_region_gives_the_text_less_room_to_wrap_in() {
+        // The whole reason the split lives in the session: the wrap width has to
+        // move with it, or a line breaks where the renderer is not drawing.
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.txt"), "x\n");
+        s.resize(80, 24);
+        let before = s.view.text_width;
+
+        press(&mut s, "ctrl+b");
+        assert!(
+            s.view.text_width < before,
+            "the side bar took columns from the text: {before} -> {}",
+            s.view.text_width
+        );
+        assert_eq!(s.view.width, s.regions().editor.width);
+
+        press(&mut s, "ctrl+j");
+        assert_eq!(s.view.height, s.regions().editor.height);
+    }
+
+    #[test]
+    fn a_region_that_does_not_fit_is_remembered_and_says_so() {
+        // The key was pressed and nothing appeared, which without a sentence
+        // reads as an editor that ignored it. The *state* is kept, so widening
+        // the window shows what was asked for rather than needing another press.
+        let mut s = session();
+        s.resize(24, 24);
+
+        let outcome = s.run("workbench.action.toggleSidebarVisibility", None, 0);
+        assert_eq!(
+            outcome,
+            Outcome::Message("no room for the side bar in this window".to_owned())
+        );
+        assert!(s.regions().side_bar.is_none());
+
+        s.resize(100, 24);
+        assert!(
+            s.regions().side_bar.is_some(),
+            "a wider window shows what was already asked for"
+        );
+    }
+
+    #[test]
+    fn toggling_the_side_bar_leaves_the_keyboard_in_the_text() {
+        // VS Code's behaviour, and the point of it: showing the tree should not
+        // cost you your place in the file.
+        let mut s = session();
+        s.resize(80, 24);
+        press(&mut s, "ctrl+b");
+
+        assert_eq!(s.focus(), Focus::Editor);
+        assert_eq!(s.context.get("sideBarFocus"), Some(&json!(false)));
+        assert_eq!(s.context.get("editorTextFocus"), Some(&json!(true)));
+    }
+
+    #[test]
+    fn focusing_a_region_shows_it_first() {
+        // Focusing something invisible is the one thing this must not do.
+        let mut s = session();
+        s.resize(80, 24);
+
+        assert_eq!(
+            s.run("workbench.action.focusPanel", None, 0),
+            Outcome::Handled
+        );
+        assert!(s.regions().panel.is_some());
+        assert_eq!(s.focus(), Focus::Panel);
+        assert_eq!(s.context.get("panelFocus"), Some(&json!(true)));
+        assert_eq!(s.context.get("editorTextFocus"), Some(&json!(false)));
+    }
+
+    #[test]
+    fn hiding_the_region_that_has_the_keyboard_gives_it_back() {
+        let mut s = session();
+        s.resize(80, 24);
+        s.run("workbench.action.focusSideBar", None, 0);
+        assert_eq!(s.focus(), Focus::SideBar);
+
+        press(&mut s, "ctrl+b");
+        assert_eq!(
+            s.focus(),
+            Focus::Editor,
+            "the keyboard is nowhere otherwise"
+        );
+        assert_eq!(s.context.get("editorTextFocus"), Some(&json!(true)));
+    }
+
+    #[test]
+    fn a_region_with_the_keyboard_does_not_get_typed_into() {
+        // Every editing command acts on the document, and the document is not
+        // what has focus. The unbound-printable fallback goes the same way,
+        // which is why the guard is on the command rather than on the binding.
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.txt"), "hello\n");
+        s.resize(80, 24);
+        s.run("workbench.action.focusSideBar", None, 0);
+
+        press(&mut s, "x");
+        press(&mut s, "enter");
+        press(&mut s, "backspace");
+        s.run("editor.action.selectAll", None, 0);
+
+        assert_eq!(s.document.buffer.text(), "hello\n", "untouched");
+        assert!(!s.document.dirty);
+
+        // And it comes back the moment the editor has the keyboard again.
+        s.run("workbench.action.focusActiveEditorGroup", None, 0);
+        press(&mut s, "x");
+        assert_eq!(s.document.buffer.text(), "xhello\n");
+    }
+
+    #[test]
+    fn the_side_bar_goes_where_the_setting_says() {
+        let mut s = session();
+        s.set_workspace_settings(r#"{"workbench.sideBar.location": "right"}"#);
+        s.resize(80, 24);
+        press(&mut s, "ctrl+b");
+
+        let regions = s.regions();
+        assert_eq!(regions.editor.x, 0, "the text keeps the left edge");
+        assert!(regions.side_bar.expect("showing").x > regions.editor.x);
+    }
+
+    #[test]
     fn an_unimplemented_command_says_which_feature_it_is() {
+        // The panel exists now; a terminal to put in it does not, which is what
+        // this key is still waiting on.
         let mut s = searchable("x\n");
         assert_eq!(
-            s.run("workbench.action.togglePanel", None, 0),
-            Outcome::Message("Toggle Panel is not implemented yet".to_owned())
+            s.run("workbench.action.terminal.toggleTerminal", None, 0),
+            Outcome::Message("Toggle Terminal is not implemented yet".to_owned())
         );
         assert_eq!(
             s.status.as_deref(),
-            Some("Toggle Panel is not implemented yet")
+            Some("Toggle Terminal is not implemented yet")
         );
     }
 

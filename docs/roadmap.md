@@ -21,10 +21,9 @@ What VS Code has and deco does not, grouped by how it blocks:
 
 | Missing | Depends on |
 | --- | --- |
-| Sidebar and panel — the chrome itself | nothing; everything below sits in it |
-| File tree (the explorer) | the sidebar |
-| Git — gutter diffs, branch in the status bar, stage and commit | the sidebar, and a status-bar segment |
-| Integrated terminal | the panel, and a PTY dependency |
+| File tree (the explorer) | nothing — the [side bar](chrome.md) is built and waiting for it |
+| Git — gutter diffs, branch in the status bar, stage and commit | a status-bar segment; its view is a side-bar tenant |
+| Integrated terminal | a PTY dependency; its home is the [panel](chrome.md) |
 | Task runner (`tasks.json`, `ctrl+shift+b`) | the terminal, for somewhere to run |
 | Test runner | the task runner, and later the extension host |
 | Self-update | nothing — `cargo xtask dist` already builds what it would install |
@@ -33,13 +32,13 @@ What VS Code has and deco does not, grouped by how it blocks:
 | Regular-expression search | nothing — `deco-core::search` is deliberately literal so far |
 | Snippet tab stops | nothing |
 
-The dependencies are why the order below is the order. Two foundations are left
-— the **sidebar and panel**, and **finishing the extension-host wiring** — and
-most of what users actually ask for (the tree, git, the terminal) is a tenant of
-one of them. The third, **`WorkspaceEdit`**, is
-[built](#the-gaps-behind-the-features): rename and code actions land through it,
-replace across the workspace lands through it, and so will the tree's
-mutations and an agent's turn.
+The dependencies are why the order below is the order. One foundation is left —
+**finishing the extension-host wiring**. The other two are built. The
+**[side bar and panel](chrome.md)** is the chrome the tree, git's view and the
+terminal are all tenants of; **`WorkspaceEdit`**
+([below](#the-gaps-behind-the-features)) is what rename, code actions and
+replace across the workspace already land through, and what the tree's mutations
+and an agent's turn will.
 
 Two rules carry over from everything already built, and every chapter below is
 written under them:
@@ -49,42 +48,11 @@ written under them:
   and `terminal.integrated.defaultProfile.linux` — never a `deco.*` synonym for
   something VS Code already has a name for. That is what makes an existing
   `keybindings.json` keep meaning what it meant.
-- **A key that waits on a feature says so.** `ctrl+b` and `ctrl+j` are already
-  bound and already name the sidebar and the panel as the features they are
-  waiting on; a test over the default keymap keeps every such key honest. Each
-  chapter shipping turns one of those refusals into behaviour.
-
-## The sidebar and the panel
-
-**What VS Code has.** A left sidebar hosting views (explorer, search, source
-control, extensions), a bottom panel hosting others (terminal, problems,
-output), and commands to toggle and focus them.
-
-**What deco has.** The bindings — `ctrl+b` is
-`workbench.action.toggleSidebarVisibility`, `ctrl+j` is
-`workbench.action.togglePanel` — and nothing behind them. The TUI lays out one
-editor region plus the status bar and prompt; there is no notion of a second
-region with focus of its own.
-
-**The plan.** A `Region` layer in `deco-editor`'s layout: the frontend hands
-the session a rectangle, the session splits it between editor, sidebar and
-panel, and each region renders through the same pure-function path the editor
-does today — so the split is testable in CI with no terminal attached, which is
-the property everything else here already has. Focus becomes part of the
-session (`sideBarFocus`, `panelFocus` join the when-clause context keys), so
-the keymap can route keys the way VS Code does. The GUI frontend draws the same
-regions; it gets them for free once they exist below the frontends.
-
-**Steps.**
-
-1. Add regions and focus to `deco-editor::layout`, with the editor as the only
-   tenant, and tests asserting the arithmetic of the split.
-2. Wire `ctrl+b` / `ctrl+j` to toggle empty regions, replacing their
-   named refusals; add the context keys to `deco-keymap`'s when engine.
-3. Teach `deco-tui`'s renderer to paint a region border and a placeholder body;
-   same for `deco-gui`.
-4. Define the view contract — what a tenant must implement to be given a
-   region — against which every later chapter builds.
+- **A key that waits on a feature says so.** `` ctrl+` `` is bound and names the
+  integrated terminal as what it is waiting on; a test over the default keymap
+  keeps every such key honest. Each chapter shipping turns one of those refusals
+  into behaviour — `ctrl+b` and `ctrl+j` were on this list until the chrome
+  landed.
 
 ## The file tree
 
@@ -96,7 +64,7 @@ delete, and reveal; `workbench.files.action.focusFilesExplorer`,
 already enumerated with `files.exclude` honoured — see `deco-tui::files`. No
 tree.
 
-**The plan.** The first sidebar tenant. The same file enumeration that feeds
+**The plan.** The first [side bar](chrome.md) tenant. The same file enumeration that feeds
 quick open feeds the tree; directories expand lazily so a large workspace costs
 what its *visible* rows cost, which is the bounded-by-the-window rule every hot
 path here already follows. Enter opens in a tab; create, rename and delete come
@@ -109,7 +77,7 @@ already does.
 
 1. A tree model over the existing walker: visible rows only, expansion state in
    the session.
-2. Render as a sidebar view; keyboard first (VS Code's explorer keys), mouse
+2. Render as a side-bar view; keyboard first (VS Code's explorer keys), mouse
    later with the GUI's mouse work.
 3. Open-on-enter, reveal-active-file; the `filesExplorerFocus` context key.
 4. Mutations (new file, rename, delete) after `WorkspaceEdit` lands.
@@ -135,7 +103,7 @@ copy of libgit2 nobody asked for. Three stages, each useful alone:
 2. **Gutter**: changed/added/deleted line markers, from `git diff` of the
    buffer against `HEAD`, computed the way everything else is — for the visible
    rows, resumed from the earliest edited line.
-3. **The source-control view**: a sidebar tenant listing changed files;
+3. **The source-control view**: a side-bar tenant listing changed files;
    `git.stage`, `git.unstage`, `git.commit` (message through the existing
    prompt), `git.checkout` through the existing picker. `git.enabled` and
    `git.decorations.enabled` are read with their VS Code meanings.
@@ -152,7 +120,7 @@ the buffer.
 2. Status-bar segment; refresh triggers; a workspace without git, or a machine
    without the binary, shows nothing and logs why once.
 3. Line diff for the visible window; gutter marks in both frontends.
-4. The sidebar view and the `git.*` commands, last, because the first two are
+4. The side-bar view and the `git.*` commands, last, because the first two are
    most of the daily value.
 
 ## The integrated terminal
@@ -160,10 +128,10 @@ the buffer.
 **What VS Code has.** Terminals in the panel, ``ctrl+` `` to toggle, profiles,
 and the `terminal.integrated.*` settings family.
 
-**What deco has.** The bindings — ``ctrl+` `` is already
-`workbench.action.terminal.toggleTerminal`, refusing by name — and nothing
-behind them. And one honest complication the plan has to answer: deco's TUI
-*is already inside* a terminal.
+**What deco has.** The [panel](chrome.md) to put one in, and the binding —
+``ctrl+` `` is already `workbench.action.terminal.toggleTerminal`, refusing by
+name. What is missing is the terminal itself. And one honest complication the
+plan has to answer: deco's TUI *is already inside* a terminal.
 
 **The plan.** A PTY per terminal, a VT parser feeding a screen model, and the
 panel region painting that model — through the same pure render path, so a
@@ -233,7 +201,7 @@ table like `readFile` before it.
 
 1. Test-group tasks through the task runner.
 2. The `vscode.tests` surface in the host shim, brokered like the rest.
-3. A sidebar testing view rendering what extensions report; run through tasks,
+3. A side-bar testing view rendering what extensions report; run through tasks,
    results to gutter marks.
 
 ## Self-update
@@ -299,7 +267,7 @@ serve both honestly because of two decisions already made: AI arrives as
   machine" is readable off the manifest instead of taken on faith.
 - **The surfaces are the ordinary ones.** Inline completions are ghost text —
   a rendering concern worth building once, since parameter hints and inlay
-  hints want it too. Chat is a sidebar or panel tenant like the views before
+  hints want it too. Chat is a side-bar or panel tenant like the views before
   it. Both are fed through the host's mediated API
   (`InlineCompletionItemProvider`, the chat participant surface), so an AI
   extension is not a special kind of extension — it is an extension with an
@@ -313,7 +281,7 @@ serve both honestly because of two decisions already made: AI arrives as
 2. Ghost-text rendering in both frontends, as its own feature.
 3. `InlineCompletionItemProvider` through the host shim, brokered like the
    rest.
-4. A chat view as a sidebar/panel tenant, last — it is the largest surface and
+4. A chat view as a side-bar/panel tenant, last — it is the largest surface and
    the least of the daily value.
 
 ### Agent integration

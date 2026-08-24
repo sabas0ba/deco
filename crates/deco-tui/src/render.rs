@@ -13,7 +13,7 @@ use deco_core::position::Range;
 // disagree about the width, and a disagreement there draws a caret beside the
 // character it is on rather than under it.
 use deco_editor::find::Field;
-use deco_editor::layout::{column_widths, gutter_width as gutter_width_of};
+use deco_editor::layout::{column_widths, gutter_width as gutter_width_of, Rect};
 use deco_editor::Session;
 use deco_theme::Rgba;
 use unicode_width::UnicodeWidthChar;
@@ -234,27 +234,102 @@ fn render_text(session: &Session, width: usize, height: usize) -> Frame {
         rows.push(tab_bar(session, &session.panes(), width, &palette));
     }
 
+    // What is left of the text area once the chrome regions have taken theirs.
+    // Computed from the height actually being drawn rather than from the one the
+    // session was last resized to — see `Session::regions_for`.
+    let regions = session.regions_for(width, text_height);
+    let editor = regions.editor;
+
     let panes = session.panes();
-    let widths = column_widths(width, panes.len());
+    let widths = column_widths(editor.width, panes.len());
     let mut cursor_cell = None;
     let drawn: Vec<Frame> = panes
         .iter()
         .zip(&widths)
-        .map(|(pane, column)| pane_rows(session, pane, *column, text_height, &palette))
+        .map(|(pane, column)| pane_rows(session, pane, *column, editor.height, &palette))
         .collect();
 
     // The caret belongs to one group, and its column is offset by everything to
-    // the left of that group — including the separators.
-    let mut left = 0usize;
+    // the left of that group — including the separators, and now the side bar.
+    let mut left = editor.x;
     for (index, frame) in drawn.iter().enumerate() {
         if let Some((x, y)) = frame.cursor {
             cursor_cell = Some((x + left as u16, y + top as u16));
         }
         left += widths[index] + usize::from(index + 1 < widths.len());
     }
+    // A region with the keyboard means the text does not have it, and two
+    // carets — or one in a place typing does not go — is a lie about where the
+    // next keystroke lands.
+    if session.focus() != deco_editor::Focus::Editor {
+        cursor_cell = None;
+    }
+
+    let side_bar = regions
+        .side_bar
+        .map(|rect| region_rows(session, rect, Region::SideBar, &palette));
+    let panel = regions
+        .panel
+        .map(|rect| region_rows(session, rect, Region::Panel, &palette));
 
     for row_index in 0..text_height {
-        rows.push(stitch(&drawn, row_index, &palette));
+        // The middle of the row: the groups, the rule above the panel, or the
+        // panel itself, depending how far down we are.
+        let middle = if let Some(rule) = regions.panel_rule.filter(|rule| *rule == row_index) {
+            let _ = rule;
+            Row {
+                spans: vec![Span {
+                    text: "─".repeat(editor.width),
+                    fg: palette.gutter_fg,
+                    bg: palette.bg,
+                }],
+            }
+        } else if row_index < editor.height {
+            stitch(&drawn, row_index, &palette)
+        } else {
+            let rect = regions.panel.expect("rows past the editor are the panel's");
+            panel
+                .as_ref()
+                .and_then(|rows| rows.get(row_index - rect.y))
+                .cloned()
+                .unwrap_or_else(|| Row {
+                    spans: vec![blank(editor.width, palette.bg)],
+                })
+        };
+
+        rows.push(match (regions.side_bar, &side_bar) {
+            (Some(rect), Some(bar)) => {
+                let cells = bar.get(row_index).cloned().unwrap_or_else(|| Row {
+                    spans: vec![blank(rect.width, palette.bg)],
+                });
+                // Where the panel's rule meets the side bar's, the two join
+                // rather than crossing: a `│` butted against a run of `─` reads
+                // as two borders that happen to touch.
+                let joins = regions.panel_rule == Some(row_index);
+                let rule = Span {
+                    text: match (joins, rect.x == 0) {
+                        (true, true) => "├",
+                        (true, false) => "┤",
+                        (false, _) => "│",
+                    }
+                    .to_owned(),
+                    fg: palette.gutter_fg,
+                    bg: palette.bg,
+                };
+                let mut spans = Vec::new();
+                if rect.x == 0 {
+                    spans.extend(cells.spans);
+                    spans.push(rule);
+                    spans.extend(middle.spans);
+                } else {
+                    spans.extend(middle.spans);
+                    spans.push(rule);
+                    spans.extend(cells.spans);
+                }
+                Row { spans }
+            }
+            _ => middle,
+        });
     }
 
     // Between the text and the status bar, so that the bar the user is typing
@@ -318,6 +393,115 @@ fn render_text(session: &Session, width: usize, height: usize) -> Frame {
         rows,
         cursor: cursor_cell,
     }
+}
+
+/// Which region is being drawn, for the two things that differ between them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Region {
+    SideBar,
+    Panel,
+}
+
+impl Region {
+    /// The heading, in the case VS Code puts its view titles in.
+    fn title(self) -> &'static str {
+        match self {
+            Self::SideBar => "SIDE BAR",
+            Self::Panel => "PANEL",
+        }
+    }
+
+    /// What is going to live here, for as long as nothing does.
+    ///
+    /// A region that opens empty and says nothing is indistinguishable from one
+    /// that failed to draw. deco names commands it has not built rather than
+    /// letting the key do nothing silently, and this is the same rule one layer
+    /// out: the chrome is real, what goes in it is named, and neither is
+    /// pretended about.
+    fn waiting_on(self) -> &'static str {
+        match self {
+            Self::SideBar => "the file tree, search and source control",
+            Self::Panel => "the terminal, problems and output",
+        }
+    }
+
+    /// Whether this region currently has the keyboard.
+    fn has_focus(self, session: &Session) -> bool {
+        match self {
+            Self::SideBar => session.focus() == deco_editor::Focus::SideBar,
+            Self::Panel => session.focus() == deco_editor::Focus::Panel,
+        }
+    }
+}
+
+/// One region's rows: a heading, then what it is waiting for, then blank.
+///
+/// Exactly `rect.height` rows of exactly `rect.width` columns, so the caller can
+/// stitch them beside the editor's without measuring anything.
+fn region_rows(session: &Session, rect: Rect, region: Region, palette: &Palette) -> Vec<Row> {
+    let theme = &session.theme;
+    // The side bar's own colours when the theme has them, so a region looks like
+    // part of the editor it was themed for rather than a hole in it.
+    let bg = theme
+        .color("sideBar.background")
+        .unwrap_or(palette.status_bg);
+    let fg = theme
+        .color("sideBar.foreground")
+        .unwrap_or(palette.status_fg);
+    let title_fg = theme.color("sideBarTitle.foreground").unwrap_or(fg);
+    // The one thing that has to be visible without a tenant to show it: which
+    // region the keyboard is in.
+    let title_bg = if region.has_focus(session) {
+        theme
+            .color("focusBorder")
+            .unwrap_or(palette.gutter_active_fg)
+    } else {
+        bg
+    };
+
+    let mut rows: Vec<Row> = Vec::with_capacity(rect.height);
+    rows.push(region_line(region.title(), rect.width, title_fg, title_bg));
+    if rect.height > 1 {
+        rows.push(region_line("", rect.width, fg, bg));
+    }
+    // Wrapped, because "the file tree, search and source control" does not fit
+    // in thirty columns and a region that ends mid-word reads as broken.
+    let mut body = wrap(region.waiting_on(), rect.width.saturating_sub(1), 4);
+    body.push("will live here".to_owned());
+    for text in body {
+        if rows.len() >= rect.height {
+            break;
+        }
+        rows.push(region_line(&text, rect.width, fg, bg));
+    }
+    while rows.len() < rect.height {
+        rows.push(region_line("", rect.width, fg, bg));
+    }
+    rows.truncate(rect.height);
+    rows
+}
+
+/// One row of a region: a column of padding, the text, and blank to the edge.
+fn region_line(text: &str, width: usize, fg: Rgba, bg: Rgba) -> Row {
+    let clipped = clip(text, width.saturating_sub(1));
+    let used = columns(&clipped);
+    let mut spans = vec![Span {
+        text: format!(" {clipped}"),
+        fg,
+        bg,
+    }];
+    if used + 1 < width {
+        spans.push(blank(width - used - 1, bg));
+    }
+    Row { spans }
+}
+
+/// `text` cut to `limit` columns.
+fn clip(text: &str, limit: usize) -> String {
+    if columns(text) <= limit {
+        return text.to_owned();
+    }
+    text.chars().take(limit).collect()
 }
 
 /// Joins one row of every group into the row that goes on screen.
@@ -1536,6 +1720,131 @@ mod tests {
         );
         session.open(PathBuf::from("/w/file.rs"), text);
         session
+    }
+
+    /// A session sized the way the frontend sizes one, with regions showing.
+    ///
+    /// The two-step is what `app::resize` does: the session is given what is
+    /// left after the bars, and the renderer is given the whole terminal.
+    fn with_chrome(side_bar: bool, panel: bool, width: usize, height: usize) -> Session {
+        let mut session = session("fn main() {\n    println!(\"hi\");\n}\n");
+        session.resize(width, height);
+        if side_bar {
+            session.run("workbench.action.toggleSidebarVisibility", None, 0);
+        }
+        if panel {
+            session.run("workbench.action.togglePanel", None, 0);
+        }
+        let chrome = chrome_height(&session, height);
+        session.resize(width, height - chrome);
+        session
+    }
+
+    #[test]
+    fn a_side_bar_takes_columns_from_the_text_and_leaves_a_rule() {
+        let session = with_chrome(true, false, 72, 10);
+        let frame = render(&session, 72, 10);
+        let first = frame.rows[0].plain();
+
+        assert!(first.starts_with(" SIDE BAR"), "{first:?}");
+        // The rule sits where the layout put it, and the text starts past it.
+        let rule = session.regions().side_bar_rule.expect("showing");
+        assert_eq!(first.chars().nth(rule), Some('│'), "{first:?}");
+        assert!(first[rule..].contains("fn main"), "{first:?}");
+        assert_eq!(first.chars().count(), 72);
+    }
+
+    #[test]
+    fn a_right_side_bar_puts_the_text_on_the_left() {
+        let mut session = session("fn main() {}\n");
+        session.set_workspace_settings(r#"{"workbench.sideBar.location": "right"}"#);
+        session.resize(72, 10);
+        session.run("workbench.action.toggleSidebarVisibility", None, 0);
+        session.resize(72, 10 - chrome_height(&session, 10));
+
+        let frame = render(&session, 72, 10);
+        let first = frame.rows[0].plain();
+        assert!(first.starts_with("  1 fn main"), "{first:?}");
+        assert!(first.trim_end().ends_with("SIDE BAR"), "{first:?}");
+    }
+
+    #[test]
+    fn the_panel_sits_under_the_text_behind_a_rule() {
+        let session = with_chrome(false, true, 72, 12);
+        let frame = render(&session, 72, 12);
+        let rule = session.regions().panel_rule.expect("showing");
+
+        assert!(
+            frame.rows[rule].plain().starts_with("────"),
+            "{:?}",
+            frame.rows[rule].plain()
+        );
+        assert!(frame.rows[rule + 1].plain().starts_with(" PANEL"));
+    }
+
+    #[test]
+    fn the_two_rules_join_where_they_meet() {
+        // `│` butted against a run of `─` reads as two borders that happen to
+        // touch rather than as one drawn frame.
+        let session = with_chrome(true, true, 72, 12);
+        let frame = render(&session, 72, 12);
+        let rule_row = session.regions().panel_rule.expect("showing");
+        let rule_column = session.regions().side_bar_rule.expect("showing");
+
+        let row = frame.rows[rule_row].plain();
+        assert_eq!(row.chars().nth(rule_column), Some('├'), "{row:?}");
+    }
+
+    #[test]
+    fn every_row_is_still_exactly_the_window_wide() {
+        // The thing region stitching is most likely to get wrong.
+        for (side_bar, panel) in [(true, false), (false, true), (true, true)] {
+            let session = with_chrome(side_bar, panel, 72, 12);
+            let frame = render(&session, 72, 12);
+            assert_eq!(frame.rows.len(), 12);
+            for (index, row) in frame.rows.iter().enumerate() {
+                assert_eq!(
+                    row.plain().chars().count(),
+                    72,
+                    "row {index} with side_bar={side_bar} panel={panel}: {:?}",
+                    row.plain()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_caret_moves_over_by_a_left_side_bar() {
+        let plain = session("fn main() {}\n");
+        let before = render(&plain, 72, 10).cursor.expect("a caret");
+
+        let session = with_chrome(true, false, 72, 10);
+        let after = render(&session, 72, 10).cursor.expect("a caret");
+        let shift = session.regions().editor.x as u16;
+
+        assert_eq!(
+            after.0,
+            before.0 + shift,
+            "shifted past the bar and its rule"
+        );
+        assert_eq!(after.1, before.1);
+    }
+
+    #[test]
+    fn a_region_with_the_keyboard_takes_the_caret_off_the_text() {
+        // Two carets, or one where typing does not go, is a lie about where the
+        // next keystroke lands.
+        let mut session = with_chrome(true, false, 72, 10);
+        assert!(render(&session, 72, 10).cursor.is_some());
+
+        session.run("workbench.action.focusSideBar", None, 0);
+        assert_eq!(render(&session, 72, 10).cursor, None);
+
+        session.run("workbench.action.focusActiveEditorGroup", None, 0);
+        assert!(
+            render(&session, 72, 10).cursor.is_some(),
+            "and it comes back"
+        );
     }
 
     #[test]

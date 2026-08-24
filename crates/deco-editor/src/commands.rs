@@ -272,12 +272,8 @@ impl PaletteEntry {
 ///
 /// An identifier leaves this list when the feature lands.
 pub const PENDING: &[(&str, &str)] = &[
-    // Needs chrome deco has no concept of yet.
-    (
-        "workbench.action.toggleSidebarVisibility",
-        "Toggle Side Bar",
-    ),
-    ("workbench.action.togglePanel", "Toggle Panel"),
+    // The panel exists now; what is missing is a terminal to put in it, which
+    // needs a PTY dependency — see docs/roadmap.md.
     (
         "workbench.action.terminal.toggleTerminal",
         "Toggle Terminal",
@@ -313,6 +309,23 @@ pub const PALETTE: &[(&str, &str)] = &[
     ("editor.action.removeCommentLine", "Remove Line Comment"),
     ("editor.action.blockComment", "Toggle Block Comment"),
     ("editor.action.toggleWordWrap", "View: Toggle Word Wrap"),
+    (
+        "workbench.action.toggleSidebarVisibility",
+        "View: Toggle Primary Side Bar Visibility",
+    ),
+    (
+        "workbench.action.togglePanel",
+        "View: Toggle Panel Visibility",
+    ),
+    (
+        "workbench.action.focusSideBar",
+        "View: Focus into Primary Side Bar",
+    ),
+    ("workbench.action.focusPanel", "View: Focus into Panel"),
+    (
+        "workbench.action.focusActiveEditorGroup",
+        "View: Focus Active Editor Group",
+    ),
     ("editor.action.indentLines", "Indent Lines"),
     ("editor.action.outdentLines", "Outdent Lines"),
     ("editor.action.deleteLines", "Delete Line"),

@@ -101,6 +101,7 @@ running, and is published at
 | --- | --- |
 | [Editing](docs/editing.md) | Motion, line and block comments, multiple cursors, word wrap, undo |
 | [Tabs](docs/tabs.md) | Several documents, one per tab; splitting; what a tab keeps |
+| [Chrome](docs/chrome.md) | The side bar and the panel: `ctrl+b`, `ctrl+j`, where the space comes from, and where the keyboard is |
 | [Syntax highlighting](docs/highlighting.md) | Scopes, languages, choosing one, and why not tree-sitter |
 | [Find and replace](docs/find-and-replace.md) | `ctrl+f`, `ctrl+h`, `F3`, the multi-cursor find keys, and replacing across the workspace |
 | [Running commands](docs/commands.md) | The command palette, quick open, go to symbol, search in files, go to line |
@@ -171,6 +172,7 @@ thin painter.
 | Find and replace (`ctrl+f`, `ctrl+h`, `F3`, `ctrl+d`, `ctrl+shift+l`, `ctrl+shift+h`) | Literal search only — no regular expressions; replace across the workspace is one undoable edit |
 | Search in files (`ctrl+shift+f`) | Yes — bounded and synchronous, and it says so |
 | Command palette (`ctrl+shift+p`), quick open (`ctrl+p`), go to line (`ctrl+g`) | Yes |
+| Side bar and panel (`ctrl+b`, `ctrl+j`, `workbench.sideBar.location`) | The chrome is built — regions, focus, the context keys — and **empty**: the tree, search, source control, terminal, problems and output are named as what will live in them, see [Chrome](docs/chrome.md) |
 | Word wrap (`editor.wordWrap`, `editor.wrappingIndent`, `alt+z`) | Yes in the terminal |
 | Detected indentation (`editor.detectIndentation`) | Yes — the status bar says when a file overruled the setting |
 | Auto-closing brackets (`editor.autoClosingBrackets`) | Yes — no `autoSurround`, no `autoClosingDelete` |
@@ -288,6 +290,11 @@ not exist *at all* yet — git, an integrated terminal, tasks, a test runner,
 self-update, debugging — each have a plan in the
 [Roadmap](docs/roadmap.md):
 
+- **The side bar and the panel are built and empty.** `ctrl+b` and `ctrl+j` open
+  real regions — the split, the focus and VS Code's context keys are all there,
+  and both frontends draw them — but nothing lives in them yet. Each names what
+  it is waiting for: the file tree, search and source control on one side, the
+  terminal, problems and output on the other. See [Chrome](docs/chrome.md).
 - **Remote development runs everything except the extension host over there.**
   `deco --remote ssh-remote+myhost --workspace /home/u/project src/main.rs` starts
   `deco --server --stdio` on the far end, fetches the file, and writes it back on

@@ -156,6 +156,19 @@ impl Gpu {
             ));
         }
 
+        // The chrome, in the gutter's colour so it reads as a border rather than
+        // as text somebody typed.
+        for line in &laid_out.chrome {
+            let mut buffer = TextBuffer::new(&mut self.font_system, text_metrics);
+            buffer.borrow_with(&mut self.font_system).set_text(
+                &line.text,
+                &attrs,
+                Shaping::Advanced,
+                None,
+            );
+            buffers.push((buffer, line.x, line.y, to_glyphon(laid_out.colors.gutter)));
+        }
+
         let bounds = TextBounds {
             left: 0,
             top: 0,
