@@ -537,13 +537,20 @@ impl Client {
             "client/registerCapability" | "client/unregisterCapability" => {
                 Response::ok(request.id, serde_json::Value::Null)
             }
-            // Nothing here can apply an edit yet. Saying so honestly is better
-            // than "applied: true" for a refactoring that never happened.
+            // Declined, and no longer for want of a way to apply one: an edit
+            // the *editor* asked for — a rename, a chosen code action — goes
+            // through `deco_editor::workspace`. This is the other direction. A
+            // server pushing an edit unprompted is asking to change files
+            // nobody pressed a key about, which is a different thing to be
+            // allowed to do, and giving it the same answer as the asked-for
+            // case because the machinery happens to exist is not the way that
+            // decision should get made. `applied: false` is the protocol's own
+            // word for it, and honest.
             "workspace/applyEdit" => Response::ok(
                 request.id,
                 serde_json::json!({
                     "applied": false,
-                    "failureReason": "deco cannot apply workspace edits yet",
+                    "failureReason": "deco applies only the edits it asked for",
                 }),
             ),
             "workspace/configuration" => {

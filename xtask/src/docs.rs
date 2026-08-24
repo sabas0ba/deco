@@ -111,6 +111,10 @@ fn demos() -> Vec<Demo> {
             build: rename,
         },
         Demo {
+            name: "code-actions",
+            build: code_actions,
+        },
+        Demo {
             name: "completion",
             build: completion,
         },
@@ -471,6 +475,64 @@ fn diagnostics() -> String {
         .press_and_hold(&["f8"], 4)
         .press_and_hold(&["f8"], 4)
         .press_and_hold(&["f8"], 4);
+    take.finish()
+}
+
+fn code_actions() -> String {
+    // A file with something wrong with it, so the diagnostic and the fix for it
+    // are on screen together — which is the pairing the feature is about.
+    const TEXT: &str = "fn main() {\n    let count = 2;\n    println!(\"hello\");\n}\n";
+    let mut take = Take::new("main.rs", TEXT);
+    take.session.set_diagnostics(vec![Diagnostic {
+        range: Range::new(Position::new(1, 8), Position::new(1, 13)),
+        severity: Severity::Warning,
+        code: Some("unused_variables".to_owned()),
+        source: Some("rustc".to_owned()),
+        message: "unused variable: `count`".to_owned(),
+    }]);
+    take.at(1, 8).capture("the caret is on the warning", 4);
+
+    // The list the server answered with, injected for the same reason the
+    // diagnostics are: a demonstration must not need a server installed to
+    // build. Everything after this is the editor's own code.
+    take.session.offer_code_actions(vec![
+        deco_editor::commands::PaletteEntry::new("0", "Prefix the name with an underscore")
+            .with_detail("quickfix"),
+        deco_editor::commands::PaletteEntry::new("1", "Remove this line").with_detail("quickfix"),
+        deco_editor::commands::PaletteEntry::new("2", "Extract into function")
+            .with_detail("extract"),
+        deco_editor::commands::PaletteEntry::new("3", "Inline variable")
+            .with_detail("unavailable — not on a variable"),
+    ]);
+    take.resize_for_chrome();
+    take.capture("ctrl+.", 7);
+
+    // Choosing the first one. The edit is the server's; applying it is the same
+    // workspace-edit path a rename uses, which is why one `ctrl+z` takes it back.
+    take.session
+        .run("workbench.action.acceptSelectedQuickOpenItem", None, 0);
+    let edit = deco_lsp::WorkspaceEdit {
+        changes: vec![document_edits("file:///demo/main.rs", &[(1, 8, 8)], "_")],
+    };
+    let plan = take
+        .session
+        .plan_workspace_edit(
+            &edit,
+            |uri| uri.to_path(deco_lsp::uri::PathStyle::Unix).ok(),
+            |_| None,
+        )
+        .expect("the demonstration's own URI")
+        .with_contents(|_| unreachable!("the only file it touches is open"))
+        .expect("nothing to read");
+    let applied = take
+        .session
+        .apply_workspace_edit(plan, 0)
+        .expect("nothing overlaps");
+    take.session.status = Some(applied.summary("Prefix the name with an underscore"));
+    take.resize_for_chrome();
+    take.capture("enter", 7);
+
+    take.press_and_hold(&["ctrl+z"], 5);
     take.finish()
 }
 

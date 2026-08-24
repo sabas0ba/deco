@@ -92,6 +92,19 @@ pub struct Lsp {
     format_request: Option<RequestId>,
     /// The rename request in flight.
     rename_request: Option<RequestId>,
+    /// The code-action request in flight.
+    code_action_request: Option<RequestId>,
+    /// The `codeAction/resolve` in flight, for the action that was chosen.
+    resolve_request: Option<RequestId>,
+    /// What the server last offered, in the order it offered them.
+    ///
+    /// Held here rather than handed to the session, because most of an action is
+    /// the server's own JSON — the edit, and the `data` a resolve is matched by.
+    /// The prompt gets a title and an index; this is what that index is into.
+    ///
+    /// Cleared when a new list arrives and when the server goes away, so a stale
+    /// index can never select an action from a question nobody asked.
+    code_actions: Vec<deco_lsp::CodeAction>,
 }
 
 /// A hover being displayed.
@@ -346,6 +359,9 @@ impl Lsp {
             completion_request: None,
             format_request: None,
             rename_request: None,
+            code_action_request: None,
+            resolve_request: None,
+            code_actions: Vec::new(),
         }
     }
 
@@ -522,9 +538,10 @@ impl Lsp {
         session
             .context
             .set("editorHasDocumentFormattingProvider", has(|c| c.formatting));
-        // Deliberately false: nothing applies a code action yet, and advertising
-        // the provider would bind ctrl+. to a command that does nothing.
-        session.context.set("editorHasCodeActionsProvider", false);
+        session.context.set(
+            "editorHasCodeActionsProvider",
+            has(|c| c.code_action.is_some()),
+        );
 
         // Gates escape.
         session
@@ -592,6 +609,170 @@ impl Lsp {
             }
             Ok(None) => {
                 session.status = Some("this server does not offer formatting".to_owned());
+            }
+            Err(error) => self.report(session, error.to_string()),
+        }
+    }
+
+    /// Asks what the server offers to do about the selection.
+    pub fn request_code_actions(&mut self, session: &mut Session) {
+        let (Some(path), Some(supervisor)) =
+            (session.document.path.clone(), self.supervisor.as_mut())
+        else {
+            session.status = Some("no language server for this file".to_owned());
+            return;
+        };
+        // The selection, or the caret when there is none — which is how VS Code
+        // asks, and why a quick fix works without selecting the error first.
+        let selection = session.view.selections.primary();
+        let range = deco_core::position::Range::ordered(selection.anchor, selection.active);
+
+        match supervisor.code_action(&path, range) {
+            Ok(Some(id)) => {
+                self.code_action_request = Some(id);
+                session.status = Some("Looking for code actions…".to_owned());
+            }
+            Ok(None) => {
+                session.status = Some("this server does not offer code actions".to_owned());
+            }
+            Err(error) => self.report(session, error.to_string()),
+        }
+    }
+
+    /// Puts what the server offered into the picker.
+    fn offer_code_actions(&mut self, session: &mut Session, actions: Vec<deco_lsp::CodeAction>) {
+        let entries = actions
+            .iter()
+            .enumerate()
+            .map(|(index, action)| {
+                let entry =
+                    deco_editor::commands::PaletteEntry::new(&index.to_string(), &action.title);
+                // The second column says either why it cannot be run or what
+                // kind of thing it is — in that order, because a disabled
+                // action's reason is the only thing about it worth reading.
+                match (&action.disabled, action.short_kind()) {
+                    (Some(reason), _) => entry.with_detail(&format!("unavailable — {reason}")),
+                    (None, Some(kind)) => entry.with_detail(kind),
+                    (None, None) => entry,
+                }
+            })
+            .collect();
+        self.code_actions = actions;
+        session.offer_code_actions(entries);
+    }
+
+    /// Carries out the action the user chose from the picker.
+    ///
+    /// `id` is the index the picker was given. An action that already has its
+    /// edit is applied here; one that does not goes back to the server first and
+    /// is applied when the resolved answer arrives.
+    pub fn run_code_action(&mut self, session: &mut Session, id: &str) {
+        let Some(action) = id
+            .parse::<usize>()
+            .ok()
+            .and_then(|index| self.code_actions.get(index))
+            .cloned()
+        else {
+            // The list was replaced or dropped between the prompt opening and
+            // this arriving. Nothing to do, and nothing worth alarming anyone
+            // about.
+            return;
+        };
+
+        if let Some(reason) = &action.disabled {
+            session.status = Some(format!("`{}` is unavailable: {reason}", action.title));
+            return;
+        }
+
+        if action.needs_resolving() {
+            match self
+                .supervisor
+                .as_mut()
+                .map(|s| s.resolve_code_action(&action))
+            {
+                Some(Ok(Some(id))) => {
+                    self.resolve_request = Some(id);
+                    session.status = Some(format!("{}…", action.title));
+                }
+                // The server offered an action with no edit and no way to ask
+                // for one. Naming it is the only honest answer: there is nothing
+                // here to apply and never was.
+                Some(Ok(None)) | None => {
+                    session.status = Some(format!(
+                        "`{}` came with no edit, and this server cannot resolve one",
+                        action.title
+                    ));
+                }
+                Some(Err(error)) => self.report(session, error.to_string()),
+            }
+            return;
+        }
+
+        self.apply_code_action(session, &action);
+    }
+
+    /// Applies a resolved action's edit, or says why there is nothing to apply.
+    fn apply_code_action(&mut self, session: &mut Session, action: &deco_lsp::CodeAction) {
+        let Some(edit) = &action.edit else {
+            // Either the resolve came back with nothing, or the action was only
+            // ever a `Command`. Running a server command is `workspace/executeCommand`,
+            // whose result comes back as a `workspace/applyEdit` *request* — a
+            // different direction of authority, and not wired here.
+            let detail = match &action.command {
+                Some(command) => {
+                    format!("it runs the server command `{command}`, which deco cannot")
+                }
+                None => "the server sent no edit for it".to_owned(),
+            };
+            session.status = Some(format!("`{}` was not applied: {detail}", action.title));
+            return;
+        };
+
+        let edit = match deco_lsp::WorkspaceEdit::from_json(edit) {
+            Ok(edit) => edit,
+            // A file created, renamed or deleted. Refused for one action rather
+            // than for the whole menu, which is why the edit is parsed here and
+            // not while listing.
+            Err(error) => {
+                self.report(session, format!("`{}`: {error}", action.title));
+                return;
+            }
+        };
+        if edit.is_empty() {
+            session.status = Some(format!("`{}` changes nothing", action.title));
+            return;
+        }
+
+        let Some(supervisor) = self.supervisor.as_ref() else {
+            return;
+        };
+        let paths = supervisor.paths();
+        let planned = session
+            .plan_workspace_edit(
+                &edit,
+                |uri| paths.from_uri(uri).ok(),
+                |path| supervisor.version_of(path),
+            )
+            .and_then(|plan| {
+                plan.with_contents(|path| {
+                    std::fs::read_to_string(path).map_err(|error| error.to_string())
+                })
+            });
+
+        let plan = match planned {
+            Ok(plan) => plan,
+            Err(error) => {
+                self.report(session, error.to_string());
+                return;
+            }
+        };
+
+        match session.apply_workspace_edit(plan, 0) {
+            Ok(applied) => {
+                session.status = Some(applied.summary(&action.title));
+                // The answer arrived through the poll rather than through a
+                // keypress, so the loop's own sync has already run this turn.
+                self.changed(session);
             }
             Err(error) => self.report(session, error.to_string()),
         }
@@ -1067,6 +1248,9 @@ impl Lsp {
                     self.completion_request = None;
                     self.format_request = None;
                     self.rename_request = None;
+                    self.code_action_request = None;
+                    self.resolve_request = None;
+                    self.code_actions.clear();
                     // The features that were on offer went with the server.
                     self.sync_context(session);
                     return true;
@@ -1204,6 +1388,22 @@ impl Lsp {
                             session.problems.push(format!("{method}: {error}"));
                         }
                     }
+                    changed = true;
+                }
+                Update::CodeActions { id, actions } => {
+                    if self.code_action_request.as_ref() != Some(&id) {
+                        continue;
+                    }
+                    self.code_action_request = None;
+                    self.offer_code_actions(session, actions);
+                    changed = true;
+                }
+                Update::CodeActionResolved { id, action } => {
+                    if self.resolve_request.as_ref() != Some(&id) {
+                        continue;
+                    }
+                    self.resolve_request = None;
+                    self.apply_code_action(session, &action);
                     changed = true;
                 }
                 Update::Renamed { id, edit } => {
@@ -1441,6 +1641,9 @@ impl Lsp {
         self.completion_request = None;
         self.format_request = None;
         self.rename_request = None;
+        self.code_action_request = None;
+        self.resolve_request = None;
+        self.code_actions.clear();
     }
 
     fn report(&mut self, session: &mut Session, message: String) {
@@ -2024,15 +2227,113 @@ mod tests {
     }
 
     #[test]
-    fn code_actions_are_never_advertised_while_none_can_be_applied() {
-        // Advertising the provider would bind ctrl+. to a command that does
-        // nothing, which reads as a broken editor rather than a missing feature.
+    fn requesting_code_actions_without_a_server_says_so() {
+        // `ctrl+.` is gated on the context key, so this is reached from the
+        // palette, where the command is offered unconditionally.
         let mut s = session(Settings::with_defaults());
-        let lsp = Lsp::new(&mut s, None);
-        lsp.sync_context(&mut s);
+        let mut lsp = Lsp::new(&mut s, None);
+        lsp.request_code_actions(&mut s);
         assert_eq!(
-            s.context.get("editorHasCodeActionsProvider"),
-            Some(&json!(false))
+            s.status.as_deref(),
+            Some("no language server for this file")
+        );
+        assert!(s.prompt.is_none());
+    }
+
+    #[test]
+    fn detaching_forgets_the_actions_that_were_on_offer() {
+        // An index into a list from a server that is gone would select whatever
+        // happened to land at that position next.
+        let mut s = session(Settings::with_defaults());
+        let mut lsp = Lsp::new(&mut s, None);
+        lsp.code_actions = code_actions(&json!([{"title": "Fix", "edit": {"changes": {}}}]));
+        lsp.code_action_request = Some(deco_lsp::RequestId::Number(1));
+        lsp.resolve_request = Some(deco_lsp::RequestId::Number(2));
+
+        lsp.detach();
+        assert!(lsp.code_actions.is_empty());
+        assert!(lsp.code_action_request.is_none());
+        assert!(lsp.resolve_request.is_none());
+    }
+
+    #[test]
+    fn choosing_an_action_that_is_no_longer_there_does_nothing() {
+        let mut s = session(Settings::with_defaults());
+        let mut lsp = Lsp::new(&mut s, None);
+        lsp.run_code_action(&mut s, "3");
+        lsp.run_code_action(&mut s, "not a number");
+        assert_eq!(s.status, None, "nothing to say and nothing to alarm about");
+    }
+
+    #[test]
+    fn a_disabled_action_says_why_rather_than_doing_nothing() {
+        let mut s = session(Settings::with_defaults());
+        let mut lsp = Lsp::new(&mut s, None);
+        lsp.code_actions = code_actions(&json!([{
+            "title": "Extract into function",
+            "disabled": {"reason": "not inside a function"},
+        }]));
+
+        lsp.run_code_action(&mut s, "0");
+        assert_eq!(
+            s.status.as_deref(),
+            Some("`Extract into function` is unavailable: not inside a function")
+        );
+    }
+
+    #[test]
+    fn an_action_that_only_runs_a_command_is_refused_by_name() {
+        // Running one is `workspace/executeCommand`, whose result comes back as
+        // a request in the other direction. Saying so beats a key that appears
+        // to work and changes nothing.
+        let mut s = session(Settings::with_defaults());
+        let mut lsp = Lsp::new(&mut s, None);
+        lsp.code_actions = code_actions(&json!([
+            {"title": "Organize imports", "command": "rust-analyzer.organizeImports"},
+        ]));
+
+        // Its `edit` is absent, but it is not an action waiting to be filled in:
+        // `codeAction/resolve` takes a `CodeAction`, so this goes straight to the
+        // refusal rather than to a round trip the server cannot answer.
+        lsp.run_code_action(&mut s, "0");
+        let status = s.status.clone().expect("a reason");
+        assert!(
+            status.contains("Organize imports") && status.contains("rust-analyzer.organizeImports"),
+            "the message should name the action and the command it would run: {status}"
+        );
+    }
+
+    #[test]
+    fn an_action_whose_edit_changes_nothing_says_so() {
+        let mut s = session(Settings::with_defaults());
+        let mut lsp = Lsp::new(&mut s, None);
+        lsp.code_actions = code_actions(&json!([
+            {"title": "Tidy", "kind": "quickfix", "edit": {"changes": {}}},
+        ]));
+
+        lsp.run_code_action(&mut s, "0");
+        assert_eq!(s.status.as_deref(), Some("`Tidy` changes nothing"));
+    }
+
+    #[test]
+    fn an_action_that_wants_a_file_operation_is_refused_by_name() {
+        // Refused for this action alone. The rest of the menu is untouched,
+        // which is why the edit is parsed on selection rather than on listing.
+        let mut s = session(Settings::with_defaults());
+        let mut lsp = Lsp::new(&mut s, None);
+        lsp.code_actions = code_actions(&json!([{
+            "title": "Move to its own file",
+            "kind": "refactor.move",
+            "edit": {"documentChanges": [
+                {"kind": "create", "uri": "file:///w/new.rs"},
+            ]},
+        }]));
+
+        lsp.run_code_action(&mut s, "0");
+        let status = s.status.clone().expect("a reason");
+        assert!(
+            status.contains("Move to its own file") && status.contains("create a file"),
+            "the message should name the action and the operation: {status}"
         );
     }
 
@@ -2145,6 +2446,11 @@ mod tests {
             s.context.get("editorHasDocumentFormattingProvider"),
             Some(&json!(false))
         );
+    }
+
+    /// The actions a server would have sent, parsed the way one arriving is.
+    fn code_actions(value: &serde_json::Value) -> Vec<deco_lsp::CodeAction> {
+        deco_lsp::CodeAction::list_from_json(value)
     }
 
     // ---- The symbol list --------------------------------------------------

@@ -65,6 +65,10 @@ fn serve(role: &str) -> i32 {
                             "referencesProvider": true,
                             "documentSymbolProvider": true,
                             "renameProvider": offers_rename,
+                            // With resolving, because the interesting half of a
+                            // code action is the one that arrives without its
+                            // edit and has to be asked for.
+                            "codeActionProvider": {"resolveProvider": true},
                             "documentFormattingProvider": true,
                             "completionProvider": {
                                 "triggerCharacters": ["."],
@@ -139,6 +143,76 @@ fn serve(role: &str) -> i32 {
                     ],
                 }),
             ),
+            // Four actions, each covering a different answer the editor has to
+            // have: one that arrives ready to apply, one whose edit only exists
+            // after `codeAction/resolve`, one the server says is unavailable,
+            // and one that is a bare `Command`.
+            "textDocument/codeAction" => {
+                let open = uri_of(&params);
+                send(
+                    &mut output,
+                    &serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": [
+                            {
+                                "title": "Prefix the name with an underscore",
+                                "kind": "quickfix",
+                                "isPreferred": true,
+                                "edit": {"documentChanges": [{
+                                    "textDocument": {"uri": open, "version": null},
+                                    "edits": [{
+                                        "range": {
+                                            "start": {"line": 1, "character": 4},
+                                            "end": {"line": 1, "character": 4},
+                                        },
+                                        "newText": "_",
+                                    }],
+                                }]},
+                            },
+                            {
+                                "title": "Extract into function",
+                                "kind": "refactor.extract",
+                                // No edit: it comes back from `resolve`, and
+                                // `data` is how this server recognises which
+                                // action it is being asked about.
+                                "data": {"assist": "extract", "uri": open},
+                            },
+                            {
+                                "title": "Inline variable",
+                                "kind": "refactor.inline",
+                                "disabled": {"reason": "not on a variable"},
+                            },
+                            {"title": "Organize imports", "command": "example.organizeImports"},
+                        ],
+                    }),
+                );
+            }
+            // The same action back with its edit filled in, which is the whole
+            // contract: what arrives here is what the editor was sent.
+            "codeAction/resolve" => {
+                let open = params
+                    .get("data")
+                    .and_then(|data| data.get("uri"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_owned();
+                let mut action = params.clone();
+                action["edit"] = serde_json::json!({"documentChanges": [{
+                    "textDocument": {"uri": open, "version": null},
+                    "edits": [{
+                        "range": {
+                            "start": {"line": 0, "character": 0},
+                            "end": {"line": 0, "character": 0},
+                        },
+                        "newText": "// extracted\n",
+                    }],
+                }]});
+                send(
+                    &mut output,
+                    &serde_json::json!({"jsonrpc": "2.0", "id": id, "result": action}),
+                );
+            }
             // Both occurrences of `greet` in the open file, and the one in
             // `helper.rs` — which the editor has not opened. That second file is
             // the point of the scenario: the answer to a rename is mostly about

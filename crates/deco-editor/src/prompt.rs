@@ -45,6 +45,8 @@ pub enum PromptKind {
     SearchQuery,
     /// `F2`: what to call the symbol under the cursor instead.
     Rename,
+    /// `ctrl+.`: what the language server offers to do about the selection.
+    CodeActions,
     /// An extension asked for a capability nobody has decided about yet.
     ///
     /// Not opened by a key: it appears because an extension asked, which is the
@@ -71,6 +73,7 @@ impl PromptKind {
             Self::OpenPath => "Open file:",
             Self::SearchQuery => "Search:",
             Self::Rename => "Rename to:",
+            Self::CodeActions => "Code action:",
             Self::ExtensionConsent => "Extension permission:",
             Self::ExtensionPermissions => "Forget which decision?",
         }
@@ -88,6 +91,8 @@ impl PromptKind {
             (Self::SaveAs, _) | (Self::OpenPath, _) | (Self::SearchQuery, _) => "",
             // Typed, not chosen: a new name is not on any list.
             (Self::Rename, _) => "",
+            (Self::CodeActions, 1) => "action",
+            (Self::CodeActions, _) => "actions",
             (Self::Commands, 1) => "command",
             (Self::Commands, _) => "commands",
             (Self::Files, 1) => "file",
@@ -125,6 +130,7 @@ impl PromptKind {
             Self::OpenPath => "open file",
             Self::SearchQuery => "search in files",
             Self::Rename => "rename symbol",
+            Self::CodeActions => "the code-action list",
             Self::ExtensionConsent => "an extension's permission request",
             Self::ExtensionPermissions => "the list of permission decisions",
         }
@@ -145,7 +151,14 @@ impl PromptKind {
         //
         // And files, whose supplied order puts the ones you have had open first —
         // which a sort by name would throw away, taking the whole point of it.
-        matches!(self, Self::Symbols | Self::Themes | Self::Files)
+        //
+        // And code actions, where the server's order is its opinion: the fix for
+        // the error you are sitting on comes before the refactorings that happen
+        // to be available, and sorting by title would interleave them.
+        matches!(
+            self,
+            Self::Symbols | Self::Themes | Self::Files | Self::CodeActions
+        )
     }
 }
 

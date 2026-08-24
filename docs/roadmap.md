@@ -30,14 +30,15 @@ What VS Code has and deco does not, grouped by how it blocks:
 | Self-update | nothing — `cargo xtask dist` already builds what it would install |
 | AI features — inline completions, chat, agent mode, MCP (`chat.disableAIFeatures`) | the extension host, ghost text, and the panel; agents additionally on `WorkspaceEdit` and the terminal; the off switch depends on nothing and comes first |
 | Debugging (DAP) | the panel; by far the largest item here |
-| `WorkspaceEdit` — one undoable edit across several files | nothing; rename, code actions and replace-across-files all wait on it |
 | Regular-expression search | nothing — `deco-core::search` is deliberately literal so far |
 | Snippet tab stops | nothing |
 
-The dependencies are why the order below is the order. Three items are
-foundations — the **sidebar and panel**, **`WorkspaceEdit`**, and **finishing
-the extension-host wiring** — and most of what users actually ask for (the
-tree, git, the terminal) is a tenant of one of them.
+The dependencies are why the order below is the order. Two foundations are left
+— the **sidebar and panel**, and **finishing the extension-host wiring** — and
+most of what users actually ask for (the tree, git, the terminal) is a tenant of
+one of them. The third, **`WorkspaceEdit`**, is
+[built](#the-gaps-behind-the-features): rename and code actions land through it,
+and so will replace-across-files, the tree's mutations and an agent's turn.
 
 Two rules carry over from everything already built, and every chapter below is
 written under them:
@@ -403,10 +404,10 @@ here because the plans above lean on them.
   against document versions before any write, applied all-or-nothing, and undone
   as one step; files no tab holds are opened rather than written. LSP rename
   (`F2`) is its first user and is documented in
-  [Language servers](language-servers.md#rename). What still waits on a *caller*
-  rather than on the mechanism: code actions (`ctrl+.` needs
-  `textDocument/codeAction` and a list to choose from), replace-across-files, and
-  the file tree's mutations. An agent's turn is the same shape — see
+  [Language servers](language-servers.md#rename), and
+  [code actions](language-servers.md#code-actions) (`ctrl+.`) followed it. What
+  still waits on a *caller* rather than on the mechanism: replace-across-files,
+  and the file tree's mutations. An agent's turn is the same shape — see
   [Agent integration](#agent-integration).
 - **Regular-expression search.** `deco-core::search` is literal on purpose;
   regex needs its own escaping rules and its own error reporting for a bad

@@ -122,6 +122,13 @@ pub enum Outcome {
         /// session refuses both before this is produced.
         new_name: String,
     },
+    /// The user chose one of the code actions the frontend offered.
+    ///
+    /// The identifier is whatever the frontend put on the choice, as with
+    /// [`Outcome::ForgetExtensionPermission`]: only the frontend is holding the
+    /// list the server sent, and a copy kept here would be a second answer to
+    /// keep in step with it.
+    CodeAction(String),
     /// The document should be re-read from disk, throwing away the edits.
     ///
     /// The frontend reads `session.document.path` and hands the text back with
@@ -272,9 +279,6 @@ pub const PENDING: &[(&str, &str)] = &[
         "workbench.action.openGlobalKeybindings",
         "Open Keyboard Shortcuts",
     ),
-    // Needs the code-action request, and a list to choose from — the applying
-    // half is `Session::apply_workspace_edit`, which rename already uses.
-    ("editor.action.quickFix", "Quick Fix"),
     // `deco --server` exists now; what does not is the client half — nothing in
     // the editor opens a file through a transport, so a menu would offer a list of
     // places it cannot go.
