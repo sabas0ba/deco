@@ -102,7 +102,7 @@ running, and is published at
 | [Editing](docs/editing.md) | Motion, line and block comments, multiple cursors, word wrap, undo |
 | [Tabs](docs/tabs.md) | Several documents, one per tab; splitting; what a tab keeps |
 | [Syntax highlighting](docs/highlighting.md) | Scopes, languages, choosing one, and why not tree-sitter |
-| [Find and replace](docs/find-and-replace.md) | `ctrl+f`, `ctrl+h`, `F3`, and the multi-cursor find keys |
+| [Find and replace](docs/find-and-replace.md) | `ctrl+f`, `ctrl+h`, `F3`, the multi-cursor find keys, and replacing across the workspace |
 | [Running commands](docs/commands.md) | The command palette, quick open, go to symbol, search in files, go to line |
 | [Language servers](docs/language-servers.md) | Diagnostics, hover, definition, references, completion, symbols, semantic tokens, formatting, rename, code actions |
 | [Configuration](docs/configuration.md) | `settings.json`, `keybindings.json`, themes, and where they are read from |
@@ -168,7 +168,7 @@ thin painter.
 | Code extensions (`main`) | Commands run: the palette lists them, choosing one starts a sandboxed host. The surface an extension can reach is registering a command, the message and status-bar calls, the `workspace.fs` family, and `workspace.applyEdit` — everything else is refused by name, see [Extensions](docs/extensions.md#what-an-extension-can-reach-today) |
 | Remote SSH / containers / WSL | Open, edit and save a file on the far end with `--remote ssh-remote+host`, `--remote-install` puts deco there if it has none, `--forward 3000` reaches a port on it, language servers run over there, `ctrl+shift+f` searches the far end, an extension's file access goes through the connection, and the machine's own `machine-settings.json` layers in as `remote` scope. Extension hosts still run locally — see [Remote](docs/remote.md) |
 | Language servers (LSP) | Diagnostics, hover, go-to-definition, references, completion, symbols, semantic tokens, formatting, rename (`F2`, across files, one undo step), code actions (`ctrl+.`, with `codeAction/resolve`) |
-| Find and replace (`ctrl+f`, `ctrl+h`, `F3`, `ctrl+d`, `ctrl+shift+l`) | Literal search only — no regular expressions |
+| Find and replace (`ctrl+f`, `ctrl+h`, `F3`, `ctrl+d`, `ctrl+shift+l`, `ctrl+shift+h`) | Literal search only — no regular expressions; replace across the workspace is one undoable edit |
 | Search in files (`ctrl+shift+f`) | Yes — bounded and synchronous, and it says so |
 | Command palette (`ctrl+shift+p`), quick open (`ctrl+p`), go to line (`ctrl+g`) | Yes |
 | Word wrap (`editor.wordWrap`, `editor.wrappingIndent`, `alt+z`) | Yes in the terminal |
@@ -357,8 +357,9 @@ self-update, debugging — each have a plan in the
   expressions: `deco-core::search` is deliberately literal, and a regex mode needs
   its own escaping rules and its own error reporting for an invalid pattern.
   `alt+r` says so when pressed rather than reporting an unknown command. Nor is
-  there replace-across-files, or a results view that stays open — the matches are a
-  picker.
+  there a results view that stays open — the matches are a picker. Replacing
+  across the workspace is built: `ctrl+shift+h` asks what to look for and what to
+  put there, and lands as one undoable edit.
 - **Tabs, splits, quick open and search in files, but no file tree.**
   Several documents open at once, one per tab (see [Tabs](docs/tabs.md)); `ctrl+p`
   opens any file in the workspace and `ctrl+shift+f` searches all of them,

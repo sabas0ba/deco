@@ -206,6 +206,10 @@ fn demos() -> Vec<Demo> {
             name: "search-in-files",
             build: search_in_files,
         },
+        Demo {
+            name: "replace-in-files",
+            build: replace_in_files,
+        },
     ]
 }
 
@@ -1212,6 +1216,57 @@ fn quick_open() -> String {
         "ctrl+p again — the two files that have been open are at the top",
         7,
     );
+    take.finish()
+}
+
+fn replace_in_files() -> String {
+    // Two files that both say `amount`, one of them not open — the case the
+    // feature is about, and the reason the tab bar changes partway through.
+    const OPEN: &str = "fn total(rows: &[Row]) -> u32 {\n    let mut amount = 0;\n    for row in rows {\n        amount += row.value;\n    }\n    amount\n}\n";
+    const OTHER: &str = "pub struct Row {\n    pub amount: u32,\n}\n";
+
+    let mut take = Take::new("report.rs", OPEN);
+    take.at(1, 12).capture("two files say `amount`", 4);
+
+    take.session.run("workbench.action.replaceInFiles", None, 0);
+    take.resize_for_chrome();
+    take.capture("ctrl+shift+h", 3);
+    // The field opens seeded from the caret and selected, so this is a
+    // demonstration of typing over it rather than of clearing it first.
+    take.type_text("amount");
+    take.session
+        .run("workbench.action.acceptSelectedQuickOpenItem", None, 0);
+    take.resize_for_chrome();
+    take.capture("enter — and it asks what to put there", 4);
+    take.type_text("subtotal");
+
+    // The search is the frontend's, and a demonstration has no workspace to
+    // walk; the two paths it would have found are handed in. Everything after
+    // this is the editor's own code deciding what the edit is.
+    take.session
+        .run("workbench.action.acceptSelectedQuickOpenItem", None, 0);
+    let plan = take
+        .session
+        .plan_replacements(
+            &[
+                PathBuf::from("/demo/report.rs"),
+                PathBuf::from("/demo/row.rs"),
+            ],
+            "amount",
+            "subtotal",
+            Default::default(),
+            |_| Ok(OTHER.to_owned()),
+        )
+        .expect("row.rs is right here");
+    let applied = take
+        .session
+        .apply_workspace_edit(plan, 0)
+        .expect("nothing overlaps");
+    take.session.status = Some(applied.summary("Replaced `amount`"));
+    take.resize_for_chrome();
+    take.capture("enter", 7);
+
+    take.press_and_hold(&["ctrl+z"], 6);
     take.finish()
 }
 

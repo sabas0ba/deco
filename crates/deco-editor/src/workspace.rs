@@ -175,6 +175,18 @@ impl Plan {
         Ok(Self { documents })
     }
 
+    /// A plan whose documents were worked out by the caller.
+    ///
+    /// For an edit that did not come from a language server and so has no URIs
+    /// to resolve and no versions to check — a replace across the workspace,
+    /// where the editor itself decided what to change. The checks that remain
+    /// are the ones [`crate::Session::apply_workspace_edit`] makes on every
+    /// plan, which are the ones that matter: nothing is written until all of it
+    /// can be.
+    pub(crate) fn from_documents(documents: Vec<PlannedDocument>) -> Self {
+        Self { documents }
+    }
+
     /// The files this edit needs that no tab holds, in the server's order.
     ///
     /// What the frontend has to read before [`Plan::with_contents`].

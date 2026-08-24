@@ -189,6 +189,7 @@ and lists what it found; `enter` opens that file at that line.
 | Key | Command |
 | --- | --- |
 | `ctrl+shift+f` | `workbench.action.findInFiles` |
+| `ctrl+shift+h` | `workbench.action.replaceInFiles` — see [Find and replace](find-and-replace.md#replacing-across-the-workspace) |
 | `alt+c` / `alt+w` | `toggleFindCaseSensitive` / `toggleFindWholeWord` |
 
 The query field is seeded with the selection, the word under the cursor, or
@@ -276,9 +277,12 @@ The keyboard-shortcuts editor and the settings UI. Quick open has no `@` mode �
 symbols of a file are reachable with `ctrl+shift+o`, but typing `@` after `ctrl+p`
 does not switch a file list into a symbol one, which needs the prompt to re-source
 its choices mid-typing.
-Search in files has no replace-across-files and no regular expressions. Nor is
-there a results view that stays open: the matches are a picker, so reading the
-second one means pressing `ctrl+shift+f` again.
+Search in files has no regular expressions, and no results view that stays open:
+the matches are a picker, so reading the second one means pressing `ctrl+shift+f`
+again. Replacing across the workspace *is* built — `ctrl+shift+h`, documented in
+[Find and replace](find-and-replace.md#replacing-across-the-workspace) — but it
+asks for the replacement in a second prompt rather than showing the matches and
+the replacement together the way a search view would.
 
 The GPU frontend has no chrome to draw a prompt in, so it refuses `ctrl+g`,
 `ctrl+shift+p` and `ctrl+p` and says so — an invisible widget holding the keyboard

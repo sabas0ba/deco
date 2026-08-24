@@ -43,6 +43,12 @@ pub enum PromptKind {
     OpenPath,
     /// `ctrl+shift+f`: what to look for across the workspace.
     SearchQuery,
+    /// `ctrl+shift+h`: what to put in place of it, everywhere.
+    ///
+    /// The second half of a replace across files. The first half is a
+    /// [`PromptKind::SearchQuery`], which is why the query is not here: it has
+    /// already been answered by the time this opens.
+    ReplaceQuery,
     /// `F2`: what to call the symbol under the cursor instead.
     Rename,
     /// `ctrl+.`: what the language server offers to do about the selection.
@@ -72,6 +78,7 @@ impl PromptKind {
             Self::SaveAs => "Save as:",
             Self::OpenPath => "Open file:",
             Self::SearchQuery => "Search:",
+            Self::ReplaceQuery => "Replace with:",
             Self::Rename => "Rename to:",
             Self::CodeActions => "Code action:",
             Self::ExtensionConsent => "Extension permission:",
@@ -89,6 +96,7 @@ impl PromptKind {
             (Self::GoToLine, _) => "",
             // Nothing to count: a path is typed, not chosen from a list.
             (Self::SaveAs, _) | (Self::OpenPath, _) | (Self::SearchQuery, _) => "",
+            (Self::ReplaceQuery, _) => "",
             // Typed, not chosen: a new name is not on any list.
             (Self::Rename, _) => "",
             (Self::CodeActions, 1) => "action",
@@ -129,6 +137,7 @@ impl PromptKind {
             Self::SaveAs => "save as",
             Self::OpenPath => "open file",
             Self::SearchQuery => "search in files",
+            Self::ReplaceQuery => "replace in files",
             Self::Rename => "rename symbol",
             Self::CodeActions => "the code-action list",
             Self::ExtensionConsent => "an extension's permission request",

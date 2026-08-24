@@ -666,7 +666,12 @@ impl Lsp {
     /// `id` is the index the picker was given. An action that already has its
     /// edit is applied here; one that does not goes back to the server first and
     /// is applied when the resolved answer arrives.
-    pub fn run_code_action(&mut self, session: &mut Session, id: &str) {
+    pub fn run_code_action(
+        &mut self,
+        session: &mut Session,
+        id: &str,
+        files: &mut crate::extensions::Files<'_>,
+    ) {
         let Some(action) = id
             .parse::<usize>()
             .ok()
@@ -708,11 +713,16 @@ impl Lsp {
             return;
         }
 
-        self.apply_code_action(session, &action);
+        self.apply_code_action(session, &action, files);
     }
 
     /// Applies a resolved action's edit, or says why there is nothing to apply.
-    fn apply_code_action(&mut self, session: &mut Session, action: &deco_lsp::CodeAction) {
+    fn apply_code_action(
+        &mut self,
+        session: &mut Session,
+        action: &deco_lsp::CodeAction,
+        files: &mut crate::extensions::Files<'_>,
+    ) {
         let Some(edit) = &action.edit else {
             // Either the resolve came back with nothing, or the action was only
             // ever a `Command`. Running a server command is `workspace/executeCommand`,
@@ -754,9 +764,11 @@ impl Lsp {
                 |path| supervisor.version_of(path),
             )
             .and_then(|plan| {
-                plan.with_contents(|path| {
-                    std::fs::read_to_string(path).map_err(|error| error.to_string())
-                })
+                // Through `files` rather than `std::fs`: in a remote session the
+                // language server runs where the files are, so the paths in its
+                // answer are paths over there, and reading them here would find
+                // either nothing or the wrong file.
+                plan.with_contents(|path| files.read(&path.display().to_string()))
             });
 
         let plan = match planned {
@@ -823,7 +835,12 @@ impl Lsp {
     /// The reading of files is here because this is the layer with a filesystem;
     /// every decision about *whether* to apply is in `deco_editor::workspace`,
     /// which is where it can be tested without one.
-    fn apply_rename(&mut self, session: &mut Session, edit: deco_lsp::WorkspaceEdit) {
+    fn apply_rename(
+        &mut self,
+        session: &mut Session,
+        edit: deco_lsp::WorkspaceEdit,
+        files: &mut crate::extensions::Files<'_>,
+    ) {
         if edit.is_empty() {
             session.status = Some("nothing to rename here".to_owned());
             return;
@@ -841,9 +858,11 @@ impl Lsp {
                 |path| supervisor.version_of(path),
             )
             .and_then(|plan| {
-                plan.with_contents(|path| {
-                    std::fs::read_to_string(path).map_err(|error| error.to_string())
-                })
+                // Through `files` rather than `std::fs`: in a remote session the
+                // language server runs where the files are, so the paths in its
+                // answer are paths over there, and reading them here would find
+                // either nothing or the wrong file.
+                plan.with_contents(|path| files.read(&path.display().to_string()))
             });
 
         let plan = match planned {
@@ -1183,7 +1202,11 @@ impl Lsp {
     /// Drains whatever the server has said and applies it. Never blocks.
     ///
     /// Returns whether anything changed, so the caller can skip a repaint.
-    pub fn poll(&mut self, session: &mut Session) -> bool {
+    pub fn poll(
+        &mut self,
+        session: &mut Session,
+        files: &mut crate::extensions::Files<'_>,
+    ) -> bool {
         let Some(supervisor) = self.supervisor.as_mut() else {
             return false;
         };
@@ -1192,7 +1215,7 @@ impl Lsp {
         if updates.is_empty() {
             return false;
         }
-        self.absorb(session, updates)
+        self.absorb(session, updates, files)
     }
 
     /// Applies updates already drained from a server.
@@ -1200,7 +1223,12 @@ impl Lsp {
     /// Split from [`Lsp::poll`] so that what an answer *does* can be asserted
     /// without a language server installed: the alternative is a test suite that
     /// passes or fails depending on what happens to be on the machine.
-    fn absorb(&mut self, session: &mut Session, updates: Vec<Update>) -> bool {
+    fn absorb(
+        &mut self,
+        session: &mut Session,
+        updates: Vec<Update>,
+        files: &mut crate::extensions::Files<'_>,
+    ) -> bool {
         let mut changed = false;
         // Collected first so `self` is free of the supervisor borrow.
         let open_uri = self.supervisor.as_ref().and_then(|supervisor| {
@@ -1285,7 +1313,7 @@ impl Lsp {
                     if self.references_request.as_ref() == Some(&id) {
                         self.references_request = None;
                         self.semantic_request = None;
-                        self.offer_locations(session, &locations);
+                        self.offer_locations(session, &locations, files);
                         changed = true;
                         continue;
                     }
@@ -1295,7 +1323,7 @@ impl Lsp {
                     self.definition_request = None;
                     self.references_request = None;
                     self.semantic_request = None;
-                    changed |= self.go_to(session, &method, &locations);
+                    changed |= self.go_to(session, &method, &locations, files);
                 }
                 Update::Symbols { id, symbols } => {
                     // Only the outstanding request: an answer to a superseded one
@@ -1403,7 +1431,7 @@ impl Lsp {
                         continue;
                     }
                     self.resolve_request = None;
-                    self.apply_code_action(session, &action);
+                    self.apply_code_action(session, &action, files);
                     changed = true;
                 }
                 Update::Renamed { id, edit } => {
@@ -1412,7 +1440,7 @@ impl Lsp {
                     }
                     self.rename_request = None;
                     match edit {
-                        Ok(edit) => self.apply_rename(session, edit),
+                        Ok(edit) => self.apply_rename(session, edit, files),
                         // A server asking for something deco cannot do — a file
                         // created, renamed or deleted. Nothing was changed, and
                         // the message says which operation it was.
@@ -1442,6 +1470,7 @@ impl Lsp {
         session: &mut Session,
         method: &str,
         locations: &[deco_lsp::Location],
+        files: &mut crate::extensions::Files<'_>,
     ) -> bool {
         let Some(target) = locations.first() else {
             // A successful answer meaning the server found nothing. Reporting it
@@ -1454,7 +1483,7 @@ impl Lsp {
         // Several answers is a question, not a result: offer them rather than
         // picking one. The same list references uses, for the same reason.
         if locations.len() > 1 {
-            self.offer_locations(session, locations);
+            self.offer_locations(session, locations, files);
             return true;
         }
 
@@ -1471,7 +1500,10 @@ impl Lsp {
             // Into a new tab (or the tab already holding that file), so unsaved
             // work in the current document is not at risk and no longer needs to
             // block the jump.
-            match std::fs::read_to_string(&path) {
+            // Through `files`: a server running on the far end of a remote
+            // session points at files over there, and reading the path here
+            // would open either nothing or an unrelated local file.
+            match files.read(&path.display().to_string()) {
                 Ok(text) => {
                     session.open(path.clone(), &text);
                     // The new document needs its own server, and the old one
@@ -1508,7 +1540,12 @@ impl Lsp {
     /// question — which of these places do you want to be? — and a second list
     /// widget that behaved almost identically would be a second place for it to
     /// behave slightly differently.
-    fn offer_locations(&mut self, session: &mut Session, locations: &[deco_lsp::Location]) {
+    fn offer_locations(
+        &mut self,
+        session: &mut Session,
+        locations: &[deco_lsp::Location],
+        files: &mut crate::extensions::Files<'_>,
+    ) {
         let paths = self.paths.clone();
         // The line's text is what makes a list of locations readable, and for a
         // location in a file that is not on screen it has to be read from disk.
@@ -1536,7 +1573,9 @@ impl Lsp {
                         .map(str::to_owned)
                         .collect()
                 } else {
-                    std::fs::read_to_string(&path)
+                    // Same machine as the file itself; see `go_to`.
+                    files
+                        .read(&path.display().to_string())
                         .map(|text| text.lines().map(str::to_owned).collect())
                         .unwrap_or_default()
                 }
@@ -1909,7 +1948,7 @@ mod tests {
     fn polling_without_a_server_is_a_no_op() {
         let mut s = session(Settings::with_defaults());
         let mut lsp = Lsp::new(&mut s, None);
-        assert!(!lsp.poll(&mut s));
+        assert!(!lsp.poll(&mut s, &mut here()));
         lsp.changed(&mut s);
         lsp.saved(&mut s);
         lsp.detach();
@@ -2099,7 +2138,7 @@ mod tests {
         s.open(PathBuf::from("/w/a.toml"), "one = 1\ntwo = total\n");
         let mut lsp = Lsp::new(&mut s, Some(PathBuf::from("/w")));
 
-        lsp.offer_locations(&mut s, &[location("/w/a.toml", 1, 6)]);
+        lsp.offer_locations(&mut s, &[location("/w/a.toml", 1, 6)], &mut here());
         let prompt = s.prompt.as_ref().expect("a list should be open");
         assert_eq!(prompt.matches(), 1);
         // The path is shortened against the workspace root, and the line's text
@@ -2115,7 +2154,7 @@ mod tests {
         let mut s = session(Settings::with_defaults());
         s.open(PathBuf::from("/w/a.toml"), "edited in memory\n");
         let mut lsp = Lsp::new(&mut s, Some(PathBuf::from("/w")));
-        lsp.offer_locations(&mut s, &[location("/w/a.toml", 0, 0)]);
+        lsp.offer_locations(&mut s, &[location("/w/a.toml", 0, 0)], &mut here());
         assert!(
             s.prompt
                 .as_ref()
@@ -2132,7 +2171,7 @@ mod tests {
     fn an_empty_answer_says_so_rather_than_opening_an_empty_list() {
         let mut s = session(Settings::with_defaults());
         let mut lsp = Lsp::new(&mut s, None);
-        lsp.offer_locations(&mut s, &[]);
+        lsp.offer_locations(&mut s, &[], &mut here());
         assert!(s.prompt.is_none());
         assert_eq!(s.status.as_deref(), Some("no locations found"));
     }
@@ -2145,6 +2184,7 @@ mod tests {
         lsp.offer_locations(
             &mut s,
             &[location("/w/a.toml", 0, 0), location("/w/a.toml", 2, 0)],
+            &mut here(),
         );
         assert_eq!(s.status.as_deref(), Some("2 locations"));
         assert_eq!(s.prompt.as_ref().unwrap().matches(), 2);
@@ -2260,8 +2300,8 @@ mod tests {
     fn choosing_an_action_that_is_no_longer_there_does_nothing() {
         let mut s = session(Settings::with_defaults());
         let mut lsp = Lsp::new(&mut s, None);
-        lsp.run_code_action(&mut s, "3");
-        lsp.run_code_action(&mut s, "not a number");
+        lsp.run_code_action(&mut s, "3", &mut here());
+        lsp.run_code_action(&mut s, "not a number", &mut here());
         assert_eq!(s.status, None, "nothing to say and nothing to alarm about");
     }
 
@@ -2274,7 +2314,7 @@ mod tests {
             "disabled": {"reason": "not inside a function"},
         }]));
 
-        lsp.run_code_action(&mut s, "0");
+        lsp.run_code_action(&mut s, "0", &mut here());
         assert_eq!(
             s.status.as_deref(),
             Some("`Extract into function` is unavailable: not inside a function")
@@ -2295,7 +2335,7 @@ mod tests {
         // Its `edit` is absent, but it is not an action waiting to be filled in:
         // `codeAction/resolve` takes a `CodeAction`, so this goes straight to the
         // refusal rather than to a round trip the server cannot answer.
-        lsp.run_code_action(&mut s, "0");
+        lsp.run_code_action(&mut s, "0", &mut here());
         let status = s.status.clone().expect("a reason");
         assert!(
             status.contains("Organize imports") && status.contains("rust-analyzer.organizeImports"),
@@ -2311,7 +2351,7 @@ mod tests {
             {"title": "Tidy", "kind": "quickfix", "edit": {"changes": {}}},
         ]));
 
-        lsp.run_code_action(&mut s, "0");
+        lsp.run_code_action(&mut s, "0", &mut here());
         assert_eq!(s.status.as_deref(), Some("`Tidy` changes nothing"));
     }
 
@@ -2329,7 +2369,7 @@ mod tests {
             ]},
         }]));
 
-        lsp.run_code_action(&mut s, "0");
+        lsp.run_code_action(&mut s, "0", &mut here());
         let status = s.status.clone().expect("a reason");
         assert!(
             status.contains("Move to its own file") && status.contains("create a file"),
@@ -2448,6 +2488,11 @@ mod tests {
         );
     }
 
+    /// A local filesystem, for the paths a test's edits never actually reach.
+    fn here() -> crate::extensions::Files<'static> {
+        crate::extensions::Files::Here
+    }
+
     /// The actions a server would have sent, parsed the way one arriving is.
     fn code_actions(value: &serde_json::Value) -> Vec<deco_lsp::CodeAction> {
         deco_lsp::CodeAction::list_from_json(value)
@@ -2528,7 +2573,7 @@ mod tests {
             id: deco_lsp::RequestId::Number(8),
             symbols: vec![symbol("stale", Some("key"), 0)],
         };
-        lsp.absorb(&mut s, vec![stale]);
+        lsp.absorb(&mut s, vec![stale], &mut here());
         assert!(s.prompt.is_none());
         assert!(lsp.symbols_request.is_some(), "still waiting for 9");
 
@@ -2538,6 +2583,7 @@ mod tests {
                 id: deco_lsp::RequestId::Number(9),
                 symbols: vec![symbol("fresh", Some("key"), 0)],
             }],
+            &mut here(),
         );
         assert_eq!(
             s.prompt

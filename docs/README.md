@@ -10,7 +10,7 @@ yet.
 | [Editing](editing.md) | Motion, selection, line and block comments, multiple cursors, undo |
 | [Tabs](tabs.md) | Several documents, one per tab; splitting; what a tab keeps |
 | [Syntax highlighting](highlighting.md) | Scopes, languages, choosing one, and why not tree-sitter |
-| [Find and replace](find-and-replace.md) | `ctrl+f`, `ctrl+h`, `F3`, and the multi-cursor find keys |
+| [Find and replace](find-and-replace.md) | `ctrl+f`, `ctrl+h`, `F3`, the multi-cursor find keys, and replacing across the workspace |
 | [Running commands](commands.md) | The command palette, quick open, go to symbol, search in files, go to line |
 | [Language servers](language-servers.md) | Diagnostics, hover, definition, references, completion, symbols, semantic tokens, formatting, rename, code actions |
 | [Configuration](configuration.md) | `settings.json`, `keybindings.json`, colour themes, and where they are read from |

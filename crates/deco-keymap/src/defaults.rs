@@ -105,6 +105,7 @@ pub const DEFAULT_KEYBINDINGS_JSONC: &str = r#"[
     { "key": "f3",           "mac": "cmd+g",       "command": "editor.action.nextMatchFindAction",     "when": "editorFocus" },
     { "key": "shift+f3",     "mac": "cmd+shift+g", "command": "editor.action.previousMatchFindAction", "when": "editorFocus" },
     { "key": "ctrl+shift+f", "mac": "cmd+shift+f", "command": "workbench.action.findInFiles" },
+    { "key": "ctrl+shift+h", "mac": "cmd+shift+h", "command": "workbench.action.replaceInFiles" },
     { "key": "escape",       "command": "closeFindWidget", "when": "editorFocus && findWidgetVisible" },
     // After the `enter` binding above, so that these win while the find input has
     // the keyboard: a later rule takes precedence, as it does in VS Code.

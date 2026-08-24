@@ -122,6 +122,23 @@ pub enum Outcome {
         /// session refuses both before this is produced.
         new_name: String,
     },
+    /// Every occurrence of `query` in the workspace should become `replacement`.
+    ///
+    /// The frontend searches — only it knows where the files are — and then
+    /// hands what it found to
+    /// [`Session::plan_replacements`](crate::Session::plan_replacements), which
+    /// decides what the edit is, and to
+    /// [`Session::apply_workspace_edit`](crate::Session::apply_workspace_edit),
+    /// which makes it one undoable action.
+    ReplaceInFiles {
+        /// What to look for. Never empty — the session refuses before this.
+        query: String,
+        /// What to put there. **May be empty**, which deletes every occurrence
+        /// and is a thing people mean to do.
+        replacement: String,
+        /// How to match, the project search's own.
+        options: deco_core::search::SearchOptions,
+    },
     /// The user chose one of the code actions the frontend offered.
     ///
     /// The identifier is whatever the frontend put on the choice, as with

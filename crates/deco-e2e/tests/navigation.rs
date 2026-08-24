@@ -251,6 +251,119 @@ fn search_in_files_finds_a_line_in_another_file_and_opens_it_there() {
 }
 
 #[test]
+fn replace_in_files_changes_every_file_and_one_undo_takes_it_back() {
+    let scenario = workspace("replace-files");
+    let mut editor = scenario.launch(&["src/main.rs"]);
+
+    editor.press("ctrl+shift+h");
+    editor.type_text("greet");
+    editor.press("enter");
+    // The second prompt: what to put there.
+    assert_eq!(
+        editor.session().prompt.as_ref().map(|p| p.kind()),
+        Some(deco_editor::PromptKind::ReplaceQuery),
+        "the query is only the first half"
+    );
+    editor.type_text("welcome");
+    editor.press("enter");
+
+    let status = editor.status().unwrap_or_default().to_owned();
+    assert!(
+        status.starts_with("Replaced `greet`"),
+        "the status should report what was replaced: {status}"
+    );
+
+    // The file on screen, and one that was opened to be changed.
+    assert_eq!(editor.text(), "fn main() {\n    welcome();\n}\n");
+    let unsaved = editor.session().unsaved();
+    let greet = unsaved
+        .iter()
+        .find(|(path, _)| path.ends_with("greet.rs"))
+        .map(|(_, text)| text.clone())
+        .expect("greet.rs should have been opened and changed");
+    assert_eq!(greet, "pub fn welcome() {\n    println!(\"hi\");\n}\n");
+
+    // Nothing reached the disk.
+    assert_eq!(
+        editor.on_disk("src/greet.rs"),
+        "pub fn greet() {\n    println!(\"hi\");\n}\n"
+    );
+
+    editor.press("ctrl+z");
+    assert_eq!(editor.text(), "fn main() {\n    greet();\n}\n");
+    assert_eq!(
+        editor
+            .session()
+            .unsaved()
+            .iter()
+            .find(|(path, _)| path.ends_with("greet.rs"))
+            .map(|(_, text)| text.clone())
+            .as_deref(),
+        Some("pub fn greet() {\n    println!(\"hi\");\n}\n"),
+        "every file came back in the same step"
+    );
+    editor.screen().assert_fits();
+}
+
+#[test]
+fn replace_in_files_acts_on_the_buffer_rather_than_the_file_on_disk() {
+    // The search reads the disk; this tab has unsaved changes. Replacing against
+    // what the search read would edit positions in a document that no longer
+    // exists, and then save the result over the real one.
+    let scenario = workspace("replace-files-dirty");
+    let mut editor = scenario.launch(&["src/main.rs"]);
+
+    // A second `greet` in the open buffer that the file on disk does not have.
+    editor.press("ctrl+end");
+    editor.type_text("// greet again\n");
+
+    editor.press("ctrl+shift+h");
+    editor.type_text("greet");
+    editor.press("enter");
+    editor.type_text("welcome");
+    editor.press("enter");
+
+    assert_eq!(
+        editor.text(),
+        "fn main() {\n    welcome();\n}\n// welcome again\n",
+        "the occurrence that only exists in the buffer was replaced too"
+    );
+}
+
+#[test]
+fn an_empty_replacement_takes_every_occurrence_out() {
+    let scenario = workspace("replace-files-empty");
+    let mut editor = scenario.launch(&["src/main.rs"]);
+
+    editor.press("ctrl+shift+h");
+    editor.type_text("greet");
+    editor.press("enter");
+    // Nothing typed: the replacement is empty on purpose.
+    editor.press("enter");
+
+    assert_eq!(editor.text(), "fn main() {\n    ();\n}\n");
+}
+
+#[test]
+fn replace_in_files_says_when_nothing_matched() {
+    let scenario = workspace("replace-files-nothing");
+    let mut editor = scenario.launch(&["src/main.rs"]);
+
+    editor.press("ctrl+shift+h");
+    editor.type_text("nothinglikethis");
+    editor.press("enter");
+    editor.type_text("x");
+    editor.press("enter");
+
+    assert_eq!(
+        editor.status(),
+        Some("no matches for `nothinglikethis`"),
+        "and nothing should have been opened or changed"
+    );
+    assert!(!editor.is_dirty());
+}
+
+#[test]
 fn search_in_files_says_when_nothing_matched() {
     let scenario = workspace("search-files-nothing");
     let mut editor = scenario.launch(&["src/main.rs"]);
