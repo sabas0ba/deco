@@ -104,7 +104,7 @@ running, and is published at
 | [Syntax highlighting](docs/highlighting.md) | Scopes, languages, choosing one, and why not tree-sitter |
 | [Find and replace](docs/find-and-replace.md) | `ctrl+f`, `ctrl+h`, `F3`, and the multi-cursor find keys |
 | [Running commands](docs/commands.md) | The command palette, quick open, go to symbol, search in files, go to line |
-| [Language servers](docs/language-servers.md) | Diagnostics, hover, definition, references, completion, symbols, semantic tokens, formatting, rename |
+| [Language servers](docs/language-servers.md) | Diagnostics, hover, definition, references, completion, symbols, semantic tokens, formatting, rename, code actions |
 | [Configuration](docs/configuration.md) | `settings.json`, `keybindings.json`, themes, and where they are read from |
 | [Extensions](docs/extensions.md) | The capability model, and why an extension gets less power here |
 | [Remote](docs/remote.md) | SSH, container and WSL authorities, and the server that answers on the far end |
@@ -167,7 +167,7 @@ thin painter.
 | Theme extensions from the marketplace | Yes — declarative, no host process; `ctrl+k ctrl+t` lists them |
 | Code extensions (`main`) | Commands run: the palette lists them, choosing one starts a sandboxed host. The surface an extension can reach is registering a command, the message and status-bar calls, the `workspace.fs` family, and `workspace.applyEdit` — everything else is refused by name, see [Extensions](docs/extensions.md#what-an-extension-can-reach-today) |
 | Remote SSH / containers / WSL | Open, edit and save a file on the far end with `--remote ssh-remote+host`, `--remote-install` puts deco there if it has none, `--forward 3000` reaches a port on it, language servers run over there, `ctrl+shift+f` searches the far end, an extension's file access goes through the connection, and the machine's own `machine-settings.json` layers in as `remote` scope. Extension hosts still run locally — see [Remote](docs/remote.md) |
-| Language servers (LSP) | Diagnostics, hover, go-to-definition, references, completion, symbols, semantic tokens, formatting, rename (`F2`, across files, one undo step) |
+| Language servers (LSP) | Diagnostics, hover, go-to-definition, references, completion, symbols, semantic tokens, formatting, rename (`F2`, across files, one undo step), code actions (`ctrl+.`, with `codeAction/resolve`) |
 | Find and replace (`ctrl+f`, `ctrl+h`, `F3`, `ctrl+d`, `ctrl+shift+l`) | Literal search only — no regular expressions |
 | Search in files (`ctrl+shift+f`) | Yes — bounded and synchronous, and it says so |
 | Command palette (`ctrl+shift+p`), quick open (`ctrl+p`), go to line (`ctrl+g`) | Yes |
@@ -310,13 +310,15 @@ self-update, debugging — each have a plan in the
   What is missing: the extension *host* still runs locally, so a capability to
   run a program runs it here — which the docs say rather than leaving it to be
   discovered.
-- **Code actions are not wired.** Diagnostics, hover (`ctrl+k ctrl+i`),
-  go-to-definition (`F12`), references (`shift+f12`), document symbols
-  (`ctrl+shift+o`), completion (`ctrl+space`), semantic tokens, formatting
-  (`ctrl+shift+i`) and rename (`F2`) work. `ctrl+.` still needs
-  `textDocument/codeAction` and a list to choose from; the half that applies the
-  result is done, since rename already lands through it. That key says the
-  feature is not implemented rather than pretending. Changes are sent as
+- **A code action that is only a server command is declined.** Diagnostics,
+  hover (`ctrl+k ctrl+i`), go-to-definition (`F12`), references (`shift+f12`),
+  document symbols (`ctrl+shift+o`), completion (`ctrl+space`), semantic tokens,
+  formatting (`ctrl+shift+i`), rename (`F2`) and code actions (`ctrl+.`,
+  including `codeAction/resolve`) work. What `ctrl+.` will not do is run an
+  action whose whole content is a command for the client to execute: that means
+  `workspace/executeCommand`, whose effect comes back as a request asking the
+  editor to change files — the server driving rather than answering — and deco
+  names the command instead of appearing to work. Changes are sent as
   full-document syncs; the incremental path exists in `deco-lsp` but the editor
   does not yet track applied ranges, and only the document on screen is
   synchronised at all.

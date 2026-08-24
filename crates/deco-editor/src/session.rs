@@ -1247,6 +1247,7 @@ impl Session {
             // a keybinding is still reported as unknown.
             "editor.action.showHover"
             | "editor.action.rename"
+            | "editor.action.quickFix"
             | "editor.action.revealDefinition"
             | "editor.action.goToReferences"
             | "workbench.action.gotoSymbol"
@@ -1740,6 +1741,10 @@ impl Session {
                     at: None,
                 }
             }
+            PromptKind::CodeActions => match prompt.selected() {
+                Some(entry) => Outcome::CodeAction(entry.id.clone()),
+                None => Outcome::Message(format!("no action matches `{}`", prompt.text())),
+            },
             PromptKind::ExtensionPermissions => match prompt.selected() {
                 Some(entry) => Outcome::ForgetExtensionPermission(entry.id.clone()),
                 None => Outcome::Message(format!("no decision matches `{}`", prompt.text())),
@@ -2177,6 +2182,24 @@ impl Session {
         // No `refresh_context`: the context keys describe the document on screen,
         // and this one is not it.
         Some(applied)
+    }
+
+    /// Offers what a language server said it could do about the selection.
+    ///
+    /// Called by the frontend once the answer arrives, like
+    /// [`Session::offer_symbols`]. Each entry's `id` is the frontend's own
+    /// handle on the action, since the frontend is the one holding it.
+    ///
+    /// An empty list is reported rather than opening an empty prompt: `ctrl+.`
+    /// on a line with nothing wrong with it is a reasonable thing to press, and
+    /// a menu of nothing is a worse answer than a sentence.
+    pub fn offer_code_actions(&mut self, actions: Vec<crate::commands::PaletteEntry>) {
+        if actions.is_empty() {
+            self.status = Some("no code actions here".to_owned());
+            return;
+        }
+        self.prompt = Some(Prompt::list(PromptKind::CodeActions, actions));
+        self.refresh_context();
     }
 
     /// Asks what to call the symbol under the cursor instead.

@@ -206,6 +206,62 @@ previous edit moved. Overlapping edits are refused rather than guessed at: the
 specification forbids them, so a server sending them is broken, and picking which
 to honour would corrupt the file silently.
 
+## Code actions
+
+![ctrl+. listing what the server offers and applying the one chosen](img/code-actions.svg)
+
+`ctrl+.` asks what the server can do about the selection — or about the caret,
+when there is none, which is why a quick fix works without selecting the error
+first. The answers arrive as a list, and choosing one applies its edit through
+the same [`WorkspaceEdit`](#rename) path a rename uses: all of it or none of it,
+and one `ctrl+z` to take it back.
+
+The key is gated on `editorHasCodeActionsProvider`, so it does not resolve at
+all against a server that offers nothing here.
+
+**The diagnostics go with the request, exactly as the server sent them.** That
+is the part worth being careful about: a quick fix is computed from the
+diagnostic it fixes, and a diagnostic carries a `data` field that is opaque to a
+client by specification — several servers keep everything they need to build the
+fix in it. deco parses diagnostics for its own use (a range to underline, a
+severity to tally) and that parsing necessarily drops what it has no use for, so
+the request is built from the JSON as received rather than from the parsed
+struct. A reconstructed diagnostic is one the server does not recognise, and the
+fix it was carrying goes with it.
+
+Diagnostics **overlapping** the selection are sent, not only those inside it: a
+selection across half an error is still a question about that error, and a caret
+touching one counts.
+
+**An action without an edit is resolved before it is applied.** Servers that
+compute expensive refactorings send the titles first and the edit only for the
+one chosen — `codeAction/resolve` is that second round trip, and the action goes
+back exactly as it arrived, `data` included, since that is what the server
+recognises it by. Against a server with no `resolveProvider`, an action that
+arrives without an edit is one deco can only decline, and it says so by name.
+
+The list says what it cannot do rather than hiding it:
+
+| What arrived | What happens |
+| --- | --- |
+| An action with an edit | Applied |
+| An action with no edit, from a server that resolves | Resolved, then applied |
+| An action with no edit, from one that does not | Declined, naming the action |
+| A disabled action | Listed with the server's reason, in the second column; choosing it repeats the reason |
+| A bare `Command` | Declined, naming the command — see below |
+| An edit that creates, renames or deletes a file | Declined for **that action only**, naming the operation |
+
+That last row is why the edit is parsed when an action is chosen rather than
+when the menu is built: one entry deco cannot carry out should not empty a menu
+whose other entries are fine.
+
+**A bare `Command` is not run.** The older spelling of a code action is a
+`command` for the client to execute, which means `workspace/executeCommand`,
+whose effect comes back as a `workspace/applyEdit` *request* — the server
+driving the editor rather than answering it. That is a different direction of
+authority from everything else here and is not wired; deco names the command it
+would have run instead of appearing to work.
+
 ## Rename
 
 ![F2 renaming a symbol across two files, one of them not open, undone with ctrl+z](img/rename.svg)
@@ -315,10 +371,17 @@ settings, having read it — which is the step Workspace Trust makes it easy to 
 
 ## Not built yet
 
-Code actions are parsed but not wired. The applying half is done — `ctrl+.` needs
-`textDocument/codeAction` and a list to choose from, and then it lands through
-the same `WorkspaceEdit` path [rename](#rename) uses. The key says the feature is
-not implemented rather than pretending.
+`workspace/executeCommand` is not sent, which is what leaves a code action that
+is only a [bare `Command`](#code-actions) declined. Running one means being
+willing to answer the `workspace/applyEdit` request it sends back — a server
+asking the editor to change files rather than answering a question the editor
+asked — and that is a decision about authority rather than a missing function
+call. deco answers such a request with `applied: false` today.
+
+`textDocument/codeLens`, `textDocument/inlayHint` and
+`textDocument/documentHighlight` are not requested at all. Each wants a place to
+draw that the editor does not have yet — a line above the code, a run of
+non-text inside it, a second kind of selection highlight.
 
 `textDocument/prepareRename` is not sent. It is the request that asks a server
 whether a position can be renamed *before* the user is asked for a new name; deco

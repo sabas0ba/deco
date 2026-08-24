@@ -187,6 +187,15 @@ impl Location {
     }
 }
 
+/// [`read_range`], for the one caller outside this module.
+///
+/// The supervisor filters raw diagnostics by range without parsing them into
+/// anything, and a second implementation of "where is this" would be a second
+/// answer to keep in step with this one.
+pub(crate) fn read_range_public(value: &serde_json::Value) -> Option<Range> {
+    read_range(value)
+}
+
 /// Reads a `{ start, end }` range, clamping rather than rejecting.
 ///
 /// A server that miscounts should cost one misplaced jump, not the feature.
@@ -791,6 +800,156 @@ impl WorkspaceEdit {
     }
 }
 
+/// Parameters for `textDocument/codeAction`.
+///
+/// `diagnostics` are the server's own, **as it sent them**. That is the whole
+/// point of the context: a quick fix is computed from the diagnostic it fixes,
+/// and a diagnostic carries fields a client has no business interpreting —
+/// `data` is opaque by specification and is where several servers keep what they
+/// need to build the fix. Handing back anything but the original object is
+/// handing back a diagnostic the server does not recognise.
+pub fn code_action_params(
+    uri: &Uri,
+    range: Range,
+    diagnostics: Vec<serde_json::Value>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "textDocument": { "uri": uri },
+        "range": {
+            "start": { "line": range.start.line, "character": range.start.character },
+            "end": { "line": range.end.line, "character": range.end.character },
+        },
+        "context": { "diagnostics": diagnostics },
+    })
+}
+
+/// Something a server offers to do about a place in a document.
+///
+/// Covers both shapes the result array can hold. A bare `Command` — the older
+/// spelling, still sent by several servers — becomes one of these with no edit
+/// and a command named, which is exactly what deco cannot carry out and says so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodeAction {
+    /// What to show in the list.
+    pub title: String,
+    /// `quickfix`, `refactor.extract`, `source.organizeImports`, and so on.
+    ///
+    /// A hierarchy of dot-separated segments, so `refactor` is the prefix of
+    /// every refactoring. `None` for a bare `Command`, which has no kind.
+    pub kind: Option<String>,
+    /// Why the server says this cannot be run right now, if it says so.
+    ///
+    /// Kept rather than filtered out: VS Code lists a disabled action with its
+    /// reason, and "the action I wanted is missing" is a worse thing to leave
+    /// somebody with than "here is why it is not available".
+    pub disabled: Option<String>,
+    /// Whether the server marked this the obvious one.
+    pub preferred: bool,
+    /// The command it would run, if it runs one.
+    pub command: Option<String>,
+    /// Whether this entry was a bare `Command` rather than a `CodeAction`.
+    ///
+    /// The two are not interchangeable where it matters: `codeAction/resolve`
+    /// takes a `CodeAction`, so a `Command` with no edit is not an action
+    /// waiting to be filled in — it is the whole of what the server offered,
+    /// and running it is a different request entirely.
+    pub is_command: bool,
+    /// The edit it would make, **unparsed**.
+    ///
+    /// Left as JSON until the action is chosen. A `WorkspaceEdit` can be refused
+    /// — for a file operation deco cannot perform — and refusing it while
+    /// *listing* would take one broken entry and empty the whole menu, when the
+    /// other entries are fine and one of them is probably what was wanted.
+    pub edit: Option<serde_json::Value>,
+    /// The action exactly as the server sent it, for `codeAction/resolve`.
+    ///
+    /// Resolve takes the action back and returns it with its edit filled in, so
+    /// what goes out has to be what came in, `data` included.
+    pub raw: serde_json::Value,
+}
+
+impl CodeAction {
+    /// Reads a `(Command | CodeAction)[]` result.
+    ///
+    /// `null` — how a server says there is nothing to offer here — reads as an
+    /// empty list, which is a successful answer.
+    pub fn list_from_json(value: &serde_json::Value) -> Vec<Self> {
+        let Some(items) = value.as_array() else {
+            return Vec::new();
+        };
+        items.iter().filter_map(Self::one).collect()
+    }
+
+    fn one(value: &serde_json::Value) -> Option<Self> {
+        let title = value.get("title")?.as_str()?.to_owned();
+        // The two shapes are told apart by `command`'s *type*: on a `Command` it
+        // is the identifier itself, and on a `CodeAction` it is a nested object.
+        // Nothing else distinguishes them reliably — `kind` and `edit` are both
+        // optional on a `CodeAction`.
+        let (command, is_command) = match value.get("command") {
+            Some(serde_json::Value::String(id)) => (Some(id.clone()), true),
+            Some(nested) => (
+                nested
+                    .get("command")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned),
+                false,
+            ),
+            None => (None, false),
+        };
+        Some(Self {
+            title,
+            kind: value
+                .get("kind")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned),
+            // `disabled` is `{ reason }`, and the reason is the useful half.
+            disabled: value
+                .get("disabled")
+                .and_then(|d| d.get("reason"))
+                .and_then(|v| v.as_str())
+                .map(str::to_owned),
+            preferred: value
+                .get("isPreferred")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            command,
+            is_command,
+            edit: value.get("edit").cloned(),
+            raw: value.clone(),
+        })
+    }
+
+    /// Whether choosing this would need a `codeAction/resolve` first.
+    ///
+    /// Not a bare `Command`: resolve takes a `CodeAction`, and one sent a
+    /// `Command` answers about something it was never given. Not a disabled
+    /// one either — there is nothing to go and fetch for an action the server
+    /// has already said cannot run.
+    pub fn needs_resolving(&self) -> bool {
+        self.edit.is_none() && self.disabled.is_none() && !self.is_command
+    }
+
+    /// The kind, in the form a list shows it.
+    ///
+    /// The last segment, because the leading ones are the same down a whole
+    /// menu — every entry reading `refactor.extract` differs only after the dot,
+    /// and a column of identical prefixes is a column of nothing.
+    pub fn short_kind(&self) -> Option<&str> {
+        self.kind.as_deref().map(|kind| {
+            kind.rsplit('.')
+                .next()
+                .filter(|last| !last.is_empty())
+                .unwrap_or(kind)
+        })
+    }
+}
+
+/// Parameters for `codeAction/resolve`: the action, exactly as it arrived.
+pub fn code_action_resolve_params(action: &CodeAction) -> serde_json::Value {
+    action.raw.clone()
+}
+
 /// One semantically classified run of text.
 ///
 /// Positions are already absolute and in the negotiated encoding, so a caller
@@ -1058,6 +1217,138 @@ mod tests {
                 "textDocument": {"uri": "file:///w/a.rs"},
                 "position": {"line": 3, "character": 7},
             })
+        );
+    }
+
+    #[test]
+    fn code_action_params_echo_the_diagnostics_verbatim() {
+        // `data` is opaque to a client and is where servers keep what they need
+        // to build the fix. Anything that reshapes it hands back a diagnostic
+        // the server does not recognise.
+        let diagnostic = json!({
+            "range": range(1, 0, 1, 4),
+            "message": "unused",
+            "data": {"fix": "remove", "id": 91},
+        });
+        let params = code_action_params(
+            &uri(),
+            Range::new(Position::new(1, 0), Position::new(1, 4)),
+            vec![diagnostic.clone()],
+        );
+
+        assert_eq!(params["context"]["diagnostics"][0], diagnostic);
+        assert_eq!(params["range"]["end"], json!({"line": 1, "character": 4}));
+    }
+
+    #[test]
+    fn a_code_action_and_a_bare_command_both_read() {
+        // Both shapes arrive in one array, and the older one is still what
+        // several servers send.
+        let actions = CodeAction::list_from_json(&json!([
+            {
+                "title": "Remove unused import",
+                "kind": "quickfix",
+                "isPreferred": true,
+                "edit": {"changes": {"file:///w/a.rs": []}},
+            },
+            {"title": "Organize imports", "command": "rust-analyzer.organizeImports"},
+        ]));
+
+        assert_eq!(actions.len(), 2);
+        assert_eq!(actions[0].kind.as_deref(), Some("quickfix"));
+        assert!(actions[0].preferred);
+        assert!(actions[0].edit.is_some());
+        assert_eq!(actions[0].command, None);
+
+        assert_eq!(actions[1].kind, None, "a bare Command has no kind");
+        assert_eq!(
+            actions[1].command.as_deref(),
+            Some("rust-analyzer.organizeImports")
+        );
+        assert!(actions[1].edit.is_none());
+    }
+
+    #[test]
+    fn a_nested_command_is_read_off_the_object() {
+        // A `CodeAction` may carry a command *as well as* an edit, and its
+        // `command` is an object rather than the identifier itself.
+        let actions = CodeAction::list_from_json(&json!([{
+            "title": "Extract into function",
+            "kind": "refactor.extract",
+            "command": {"title": "Rename it", "command": "editor.action.rename"},
+        }]));
+
+        assert_eq!(actions[0].command.as_deref(), Some("editor.action.rename"));
+        assert_eq!(actions[0].short_kind(), Some("extract"));
+    }
+
+    #[test]
+    fn an_action_with_no_edit_is_one_to_resolve() {
+        let actions = CodeAction::list_from_json(&json!([
+            {"title": "Expensive refactor", "kind": "refactor"},
+            {"title": "Cheap fix", "kind": "quickfix", "edit": {"changes": {}}},
+            {"title": "Not here", "kind": "quickfix", "disabled": {"reason": "not in a function"}},
+        ]));
+
+        assert!(actions[0].needs_resolving());
+        assert!(!actions[1].needs_resolving(), "it already has its edit");
+        assert!(
+            !actions[2].needs_resolving(),
+            "a disabled action is not one to go and ask about"
+        );
+        assert_eq!(actions[2].disabled.as_deref(), Some("not in a function"));
+
+        // A bare `Command` has no edit either, and is still not resolvable:
+        // `codeAction/resolve` takes a `CodeAction`, and a server sent a
+        // `Command` is being asked about something it never offered.
+        let command = CodeAction::list_from_json(&json!([
+            {"title": "Organize imports", "command": "example.organizeImports"},
+        ]));
+        assert!(command[0].is_command);
+        assert!(!command[0].needs_resolving());
+    }
+
+    #[test]
+    fn resolving_sends_the_action_back_exactly_as_it_arrived() {
+        // Including `data`, which is what the server matches the action by.
+        let sent = json!({
+            "title": "Expensive refactor",
+            "kind": "refactor",
+            "data": {"file": "a.rs", "assist": 3},
+        });
+        let action = CodeAction::list_from_json(&json!([sent.clone()]))
+            .pop()
+            .expect("one action");
+        assert_eq!(code_action_resolve_params(&action), sent);
+    }
+
+    #[test]
+    fn nothing_to_offer_reads_as_an_empty_list() {
+        assert!(CodeAction::list_from_json(&json!(null)).is_empty());
+        assert!(CodeAction::list_from_json(&json!([])).is_empty());
+        // An entry with no title cannot be listed, and the rest still can.
+        let actions = CodeAction::list_from_json(&json!([{"kind": "quickfix"}, {"title": "Fix"}]));
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].title, "Fix");
+    }
+
+    #[test]
+    fn the_kind_shown_is_the_part_that_differs() {
+        // A menu of `refactor.extract`, `refactor.inline`, `refactor.rewrite`
+        // reads as one repeated word and one useful one.
+        let actions = CodeAction::list_from_json(&json!([
+            {"title": "a", "kind": "refactor.extract.function"},
+            {"title": "b", "kind": "quickfix"},
+            {"title": "c"},
+            {"title": "d", "kind": "trailing."},
+        ]));
+        assert_eq!(actions[0].short_kind(), Some("function"));
+        assert_eq!(actions[1].short_kind(), Some("quickfix"));
+        assert_eq!(actions[2].short_kind(), None);
+        assert_eq!(
+            actions[3].short_kind(),
+            Some("trailing."),
+            "a trailing dot leaves nothing to shorten to, so nothing is taken"
         );
     }
 

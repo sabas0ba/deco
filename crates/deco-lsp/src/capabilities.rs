@@ -148,6 +148,19 @@ pub struct ServerCapabilities {
     pub document_symbol: bool,
     /// `textDocument/semanticTokens/full`, with the legend needed to read one.
     pub semantic_tokens: Option<SemanticTokensOptions>,
+    /// `textDocument/codeAction`, and whether a chosen action can be resolved.
+    pub code_action: Option<CodeActionOptions>,
+}
+
+/// How code actions are offered.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CodeActionOptions {
+    /// Whether `codeAction/resolve` can fill in an action's edit.
+    ///
+    /// Servers that compute expensive refactorings send the titles first and the
+    /// edits only for the one that is chosen. Without this the actions that
+    /// arrive without an edit are ones deco can only decline.
+    pub resolve_provider: bool,
 }
 
 /// What a server offers for semantic tokens.
@@ -240,6 +253,7 @@ impl ServerCapabilities {
             formatting: is_provider(value.get("documentFormattingProvider")),
             document_symbol: is_provider(value.get("documentSymbolProvider")),
             semantic_tokens: read_semantic_tokens(value.get("semanticTokensProvider")),
+            code_action: read_code_action(value.get("codeActionProvider")),
         }
     }
 }
@@ -295,6 +309,22 @@ fn is_provider(value: Option<&serde_json::Value>) -> bool {
         // only the boolean form here is the bug this function exists to avoid.
         Some(serde_json::Value::Object(_)) => true,
         Some(_) => false,
+    }
+}
+
+fn read_code_action(value: Option<&serde_json::Value>) -> Option<CodeActionOptions> {
+    match value {
+        Some(serde_json::Value::Bool(true)) => Some(CodeActionOptions::default()),
+        Some(serde_json::Value::Object(options)) => Some(CodeActionOptions {
+            resolve_provider: options
+                .get("resolveProvider")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+        }),
+        // Including `codeActionKinds` without `resolveProvider`, which is an
+        // object and so still means the server offers code actions. Only `false`
+        // and absence mean it does not.
+        _ => None,
     }
 }
 
@@ -557,6 +587,45 @@ mod tests {
         let completion = caps.completion.expect("an empty object still offers it");
         assert!(completion.trigger_characters.is_empty());
         assert!(!completion.resolve_provider);
+    }
+
+    #[test]
+    fn code_actions_distinguish_resolve_support() {
+        assert_eq!(
+            ServerCapabilities::from_json(&json!({"codeActionProvider": true})).code_action,
+            Some(CodeActionOptions {
+                resolve_provider: false
+            })
+        );
+        assert_eq!(
+            ServerCapabilities::from_json(&json!({
+                "codeActionProvider": {"resolveProvider": true}
+            }))
+            .code_action,
+            Some(CodeActionOptions {
+                resolve_provider: true
+            })
+        );
+        // An object that only lists kinds still offers code actions; it just
+        // sends every edit up front.
+        assert_eq!(
+            ServerCapabilities::from_json(&json!({
+                "codeActionProvider": {"codeActionKinds": ["quickfix"]}
+            }))
+            .code_action,
+            Some(CodeActionOptions {
+                resolve_provider: false
+            })
+        );
+        assert_eq!(
+            ServerCapabilities::from_json(&json!({"codeActionProvider": false})).code_action,
+            None
+        );
+        assert_eq!(
+            ServerCapabilities::from_json(&json!({})).code_action,
+            None,
+            "absent is the same as declined"
+        );
     }
 
     #[test]

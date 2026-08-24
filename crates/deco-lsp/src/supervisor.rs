@@ -120,6 +120,22 @@ pub enum Update {
         /// is a successful answer and worth reporting as such.
         edit: Result<crate::WorkspaceEdit, crate::WorkspaceEditError>,
     },
+    /// An answer to [`Supervisor::code_action`].
+    CodeActions {
+        /// The request this answers.
+        id: RequestId,
+        /// What the server offers, in the order it listed them. Empty means it
+        /// has nothing for that place, which is a successful answer.
+        actions: Vec<crate::requests::CodeAction>,
+    },
+    /// An answer to [`Supervisor::resolve_code_action`].
+    CodeActionResolved {
+        /// The request this answers.
+        id: RequestId,
+        /// The same action with its edit filled in — or, from a server that
+        /// resolved to nothing useful, still without one.
+        action: Box<crate::requests::CodeAction>,
+    },
     /// An answer to [`Supervisor::semantic_tokens`].
     SemanticTokens {
         /// The request this answers.
@@ -223,6 +239,28 @@ pub enum SupervisorError {
 /// [`ServerProcess::stderr_after_exit`] resolves it by waiting for the pump
 /// thread to finish rather than for output to appear, which is a fact rather
 /// than a guess.
+/// Whether a raw diagnostic's range overlaps `range` at all.
+///
+/// Read off the JSON rather than the parsed struct, because the parsed set and
+/// the raw set are two lists and matching one against the other by index would
+/// be a rule that silently stops holding the first time a diagnostic fails to
+/// parse. Reading the range from the same value being filtered cannot drift.
+///
+/// A diagnostic with no usable range never matches, which is the same thing
+/// [`Diagnostic::from_json`] does with one: it cannot be placed, so nothing can
+/// be said about where it is.
+fn overlaps_range(value: &serde_json::Value, range: deco_core::position::Range) -> bool {
+    let Some(other) = value
+        .get("range")
+        .and_then(crate::requests::read_range_public)
+    else {
+        return false;
+    };
+    // Touching counts. An empty selection is a caret, and a caret at the start
+    // of an error is squarely a request about that error.
+    other.start <= range.end && range.start <= other.end
+}
+
 fn drain_stderr(process: &mut ServerProcess, grace: Duration) -> String {
     process.stderr_after_exit(grace).summary()
 }
@@ -249,6 +287,13 @@ pub struct Supervisor {
     process: Option<ServerProcess>,
     sync: DocumentSync,
     diagnostics: DiagnosticStore,
+    /// The diagnostics as the server sent them, per document.
+    ///
+    /// Beside the parsed store rather than inside it, because they are not for
+    /// the editor to read: nothing draws them, and the one thing they are for is
+    /// being handed back to the server that produced them — see
+    /// [`Supervisor::code_action`], and the comment where they are stored.
+    published: std::collections::HashMap<Uri, Vec<serde_json::Value>>,
     paths: PathMap,
     /// Set once the server is gone, so a later call reports the original reason
     /// rather than a bare "not running".
@@ -302,6 +347,7 @@ impl Supervisor {
             process: Some(process),
             sync: DocumentSync::new(),
             diagnostics: DiagnosticStore::new(),
+            published: std::collections::HashMap::new(),
             paths,
             stopped: None,
             pending_updates: Vec::new(),
@@ -667,6 +713,65 @@ impl Supervisor {
         self.request("textDocument/rename", params).map(Some)
     }
 
+    /// Asks what the server offers to do about `range`.
+    ///
+    /// The diagnostics covering that range go with the request, as the server
+    /// sent them — see [`crate::requests::code_action_params`] for why that
+    /// matters more than it looks like it should.
+    pub fn code_action(
+        &mut self,
+        path: &Path,
+        range: deco_core::position::Range,
+    ) -> Result<Option<RequestId>, SupervisorError> {
+        if self.client.capabilities().code_action.is_none() {
+            return Ok(None);
+        }
+        let Some(uri) = self.uri_for(path) else {
+            return Ok(None);
+        };
+        if !self.sync.is_open(&uri) {
+            return Ok(None);
+        }
+        // Overlapping the range rather than contained in it: a selection across
+        // half an error is still a request about that error, and VS Code sends
+        // the same set.
+        let diagnostics: Vec<serde_json::Value> = self
+            .published
+            .get(&uri)
+            .map(|published| {
+                published
+                    .iter()
+                    .filter(|value| overlaps_range(value, range))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        let params = crate::requests::code_action_params(&uri, range, diagnostics);
+        self.request("textDocument/codeAction", params).map(Some)
+    }
+
+    /// Asks the server to fill in a chosen action's edit.
+    ///
+    /// `Ok(None)` when the server does not offer resolving, which is the
+    /// caller's cue that an action with no edit is one that cannot be run rather
+    /// than one that has not been asked about yet.
+    pub fn resolve_code_action(
+        &mut self,
+        action: &crate::requests::CodeAction,
+    ) -> Result<Option<RequestId>, SupervisorError> {
+        if !self
+            .client
+            .capabilities()
+            .code_action
+            .as_ref()
+            .is_some_and(|options| options.resolve_provider)
+        {
+            return Ok(None);
+        }
+        let params = crate::requests::code_action_resolve_params(action);
+        self.request("codeAction/resolve", params).map(Some)
+    }
+
     /// The version last sent to the server for `path`.
     ///
     /// What an incoming edit's `version` has to match. `None` for a document
@@ -947,6 +1052,23 @@ impl Supervisor {
                         id,
                         method,
                     }),
+                    "textDocument/codeAction" => Some(Update::CodeActions {
+                        id,
+                        actions: crate::requests::CodeAction::list_from_json(&result),
+                    }),
+                    "codeAction/resolve" => {
+                        // One action back, not a list. A server that answered
+                        // with something unreadable leaves nothing to apply,
+                        // which the caller reports as such.
+                        crate::requests::CodeAction::list_from_json(&serde_json::Value::Array(
+                            vec![result],
+                        ))
+                        .pop()
+                        .map(|action| Update::CodeActionResolved {
+                            id,
+                            action: Box::new(action),
+                        })
+                    }
                     "textDocument/rename" => Some(Update::Renamed {
                         id,
                         edit: crate::WorkspaceEdit::from_json(&result),
@@ -997,10 +1119,30 @@ impl Supervisor {
             .diagnostics
             .publish(uri.clone(), version, diagnostics, current)
         {
-            Published::Replaced { .. } => Some(Update::Diagnostics {
-                diagnostics: self.diagnostics.for_uri(&uri).to_vec(),
-                uri,
-            }),
+            Published::Replaced { .. } => {
+                // Kept as sent, beside the parsed set and only when that set was
+                // accepted, so the two cannot disagree about which publication
+                // is current. Parsing drops what deco has no use for — `data`
+                // above all, which is opaque to a client by design — and a quick
+                // fix is exactly the request that hands a diagnostic back to the
+                // server that produced it. Reconstructing one from the parsed
+                // struct would return a diagnostic the server does not
+                // recognise, and the fix it was carrying with it.
+                let raw = params
+                    .get("diagnostics")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                if raw.is_empty() {
+                    self.published.remove(&uri);
+                } else {
+                    self.published.insert(uri.clone(), raw);
+                }
+                Some(Update::Diagnostics {
+                    diagnostics: self.diagnostics.for_uri(&uri).to_vec(),
+                    uri,
+                })
+            }
             // Not reported: the editor's current diagnostics are still correct,
             // and a message saying a stale result was dropped is noise during
             // ordinary typing.
@@ -1046,6 +1188,7 @@ mod tests {
             process: None,
             sync: DocumentSync::new(),
             diagnostics: DiagnosticStore::new(),
+            published: std::collections::HashMap::new(),
             paths: PathMap::local(crate::uri::PathStyle::Unix),
             stopped: None,
             pending_updates: Vec::new(),
@@ -1121,6 +1264,146 @@ mod tests {
             panic!("an empty set must still be reported, got {updates:?}");
         };
         assert!(diagnostics.is_empty());
+    }
+
+    /// A publication carrying the opaque `data` a quick fix is built from.
+    fn publish_with_data(uri: &str, line: u32, data: serde_json::Value) -> Message {
+        Message::Notification(Notification {
+            method: "textDocument/publishDiagnostics".into(),
+            params: Some(json!({
+                "uri": uri,
+                "diagnostics": [{
+                    "range": {
+                        "start": {"line": line, "character": 0},
+                        "end": {"line": line, "character": 4},
+                    },
+                    "severity": 1,
+                    "message": "unused",
+                    "data": data,
+                }],
+            })),
+        })
+    }
+
+    #[test]
+    fn the_diagnostics_a_server_sent_are_kept_as_it_sent_them() {
+        // Parsing drops `data`, and `data` is what a server builds the fix from.
+        let mut s = detached(json!({}));
+        feed(
+            &mut s,
+            publish_with_data("file:///w/a.rs", 2, json!({"assist": 7})),
+        );
+
+        let uri = Uri::from_string("file:///w/a.rs");
+        let kept = s.published.get(&uri).expect("kept beside the parsed set");
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0]["data"], json!({"assist": 7}));
+    }
+
+    #[test]
+    fn a_publication_that_is_dropped_leaves_the_kept_set_alone() {
+        // Otherwise the raw set would describe a publication the editor refused,
+        // and a code action would be asked about a diagnostic nothing is showing.
+        let mut s = detached(json!({
+            "textDocumentSync": {"openClose": true, "change": 1}
+        }));
+        let path = Path::new("/w/a.rs");
+        s.sync.open(s.uri_for(path).unwrap(), "rust", "x").unwrap();
+        feed(
+            &mut s,
+            publish_with_data("file:///w/a.rs", 0, json!({"assist": 1})),
+        );
+        s.sync
+            .change(
+                &s.uri_for(path).unwrap(),
+                TextDocumentSyncKind::Full,
+                &[],
+                "x",
+            )
+            .unwrap();
+
+        // Stamped with a version older than the document's.
+        feed(&mut s, publish("file:///w/a.rs", Some(1), &[(9, "stale")]));
+
+        let kept = &s.published[&s.uri_for(path).unwrap()];
+        assert_eq!(kept[0]["data"], json!({"assist": 1}), "still the first set");
+    }
+
+    #[test]
+    fn clearing_the_diagnostics_clears_what_was_kept() {
+        let mut s = detached(json!({}));
+        feed(
+            &mut s,
+            publish_with_data("file:///w/a.rs", 0, json!({"assist": 1})),
+        );
+        feed(&mut s, publish("file:///w/a.rs", None, &[]));
+
+        assert!(!s
+            .published
+            .contains_key(&Uri::from_string("file:///w/a.rs")));
+    }
+
+    #[test]
+    fn a_server_that_offers_no_code_actions_is_not_asked() {
+        let mut s = detached(json!({}));
+        assert!(s
+            .code_action(
+                Path::new("/w/a.rs"),
+                deco_core::position::Range::new(
+                    deco_core::position::Position::ZERO,
+                    deco_core::position::Position::ZERO,
+                ),
+            )
+            .expect("declining is not an error")
+            .is_none());
+    }
+
+    #[test]
+    fn an_action_is_not_sent_for_resolving_to_a_server_that_cannot() {
+        // The caller reads `None` as "this action has no edit and never will",
+        // which is a different thing to report than a request in flight.
+        let mut s = detached(json!({"codeActionProvider": true}));
+        let action = crate::requests::CodeAction::list_from_json(&json!([{"title": "Fix"}]))
+            .pop()
+            .expect("one action");
+        assert!(s
+            .resolve_code_action(&action)
+            .expect("declining is not an error")
+            .is_none());
+    }
+
+    #[test]
+    fn a_diagnostic_is_offered_when_it_touches_the_selection() {
+        let at = |line: u32, from: u32, to: u32| {
+            json!({"range": {
+                "start": {"line": line, "character": from},
+                "end": {"line": line, "character": to},
+            }})
+        };
+        let selection = deco_core::position::Range::new(
+            deco_core::position::Position::new(1, 4),
+            deco_core::position::Position::new(1, 8),
+        );
+
+        assert!(
+            overlaps_range(&at(1, 0, 6), selection),
+            "overlapping the start"
+        );
+        assert!(
+            overlaps_range(&at(1, 6, 20), selection),
+            "overlapping the end"
+        );
+        assert!(overlaps_range(&at(1, 5, 6), selection), "inside it");
+        assert!(
+            overlaps_range(&at(1, 8, 9), selection),
+            "touching the end counts: a caret there is a question about it"
+        );
+        assert!(!overlaps_range(&at(2, 0, 4), selection), "another line");
+        assert!(!overlaps_range(&at(1, 0, 3), selection), "ends before it");
+        assert!(
+            !overlaps_range(&json!({"message": "no range"}), selection),
+            "a diagnostic that cannot be placed is nowhere"
+        );
     }
 
     #[test]

@@ -277,6 +277,97 @@ fn a_server_offering_no_rename_leaves_f2_doing_nothing_quietly() {
 }
 
 #[test]
+fn ctrl_dot_lists_what_the_server_offers_and_applies_the_one_chosen() {
+    let scenario = project("lsp-code-actions", "full");
+    let mut editor = started(&scenario);
+    editor.press("ctrl+home");
+    editor.press("down");
+
+    editor.press("ctrl+.");
+    editor.settle_until("the action list", |editor| {
+        editor.session().prompt.is_some()
+    });
+
+    let screen = editor.screen();
+    screen.assert_fits();
+    screen.assert_shows("Prefix the name with an underscore");
+    // The second column: the kind for the ones that can run, and the reason for
+    // the one that cannot.
+    screen.assert_shows("quickfix");
+    screen.assert_shows("not on a variable");
+
+    // The first is selected, and it arrived with its edit already on it.
+    editor.press("enter");
+    editor.settle_until("the edit to land", |editor| editor.is_dirty());
+    assert_eq!(
+        editor.text(),
+        "fn main() {\n    _greet(\"world\");\n}\n\nfn greet(who: &str) {}\n"
+    );
+}
+
+#[test]
+fn an_action_with_no_edit_is_resolved_before_it_is_applied() {
+    // The second entry arrives with `data` and no edit. Choosing it has to send
+    // that action back and apply what comes home, rather than reporting that
+    // there is nothing to do.
+    let scenario = project("lsp-code-action-resolve", "full");
+    let mut editor = started(&scenario);
+
+    editor.press("ctrl+.");
+    editor.settle_until("the action list", |editor| {
+        editor.session().prompt.is_some()
+    });
+    editor.press("down");
+    editor.press("enter");
+    editor.settle_until("the resolved edit", |editor| editor.is_dirty());
+
+    assert!(
+        editor.text().starts_with("// extracted\n"),
+        "the resolved edit should have been applied: {:?}",
+        editor.text()
+    );
+}
+
+#[test]
+fn an_action_that_only_runs_a_server_command_is_refused_by_name() {
+    let scenario = project("lsp-code-action-command", "full");
+    let mut editor = started(&scenario);
+
+    editor.press("ctrl+.");
+    editor.settle_until("the action list", |editor| {
+        editor.session().prompt.is_some()
+    });
+    // The fourth entry: a bare `Command`.
+    editor.press_times("down", 3);
+    editor.press("enter");
+    editor.settle_until("the refusal", |editor| {
+        editor
+            .status()
+            .is_some_and(|line| line.contains("was not applied"))
+    });
+
+    let status = editor.status().unwrap_or_default().to_owned();
+    assert!(
+        status.contains("example.organizeImports"),
+        "the refusal should name the command it cannot run: {status}"
+    );
+    assert!(!editor.is_dirty(), "and nothing should have changed");
+}
+
+#[test]
+fn a_server_offering_no_code_actions_leaves_the_key_doing_nothing_quietly() {
+    // `codeActionProvider` is only sent by this example server, so a scenario
+    // without a server at all is the case where the context key is false.
+    let scenario = Scenario::new("lsp-code-actions-absent").file("a.txt", "plain\n");
+    let mut editor = scenario.launch(&["a.txt"]);
+
+    editor.press("ctrl+.");
+
+    assert!(editor.session().prompt.is_none());
+    assert_eq!(editor.status(), None, "an unbound key did not fail");
+}
+
+#[test]
 fn go_to_symbol_lists_what_the_server_classified() {
     let scenario = project("lsp-symbols", "full");
     let mut editor = started(&scenario);
