@@ -110,7 +110,7 @@ running, and is published at
 | [Extensions](docs/extensions.md) | The capability model, and why an extension gets less power here |
 | [Remote](docs/remote.md) | SSH, container and WSL authorities, and the server that answers on the far end |
 | [Testing](docs/testing.md) | Unit tests, end-to-end scenarios, and what each one is for |
-| [Roadmap](docs/roadmap.md) | What VS Code has that deco does not, and the plan for each |
+| [Roadmap](docs/roadmap.md) | What VS Code has that deco does not, the plan for each, and what is worth building because deco is not Electron |
 
 The animations are generated from deco's own renderer by `cargo xtask docs`, and
 `cargo xtask docs --check` runs in CI — so a demonstration cannot show a feature

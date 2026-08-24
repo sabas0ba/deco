@@ -18,7 +18,7 @@ yet.
 | [Extensions](extensions.md) | The capability model, and why an extension gets less power here than in VS Code |
 | [Remote](remote.md) | SSH, container and WSL authorities — and which half of it exists |
 | [Testing](testing.md) | Unit tests, end-to-end scenarios, and what each one is for |
-| [Roadmap](roadmap.md) | What VS Code has that deco does not, and the plan for each |
+| [Roadmap](roadmap.md) | What VS Code has that deco does not, the plan for each, and what is worth building because deco is not Electron |
 
 ## About the animations
 
