@@ -244,6 +244,51 @@ pub fn excluded_by_settings(settings: &Settings, relative: &str) -> bool {
     is_excluded(&exclude_patterns(settings), relative)
 }
 
+/// Lists one directory for the file tree.
+///
+/// One level, not a walk: the tree reads a directory when it is expanded, so the
+/// cost of opening a workspace is one `read_dir` however large it is. That is
+/// the whole reason the tree asks a level at a time rather than being handed the
+/// listing quick open already has — that one is capped at [`MAX_FILES`] and
+/// flattened, and a tree built from it would be both truncated and unable to
+/// show an empty directory.
+///
+/// The same exclusions quick open uses, for the same reason: a `files.exclude`
+/// that hid a file from `ctrl+p` but not from the tree would be one setting with
+/// two meanings.
+pub fn list_dir(root: &Path, dir: &Path, settings: &Settings) -> Vec<deco_editor::explorer::Entry> {
+    let excludes = exclude_patterns(settings);
+    // An unreadable directory reads as empty rather than as an error: a
+    // workspace with one root-owned subdirectory should still show the rest,
+    // which is the same call the walk makes.
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some(relative) = relative_to(root, &path) else {
+            continue;
+        };
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        if kind.is_dir() {
+            if ALWAYS_SKIP.contains(&name) || is_excluded(&excludes, &relative) {
+                continue;
+            }
+            out.push(deco_editor::explorer::Entry::dir(name));
+        } else if kind.is_file() && !is_excluded(&excludes, &relative) {
+            out.push(deco_editor::explorer::Entry::file(name));
+        }
+    }
+    out
+}
+
 fn exclude_patterns(settings: &Settings) -> Vec<String> {
     settings
         .get("files.exclude")
@@ -292,6 +337,58 @@ mod tests {
 
     fn titles(listing: &Listing) -> Vec<&str> {
         listing.files.iter().map(|f| f.title.as_str()).collect()
+    }
+
+    #[test]
+    fn one_directory_is_listed_without_walking_into_it() {
+        let root = tree(
+            "one-level",
+            &[
+                "a.rs",
+                "src/b.rs",
+                "src/deep/c.rs",
+                "target/junk.o",
+                ".git/HEAD",
+            ],
+        );
+        let mut names: Vec<String> = list_dir(&root, &root, &Settings::with_defaults())
+            .into_iter()
+            .map(|entry| format!("{}{}", entry.name, if entry.is_dir { "/" } else { "" }))
+            .collect();
+        names.sort();
+        // `src/` appears as one row; nothing inside it does, and the
+        // conventionally-skipped directories are not offered at all.
+        assert_eq!(names, ["a.rs", "src/"]);
+
+        let mut inner: Vec<String> = list_dir(&root, &root.join("src"), &Settings::with_defaults())
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect();
+        inner.sort();
+        assert_eq!(inner, ["b.rs", "deep"]);
+    }
+
+    #[test]
+    fn a_directory_that_cannot_be_read_lists_as_empty() {
+        let root = tree("unreadable", &["a.rs"]);
+        assert!(list_dir(&root, &root.join("nope"), &Settings::with_defaults()).is_empty());
+    }
+
+    #[test]
+    fn files_exclude_hides_the_same_things_from_the_tree_as_from_quick_open() {
+        let root = tree("excluded-tree", &["keep.rs", "skip.log"]);
+        let mut settings = Settings::with_defaults();
+        settings.set(
+            deco_config::Scope::User,
+            "files.exclude",
+            serde_json::json!({ "**/*.log": true }),
+        );
+        let names: Vec<String> = list_dir(&root, &root, &settings)
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect();
+        assert_eq!(names, ["keep.rs"]);
+        assert_eq!(titles(&list(&root, &settings)), ["keep.rs"]);
     }
 
     #[test]

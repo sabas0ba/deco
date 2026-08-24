@@ -15,12 +15,14 @@ them, with VS Code's own command identifiers.
 | | `workbench.action.focusActiveEditorGroup` |
 | | `workbench.action.closeSidebar`, `workbench.action.closePanel` |
 
-**The regions are empty, and say so.** Nothing lives in them yet: the file tree,
-search and source control belong in the side bar, and the terminal, problems and
-output in the panel. Each region draws its name and what it is waiting for,
-which is the same rule deco applies to a key it has not implemented — the chrome
-is real, what goes in it is named, and neither is pretended about. This page will
-grow a section per tenant as they arrive.
+**The side bar has one tenant: the [file tree](files.md).** The panel has none
+yet, and neither does the rest of the side bar — search and source control
+belong there, and the terminal, problems and output in the panel. A region with
+nothing in it draws its name and what it is waiting for, which is the same rule
+deco applies to a key it has not implemented: the chrome is real, what goes in it
+is named, and neither is pretended about. Each tenant gets its own page as it
+arrives rather than a section here — the tree has more to say about itself than
+fits beside the arithmetic of the split.
 
 ## Where the space comes from
 
@@ -102,10 +104,10 @@ not yet drawn.
 
 ## Not built yet
 
-The regions have no tenants. `` ctrl+` `` (`workbench.action.terminal.toggleTerminal`)
+The panel has no tenants. `` ctrl+` `` (`workbench.action.terminal.toggleTerminal`)
 still reports that it is not implemented: the panel it would open into exists
 now, and what is missing is a PTY to put in it. The
-[roadmap](roadmap.md) has the plan for each of them, and the file tree is next.
+[roadmap](roadmap.md) has the plan for each of them.
 
 A region cannot be resized or dragged to the other side; the setting is the only
 way to move the side bar. Tenants that need to remember a width will need

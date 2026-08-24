@@ -147,6 +147,10 @@ fn demos() -> Vec<Demo> {
             build: chrome,
         },
         Demo {
+            name: "file-tree",
+            build: file_tree,
+        },
+        Demo {
             name: "tabs",
             build: tabs,
         },
@@ -231,6 +235,13 @@ const ROWS: usize = 14;
 struct Take {
     session: Session,
     shots: Vec<Shot>,
+    /// The workspace the file tree is shown over, if a demonstration set one.
+    ///
+    /// The frontend's job in the real editor, done here by the demonstration —
+    /// which is the point of the tree asking for listings rather than reading
+    /// them: a workspace can be stated instead of created on disk. Each entry is
+    /// a path and the text that file holds.
+    workspace: Vec<(String, String)>,
 }
 
 /// One captured moment: what the screen showed, and what produced it.
@@ -264,6 +275,7 @@ impl Take {
         Self {
             session,
             shots: Vec::new(),
+            workspace: Vec::new(),
         }
     }
 
@@ -308,12 +320,86 @@ impl Take {
     fn press(&mut self, keys: &[&str]) -> &mut Self {
         for key in keys {
             let chord = Chord::parse(key).expect("demonstrations only press keys that parse");
-            self.session
+            let outcome = self
+                .session
                 .handle_chord(chord, self.shots.len() as u64 * 10_000);
+            // The frontend's other half of the bargain. Without this the tree
+            // would appear to open a file and not open it, and the frames after
+            // would show typing going into whatever was already there — a
+            // demonstration of something the editor does not do, which is the
+            // one thing these files exist to make impossible.
+            if let deco_editor::Outcome::OpenFile { path, at } = outcome {
+                let relative = path
+                    .strip_prefix("/demo")
+                    .expect("a demonstration only opens files in its own workspace");
+                let text = self
+                    .workspace
+                    .iter()
+                    .find(|(candidate, _)| Path::new(candidate) == relative)
+                    .map(|(_, text)| text.clone())
+                    .unwrap_or_else(|| {
+                        panic!("this demonstration opens {relative:?} without saying what is in it")
+                    });
+                self.session.open(path, &text);
+                if let Some(at) = at {
+                    self.session.view.selections = SelectionSet::caret(at);
+                }
+            }
+            self.fill_tree();
             self.resize_for_chrome();
             self.capture(key, 1);
         }
         self
+    }
+
+    /// Gives the file tree a workspace to show, and roots it there.
+    ///
+    /// Paths are `dir/file`, a trailing `/` marking a directory — the same shape
+    /// the tests use. Supplied rather than read from disk because that is how
+    /// the tree really works: the session is *handed* directory contents by
+    /// whoever has a filesystem, so a demonstration can be that whoever, and the
+    /// rows on screen are the model's own.
+    fn workspace(&mut self, files: &[(&str, &str)]) -> &mut Self {
+        self.workspace = files
+            .iter()
+            .map(|(path, text)| ((*path).to_owned(), (*text).to_owned()))
+            .collect();
+        self.session.set_workspace_root("/demo");
+        self.fill_tree();
+        self
+    }
+
+    /// Answers whatever listings the tree is waiting on, from `workspace`.
+    fn fill_tree(&mut self) {
+        for _ in 0..16 {
+            let Some(dir) = self.session.directory_wanted() else {
+                return;
+            };
+            let prefix = match dir.strip_prefix("/demo") {
+                Ok(rest) if rest.as_os_str().is_empty() => String::new(),
+                Ok(rest) => format!("{}/", rest.display()),
+                Err(_) => return,
+            };
+            let mut entries: Vec<deco_editor::explorer::Entry> = Vec::new();
+            for (path, _) in &self.workspace {
+                let Some(rest) = path.strip_prefix(&prefix) else {
+                    continue;
+                };
+                let (name, is_dir) = match rest.split_once('/') {
+                    Some((head, _)) => (head, true),
+                    None if rest.is_empty() => continue,
+                    None => (rest, false),
+                };
+                if !entries.iter().any(|entry| entry.name == name) {
+                    entries.push(if is_dir {
+                        deco_editor::explorer::Entry::dir(name)
+                    } else {
+                        deco_editor::explorer::Entry::file(name)
+                    });
+                }
+            }
+            self.session.fill_directory(&dir, entries);
+        }
     }
 
     /// Presses `keys` and holds the result for longer, for the frame that shows
@@ -836,6 +922,42 @@ fn chrome() -> String {
 
     take.press_and_hold(&["ctrl+b"], 4)
         .press_and_hold(&["ctrl+j"], 4);
+    take.finish()
+}
+
+fn file_tree() -> String {
+    let mut take = Take::new("main.rs", SAMPLE);
+    take.workspace(&[
+        ("Cargo.toml", "[package]\nname = \"demo\"\n"),
+        ("README.md", "# demo\n"),
+        ("src/main.rs", SAMPLE),
+        ("src/lib.rs", "pub mod parse;\n"),
+        ("src/parse/mod.rs", "pub mod lexer;\n"),
+        (
+            "src/parse/lexer.rs",
+            "pub fn tokens(src: &str) -> Vec<&str> {\n    src.split_whitespace().collect()\n}\n",
+        ),
+        ("tests/parse.rs", "#[test]\nfn it_parses() {}\n"),
+    ]);
+    take.at(1, 8).capture("a workspace, and one file open", 3);
+
+    // The tree appears without taking the keyboard: `ctrl+b` shows, it does not
+    // focus. `ctrl+shift+e` is what moves into it.
+    take.press_and_hold(&["ctrl+b"], 5);
+    take.press_and_hold(&["ctrl+shift+e"], 4);
+
+    // Two levels down, a directory at a time. Each `right` is what asks for
+    // that directory's contents — nothing below a closed folder has been read.
+    take.press_and_hold(&["right"], 3)
+        .press(&["down"])
+        .press_and_hold(&["right"], 4)
+        .press(&["down"]);
+
+    // Enter opens the file and takes the keyboard with it, so what is typed
+    // next goes into what was just opened rather than into what was there.
+    take.press_and_hold(&["enter"], 5);
+    take.type_text("// ");
+    take.capture("the caret is in the file the tree opened", 5);
     take.finish()
 }
 

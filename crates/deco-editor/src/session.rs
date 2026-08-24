@@ -42,6 +42,13 @@ pub enum EditError {
     Overlapping,
 }
 
+/// Rows the side bar spends on its heading before the tree starts.
+///
+/// The title and the blank line under it. Here rather than in a renderer
+/// because the session subtracts them to know how many rows the tree can scroll
+/// within, and two frontends drawing the same heading have to agree with it.
+pub const EXPLORER_CHROME_ROWS: usize = 2;
+
 /// Which region of the window has the keyboard.
 ///
 /// VS Code's own division, and the reason its `when` clauses can say
@@ -324,6 +331,14 @@ pub struct Session {
     panel: bool,
     /// Which region has the keyboard.
     focus: Focus,
+    /// The workspace tree, once a frontend has said where the workspace is.
+    ///
+    /// `None` until then, because the session does not derive the root itself:
+    /// working it out needs a working directory and the path deco was started
+    /// with, neither of which the core has. Making the root a full session
+    /// concept is the first step of the roadmap's workspace-switching chapter;
+    /// this is the tree's own copy of it, not that.
+    explorer: Option<crate::Explorer>,
     /// The rectangle the frontend last handed over.
     ///
     /// Kept because toggling a region has to re-divide the same window, and the
@@ -493,6 +508,7 @@ impl Session {
             side_bar: false,
             panel: false,
             focus: Focus::Editor,
+            explorer: None,
             // Replaced by the first `resize`, which every frontend does before
             // it draws. The default matches `View`'s so a session nobody sized
             // still lays out sensibly under test.
@@ -1061,6 +1077,15 @@ impl Session {
         self.context
             .set("sideBarFocus", self.focus == Focus::SideBar);
         self.context.set("panelFocus", self.focus == Focus::Panel);
+        // The tree's own keys. `filesExplorerFocus` is VS Code's name for the
+        // explorer having the keyboard, and `listFocus` for any list having it —
+        // the explorer is the only list here, so today they agree, and a `when`
+        // clause copied from VS Code that uses either one resolves.
+        let explorer_focus = self.focus == Focus::SideBar && self.explorer.is_some();
+        self.context.set("filesExplorerFocus", explorer_focus);
+        self.context.set("listFocus", explorer_focus);
+        self.context
+            .set("explorerViewletVisible", regions.side_bar.is_some());
         // Everything below describes the text, and while a region has the
         // keyboard the text does not have it — which is what stops a binding
         // gated on `editorTextFocus` from resolving in a tree.
@@ -1203,6 +1228,16 @@ impl Session {
             "workbench.action.togglePanel" => self.toggle_panel(),
             "workbench.action.closeSidebar" => self.show_side_bar(false),
             "workbench.action.closePanel" => self.show_panel(false),
+            "workbench.files.action.focusFilesExplorer" => self.focus_region(Focus::SideBar),
+            "revealInExplorer" => self.reveal_active_file(),
+            // The tree's own keys. Routed before the focus guard below, because
+            // unlike the editor's commands these are *for* whatever has the
+            // keyboard. Whether the tree is what has it is decided inside, not
+            // by a guard here: these commands exist whatever has focus, and an
+            // arm that stopped matching would report them as unknown — which is
+            // what the frontend says when a binding is a typo.
+            "list.focusDown" | "list.focusUp" | "list.focusFirst" | "list.focusLast"
+            | "list.expand" | "list.collapse" | "list.select" => self.explorer_key(command),
             "workbench.action.focusSideBar" => self.focus_region(Focus::SideBar),
             "workbench.action.focusPanel" => self.focus_region(Focus::Panel),
             // VS Code's way back to the text from anywhere in the chrome.
@@ -2870,6 +2905,120 @@ impl Session {
                 what.to_lowercase()
             ));
         }
+        Outcome::Handled
+    }
+
+    /// Tells the session where the workspace is, creating the tree.
+    ///
+    /// The frontend works the root out — it needs a working directory and the
+    /// path deco was started with — and hands it over. Called again for a
+    /// different root, the tree starts over rather than merging: expansion state
+    /// from one workspace means nothing in another.
+    pub fn set_workspace_root(&mut self, root: impl Into<std::path::PathBuf>) {
+        self.explorer = Some(crate::Explorer::new(root));
+        self.refresh_context();
+    }
+
+    /// The workspace tree, if a root has been set.
+    pub fn explorer(&self) -> Option<&crate::Explorer> {
+        self.explorer.as_ref()
+    }
+
+    /// A directory the tree needs read, if any.
+    ///
+    /// The frontend asks after anything that could have expanded something, and
+    /// keeps asking until it answers `None` — one listing per turn, so a deep
+    /// reveal arrives a level at a time rather than in one blocking walk.
+    pub fn directory_wanted(&self) -> Option<std::path::PathBuf> {
+        self.explorer.as_ref().and_then(crate::Explorer::wanted)
+    }
+
+    /// Hands the tree what a directory contains.
+    pub fn fill_directory(&mut self, dir: &std::path::Path, entries: Vec<crate::explorer::Entry>) {
+        if let Some(explorer) = self.explorer.as_mut() {
+            explorer.fill(dir, entries);
+        }
+        self.refresh_context();
+    }
+
+    /// `revealInExplorer`: opens the tree onto the file being edited.
+    ///
+    /// An untitled document has no path to reveal, and saying so is better than
+    /// a key that does nothing: the tree is showing, it just has nothing to
+    /// point at yet.
+    fn reveal_active_file(&mut self) -> Outcome {
+        let Some(path) = self.document.path.clone() else {
+            return Outcome::Message("this document has not been saved anywhere yet".to_owned());
+        };
+        if self.explorer.is_none() {
+            return Outcome::Message("no workspace to reveal it in".to_owned());
+        }
+        if !self.side_bar {
+            self.show_side_bar(true);
+        }
+        if let Some(explorer) = self.explorer.as_mut() {
+            explorer.reveal(&path);
+        }
+        self.refresh_context();
+        Outcome::Handled
+    }
+
+    /// One of the tree's navigation keys.
+    ///
+    /// Does nothing unless the tree has the keyboard. The default keymap gates
+    /// these on `sideBarFocus` so it never comes up there, but a hand-written
+    /// binding without a `when` clause is allowed to exist, and moving a
+    /// selection nobody can see while someone types in the editor is worse than
+    /// a key that does nothing.
+    fn explorer_key(&mut self, command: &str) -> Outcome {
+        if self.focus != Focus::SideBar {
+            return Outcome::Handled;
+        }
+        let Some(explorer) = self.explorer.as_mut() else {
+            return Outcome::Handled;
+        };
+        match command {
+            "list.focusDown" => explorer.select_next(),
+            "list.focusUp" => explorer.select_previous(),
+            "list.focusFirst" => explorer.select_first(),
+            "list.focusLast" => explorer.select_last(),
+            "list.expand" => explorer.expand(),
+            "list.collapse" => explorer.collapse(),
+            "list.select" => {
+                // Enter opens a file and toggles a directory, which is what the
+                // explorer does in VS Code and the only reading that makes the
+                // same key useful on every row.
+                let Some(row) = explorer.selection() else {
+                    return Outcome::Handled;
+                };
+                if row.is_dir {
+                    explorer.toggle();
+                } else {
+                    // The keyboard follows the file into the editor. Opening
+                    // something and leaving the caret in the tree would mean a
+                    // second keystroke before you could type in what you just
+                    // asked for.
+                    self.focus = Focus::Editor;
+                    self.refresh_context();
+                    return Outcome::OpenFile {
+                        path: row.path,
+                        at: None,
+                    };
+                }
+            }
+            _ => {}
+        }
+        // The side bar's height, so the tree can keep the selection on screen —
+        // the model does not know how tall it is drawn.
+        let height = self
+            .regions()
+            .side_bar
+            .map(|rect| rect.height.saturating_sub(EXPLORER_CHROME_ROWS))
+            .unwrap_or(0);
+        if let Some(explorer) = self.explorer.as_mut() {
+            explorer.scroll_into_view(height);
+        }
+        self.refresh_context();
         Outcome::Handled
     }
 
@@ -6489,6 +6638,107 @@ mod tests {
 
         press(&mut s, "ctrl+j");
         assert_eq!(s.view.height, s.regions().editor.height);
+    }
+
+    // ---- The file tree ----------------------------------------------------
+
+    /// A session with a workspace whose root has been listed.
+    fn with_tree() -> Session {
+        let mut s = session();
+        s.resize(100, 30);
+        s.set_workspace_root("/w");
+        assert_eq!(s.directory_wanted().as_deref(), Some(Path::new("/w")));
+        s.fill_directory(
+            Path::new("/w"),
+            vec![
+                crate::explorer::Entry::dir("src"),
+                crate::explorer::Entry::file("Cargo.toml"),
+            ],
+        );
+        s
+    }
+
+    #[test]
+    fn the_trees_keys_do_nothing_until_it_has_the_keyboard() {
+        let mut s = with_tree();
+        // Bound to `down`, but the caret is in the text.
+        assert_eq!(s.run("list.focusDown", None, 0), Outcome::Handled);
+        assert_eq!(
+            s.explorer().unwrap().selection().unwrap().name,
+            "src",
+            "the selection did not move while the editor had focus"
+        );
+
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+        assert_eq!(s.focus(), Focus::SideBar);
+        assert_eq!(s.context.get("filesExplorerFocus"), Some(&json!(true)));
+        s.run("list.focusDown", None, 0);
+        assert_eq!(
+            s.explorer().unwrap().selection().unwrap().name,
+            "Cargo.toml"
+        );
+    }
+
+    #[test]
+    fn enter_on_a_file_opens_it_and_takes_the_keyboard_with_it() {
+        let mut s = with_tree();
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+        s.run("list.focusDown", None, 0);
+        assert_eq!(
+            s.run("list.select", None, 0),
+            Outcome::OpenFile {
+                path: PathBuf::from("/w/Cargo.toml"),
+                at: None,
+            }
+        );
+        assert_eq!(
+            s.focus(),
+            Focus::Editor,
+            "opening a file puts the keyboard where the file is"
+        );
+    }
+
+    #[test]
+    fn enter_on_a_directory_opens_it_and_stays_put() {
+        let mut s = with_tree();
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+        assert_eq!(s.run("list.select", None, 0), Outcome::Handled);
+        assert_eq!(s.focus(), Focus::SideBar);
+        assert_eq!(
+            s.directory_wanted().as_deref(),
+            Some(Path::new("/w/src")),
+            "opening it is what asks for its contents"
+        );
+    }
+
+    #[test]
+    fn revealing_an_unsaved_document_says_so_rather_than_doing_nothing() {
+        let mut s = with_tree();
+        assert!(s.document.path.is_none());
+        assert!(matches!(
+            s.run("revealInExplorer", None, 0),
+            Outcome::Message(_)
+        ));
+    }
+
+    #[test]
+    fn revealing_shows_the_side_bar_it_needs() {
+        let mut s = with_tree();
+        s.open(PathBuf::from("/w/src/main.rs"), "fn main() {}\n");
+        assert!(s.regions().side_bar.is_none(), "hidden to start with");
+
+        assert_eq!(s.run("revealInExplorer", None, 0), Outcome::Handled);
+        assert!(s.regions().side_bar.is_some());
+        // The directories above it were opened, so its listing is now wanted.
+        assert_eq!(s.directory_wanted().as_deref(), Some(Path::new("/w/src")));
+        s.fill_directory(
+            Path::new("/w/src"),
+            vec![crate::explorer::Entry::file("main.rs")],
+        );
+        assert_eq!(
+            s.explorer().unwrap().selection().map(|r| r.path),
+            Some(PathBuf::from("/w/src/main.rs"))
+        );
     }
 
     #[test]

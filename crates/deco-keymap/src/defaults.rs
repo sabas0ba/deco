@@ -158,6 +158,20 @@ pub const DEFAULT_KEYBINDINGS_JSONC: &str = r#"[
     { "key": "tab",          "command": "workbench.action.quickOpenSelectNext",          "when": "inQuickOpen" },
     { "key": "shift+tab",    "command": "workbench.action.quickOpenSelectPrevious",      "when": "inQuickOpen" },
 
+    // ---- The file tree ---------------------------------------------------
+    // Gated on the side bar having the keyboard, so every one of these still
+    // means what it always meant in the text. VS Code's `list.*` identifiers,
+    // because a tree is a list and these are what its explorer binds.
+    { "key": "down",         "command": "list.focusDown",   "when": "sideBarFocus" },
+    { "key": "up",           "command": "list.focusUp",     "when": "sideBarFocus" },
+    { "key": "right",        "command": "list.expand",      "when": "sideBarFocus" },
+    { "key": "left",         "command": "list.collapse",    "when": "sideBarFocus" },
+    { "key": "home",         "command": "list.focusFirst",  "when": "sideBarFocus" },
+    { "key": "end",          "command": "list.focusLast",   "when": "sideBarFocus" },
+    { "key": "enter",        "command": "list.select",      "when": "sideBarFocus" },
+    { "key": "escape",       "command": "workbench.action.focusActiveEditorGroup", "when": "sideBarFocus" },
+    { "key": "ctrl+shift+e", "mac": "cmd+shift+e", "command": "workbench.files.action.focusFilesExplorer" },
+
     // ---- Editors and tabs -----------------------------------------------
     { "key": "ctrl+tab",       "command": "workbench.action.nextEditor" },
     { "key": "ctrl+shift+tab", "command": "workbench.action.previousEditor" },

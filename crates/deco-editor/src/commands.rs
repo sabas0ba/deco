@@ -182,6 +182,15 @@ pub enum Outcome {
         /// Where to put the cursor, or `None` to leave it at the start.
         at: Option<deco_core::position::Position>,
     },
+    /// The frontend should list this directory and hand the entries back with
+    /// [`Session::fill_directory`](crate::Session::fill_directory).
+    ///
+    /// The file tree's half of the same bargain [`Outcome::OpenFile`] makes: the
+    /// core decides *which* directory needs reading — that is a question about
+    /// what is expanded and on screen — and whoever has a filesystem answers it.
+    /// On a remote workspace that is the connection rather than `std::fs`, and
+    /// the tree does not know the difference.
+    ListDirectory(std::path::PathBuf),
 }
 
 /// The title of a command deco binds but has not built, if `id` is one.

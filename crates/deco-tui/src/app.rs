@@ -353,6 +353,11 @@ pub struct Driver {
     /// When the document last changed, for `files.autoSave: "afterDelay"`. `None`
     /// while there is nothing to save.
     edited_at: Option<u64>,
+    /// Where the file tree is rooted, if there is a workspace.
+    ///
+    /// Kept rather than recomputed per keystroke so the tree cannot end up
+    /// reading one root while it was built against another.
+    tree_root: Option<PathBuf>,
 }
 
 impl Driver {
@@ -387,6 +392,15 @@ impl Driver {
         // them.
         lsp.attach(session);
         session.frontend_commands = frontend_commands();
+
+        // Where the file tree is rooted. The same answer the language server and
+        // quick open get, so `ctrl+p` and the tree are looking at one workspace.
+        // On a remote session that is the workspace the server was given, which
+        // is a path on the far machine.
+        let tree_root = workspace_roots.clone();
+        if let Some(root) = tree_root.clone() {
+            session.set_workspace_root(root);
+        }
 
         // What is installed, listed in the palette whether or not it has started:
         // invoking one of these is what starts it. The walk happens here for the same
@@ -423,6 +437,7 @@ impl Driver {
             height,
             dirty: true,
             edited_at: None,
+            tree_root,
         }
     }
 
@@ -521,6 +536,7 @@ impl Driver {
             cwd,
             dirty,
             edited_at,
+            tree_root,
             ..
         } = self;
         *dirty = true;
@@ -972,6 +988,15 @@ impl Driver {
         } else if was_dirty {
             *edited_at = None;
         }
+
+        // Whatever that keystroke was, it may have opened a directory in the
+        // tree — `ctrl+b` showing it for the first time, `right` on a folder, a
+        // reveal walking down to a file. Answering here rather than inside each
+        // arm keeps the tree's reading in one place, and one place is where it
+        // has to be to be turned into something asynchronous later.
+        if let Some(root) = tree_root.clone() {
+            fill_tree(session, &root, remote.as_mut())?;
+        }
         Ok(Flow::Continue)
     }
 
@@ -1056,6 +1081,80 @@ fn printable(chord: &deco_keymap::keys::Chord) -> Option<char> {
 /// simply block on input. 50ms is below the threshold at which a diagnostic
 /// feels delayed, and 20 wakeups a second on an idle editor is not measurable.
 const LSP_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Answers every directory listing the file tree is waiting on.
+///
+/// A loop rather than one listing, because the tree asks for one at a time and
+/// answering can reveal the next: opening the tree onto `src/deep/main.rs` needs
+/// `src` before it can know it wants `src/deep`. Bounded by [`files::MAX_DEPTH`]
+/// so a symlink that contains itself cannot spin here — the same guard, and the
+/// same reason, as the walk's.
+fn fill_tree(
+    session: &mut Session,
+    root: &Path,
+    remote: Option<&mut deco_remote::Client>,
+) -> Result<()> {
+    let mut remote = remote;
+    for _ in 0..crate::files::MAX_DEPTH {
+        let Some(dir) = session.directory_wanted() else {
+            return Ok(());
+        };
+        let entries = match remote.as_mut() {
+            // The remote lists the whole workspace at once — that is the only
+            // listing the protocol has — so a directory's contents are derived
+            // from it. Wasteful next to a per-directory call, and no more so
+            // than `ctrl+p`, which does the same list on every press. A
+            // `list_dir` on the wire is the obvious improvement and is a
+            // protocol change rather than a local one.
+            Some(client) => match client.list() {
+                Ok(files) => remote_children(&files, root, &dir),
+                Err(error) => {
+                    session.status = Some(format!("could not list the remote: {error}"));
+                    // Filled empty rather than left pending, or the tree asks
+                    // for the same unreachable directory on every keystroke.
+                    Vec::new()
+                }
+            },
+            None => crate::files::list_dir(root, &dir, &session.settings),
+        };
+        session.fill_directory(&dir, entries);
+    }
+    Ok(())
+}
+
+/// What `dir` directly contains, out of a flat list of every file under `root`.
+///
+/// Directories are inferred from the paths rather than reported: a flat listing
+/// names files, and every path with something after `dir/` implies a directory
+/// that the tree has to be able to show and expand.
+fn remote_children(files: &[String], root: &Path, dir: &Path) -> Vec<deco_editor::explorer::Entry> {
+    let prefix = match dir.strip_prefix(root) {
+        Ok(rest) if rest.as_os_str().is_empty() => String::new(),
+        Ok(rest) => format!("{}/", rest.to_string_lossy().replace('\\', "/")),
+        Err(_) => return Vec::new(),
+    };
+
+    let mut names: Vec<deco_editor::explorer::Entry> = Vec::new();
+    for file in files {
+        let file = file.replace('\\', "/");
+        let Some(rest) = file.strip_prefix(&prefix) else {
+            continue;
+        };
+        let (name, is_dir) = match rest.split_once('/') {
+            Some((head, _)) => (head, true),
+            None if rest.is_empty() => continue,
+            None => (rest, false),
+        };
+        if !names.iter().any(|entry| entry.name == name) {
+            names.push(if is_dir {
+                deco_editor::explorer::Entry::dir(name)
+            } else {
+                deco_editor::explorer::Entry::file(name)
+            });
+        }
+    }
+    names
+}
 
 /// The directory to hand a language server as its workspace root.
 ///
@@ -1211,6 +1310,48 @@ fn save(session: &mut Session, remote: Option<&mut deco_remote::Client>) -> Resu
 mod tests {
     use super::*;
     use deco_theme::Rgba;
+
+    #[test]
+    fn a_remote_directorys_contents_come_out_of_the_flat_listing() {
+        // What `fs.list` answers: every file, relative to the workspace.
+        let files = vec![
+            "Cargo.toml".to_owned(),
+            "src/main.rs".to_owned(),
+            "src/deep/mod.rs".to_owned(),
+            "src/deep/inner/x.rs".to_owned(),
+        ];
+        let root = Path::new("/remote/w");
+
+        let mut top: Vec<String> = remote_children(&files, root, root)
+            .into_iter()
+            .map(|e| format!("{}{}", e.name, if e.is_dir { "/" } else { "" }))
+            .collect();
+        top.sort();
+        assert_eq!(
+            top,
+            ["Cargo.toml", "src/"],
+            "a directory is implied by its files"
+        );
+
+        let mut inner: Vec<String> = remote_children(&files, root, &root.join("src"))
+            .into_iter()
+            .map(|e| format!("{}{}", e.name, if e.is_dir { "/" } else { "" }))
+            .collect();
+        inner.sort();
+        assert_eq!(
+            inner,
+            ["deep/", "main.rs"],
+            "named once, not once per file inside it"
+        );
+    }
+
+    #[test]
+    fn a_directory_outside_the_remote_workspace_has_no_children() {
+        let files = vec!["a.rs".to_owned()];
+        assert!(
+            remote_children(&files, Path::new("/remote/w"), Path::new("/elsewhere")).is_empty()
+        );
+    }
 
     /// An absolute path made of `parts`, on any platform.
     ///

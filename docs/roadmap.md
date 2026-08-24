@@ -25,8 +25,7 @@ What VS Code has and deco does not, grouped by how it blocks:
 
 | Missing | Depends on |
 | --- | --- |
-| File tree (the explorer) | nothing — the [side bar](chrome.md) is built and waiting for it |
-| Git — gutter diffs, branch in the status bar, stage and commit | a status-bar segment; its view is a side-bar tenant |
+| Git — gutter diffs, branch in the status bar, stage and commit | a status-bar segment; its view is a side-bar tenant, beside the [file tree](files.md) |
 | Integrated terminal | a PTY dependency; its home is the [panel](chrome.md) |
 | Task runner (`tasks.json`, `ctrl+shift+b`) | the terminal, for somewhere to run |
 | Test runner | the task runner, and later the extension host |
@@ -58,34 +57,6 @@ written under them:
   into behaviour — `ctrl+b` and `ctrl+j` were on this list until the chrome
   landed.
 
-## The file tree
-
-**What VS Code has.** The explorer: a workspace tree with create, rename,
-delete, and reveal; `workbench.files.action.focusFilesExplorer`,
-`revealInExplorer`.
-
-**What deco has.** `ctrl+p` (quick open) over the workspace file list, which is
-already enumerated with `files.exclude` honoured — see `deco-tui::files`. No
-tree.
-
-**The plan.** The first [side bar](chrome.md) tenant. The same file enumeration that feeds
-quick open feeds the tree; directories expand lazily so a large workspace costs
-what its *visible* rows cost, which is the bounded-by-the-window rule every hot
-path here already follows. Enter opens in a tab; create, rename and delete come
-once `WorkspaceEdit` exists, so that a rename of an open file and the retarget
-of its tab are one undoable thing. On a remote workspace the tree lists the far
-end through the existing `deco-remote` file listing, exactly as quick open
-already does.
-
-**Steps.**
-
-1. A tree model over the existing walker: visible rows only, expansion state in
-   the session.
-2. Render as a side-bar view; keyboard first (VS Code's explorer keys), mouse
-   later with the GUI's mouse work.
-3. Open-on-enter, reveal-active-file; the `filesExplorerFocus` context key.
-4. Mutations (new file, rename, delete) after `WorkspaceEdit` lands.
-
 ## Git
 
 **What VS Code has.** A source-control view (stage, unstage, commit, discard),
@@ -107,7 +78,7 @@ copy of libgit2 nobody asked for. Three stages, each useful alone:
 2. **Gutter**: changed/added/deleted line markers, from `git diff` of the
    buffer against `HEAD`, computed the way everything else is — for the visible
    rows, resumed from the earliest edited line.
-3. **The source-control view**: a side-bar tenant listing changed files;
+3. **The source-control view**: a side-bar tenant beside the tree, listing changed files;
    `git.stage`, `git.unstage`, `git.commit` (message through the existing
    prompt), `git.checkout` through the existing picker. `git.enabled` and
    `git.decorations.enabled` are read with their VS Code meanings.

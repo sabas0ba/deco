@@ -65,7 +65,7 @@
 <text x="445.5" y="45.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">1</text>
 <text x="454.0" y="45.0" font-size="14px" fill="#cccccc" textLength="204.0" lengthAdjust="spacingAndGlyphs">;                       </text>
 <rect x="12.0" y="50.0" width="221.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="64.0" font-size="14px" fill="#cccccc" textLength="221.0" lengthAdjust="spacingAndGlyphs"> the file tree, search and</text>
+<text x="12.0" y="64.0" font-size="14px" fill="#cccccc" textLength="221.0" lengthAdjust="spacingAndGlyphs"> search and source control</text>
 <rect x="233.0" y="50.0" width="34.0" height="19.0" fill="#181818"/>
 <text x="267.0" y="64.0" font-size="14px" fill="#6e7681" textLength="8.5" lengthAdjust="spacingAndGlyphs">│</text>
 <text x="275.5" y="64.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  3 </text>
@@ -74,16 +74,15 @@
 <text x="445.5" y="64.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">2</text>
 <text x="454.0" y="64.0" font-size="14px" fill="#cccccc" textLength="204.0" lengthAdjust="spacingAndGlyphs">;                       </text>
 <rect x="12.0" y="69.0" width="127.5" height="19.0" fill="#181818"/>
-<text x="12.0" y="83.0" font-size="14px" fill="#cccccc" textLength="127.5" lengthAdjust="spacingAndGlyphs"> source control</text>
+<text x="12.0" y="83.0" font-size="14px" fill="#cccccc" textLength="127.5" lengthAdjust="spacingAndGlyphs"> will live here</text>
 <rect x="139.5" y="69.0" width="127.5" height="19.0" fill="#181818"/>
 <text x="267.0" y="83.0" font-size="14px" fill="#6e7681" textLength="8.5" lengthAdjust="spacingAndGlyphs">│</text>
 <text x="275.5" y="83.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  4 </text>
 <text x="309.5" y="83.0" font-size="14px" fill="#cccccc" textLength="110.5" lengthAdjust="spacingAndGlyphs">    println!(</text>
 <text x="420.0" y="83.0" font-size="14px" fill="#ce9178" textLength="76.5" lengthAdjust="spacingAndGlyphs">&quot;{total}&quot;</text>
 <text x="496.5" y="83.0" font-size="14px" fill="#cccccc" textLength="161.5" lengthAdjust="spacingAndGlyphs">);                 </text>
-<rect x="12.0" y="88.0" width="127.5" height="19.0" fill="#181818"/>
-<text x="12.0" y="102.0" font-size="14px" fill="#cccccc" textLength="127.5" lengthAdjust="spacingAndGlyphs"> will live here</text>
-<rect x="139.5" y="88.0" width="127.5" height="19.0" fill="#181818"/>
+<rect x="12.0" y="88.0" width="8.5" height="19.0" fill="#181818"/>
+<rect x="20.5" y="88.0" width="246.5" height="19.0" fill="#181818"/>
 <text x="267.0" y="102.0" font-size="14px" fill="#6e7681" textLength="8.5" lengthAdjust="spacingAndGlyphs">│</text>
 <text x="275.5" y="102.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  5 </text>
 <text x="309.5" y="102.0" font-size="14px" fill="#cccccc" textLength="348.5" lengthAdjust="spacingAndGlyphs">}                                        </text>
@@ -136,7 +135,7 @@
 <text x="445.5" y="45.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">1</text>
 <text x="454.0" y="45.0" font-size="14px" fill="#cccccc" textLength="204.0" lengthAdjust="spacingAndGlyphs">;                       </text>
 <rect x="12.0" y="50.0" width="221.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="64.0" font-size="14px" fill="#cccccc" textLength="221.0" lengthAdjust="spacingAndGlyphs"> the file tree, search and</text>
+<text x="12.0" y="64.0" font-size="14px" fill="#cccccc" textLength="221.0" lengthAdjust="spacingAndGlyphs"> search and source control</text>
 <rect x="233.0" y="50.0" width="34.0" height="19.0" fill="#181818"/>
 <text x="267.0" y="64.0" font-size="14px" fill="#6e7681" textLength="8.5" lengthAdjust="spacingAndGlyphs">│</text>
 <text x="275.5" y="64.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  3 </text>
@@ -145,16 +144,15 @@
 <text x="445.5" y="64.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">2</text>
 <text x="454.0" y="64.0" font-size="14px" fill="#cccccc" textLength="204.0" lengthAdjust="spacingAndGlyphs">;                       </text>
 <rect x="12.0" y="69.0" width="127.5" height="19.0" fill="#181818"/>
-<text x="12.0" y="83.0" font-size="14px" fill="#cccccc" textLength="127.5" lengthAdjust="spacingAndGlyphs"> source control</text>
+<text x="12.0" y="83.0" font-size="14px" fill="#cccccc" textLength="127.5" lengthAdjust="spacingAndGlyphs"> will live here</text>
 <rect x="139.5" y="69.0" width="127.5" height="19.0" fill="#181818"/>
 <text x="267.0" y="83.0" font-size="14px" fill="#6e7681" textLength="8.5" lengthAdjust="spacingAndGlyphs">│</text>
 <text x="275.5" y="83.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  4 </text>
 <text x="309.5" y="83.0" font-size="14px" fill="#cccccc" textLength="110.5" lengthAdjust="spacingAndGlyphs">    println!(</text>
 <text x="420.0" y="83.0" font-size="14px" fill="#ce9178" textLength="76.5" lengthAdjust="spacingAndGlyphs">&quot;{total}&quot;</text>
 <text x="496.5" y="83.0" font-size="14px" fill="#cccccc" textLength="161.5" lengthAdjust="spacingAndGlyphs">);                 </text>
-<rect x="12.0" y="88.0" width="127.5" height="19.0" fill="#181818"/>
-<text x="12.0" y="102.0" font-size="14px" fill="#cccccc" textLength="127.5" lengthAdjust="spacingAndGlyphs"> will live here</text>
-<rect x="139.5" y="88.0" width="127.5" height="19.0" fill="#181818"/>
+<rect x="12.0" y="88.0" width="8.5" height="19.0" fill="#181818"/>
+<rect x="20.5" y="88.0" width="246.5" height="19.0" fill="#181818"/>
 <text x="267.0" y="102.0" font-size="14px" fill="#6e7681" textLength="8.5" lengthAdjust="spacingAndGlyphs">│</text>
 <text x="275.5" y="102.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  5 </text>
 <text x="309.5" y="102.0" font-size="14px" fill="#cccccc" textLength="348.5" lengthAdjust="spacingAndGlyphs">}                                        </text>
@@ -224,7 +222,7 @@
 <text x="479.5" y="45.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">1</text>
 <text x="488.0" y="45.0" font-size="14px" fill="#cccccc" textLength="170.0" lengthAdjust="spacingAndGlyphs">;                   </text>
 <rect x="12.0" y="50.0" width="221.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="64.0" font-size="14px" fill="#cccccc" textLength="221.0" lengthAdjust="spacingAndGlyphs"> the file tree, search and</text>
+<text x="12.0" y="64.0" font-size="14px" fill="#cccccc" textLength="221.0" lengthAdjust="spacingAndGlyphs"> search and source control</text>
 <rect x="233.0" y="50.0" width="34.0" height="19.0" fill="#181818"/>
 <text x="267.0" y="64.0" font-size="14px" fill="#6e7681" textLength="8.5" lengthAdjust="spacingAndGlyphs">│</text>
 <text x="275.5" y="64.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  3 </text>
@@ -233,16 +231,15 @@
 <text x="445.5" y="64.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">2</text>
 <text x="454.0" y="64.0" font-size="14px" fill="#cccccc" textLength="204.0" lengthAdjust="spacingAndGlyphs">;                       </text>
 <rect x="12.0" y="69.0" width="127.5" height="19.0" fill="#181818"/>
-<text x="12.0" y="83.0" font-size="14px" fill="#cccccc" textLength="127.5" lengthAdjust="spacingAndGlyphs"> source control</text>
+<text x="12.0" y="83.0" font-size="14px" fill="#cccccc" textLength="127.5" lengthAdjust="spacingAndGlyphs"> will live here</text>
 <rect x="139.5" y="69.0" width="127.5" height="19.0" fill="#181818"/>
 <text x="267.0" y="83.0" font-size="14px" fill="#6e7681" textLength="8.5" lengthAdjust="spacingAndGlyphs">│</text>
 <text x="275.5" y="83.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  4 </text>
 <text x="309.5" y="83.0" font-size="14px" fill="#cccccc" textLength="110.5" lengthAdjust="spacingAndGlyphs">    println!(</text>
 <text x="420.0" y="83.0" font-size="14px" fill="#ce9178" textLength="76.5" lengthAdjust="spacingAndGlyphs">&quot;{total}&quot;</text>
 <text x="496.5" y="83.0" font-size="14px" fill="#cccccc" textLength="161.5" lengthAdjust="spacingAndGlyphs">);                 </text>
-<rect x="12.0" y="88.0" width="127.5" height="19.0" fill="#181818"/>
-<text x="12.0" y="102.0" font-size="14px" fill="#cccccc" textLength="127.5" lengthAdjust="spacingAndGlyphs"> will live here</text>
-<rect x="139.5" y="88.0" width="127.5" height="19.0" fill="#181818"/>
+<rect x="12.0" y="88.0" width="8.5" height="19.0" fill="#181818"/>
+<rect x="20.5" y="88.0" width="246.5" height="19.0" fill="#181818"/>
 <text x="267.0" y="102.0" font-size="14px" fill="#6e7681" textLength="8.5" lengthAdjust="spacingAndGlyphs">│</text>
 <text x="275.5" y="102.0" font-size="14px" fill="#6e7681" textLength="34.0" lengthAdjust="spacingAndGlyphs">  5 </text>
 <text x="309.5" y="102.0" font-size="14px" fill="#cccccc" textLength="348.5" lengthAdjust="spacingAndGlyphs">}                                        </text>

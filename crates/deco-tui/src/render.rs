@@ -404,8 +404,11 @@ enum Region {
 
 impl Region {
     /// The heading, in the case VS Code puts its view titles in.
-    fn title(self) -> &'static str {
+    fn title(self, session: &Session) -> &'static str {
         match self {
+            // Named for its tenant once it has one, as VS Code names the view
+            // rather than the container it is in.
+            Self::SideBar if session.explorer().is_some() => "EXPLORER",
             Self::SideBar => "SIDE BAR",
             Self::Panel => "PANEL",
         }
@@ -420,7 +423,7 @@ impl Region {
     /// pretended about.
     fn waiting_on(self) -> &'static str {
         match self {
-            Self::SideBar => "the file tree, search and source control",
+            Self::SideBar => "search and source control",
             Self::Panel => "the terminal, problems and output",
         }
     }
@@ -460,12 +463,30 @@ fn region_rows(session: &Session, rect: Rect, region: Region, palette: &Palette)
     };
 
     let mut rows: Vec<Row> = Vec::with_capacity(rect.height);
-    rows.push(region_line(region.title(), rect.width, title_fg, title_bg));
+    rows.push(region_line(
+        region.title(session),
+        rect.width,
+        title_fg,
+        title_bg,
+    ));
     if rect.height > 1 {
         rows.push(region_line("", rect.width, fg, bg));
     }
-    // Wrapped, because "the file tree, search and source control" does not fit
-    // in thirty columns and a region that ends mid-word reads as broken.
+
+    // The side bar has a tenant now; the panel does not.
+    if region == Region::SideBar {
+        if let Some(explorer) = session.explorer() {
+            tree_rows(session, explorer, rect, &mut rows, palette, fg, bg);
+            while rows.len() < rect.height {
+                rows.push(region_line("", rect.width, fg, bg));
+            }
+            rows.truncate(rect.height);
+            return rows;
+        }
+    }
+
+    // Wrapped, because what a region is waiting for does not fit in thirty
+    // columns and a region that ends mid-word reads as broken.
     let mut body = wrap(region.waiting_on(), rect.width.saturating_sub(1), 4);
     body.push("will live here".to_owned());
     for text in body {
@@ -479,6 +500,87 @@ fn region_rows(session: &Session, rect: Rect, region: Region, palette: &Palette)
     }
     rows.truncate(rect.height);
     rows
+}
+
+/// The file tree's rows, indented, with the selection highlighted.
+///
+/// A name too long for the side bar is cut with an ellipsis rather than wrapped:
+/// a file name that ran onto a second line would look like two files, and the
+/// tree's whole job is to be countable at a glance.
+#[allow(clippy::too_many_arguments)]
+fn tree_rows(
+    session: &Session,
+    explorer: &deco_editor::Explorer,
+    rect: Rect,
+    rows: &mut Vec<Row>,
+    palette: &Palette,
+    fg: Rgba,
+    bg: Rgba,
+) {
+    let theme = &session.theme;
+    let focused = session.focus() == deco_editor::Focus::SideBar;
+    let selected_bg = theme
+        .color(if focused {
+            "list.activeSelectionBackground"
+        } else {
+            "list.inactiveSelectionBackground"
+        })
+        .unwrap_or(palette.selection_bg);
+    let selected_fg = theme
+        .color(if focused {
+            "list.activeSelectionForeground"
+        } else {
+            "list.inactiveSelectionForeground"
+        })
+        .unwrap_or(fg);
+
+    let height = rect.height.saturating_sub(rows.len());
+    if height == 0 {
+        return;
+    }
+
+    // Two different silences: a workspace nobody has read yet, and one that is
+    // genuinely empty. Both would otherwise be a blank panel that reads as a
+    // failure to draw.
+    if !explorer.loaded() {
+        rows.push(region_line("reading the workspace…", rect.width, fg, bg));
+        return;
+    }
+    if explorer.is_empty() {
+        rows.push(region_line("this workspace is empty", rect.width, fg, bg));
+        return;
+    }
+
+    for row in explorer.visible(height) {
+        // A chevron for a directory, two spaces for a file, so names at one
+        // level start in the same column whatever their kind.
+        let marker = match (row.is_dir, row.expanded) {
+            (true, true) => "▾ ",
+            (true, false) => "▸ ",
+            (false, _) => "  ",
+        };
+        let indent = "  ".repeat(row.depth);
+        let prefix = format!("{indent}{marker}");
+        let room = rect.width.saturating_sub(prefix.chars().count() + 1);
+        let text = format!("{prefix}{}", ellipsise(&row.name, room));
+        let (row_fg, row_bg) = if row.selected {
+            (selected_fg, selected_bg)
+        } else {
+            (fg, bg)
+        };
+        rows.push(region_line(&text, rect.width, row_fg, row_bg));
+    }
+}
+
+/// `text` cut to `width` columns, with an ellipsis when it was cut.
+fn ellipsise(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text.to_owned();
+    }
+    if width <= 1 {
+        return "…".repeat(width);
+    }
+    text.chars().take(width - 1).collect::<String>() + "…"
 }
 
 /// One row of a region: a column of padding, the text, and blank to the edge.
@@ -1738,6 +1840,87 @@ mod tests {
         let chrome = chrome_height(&session, height);
         session.resize(width, height - chrome);
         session
+    }
+
+    /// A session whose side bar holds a tree with `src/` open.
+    fn with_tree(width: usize, height: usize) -> Session {
+        use deco_editor::explorer::Entry;
+        let mut session = with_chrome(true, false, width, height);
+        session.set_workspace_root("/w");
+        session.fill_directory(
+            std::path::Path::new("/w"),
+            vec![Entry::dir("src"), Entry::file("Cargo.toml")],
+        );
+        session.fill_directory(
+            std::path::Path::new("/w/src"),
+            vec![Entry::file("main.rs"), Entry::file("lib.rs")],
+        );
+        session
+    }
+
+    #[test]
+    fn the_side_bar_is_named_for_its_tenant_and_lists_the_workspace() {
+        let session = with_tree(72, 12);
+        let frame = render(&session, 72, 12);
+        let rows: Vec<String> = frame.rows.iter().map(|r| r.plain()).collect();
+        assert!(rows[0].starts_with(" EXPLORER"), "{:?}", rows[0]);
+        // A collapsed directory, then the file, chevron for the one that opens.
+        assert!(rows[2].starts_with(" ▸ src"), "{:?}", rows[2]);
+        assert!(rows[3].starts_with("   Cargo.toml"), "{:?}", rows[3]);
+    }
+
+    #[test]
+    fn expanding_a_directory_indents_what_is_inside_it() {
+        let mut session = with_tree(72, 12);
+        session.run("workbench.files.action.focusFilesExplorer", None, 0);
+        session.run("list.expand", None, 0);
+
+        let frame = render(&session, 72, 12);
+        let rows: Vec<String> = frame.rows.iter().map(|r| r.plain()).collect();
+        assert!(rows[2].starts_with(" ▾ src"), "{:?}", rows[2]);
+        assert!(rows[3].starts_with("     lib.rs"), "{:?}", rows[3]);
+        assert!(rows[4].starts_with("     main.rs"), "{:?}", rows[4]);
+        assert!(rows[5].starts_with("   Cargo.toml"), "{:?}", rows[5]);
+    }
+
+    #[test]
+    fn an_unread_workspace_says_so_rather_than_drawing_blank() {
+        let mut session = with_chrome(true, false, 72, 12);
+        session.set_workspace_root("/w");
+        let frame = render(&session, 72, 12);
+        assert!(
+            frame.rows[2].plain().contains("reading the workspace"),
+            "{:?}",
+            frame.rows[2].plain()
+        );
+    }
+
+    #[test]
+    fn an_empty_workspace_is_not_the_same_as_an_unread_one() {
+        let mut session = with_chrome(true, false, 72, 12);
+        session.set_workspace_root("/w");
+        session.fill_directory(std::path::Path::new("/w"), Vec::new());
+        assert!(render(&session, 72, 12).rows[2].plain().contains("empty"));
+    }
+
+    #[test]
+    fn a_name_too_long_for_the_side_bar_is_cut_rather_than_wrapped() {
+        use deco_editor::explorer::Entry;
+        let mut session = with_chrome(true, false, 72, 12);
+        session.set_workspace_root("/w");
+        session.fill_directory(
+            std::path::Path::new("/w"),
+            vec![Entry::file(&"a".repeat(200))],
+        );
+        let frame = render(&session, 72, 12);
+        let row = frame.rows[2].plain();
+        assert!(row.contains('…'), "{row:?}");
+        // One row per file, whatever the name's length.
+        assert!(
+            !frame.rows[3].plain().contains('a'),
+            "{:?}",
+            frame.rows[3].plain()
+        );
     }
 
     #[test]
