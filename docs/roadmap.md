@@ -38,7 +38,8 @@ The dependencies are why the order below is the order. Two foundations are left
 most of what users actually ask for (the tree, git, the terminal) is a tenant of
 one of them. The third, **`WorkspaceEdit`**, is
 [built](#the-gaps-behind-the-features): rename and code actions land through it,
-and so will replace-across-files, the tree's mutations and an agent's turn.
+replace across the workspace lands through it, and so will the tree's
+mutations and an agent's turn.
 
 Two rules carry over from everything already built, and every chapter below is
 written under them:
@@ -405,9 +406,10 @@ here because the plans above lean on them.
   as one step; files no tab holds are opened rather than written. LSP rename
   (`F2`) is its first user and is documented in
   [Language servers](language-servers.md#rename), and
-  [code actions](language-servers.md#code-actions) (`ctrl+.`) followed it. What
-  still waits on a *caller* rather than on the mechanism: replace-across-files,
-  and the file tree's mutations. An agent's turn is the same shape — see
+  [code actions](language-servers.md#code-actions) (`ctrl+.`) and
+  [replace across the workspace](find-and-replace.md#replacing-across-the-workspace)
+  (`ctrl+shift+h`) followed it. What still waits on a *caller* rather than on the
+  mechanism: the file tree's mutations. An agent's turn is the same shape — see
   [Agent integration](#agent-integration).
 - **Regular-expression search.** `deco-core::search` is literal on purpose;
   regex needs its own escaping rules and its own error reporting for a bad

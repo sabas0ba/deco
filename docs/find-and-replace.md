@@ -68,6 +68,55 @@ Two deliberate refusals:
 
 An empty replacement deletes the matches, which is a legitimate thing to want.
 
+## Replacing across the workspace
+
+![ctrl+shift+h replacing a term in two files, one of them not open, undone with ctrl+z](img/replace-in-files.svg)
+
+`ctrl+shift+h` replaces a term everywhere in the workspace. It asks twice — what
+to look for, then what to put there — because deco has one prompt at a time
+where VS Code has a search view with two boxes. The first prompt is the same one
+`ctrl+shift+f` opens, seeded from the selection or the word under the cursor.
+
+| Key | Command |
+| --- | --- |
+| `ctrl+shift+h` | `workbench.action.replaceInFiles` |
+| `ctrl+shift+f` | `workbench.action.findInFiles` |
+
+**The whole thing is one undoable action.** It lands through the same
+[`WorkspaceEdit`](language-servers.md#rename) path a rename does: every file is
+checked before any of it is written, and one `ctrl+z` from any of them takes all
+of it back.
+
+**Files that are not open are opened, not written.** Nothing reaches the disk
+until you save — the status line says how many tabs appeared, and `ctrl+k s`
+writes them. Which is also what makes the whole operation reviewable: the tabs
+are the diff.
+
+**The matches are found again before they are replaced.** The search says which
+*files* are involved; where the occurrences are is worked out afterwards, in the
+editor, against the buffer of any file a tab is holding. That matters for a file
+you have edited since the search read it from disk: the positions from disk
+point into a document that no longer exists, and replacing at them would edit
+the wrong text and then save it over the real file. It also means the count
+reported afterwards counts what was replaced rather than what was found a moment
+earlier.
+
+An empty replacement takes every occurrence out, which is a legitimate thing to
+want and is not refused.
+
+**A search that hit its limit says so.** The project search is bounded — see
+[Running commands](commands.md#search-in-files) — and a replace-all that was not
+quite all is the one result a user must not have to guess at, so the report says
+there may be more.
+
+The match options are the project search's own, not the find bar's:
+case-sensitivity set for one does not change the other. Both are literal so far;
+[regular expressions](roadmap.md#the-gaps-behind-the-features) are not built yet.
+
+In a [remote session](remote.md) the search, the reads and the edits all go
+through the connection, so a replacement reaches the files on the far end rather
+than paths that happen to exist on this machine.
+
 ## The find input is a text input
 
 While the find bar has the keyboard, `editorTextFocus` is false and

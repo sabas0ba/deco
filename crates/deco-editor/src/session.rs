@@ -289,6 +289,14 @@ pub struct Session {
     /// Problems found while loading the user's configuration, kept so the
     /// frontend can show them rather than failing to start.
     pub problems: Vec<String>,
+    /// Whether the query being typed is the first half of a replace.
+    ///
+    /// `ctrl+shift+f` and `ctrl+shift+h` open the same prompt and differ only in
+    /// what accepting it does, so which key was pressed has to survive until
+    /// then.
+    replacing_in_files: bool,
+    /// The query a replace-in-files is waiting to be given a replacement for.
+    replace_query: String,
     /// The number the next multi-document edit will be tagged with.
     ///
     /// Handed out here because this is the layer that can see more than one
@@ -450,6 +458,8 @@ impl Session {
             recent: Vec::new(),
             problems,
             next_group: 0,
+            replacing_in_files: false,
+            replace_query: String::new(),
         };
         session.report_unsupported();
         session.refresh_context();
@@ -1191,6 +1201,20 @@ impl Session {
             // away, which meant a project search could only ever look for what the
             // cursor happened to be on.
             "workbench.action.findInFiles" => {
+                self.replacing_in_files = false;
+                self.prompt = Some(Prompt::seeded(
+                    PromptKind::SearchQuery,
+                    self.search_seed().unwrap_or_default(),
+                ));
+                self.refresh_context();
+                Outcome::Handled
+            }
+            // The same first question, remembered as the first half of a
+            // different one. VS Code opens its search view with the replace box
+            // showing; deco has one prompt at a time, so it asks in the order
+            // the answers are needed.
+            "workbench.action.replaceInFiles" => {
+                self.replacing_in_files = true;
                 self.prompt = Some(Prompt::seeded(
                     PromptKind::SearchQuery,
                     self.search_seed().unwrap_or_default(),
@@ -1694,12 +1718,40 @@ impl Session {
                 None => Outcome::Message(format!("no command matches `{}`", prompt.text())),
             },
             PromptKind::SearchQuery => {
-                let typed = prompt.text().trim();
+                // Not trimmed away entirely: a query of spaces is a real thing
+                // to look for, and only an *empty* one has nothing to do.
+                let typed = prompt.text();
                 if typed.is_empty() {
+                    self.replacing_in_files = false;
                     return Outcome::Message("nothing to search for".to_owned());
+                }
+                if self.replacing_in_files {
+                    // The second half. The query is parked rather than carried
+                    // in the prompt, because a prompt is a line of text and this
+                    // one is about to be a different line of text.
+                    self.replace_query = typed.to_owned();
+                    self.prompt = Some(Prompt::plain(PromptKind::ReplaceQuery));
+                    self.refresh_context();
+                    return Outcome::Handled;
                 }
                 Outcome::SearchInFiles {
                     query: typed.to_owned(),
+                    options: self.search_options,
+                }
+            }
+            PromptKind::ReplaceQuery => {
+                self.replacing_in_files = false;
+                let query = std::mem::take(&mut self.replace_query);
+                if query.is_empty() {
+                    // Only reachable if the prompt was opened out of order.
+                    return Outcome::Message("nothing to replace".to_owned());
+                }
+                // The replacement itself may be empty: "delete every occurrence
+                // of this" is a thing people mean, and refusing it would make
+                // the one destructive-looking case the one you cannot do.
+                Outcome::ReplaceInFiles {
+                    query,
+                    replacement: prompt.text().to_owned(),
                     options: self.search_options,
                 }
             }
@@ -2247,6 +2299,87 @@ impl Session {
         )
     }
 
+    /// Plans a replacement of every occurrence of `needle` in `paths`.
+    ///
+    /// The result goes to [`Session::apply_workspace_edit`] like any other, so a
+    /// replace across the workspace is one undoable action and files no tab
+    /// holds are opened rather than written — the same rules a rename gets, for
+    /// the same reasons.
+    ///
+    /// # The matches are found again here, not carried over
+    ///
+    /// The caller found these files by searching them, and it would be shorter
+    /// to hand the positions along. It would also be wrong twice over. A search
+    /// result names where a match *started*, and replacing needs where it ended;
+    /// deriving the end from the needle's length assumes the fold that matched
+    /// it was length-preserving, which case-insensitive matching does not
+    /// promise. And a file the search read from disk may be open here with
+    /// unsaved changes, in which case the buffer is the text that matters and
+    /// the positions from disk point into a document that no longer exists.
+    ///
+    /// So each file is searched again, against the buffer when a tab holds one,
+    /// by the same [`deco_core::search::find_all`] the find bar uses. Which also
+    /// means the count reported afterwards is a count of what was replaced,
+    /// rather than of what was found a moment earlier.
+    ///
+    /// `read` supplies the text of a file no tab holds, and is the caller's
+    /// business because reading one is I/O — in a remote session, on another
+    /// machine.
+    pub fn plan_replacements(
+        &self,
+        paths: &[PathBuf],
+        needle: &str,
+        replacement: &str,
+        options: deco_core::search::SearchOptions,
+        mut read: impl FnMut(&Path) -> Result<String, String>,
+    ) -> Result<crate::workspace::Plan, crate::workspace::WorkspaceError> {
+        let mut documents = Vec::with_capacity(paths.len());
+        for path in paths {
+            let open = self.document_at_path(path);
+            // Borrowed from the tab, or owned from the caller. The buffer is
+            // built only in the second case: an open document already has one,
+            // and rebuilding it would be the file's length of work per file.
+            let (buffer, contents) = match open {
+                Some(document) => (std::borrow::Cow::Borrowed(&document.buffer), None),
+                None => {
+                    let text = read(path).map_err(|reason| {
+                        crate::workspace::WorkspaceError::Unreadable {
+                            path: path.clone(),
+                            reason,
+                        }
+                    })?;
+                    (
+                        std::borrow::Cow::Owned(deco_core::Buffer::from_text(&text)),
+                        Some(text),
+                    )
+                }
+            };
+
+            let edits: Vec<deco_lsp::TextEdit> =
+                deco_core::search::find_all(&buffer, needle, options)
+                    .into_iter()
+                    .map(|range| deco_lsp::TextEdit {
+                        range,
+                        new_text: replacement.to_owned(),
+                    })
+                    .collect();
+
+            // A file whose matches were all in text that has since changed is
+            // left out rather than opened for nothing.
+            if edits.is_empty() {
+                continue;
+            }
+            documents.push(crate::workspace::PlannedDocument {
+                path: path.clone(),
+                version: None,
+                edits,
+                open: open.is_some(),
+                contents,
+            });
+        }
+        Ok(crate::workspace::Plan::from_documents(documents))
+    }
+
     /// Applies a planned workspace edit to every document it names, or to none.
     ///
     /// # Order
@@ -2751,6 +2884,197 @@ mod tests {
                     .ok_or_else(|| "no such file".to_owned())
             })?;
         session.apply_workspace_edit(plan, 0)
+    }
+
+    /// Answers both halves of a replace-in-files and returns what came out.
+    fn replace_in_files(session: &mut Session, query: &str, replacement: &str) -> Outcome {
+        session.run("workbench.action.replaceInFiles", None, 0);
+        // The seed is selected, so typing replaces whatever was under the caret.
+        for c in query.chars() {
+            press(session, &c.to_string());
+        }
+        let first = session.run("workbench.action.acceptSelectedQuickOpenItem", None, 0);
+        assert_eq!(first, Outcome::Handled, "the query is only the first half");
+        assert_eq!(
+            session.prompt.as_ref().map(|p| p.kind()),
+            Some(crate::prompt::PromptKind::ReplaceQuery),
+            "and the second prompt should be open"
+        );
+        for c in replacement.chars() {
+            press(session, &c.to_string());
+        }
+        session.run("workbench.action.acceptSelectedQuickOpenItem", None, 0)
+    }
+
+    #[test]
+    fn replacing_in_files_asks_what_and_then_what_with() {
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "old\n");
+
+        assert_eq!(
+            replace_in_files(&mut s, "old", "new"),
+            Outcome::ReplaceInFiles {
+                query: "old".to_owned(),
+                replacement: "new".to_owned(),
+                options: Default::default(),
+            }
+        );
+    }
+
+    #[test]
+    fn an_empty_replacement_deletes_and_is_not_refused() {
+        // "take every occurrence of this out" is a thing people mean, and it
+        // would be the one destructive-looking case that could not be done.
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "old\n");
+
+        assert_eq!(
+            replace_in_files(&mut s, "old", ""),
+            Outcome::ReplaceInFiles {
+                query: "old".to_owned(),
+                replacement: String::new(),
+                options: Default::default(),
+            }
+        );
+    }
+
+    #[test]
+    fn find_in_files_still_searches_rather_than_replacing() {
+        // The two commands open the same prompt, so the one that was pressed has
+        // to survive until the prompt is accepted.
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "old\n");
+        s.run("workbench.action.findInFiles", None, 0);
+        for c in "old".chars() {
+            press(&mut s, &c.to_string());
+        }
+
+        assert!(matches!(
+            s.run("workbench.action.acceptSelectedQuickOpenItem", None, 0),
+            Outcome::SearchInFiles { .. }
+        ));
+    }
+
+    #[test]
+    fn a_replace_left_half_finished_does_not_leak_into_the_next_search() {
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "old\n");
+        s.run("workbench.action.replaceInFiles", None, 0);
+        s.run("workbench.action.closeQuickOpen", None, 0);
+
+        // The next plain search must not turn into the replace that was abandoned.
+        s.run("workbench.action.findInFiles", None, 0);
+        for c in "old".chars() {
+            press(&mut s, &c.to_string());
+        }
+        assert!(matches!(
+            s.run("workbench.action.acceptSelectedQuickOpenItem", None, 0),
+            Outcome::SearchInFiles { .. }
+        ));
+    }
+
+    #[test]
+    fn a_replacement_is_planned_against_the_buffer_not_the_file() {
+        // The search read the file from disk; this tab has since changed. The
+        // buffer is what a replace has to act on, or it would edit positions in
+        // a document that no longer exists — and then save over the real one.
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "old old\n");
+        press(&mut s, "x");
+
+        let plan = s
+            .plan_replacements(
+                &[PathBuf::from("/w/a.rs")],
+                "old",
+                "new",
+                Default::default(),
+                |path| panic!("read {} when a tab holds it", path.display()),
+            )
+            .expect("the tab supplies the text");
+
+        assert_eq!(plan.documents(), 1);
+        assert_eq!(plan.edits(), 2, "both occurrences, found in the buffer");
+    }
+
+    #[test]
+    fn a_file_no_tab_holds_is_planned_from_what_the_caller_read() {
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "nothing here\n");
+
+        let plan = s
+            .plan_replacements(
+                &[PathBuf::from("/w/a.rs"), PathBuf::from("/w/b.rs")],
+                "old",
+                "new",
+                Default::default(),
+                |_| Ok("old and old again\n".to_owned()),
+            )
+            .expect("b.rs was supplied");
+
+        // a.rs has no matches and so is not opened, changed or listed.
+        assert_eq!(plan.documents(), 1);
+        assert_eq!(plan.edits(), 2);
+        assert_eq!(
+            plan.missing().collect::<Vec<_>>(),
+            [Path::new("/w/b.rs")],
+            "the one file that has to be opened"
+        );
+    }
+
+    #[test]
+    fn a_replacement_reaches_every_file_as_one_undoable_step() {
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "old\n");
+        s.open(PathBuf::from("/w/b.rs"), "old and old\n");
+
+        let plan = s
+            .plan_replacements(
+                &[PathBuf::from("/w/a.rs"), PathBuf::from("/w/b.rs")],
+                "old",
+                "new",
+                Default::default(),
+                |_| unreachable!("both are open"),
+            )
+            .expect("both are open");
+        let applied = s.apply_workspace_edit(plan, 0).expect("nothing overlaps");
+
+        assert_eq!(applied.documents, 2);
+        assert_eq!(applied.edits, 3);
+        assert_eq!(s.document.buffer.text(), "new and new\n");
+
+        s.run("undo", None, 0);
+        assert_eq!(s.document.buffer.text(), "old and old\n");
+        assert_eq!(
+            s.document_at_path(Path::new("/w/a.rs"))
+                .unwrap()
+                .buffer
+                .text(),
+            "old\n",
+            "the other file came back in the same step"
+        );
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_refuses_the_whole_replacement() {
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "old\n");
+
+        let error = s
+            .plan_replacements(
+                &[PathBuf::from("/w/a.rs"), PathBuf::from("/w/gone.rs")],
+                "old",
+                "new",
+                Default::default(),
+                |_| Err("no such file".to_owned()),
+            )
+            .expect_err("one of the files is not there");
+
+        assert!(matches!(
+            error,
+            crate::workspace::WorkspaceError::Unreadable { ref path, .. }
+                if path == Path::new("/w/gone.rs")
+        ));
+        assert_eq!(s.document.buffer.text(), "old\n", "and nothing was changed");
     }
 
     #[test]

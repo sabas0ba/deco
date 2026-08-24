@@ -170,6 +170,22 @@ fn remote_matches(
         .collect()
 }
 
+/// The distinct files a set of matches named, in the order they first appeared.
+///
+/// A search reports one entry per *match*, and a file with twenty of them is
+/// still one file to open and one transaction to build. Deduplicated in place
+/// rather than through a set, so the order the search found them in survives —
+/// which is the order the files are opened in, and so the order of the tabs.
+fn matched_paths(matches: impl Iterator<Item = PathBuf>) -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for path in matches {
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
+    }
+    paths
+}
+
 /// A session whose files live on another machine.
 ///
 /// Carries what the editor needs beyond the connection itself: language servers
@@ -446,16 +462,22 @@ impl Driver {
 
     /// Collects whatever the language server and the extension hosts have said.
     pub fn poll(&mut self, session: &mut Session, now_ms: u64) {
-        self.dirty |= self.lsp.poll(session);
-        // Destructured so the hosts can be advanced while the connection is
-        // borrowed: an extension's file request is served through the same
-        // connection the editor reads and writes with, because in a remote
-        // session that is where the files are.
-        let Self { hosts, remote, .. } = self;
+        // Destructured so the language server and the hosts can both be
+        // advanced while the connection is borrowed: their file requests are
+        // served through the same connection the editor reads and writes with,
+        // because in a remote session that is where the files are.
+        let Self {
+            lsp,
+            hosts,
+            remote,
+            dirty,
+            ..
+        } = self;
         let mut files = match remote.as_mut() {
             Some(client) => crate::extensions::Files::Remote(client),
             None => crate::extensions::Files::Here,
         };
+        *dirty |= lsp.poll(session, &mut files);
         hosts.poll(session, &mut files, now_ms);
     }
 
@@ -642,7 +664,15 @@ impl Driver {
             // filesystem — so both halves are here rather than in the core.
             Outcome::Rename { new_name } => lsp.request_rename(session, &new_name),
             // Which action was chosen; the list it indexes is the frontend's.
-            Outcome::CodeAction(id) => lsp.run_code_action(session, &id),
+            Outcome::CodeAction(id) => {
+                // Through the connection when there is one: the action's edit
+                // names files on the machine the server is running on.
+                let mut files = match remote.as_mut() {
+                    Some(client) => crate::extensions::Files::Remote(client),
+                    None => crate::extensions::Files::Here,
+                };
+                lsp.run_code_action(session, &id, &mut files);
+            }
             Outcome::SearchInFiles { query, options } if remote.is_some() => {
                 let client = remote.as_mut().expect("a remote session");
                 match client.search(&query, options) {
@@ -672,6 +702,84 @@ impl Driver {
                     session.status = Some(format!(
                         "{count} matches for `{query}`, and there may be more"
                     ));
+                }
+            }
+            // The search says *which files*; the session decides what the edit
+            // is and makes it one undoable action. Both halves are needed here
+            // because only this side knows where the files are.
+            Outcome::ReplaceInFiles {
+                query,
+                replacement,
+                options,
+            } => {
+                let root = workspace_root(path.as_deref()).unwrap_or_else(|| PathBuf::from("."));
+                let searched = match remote.as_mut() {
+                    Some(client) => client
+                        .search(&query, options)
+                        .map(|found| {
+                            let paths = matched_paths(
+                                found
+                                    .matches
+                                    .iter()
+                                    .filter(|entry| {
+                                        !crate::files::excluded_by_settings(
+                                            &session.settings,
+                                            &entry.path,
+                                        )
+                                    })
+                                    .map(|entry| PathBuf::from(&entry.path)),
+                            );
+                            (paths, found.truncated)
+                        })
+                        .map_err(|error| format!("could not search the remote: {error}")),
+                    None => {
+                        let found = crate::files::search(&root, &session.settings, &query, options);
+                        let paths = matched_paths(
+                            found.matches.iter().map(|entry| PathBuf::from(&entry.id)),
+                        );
+                        Ok((paths, found.truncated))
+                    }
+                };
+
+                match searched {
+                    // A failed search leaves the session alone: nothing was
+                    // opened and nothing changed, so there is nothing to undo.
+                    Err(message) => session.status = Some(message),
+                    Ok((paths, _)) if paths.is_empty() => {
+                        session.status = Some(format!("no matches for `{query}`"));
+                    }
+                    Ok((paths, truncated)) => {
+                        let mut files = match remote.as_mut() {
+                            Some(client) => crate::extensions::Files::Remote(client),
+                            None => crate::extensions::Files::Here,
+                        };
+                        let planned = session.plan_replacements(
+                            &paths,
+                            &query,
+                            &replacement,
+                            options,
+                            |path| files.read(&path.display().to_string()),
+                        );
+                        match planned.and_then(|plan| session.apply_workspace_edit(plan, now_ms)) {
+                            Ok(applied) => {
+                                let mut report = applied.summary(&format!("Replaced `{query}`"));
+                                // The search stopped early, so there may be
+                                // occurrences it never saw. Said plainly: a
+                                // replace-all that was not all is the one thing
+                                // a user must not have to guess at.
+                                if truncated {
+                                    report.push_str(
+                                        " — the search hit its limit, so there may be more",
+                                    );
+                                }
+                                session.status = Some(report);
+                            }
+                            // Nothing was changed: the plan is built before
+                            // anything is applied, which is what building one is
+                            // for.
+                            Err(error) => session.status = Some(error.to_string()),
+                        }
+                    }
                 }
             }
             Outcome::SaveAll => {
@@ -899,6 +1007,7 @@ pub fn frontend_commands() -> Vec<deco_editor::commands::PaletteEntry> {
         ("editor.action.formatSelection", "Format Selection"),
         ("workbench.action.quickOpen", "Go to File"),
         ("workbench.action.findInFiles", "Find in Files"),
+        ("workbench.action.replaceInFiles", "Replace in Files"),
         (
             "deco.extensions.forgetPermission",
             "Extensions: Forget a Permission Decision",

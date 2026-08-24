@@ -217,7 +217,12 @@ impl Files<'_> {
     /// Text rather than bytes, and a file that is not UTF-8 is refused: deco's
     /// own editor refuses one for the same reason, and an extension handed
     /// replacement characters would write them back.
-    fn read(&mut self, path: &str) -> Result<String, String> {
+    ///
+    /// Visible to the crate because the editor's own multi-file edits need the
+    /// same answer to the same question: a rename that reaches a file no tab
+    /// holds must read it from wherever the files are, which in a remote session
+    /// is not this machine.
+    pub(crate) fn read(&mut self, path: &str) -> Result<String, String> {
         match self {
             Self::Here => std::fs::read_to_string(path).map_err(|error| error.to_string()),
             Self::Remote(client) => client.read(path).map_err(|error| error.to_string()),

@@ -102,6 +102,42 @@ fn a_search_result_opens_the_file_it_named() {
 }
 
 #[test]
+fn replace_in_files_reaches_the_far_end_rather_than_this_machine() {
+    // The one that would pass by accident if the editor read the local disk:
+    // these paths do not exist here, so a replacement that reads `std::fs`
+    // finds nothing and reports a file it could not read. What it has to do is
+    // read the far end, through the same connection everything else uses.
+    let scenario = scenario("remote-replace");
+    let mut editor = scenario.launch_remote(&["notes.txt"], server());
+
+    editor.press("ctrl+shift+h");
+    editor.type_text("needle");
+    editor.press("enter");
+    editor.type_text("pin");
+    editor.press("enter");
+
+    let status = editor.status().unwrap_or_default().to_owned();
+    assert!(
+        status.starts_with("Replaced `needle`"),
+        "the replacement should have reached the far end: {status}"
+    );
+
+    // The open document, and the file that had to be fetched to be changed.
+    assert_eq!(editor.text(), "the pin is here\nand not here\n");
+    let unsaved = editor.session().unsaved();
+    let deep = unsaved
+        .iter()
+        .find(|(path, _)| path.to_string_lossy().contains("more.txt"))
+        .map(|(_, text)| text.clone())
+        .expect("the file on the far end should have been opened and changed");
+    assert_eq!(deep, "another pin further down\n");
+
+    // And one keystroke takes all of it back, exactly as it does locally.
+    editor.press("ctrl+z");
+    assert_eq!(editor.text(), "the needle is here\nand not here\n");
+}
+
+#[test]
 fn a_term_that_is_in_no_file_says_so_rather_than_offering_nothing() {
     let scenario = scenario("remote-search-empty");
     let mut editor = scenario.launch_remote(&["notes.txt"], server());
