@@ -143,6 +143,10 @@ fn demos() -> Vec<Demo> {
             build: go_to_symbol,
         },
         Demo {
+            name: "chrome",
+            build: chrome,
+        },
+        Demo {
             name: "tabs",
             build: tabs,
         },
@@ -815,6 +819,24 @@ fn semantic(
         token_type: token_type.to_owned(),
         modifiers: modifiers.iter().map(|m| (*m).to_owned()).collect(),
     }
+}
+
+fn chrome() -> String {
+    let mut take = Take::new("main.rs", SAMPLE);
+    take.at(1, 8).capture("the editor has the whole window", 4);
+
+    // Real keys: both of these were named refusals until this chapter shipped.
+    take.press_and_hold(&["ctrl+b"], 6)
+        .press_and_hold(&["ctrl+j"], 6);
+
+    // The keyboard is still in the text — showing a region does not cost you
+    // your place, which is the thing that is easiest to get wrong and hardest
+    // to see in a still image.
+    take.type_text("mut ");
+
+    take.press_and_hold(&["ctrl+b"], 4)
+        .press_and_hold(&["ctrl+j"], 4);
+    take.finish()
 }
 
 fn tabs() -> String {

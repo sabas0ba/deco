@@ -85,8 +85,27 @@ pub struct Layout {
     pub current_line: Option<Rect>,
     /// Where the text column starts, in pixels.
     pub text_left: f32,
+    /// The side bar and panel, as text.
+    ///
+    /// Text because text is all this frontend can paint: there is no quad
+    /// pipeline here yet, so the rules are drawn with the same box-drawing
+    /// characters the terminal uses rather than as filled rectangles. It looks
+    /// like the terminal's chrome because it *is* the terminal's chrome, which
+    /// is a better answer than nothing until this frontend can fill a rectangle.
+    pub chrome: Vec<ChromeLine>,
     /// Colours resolved from the theme.
     pub colors: Colors,
+}
+
+/// One line of chrome, positioned in pixels.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChromeLine {
+    /// What to draw.
+    pub text: String,
+    /// Left edge.
+    pub x: f32,
+    /// Top edge.
+    pub y: f32,
 }
 
 /// The colours one frame needs.
@@ -169,9 +188,18 @@ pub fn layout(session: &Session, width: f32, height: f32, metrics: Metrics) -> L
     } else {
         digits + 2
     };
-    let text_left = metrics.padding + gutter_columns as f32 * metrics.cell_width;
+    // The window in cells, so the session can divide it the same way the
+    // terminal's is divided — the arithmetic is shared, only the units differ.
+    let columns = (width / metrics.cell_width).floor().max(0.0) as usize;
+    let cell_rows = (height / metrics.line_height).floor().max(0.0) as usize;
+    let regions = session.regions_for(columns, cell_rows);
+    let editor = regions.editor;
+    let origin_x = editor.x as f32 * metrics.cell_width;
+    let origin_y = editor.y as f32 * metrics.line_height;
 
-    let rows = ((height / metrics.line_height).ceil() as usize).max(1);
+    let text_left = origin_x + metrics.padding + gutter_columns as f32 * metrics.cell_width;
+
+    let rows = editor.height.max(1);
     let cursor = session.view.cursor();
     let cursor_line = cursor.line as usize;
 
@@ -183,7 +211,7 @@ pub fn layout(session: &Session, width: f32, height: f32, metrics: Metrics) -> L
         if line >= buffer.line_count() {
             break;
         }
-        let y = row as f32 * metrics.line_height;
+        let y = origin_y + row as f32 * metrics.line_height;
         let raw = buffer
             .line_content(line)
             .map(|s| s.to_string())
@@ -243,7 +271,9 @@ pub fn layout(session: &Session, width: f32, height: f32, metrics: Metrics) -> L
     }
 
     let cursor_row = cursor_line.checked_sub(session.view.scroll_top);
-    let on_screen = cursor_row.is_some_and(|row| row < rows);
+    // A region with the keyboard means the text does not have it.
+    let in_editor = session.focus() == deco_editor::Focus::Editor;
+    let on_screen = in_editor && cursor_row.is_some_and(|row| row < rows);
     let caret = on_screen.then(|| {
         let raw = buffer
             .line_content(cursor_line)
@@ -252,7 +282,7 @@ pub fn layout(session: &Session, width: f32, height: f32, metrics: Metrics) -> L
         let column = display_column(&raw, cursor.character, tab_size) as f32;
         Rect {
             x: text_left + column * metrics.cell_width,
-            y: cursor_row.unwrap_or(0) as f32 * metrics.line_height,
+            y: origin_y + cursor_row.unwrap_or(0) as f32 * metrics.line_height,
             // A thin caret regardless of DPI; block cursors are a setting away.
             width: (metrics.cell_width * 0.12).max(1.0),
             height: metrics.line_height,
@@ -260,9 +290,9 @@ pub fn layout(session: &Session, width: f32, height: f32, metrics: Metrics) -> L
     });
 
     let current_line = on_screen.then(|| Rect {
-        x: 0.0,
-        y: cursor_row.unwrap_or(0) as f32 * metrics.line_height,
-        width,
+        x: origin_x,
+        y: origin_y + cursor_row.unwrap_or(0) as f32 * metrics.line_height,
+        width: editor.width as f32 * metrics.cell_width,
         height: metrics.line_height,
     });
 
@@ -272,8 +302,59 @@ pub fn layout(session: &Session, width: f32, height: f32, metrics: Metrics) -> L
         cursor: caret,
         current_line,
         text_left,
+        chrome: chrome_lines(&regions, metrics),
         colors,
     }
+}
+
+/// The side bar, the panel and the rules between them, as positioned text.
+fn chrome_lines(regions: &deco_editor::layout::Regions, metrics: Metrics) -> Vec<ChromeLine> {
+    let mut out = Vec::new();
+    let cell = |x: usize, y: usize| {
+        (
+            x as f32 * metrics.cell_width,
+            y as f32 * metrics.line_height,
+        )
+    };
+
+    if let Some(rect) = regions.side_bar {
+        let (x, y) = cell(rect.x, rect.y);
+        out.push(ChromeLine {
+            text: "SIDE BAR".to_owned(),
+            x: x + metrics.padding,
+            y,
+        });
+    }
+    if let Some(rect) = regions.panel {
+        let (x, y) = cell(rect.x, rect.y);
+        out.push(ChromeLine {
+            text: "PANEL".to_owned(),
+            x: x + metrics.padding,
+            y,
+        });
+    }
+    // One line per row rather than one tall glyph: a box-drawing character is a
+    // cell, and stretching it would be a different shape.
+    if let Some(column) = regions.side_bar_rule {
+        let height = regions.side_bar.map(|rect| rect.height).unwrap_or_default();
+        for row in 0..height {
+            let (x, y) = cell(column, row);
+            out.push(ChromeLine {
+                text: "\u{2502}".to_owned(),
+                x,
+                y,
+            });
+        }
+    }
+    if let Some(row) = regions.panel_rule {
+        let (x, y) = cell(regions.editor.x, row);
+        out.push(ChromeLine {
+            text: "\u{2500}".repeat(regions.editor.width),
+            x,
+            y,
+        });
+    }
+    out
 }
 
 #[cfg(test)]
@@ -295,6 +376,96 @@ mod tests {
             cell_width: 8.0,
             padding: 8.0,
         }
+    }
+
+    /// A session showing the chrome, sized in the cells these metrics imply.
+    fn with_chrome(side_bar: bool, panel: bool) -> Session {
+        let mut session = session("fn main() {}\n");
+        // 800x400 at 8x20 is 100 columns by 20 rows.
+        session.resize(100, 20);
+        if side_bar {
+            session.run("workbench.action.toggleSidebarVisibility", None, 0);
+        }
+        if panel {
+            session.run("workbench.action.togglePanel", None, 0);
+        }
+        session
+    }
+
+    #[test]
+    fn a_side_bar_moves_the_text_across_and_narrows_it() {
+        let plain = layout(&session("fn main() {}\n"), 800.0, 400.0, metrics());
+        let laid = layout(&with_chrome(true, false), 800.0, 400.0, metrics());
+
+        assert!(
+            laid.text_left > plain.text_left,
+            "the text starts past the bar: {} vs {}",
+            laid.text_left,
+            plain.text_left
+        );
+        // The window is divided in cells and painted in pixels, and the two have
+        // to agree about where the edge is.
+        let bar = with_chrome(true, false)
+            .regions()
+            .side_bar
+            .expect("showing");
+        assert_eq!(
+            laid.text_left - plain.text_left,
+            (bar.width + 1) as f32 * 8.0
+        );
+    }
+
+    #[test]
+    fn the_panel_takes_rows_off_the_bottom() {
+        // A file long enough to fill the window, so what stops the layout is the
+        // editor's height rather than the end of the document.
+        let mut session = session(&"x\n".repeat(100));
+        session.resize(100, 20);
+        session.run("workbench.action.togglePanel", None, 0);
+        let editor = session.regions().editor;
+        let laid = layout(&session, 800.0, 400.0, metrics());
+
+        assert_eq!(laid.lines.len(), editor.height);
+        assert!(
+            editor.height < 20,
+            "and that is fewer rows than the window has"
+        );
+
+        // The rule is drawn where the split put it.
+        let rule = with_chrome(false, true)
+            .regions()
+            .panel_rule
+            .expect("showing");
+        assert!(
+            laid.chrome
+                .iter()
+                .any(|line| line.text.starts_with('─') && line.y == rule as f32 * 20.0),
+            "{:?}",
+            laid.chrome
+        );
+    }
+
+    #[test]
+    fn the_chrome_is_named_where_it_starts() {
+        let laid = layout(&with_chrome(true, true), 800.0, 400.0, metrics());
+        let titles: Vec<&str> = laid
+            .chrome
+            .iter()
+            .map(|line| line.text.as_str())
+            .filter(|text| !text.starts_with('─') && !text.starts_with('│'))
+            .collect();
+        assert_eq!(titles, ["SIDE BAR", "PANEL"]);
+    }
+
+    #[test]
+    fn a_region_with_the_keyboard_takes_the_caret_off_the_text() {
+        let mut session = with_chrome(true, false);
+        assert!(layout(&session, 800.0, 400.0, metrics()).cursor.is_some());
+
+        session.run("workbench.action.focusSideBar", None, 0);
+        let laid = layout(&session, 800.0, 400.0, metrics());
+        assert_eq!(laid.cursor, None);
+        assert_eq!(laid.current_line, None, "and the line highlight with it");
     }
 
     #[test]

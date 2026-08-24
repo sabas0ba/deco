@@ -9,6 +9,7 @@ yet.
 | --- | --- |
 | [Editing](editing.md) | Motion, selection, line and block comments, multiple cursors, undo |
 | [Tabs](tabs.md) | Several documents, one per tab; splitting; what a tab keeps |
+| [Chrome](chrome.md) | The side bar and the panel: `ctrl+b`, `ctrl+j`, where the space comes from, and where the keyboard is |
 | [Syntax highlighting](highlighting.md) | Scopes, languages, choosing one, and why not tree-sitter |
 | [Find and replace](find-and-replace.md) | `ctrl+f`, `ctrl+h`, `F3`, the multi-cursor find keys, and replacing across the workspace |
 | [Running commands](commands.md) | The command palette, quick open, go to symbol, search in files, go to line |

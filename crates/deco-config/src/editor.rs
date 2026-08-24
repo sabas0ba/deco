@@ -148,6 +148,35 @@ pub enum LineNumbers {
     Interval,
 }
 
+/// `workbench.sideBar.location`.
+///
+/// Not a per-language setting: which side the chrome is on is a property of the
+/// window, and a side bar that jumped across the screen when you switched tabs
+/// would be answering a question nobody asked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SideBarLocation {
+    /// Down the left edge, as VS Code opens.
+    #[default]
+    Left,
+    /// Down the right edge.
+    Right,
+}
+
+impl SideBarLocation {
+    /// Reads `workbench.sideBar.location` out of the layered settings.
+    ///
+    /// Its own function rather than a field on [`EditorSettings`], which is
+    /// resolved per document and per language — this belongs to the window, and
+    /// a field there would invite exactly the `[rust]` override that must not
+    /// mean anything.
+    pub fn resolve(settings: &Settings) -> Self {
+        match settings.get_str("workbench.sideBar.location", None) {
+            Some("right") => Self::Right,
+            _ => Self::Left,
+        }
+    }
+}
+
 /// `editor.renderWhitespace`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RenderWhitespace {
