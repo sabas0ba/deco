@@ -7,6 +7,10 @@
 > chapter is a plan, not a promise; when one ships, its chapter moves out of
 > this page and into a real one with an animation of its own.
 
+Most of the page is deco catching up with VS Code. The last part,
+[Beyond VS Code](#beyond-vs-code), is not: it is what is worth building
+*because* deco is not Electron.
+
 ## Where deco stands against VS Code
 
 What already works is documented, with animations, on the other pages of this
@@ -362,6 +366,70 @@ it is chrome that debugging will then stand on.
 3. Launch/attach from `launch.json`; stop/continue/step with a stopped-line
    marker.
 4. Variables and console as panel tenants.
+
+## Beyond VS Code
+
+Everything above is deco catching up. This section is the other direction: what
+is worth building *because* deco is not Electron, and which VS Code therefore
+cannot reasonably do. The bar for a chapter here is higher than for one above —
+a feature VS Code lacks needs a reason it lacks it, or it is just a feature
+nobody got round to — and the rule about identifiers changes shape: where VS
+Code has no name for something, deco names it, and `deco.*` is the right
+namespace rather than a synonym to avoid.
+
+### Several workspaces, switched between
+
+**What VS Code does instead.** One folder per window. Multi-root workspaces
+(`.code-workspace`, `folders: []`) put several folders in *one* window, which is
+a different thing: they share one settings resolution, one search, one set of
+language servers. Working on two projects means two windows, and a window is an
+Electron process — the reason having several open is a decision about memory
+rather than a keystroke. `workbench.action.switchWindow` is as close as it gets.
+
+**What deco has.** One root, fixed at launch. It lives in
+`deco-tui::Driver::started_with`, is derived from the file deco was started
+with, and never changes; the core has no concept of a workspace root at all.
+That is exactly why `workbench.action.files.openFolder` is on the pending list —
+the file walk, the search and the language servers are all anchored to it.
+
+One piece is already in place: `deco-config`'s `Scope::Folder` exists in the
+settings layering, documented as *"a specific folder of a multi-root
+workspace"*, and nothing uses it yet.
+
+**The plan.** A workspace is a root, the settings layers that root resolves
+(`Workspace` and `Folder` scope), and a set of tabs. Tabs are already a zipper
+inside the session, so a list of workspaces is the same shape one level up:
+switching swaps the tab set, re-resolves the settings, and re-anchors quick open
+and search.
+
+The root has to move into the session first. It is in a frontend today, and
+switching has to happen where the tabs, the settings and the context keys are.
+That step is also where `openFolder` lands, so the two are one piece of work.
+
+**What it costs is language servers, not tabs.** This is the whole argument for
+doing it here. VS Code is heavy per window because a window is a browser; deco's
+per-workspace cost is a set of LSP servers, which is real but an order of
+magnitude smaller. So the default is: keep every workspace's **tabs** live —
+they are buffers that were already open, and holding them costs what they
+already cost — and supervise **servers for the active workspace only**. Keeping
+several warm is then a setting whose price is stated rather than discovered.
+
+**Identifiers.** `workbench.action.openRecent` keeps its name and its meaning,
+as does the `.code-workspace` format if deco reads one. But *switching between
+workspaces already loaded in this process* is something VS Code cannot do and
+therefore has no name for, so that is `deco.workspaces.*` — the one case where
+inventing a name is right rather than a synonym for someone else's.
+
+**Steps.**
+
+1. The root moves into `Session`, and `openFolder` changes it: re-walk, re-search,
+   re-root the language servers. One root still, but a mutable one.
+2. Several roots held at once, each with its own tabs and settings resolution;
+   `deco.workspaces.switch` moves between them, and the status bar says which.
+3. A workspace list as a side-bar tenant, so switching is visible rather than
+   remembered.
+4. Servers per active workspace, with the warm-set setting and its cost written
+   down.
 
 ## The gaps behind the features
 
