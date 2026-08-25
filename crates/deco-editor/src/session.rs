@@ -351,6 +351,8 @@ pub struct Session {
     /// transient failure — undoing `a → b` while another program has just made
     /// an `a` — would eat the entry and leave nothing to retry.
     pending_undo: Option<crate::files::Operation>,
+    /// Files a delete took away that a language server still has open.
+    closed_documents: Vec<PathBuf>,
     /// The workspace tree, once a frontend has said where the workspace is.
     ///
     /// `None` until then, because the session does not derive the root itself:
@@ -531,6 +533,7 @@ impl Session {
             explorer: None,
             explorer_undo: Vec::new(),
             pending_undo: None,
+            closed_documents: Vec::new(),
             // Replaced by the first `resize`, which every frontend does before
             // it draws. The default matches `View`'s so a session nobody sized
             // still lays out sensibly under test.
@@ -3120,9 +3123,38 @@ impl Session {
             return Outcome::Message("the workspace itself cannot be deleted".to_owned());
         }
 
-        let operation = crate::files::Operation::Delete(row.path);
+        let operation = crate::files::Operation::Delete {
+            directory: row.is_dir,
+            path: row.path,
+        };
         self.record_file_operation(&operation);
         Outcome::FileOperation(operation)
+    }
+
+    /// Throws away the analysis attached to one tab.
+    fn clear_analysis_of_tab(&mut self, index: usize) {
+        let active = self.active_tab();
+        if index == active {
+            self.diagnostics.clear();
+            self.semantic_tokens.clear();
+        } else if index < active {
+            if let Some(tab) = self.left.get_mut(index) {
+                tab.diagnostics.clear();
+                tab.semantic.clear();
+            }
+        } else if let Some(tab) = self.right.get_mut(index - active - 1) {
+            tab.diagnostics.clear();
+            tab.semantic.clear();
+        }
+    }
+
+    /// Files the language server should be told are closed, and forgets them.
+    ///
+    /// Filled when a delete detaches a tab: the server has the file open under a
+    /// URI that no longer names anything, and only a frontend can tell it. Drained
+    /// rather than read, so one delete produces one `didClose` per file.
+    pub fn take_closed_documents(&mut self) -> Vec<PathBuf> {
+        std::mem::take(&mut self.closed_documents)
     }
 
     /// The path a tab holds, in display order.
@@ -3297,26 +3329,40 @@ impl Session {
         // The buffer is kept and its path let go: the text is still the user's,
         // and where it should live is now a question only they can answer.
         let mut detached_tabs = 0usize;
-        if let crate::files::Operation::Delete(path)
-        | crate::files::Operation::DeleteIfEmpty(path) = operation
+        if let crate::files::Operation::Delete { path, .. }
+        | crate::files::Operation::DeleteIfEmpty { path, .. } = operation
         {
             let gone = normalise(path);
-            let mut detached = 0usize;
-            for index in self.tabs_under(&gone) {
-                if let Some(document) = self.document_at_index_mut(index) {
-                    document.path = None;
-                    document.dirty = true;
-                    detached += 1;
-                }
+            let affected = self.tabs_under(&gone);
+            // The paths first, while the tabs still have them: the server is
+            // holding these open under URIs that no longer name anything, and
+            // only a frontend can tell it otherwise.
+            let held: Vec<PathBuf> = affected
+                .iter()
+                .filter_map(|index| self.path_of_tab(*index))
+                .collect();
+            self.closed_documents.extend(held);
+            for index in affected {
+                let Some(document) = self.document_at_index_mut(index) else {
+                    continue;
+                };
+                document.path = None;
+                document.dirty = true;
+                // Diagnostics and semantic tokens describe a file that is not
+                // there. Every path that would refresh them returns early once
+                // the path is `None`, so leaving them would keep squiggles and
+                // highlighting from a deleted file on screen for as long as the
+                // buffer lived.
+                self.clear_analysis_of_tab(index);
+                detached_tabs += 1;
             }
-            detached_tabs = detached;
         }
 
         // Nothing below a delete can be undone either: running an older inverse
         // would put a file back beside one that is now gone, which is not the
         // state anything was ever in. Here rather than when the delete was
         // recorded, so a refusal costs nothing.
-        if matches!(operation, crate::files::Operation::Delete(_)) {
+        if matches!(operation, crate::files::Operation::Delete { .. }) {
             self.explorer_undo.clear();
         }
         if let crate::files::Operation::Rename { from, to } = operation {
@@ -3358,7 +3404,8 @@ impl Session {
                 crate::files::Operation::Rename { to, .. } => explorer.reveal(to),
                 // Nothing to select: it is gone, and the clamp inside `fill`
                 // puts the selection on a row that still exists.
-                crate::files::Operation::Delete(_) | crate::files::Operation::DeleteIfEmpty(_) => {}
+                crate::files::Operation::Delete { .. }
+                | crate::files::Operation::DeleteIfEmpty { .. } => {}
             }
         }
         // A file that was deleted or renamed away is no longer where the tree
@@ -7351,9 +7398,10 @@ mod tests {
         assert!(s.can_undo_file_operation());
         assert_eq!(
             s.run("undo", None, 0),
-            Outcome::FileOperation(crate::files::Operation::DeleteIfEmpty(PathBuf::from(
-                "/w/src/new.rs"
-            ))),
+            Outcome::FileOperation(crate::files::Operation::DeleteIfEmpty {
+                path: PathBuf::from("/w/src/new.rs"),
+                directory: false,
+            }),
             "undoing a create removes what it made — and only if it is still \
              what was made, rather than taking whatever has been written since"
         );
@@ -7593,7 +7641,7 @@ mod tests {
         assert!(
             matches!(
                 s.run("undo", None, 0),
-                Outcome::FileOperation(crate::files::Operation::DeleteIfEmpty(_))
+                Outcome::FileOperation(crate::files::Operation::DeleteIfEmpty { .. })
             ),
             "the tree's undo, even with the document holding a shared step"
         );
@@ -7709,6 +7757,79 @@ mod tests {
     }
 
     #[test]
+    fn a_delete_carries_the_type_the_tree_was_showing() {
+        let mut s = with_tree();
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+        // `src`, a directory.
+        let Outcome::FileOperation(operation) = s.delete_in_tree() else {
+            panic!("expected a delete");
+        };
+        assert_eq!(
+            operation,
+            crate::files::Operation::Delete {
+                path: PathBuf::from("/w/src"),
+                directory: true,
+            }
+        );
+
+        s.run("list.focusDown", None, 0); // Cargo.toml, a file
+        let Outcome::FileOperation(operation) = s.delete_in_tree() else {
+            panic!("expected a delete");
+        };
+        assert_eq!(
+            operation,
+            crate::files::Operation::Delete {
+                path: PathBuf::from("/w/Cargo.toml"),
+                directory: false,
+            },
+            "a file is deleted as a file, whatever the disk says by the time the \
+             frontend gets there"
+        );
+    }
+
+    #[test]
+    fn detaching_a_deleted_tab_drops_its_diagnostics_and_tells_the_server() {
+        let mut s = with_tree();
+        s.fill_directory(
+            Path::new("/w/src"),
+            vec![crate::explorer::Entry::file("main.rs")],
+        );
+        s.open(PathBuf::from("/w/src/main.rs"), "fn main() {}\n");
+        s.diagnostics = vec![deco_lsp::Diagnostic {
+            range: deco_core::position::Range::new(
+                deco_core::position::Position::new(0, 0),
+                deco_core::position::Position::new(0, 2),
+            ),
+            severity: deco_lsp::diagnostics::Severity::Error,
+            message: "something".to_owned(),
+            source: None,
+            code: None,
+        }];
+
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+        s.run("list.expand", None, 0);
+        s.run("list.focusDown", None, 0);
+        let Outcome::FileOperation(deleted) = s.delete_in_tree() else {
+            panic!("expected a delete");
+        };
+        s.file_operation_done(&deleted);
+
+        assert!(
+            s.diagnostics.is_empty(),
+            "squiggles describing a file that is gone must not outlive it"
+        );
+        assert_eq!(
+            s.take_closed_documents(),
+            vec![PathBuf::from("/w/src/main.rs")],
+            "the server is holding it open under a URI that names nothing"
+        );
+        assert!(
+            s.take_closed_documents().is_empty(),
+            "and taking them is what forgets them"
+        );
+    }
+
+    #[test]
     fn a_delete_cannot_be_undone_and_does_not_offer_an_older_one() {
         let mut s = with_tree();
         s.run("workbench.files.action.focusFilesExplorer", None, 0);
@@ -7765,9 +7886,10 @@ mod tests {
         s.run("workbench.action.focusActiveEditorGroup", None, 0);
         assert_ne!(
             s.run("undo", None, 0),
-            Outcome::FileOperation(crate::files::Operation::DeleteIfEmpty(PathBuf::from(
-                "/w/src/new.rs"
-            ))),
+            Outcome::FileOperation(crate::files::Operation::DeleteIfEmpty {
+                path: PathBuf::from("/w/src/new.rs"),
+                directory: false,
+            }),
             "undo in the text must not move files"
         );
     }

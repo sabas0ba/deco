@@ -1009,6 +1009,25 @@ impl Lsp {
     ///
     /// Idempotent: calling it for a document whose server is already running
     /// does nothing, which is what lets the event loop call it freely.
+    /// Tells the server about files a delete took away.
+    ///
+    /// A deleted file's document is still open as far as the server is
+    /// concerned, under a URI that no longer names anything — so it keeps
+    /// answering about it, and its diagnostics outlive the file. Drained from
+    /// the session, so each deletion produces one `didClose` per file.
+    pub fn close_deleted(&mut self, session: &mut Session) {
+        for path in session.take_closed_documents() {
+            if !self.enabled {
+                continue;
+            }
+            // A server that never had it open, or that has since stopped, is
+            // not an error worth showing anybody: the file is gone either way.
+            if let Some(supervisor) = self.supervisor.as_mut() {
+                let _ = supervisor.did_close(&path);
+            }
+        }
+    }
+
     pub fn attach(&mut self, session: &mut Session) {
         if !self.enabled {
             return;

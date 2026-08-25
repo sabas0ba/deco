@@ -152,6 +152,17 @@ platform code with a runtime fallback each, in a codebase with one `unsafe` in
 it. That is worth doing as its own change rather than being smuggled in here, so
 for now the window is named rather than closed.
 
+**A delete removes what the tree was showing**, not what is on disk when the
+frontend gets there. The confirmation names a file or a folder, and that is what
+is carried out — so a file replaced by a directory since the tree last read it is
+refused rather than recursively deleted, which is what asking the disk instead
+would have done. The tree has no watcher, so its picture really can be stale.
+
+Deleting a file that is open lets that tab go rather than closing it: the buffer
+stays, its path is dropped, and the status line says so. The text is still
+yours — where it should live is a question only you can answer. Its diagnostics
+go with the file, and the language server is told the document is closed.
+
 A rename that only changes capitalisation works on a case-insensitive
 filesystem, where `Foo.rs` and `foo.rs` are the same file: the check asks whether
 the target is *a different file*, not whether the name is taken.

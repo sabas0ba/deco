@@ -814,6 +814,9 @@ impl Driver {
                 match perform(&operation, remote.as_mut()) {
                     Ok(()) => {
                         session.file_operation_done(&operation);
+                        // A delete may have detached open documents; the server
+                        // still has them open under URIs that name nothing.
+                        lsp.close_deleted(session);
                         // A new file is opened, because creating one you then
                         // have to go and find is two steps where VS Code has
                         // one. Nothing is read: it is empty, and reading it back
@@ -1150,19 +1153,25 @@ fn perform(
             }
             std::fs::rename(from, to)
         }
-        FileOperation::Delete(path) => {
-            if path.is_dir() {
-                std::fs::remove_dir_all(path)
-            } else {
-                std::fs::remove_file(path)
-            }
-        }
+        // Dispatched on what the tree was showing when this was confirmed, not
+        // on what is on disk now. The tree has no watcher, so if a file has been
+        // replaced by a directory since, asking the disk would find a directory
+        // and delete it recursively — having asked the user about a file.
+        // `remove_file` on a directory fails, which is the refusal wanted.
+        FileOperation::Delete {
+            path,
+            directory: true,
+        } => std::fs::remove_dir_all(path),
+        FileOperation::Delete {
+            path,
+            directory: false,
+        } => std::fs::remove_file(path),
         // Undoing a create. `remove_dir` rather than `remove_dir_all` — it
         // fails on a directory with anything in it, which is exactly the
         // refusal wanted, and gets it from the operating system rather than
         // from a check with a race under it.
-        FileOperation::DeleteIfEmpty(path) => {
-            if path.is_dir() {
+        FileOperation::DeleteIfEmpty { path, directory } => {
+            if *directory {
                 std::fs::remove_dir(path).map_err(|error| {
                     io::Error::new(
                         error.kind(),
@@ -1499,7 +1508,14 @@ mod tests {
         .unwrap();
         assert!(!made.exists() && moved.is_file());
 
-        perform(&deco_editor::FileOperation::Delete(moved.clone()), None).unwrap();
+        perform(
+            &deco_editor::FileOperation::Delete {
+                path: moved.clone(),
+                directory: false,
+            },
+            None,
+        )
+        .unwrap();
         assert!(!moved.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1514,7 +1530,10 @@ mod tests {
         std::fs::write(&path, "fn main() {}\n").unwrap();
 
         perform(
-            &deco_editor::FileOperation::DeleteIfEmpty(path.clone()),
+            &deco_editor::FileOperation::DeleteIfEmpty {
+                path: path.clone(),
+                directory: false,
+            },
             None,
         )
         .expect_err("undoing the create must not take the contents with it");
@@ -1532,7 +1551,10 @@ mod tests {
         )
         .unwrap();
         perform(
-            &deco_editor::FileOperation::DeleteIfEmpty(untouched.clone()),
+            &deco_editor::FileOperation::DeleteIfEmpty {
+                path: untouched.clone(),
+                directory: false,
+            },
             None,
         )
         .unwrap();
@@ -1552,7 +1574,10 @@ mod tests {
         std::fs::write(made.join("mod.rs"), "pub fn x() {}\n").unwrap();
 
         perform(
-            &deco_editor::FileOperation::DeleteIfEmpty(made.clone()),
+            &deco_editor::FileOperation::DeleteIfEmpty {
+                path: made.clone(),
+                directory: true,
+            },
             None,
         )
         .expect_err("undoing the create must not recursively delete a tree");

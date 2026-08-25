@@ -407,7 +407,7 @@ impl Take {
             // file, so "if empty" is always true here — the refusal is a
             // property of the real filesystem, and belongs to the frontend's
             // tests rather than to a picture.
-            FileOperation::Delete(path) | FileOperation::DeleteIfEmpty(path) => {
+            FileOperation::Delete { path, .. } | FileOperation::DeleteIfEmpty { path, .. } => {
                 let gone = relative(path);
                 let under = format!("{gone}/");
                 self.workspace

@@ -73,7 +73,19 @@ pub enum Operation {
         to: PathBuf,
     },
     /// Remove it. A directory goes with everything in it.
-    Delete(PathBuf),
+    Delete {
+        /// What to remove.
+        path: PathBuf,
+        /// Whether the tree was showing a directory when this was confirmed.
+        ///
+        /// Carried so the frontend can act on what the *user agreed to* rather
+        /// than on what is there now. The tree has no watcher, so its picture
+        /// can be stale: if a file has been replaced by a directory since, a
+        /// frontend that looked at the disk would find a directory and delete it
+        /// recursively — having asked about a file. The confirmation named one
+        /// thing; this is how that thing stays named.
+        directory: bool,
+    },
     /// Remove it, but only if it is still empty.
     ///
     /// What undoing a create becomes. A plain [`Operation::Delete`] would be
@@ -85,7 +97,14 @@ pub enum Operation {
     /// So the inverse of a create only removes what a create made: an empty
     /// file, an empty directory. Anything else and it refuses, because at that
     /// point undoing the create is not undoing anything — it is deleting work.
-    DeleteIfEmpty(PathBuf),
+    DeleteIfEmpty {
+        /// What to remove.
+        path: PathBuf,
+        /// Whether the create being undone made a directory. Same reason as
+        /// [`Operation::Delete`]'s: undoing "new file" must not remove someone
+        /// else's directory that has taken its name.
+        directory: bool,
+    },
 }
 
 impl Operation {
@@ -96,10 +115,8 @@ impl Operation {
     /// is enough.
     pub fn parent(&self) -> Option<&Path> {
         match self {
-            Self::CreateFile(path)
-            | Self::CreateFolder(path)
-            | Self::Delete(path)
-            | Self::DeleteIfEmpty(path) => path.parent(),
+            Self::CreateFile(path) | Self::CreateFolder(path) => path.parent(),
+            Self::Delete { path, .. } | Self::DeleteIfEmpty { path, .. } => path.parent(),
             Self::Rename { to, .. } => to.parent(),
         }
     }
@@ -112,18 +129,23 @@ impl Operation {
     /// is worse than one that says it cannot.
     pub fn inverse(&self) -> Option<Operation> {
         match self {
-            Self::CreateFile(path) | Self::CreateFolder(path) => {
-                Some(Self::DeleteIfEmpty(path.clone()))
-            }
+            Self::CreateFile(path) => Some(Self::DeleteIfEmpty {
+                path: path.clone(),
+                directory: false,
+            }),
+            Self::CreateFolder(path) => Some(Self::DeleteIfEmpty {
+                path: path.clone(),
+                directory: true,
+            }),
             Self::Rename { from, to } => Some(Self::Rename {
                 from: to.clone(),
                 to: from.clone(),
             }),
-            Self::Delete(_) => None,
+            Self::Delete { .. } => None,
             // Undoing the undo of a create would be creating it again, which is
             // not what was there before: the file may have had content. One step
             // is what this stack promises.
-            Self::DeleteIfEmpty(_) => None,
+            Self::DeleteIfEmpty { .. } => None,
         }
     }
 
@@ -135,7 +157,7 @@ impl Operation {
             Self::Rename { from, to } => {
                 format!("renamed {} to {}", name_of(from), name_of(to))
             }
-            Self::Delete(path) | Self::DeleteIfEmpty(path) => {
+            Self::Delete { path, .. } | Self::DeleteIfEmpty { path, .. } => {
                 format!("deleted {}", name_of(path))
             }
         }
@@ -195,7 +217,10 @@ mod tests {
         let create = Operation::CreateFile(PathBuf::from("/w/new.rs"));
         assert_eq!(
             create.inverse(),
-            Some(Operation::DeleteIfEmpty(PathBuf::from("/w/new.rs"))),
+            Some(Operation::DeleteIfEmpty {
+                path: PathBuf::from("/w/new.rs"),
+                directory: false,
+            }),
             "undoing a create must not take content that was added since"
         );
 
@@ -212,7 +237,11 @@ mod tests {
         );
 
         assert_eq!(
-            Operation::Delete(PathBuf::from("/w/gone.rs")).inverse(),
+            Operation::Delete {
+                path: PathBuf::from("/w/gone.rs"),
+                directory: false,
+            }
+            .inverse(),
             None,
             "there is nowhere to keep the bytes"
         );
