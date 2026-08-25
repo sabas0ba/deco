@@ -74,6 +74,18 @@ pub enum Operation {
     },
     /// Remove it. A directory goes with everything in it.
     Delete(PathBuf),
+    /// Remove it, but only if it is still empty.
+    ///
+    /// What undoing a create becomes. A plain [`Operation::Delete`] would be
+    /// wrong: create a file, type in it, save, then press `ctrl+z` in the tree,
+    /// and the undo would take the file *and its contents* — without the
+    /// confirmation a delete asks for, and with no way back. Worse for a folder,
+    /// where the delete is recursive.
+    ///
+    /// So the inverse of a create only removes what a create made: an empty
+    /// file, an empty directory. Anything else and it refuses, because at that
+    /// point undoing the create is not undoing anything — it is deleting work.
+    DeleteIfEmpty(PathBuf),
 }
 
 impl Operation {
@@ -84,7 +96,10 @@ impl Operation {
     /// is enough.
     pub fn parent(&self) -> Option<&Path> {
         match self {
-            Self::CreateFile(path) | Self::CreateFolder(path) | Self::Delete(path) => path.parent(),
+            Self::CreateFile(path)
+            | Self::CreateFolder(path)
+            | Self::Delete(path)
+            | Self::DeleteIfEmpty(path) => path.parent(),
             Self::Rename { to, .. } => to.parent(),
         }
     }
@@ -97,12 +112,18 @@ impl Operation {
     /// is worse than one that says it cannot.
     pub fn inverse(&self) -> Option<Operation> {
         match self {
-            Self::CreateFile(path) | Self::CreateFolder(path) => Some(Self::Delete(path.clone())),
+            Self::CreateFile(path) | Self::CreateFolder(path) => {
+                Some(Self::DeleteIfEmpty(path.clone()))
+            }
             Self::Rename { from, to } => Some(Self::Rename {
                 from: to.clone(),
                 to: from.clone(),
             }),
             Self::Delete(_) => None,
+            // Undoing the undo of a create would be creating it again, which is
+            // not what was there before: the file may have had content. One step
+            // is what this stack promises.
+            Self::DeleteIfEmpty(_) => None,
         }
     }
 
@@ -114,7 +135,9 @@ impl Operation {
             Self::Rename { from, to } => {
                 format!("renamed {} to {}", name_of(from), name_of(to))
             }
-            Self::Delete(path) => format!("deleted {}", name_of(path)),
+            Self::Delete(path) | Self::DeleteIfEmpty(path) => {
+                format!("deleted {}", name_of(path))
+            }
         }
     }
 }
@@ -172,7 +195,8 @@ mod tests {
         let create = Operation::CreateFile(PathBuf::from("/w/new.rs"));
         assert_eq!(
             create.inverse(),
-            Some(Operation::Delete(PathBuf::from("/w/new.rs")))
+            Some(Operation::DeleteIfEmpty(PathBuf::from("/w/new.rs"))),
+            "undoing a create must not take content that was added since"
         );
 
         let rename = Operation::Rename {

@@ -85,11 +85,13 @@ selection lands on the new name. It matters more than it sounds: the next key
 might be `F2` or `delete`, and having those act on whatever happened to be
 highlighted before is a destructive kind of surprising.
 
-**A rename moves the tab with the file.** Renaming a file that is open retargets
-its tab — the buffer, its unsaved changes and its undo history all stay, because
-the file moved and the document did not. Renaming `notes.txt` to `notes.md`
-starts highlighting it as Markdown too, unless the language was chosen by hand,
-which is the same rule save-as follows.
+**A rename moves the tabs with the file.** Renaming a file that is open
+retargets its tab — the buffer, its unsaved changes and its undo history all
+stay, because the file moved and the document did not. Renaming a *directory*
+retargets every tab inside it, since that is what the rename did on disk.
+Renaming `notes.txt` to `notes.md` starts highlighting it as Markdown too,
+whether or not that tab is the one on screen, and unless the language was chosen
+by hand — the same rule save-as follows.
 
 ### The tree has its own undo
 
@@ -97,6 +99,21 @@ which is the same rule save-as follows.
 takes back characters. They are separate stacks, told apart by focus — as they
 are in VS Code, and for the reason that an undo which sometimes moved files
 because that was the last thing you did would be unpredictable in both places.
+That holds even when the document has a [workspace edit](find-and-replace.md)
+waiting to be undone: in the tree, `ctrl+z` is the tree's.
+
+**Undoing a create only removes what the create made.** If you made a file and
+have since typed in it and saved, `ctrl+z` in the tree refuses rather than taking
+the file and its contents with it:
+
+```text
+could not deleted parse.rs: parse.rs has been written to since it was
+created — delete it yourself if that is what you meant
+```
+
+The same for a folder that has gained anything. Undoing a create at that point is
+not undoing anything; it is deleting work, and it would do it without the
+confirmation an ordinary delete asks for.
 
 **Deleting cannot be undone**, so it asks first:
 
@@ -109,7 +126,9 @@ what happens when somebody dismisses a prompt they did not read. Undoing a
 delete would need the file's bytes and deco has nowhere to keep them, and there
 is no trash to move it to either — `files.enableTrash` is one of the settings
 deco does not honour. A delete also clears the stack rather than sitting on top
-of it, so `ctrl+z` afterwards cannot quietly undo the operation *before* it.
+of it, so `ctrl+z` afterwards cannot quietly undo the operation *before* it —
+and it clears it only once the delete has actually happened, so a delete the
+filesystem refuses costs you nothing.
 
 ### What can still go wrong
 

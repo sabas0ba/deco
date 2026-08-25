@@ -1151,6 +1151,35 @@ fn perform(
                 std::fs::remove_file(path)
             }
         }
+        // Undoing a create. `remove_dir` rather than `remove_dir_all` — it
+        // fails on a directory with anything in it, which is exactly the
+        // refusal wanted, and gets it from the operating system rather than
+        // from a check with a race under it.
+        FileOperation::DeleteIfEmpty(path) => {
+            if path.is_dir() {
+                std::fs::remove_dir(path).map_err(|error| {
+                    io::Error::new(
+                        error.kind(),
+                        format!("{} is no longer empty", path.display()),
+                    )
+                })
+            } else {
+                // A file has to be checked, there being no "unlink if empty".
+                // The window between this and the unlink is real and the cost of
+                // losing it is small: something written in that instant is lost.
+                // Refusing outright would be worse — it would mean a create
+                // could never be undone on a filesystem anyone else is using.
+                match std::fs::metadata(path) {
+                    Ok(meta) if meta.len() > 0 => Err(io::Error::other(format!(
+                        "{} has been written to since it was created — delete it \
+                         yourself if that is what you meant",
+                        path.display()
+                    ))),
+                    Ok(_) => std::fs::remove_file(path),
+                    Err(error) => Err(error),
+                }
+            }
+        }
     }
 }
 
@@ -1452,6 +1481,65 @@ mod tests {
 
         perform(&deco_editor::FileOperation::Delete(moved.clone()), None).unwrap();
         assert!(!moved.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn undoing_a_create_refuses_once_the_file_has_content() {
+        let dir = scratch("undo-create");
+        let path = dir.join("new.rs");
+        perform(&deco_editor::FileOperation::CreateFile(path.clone()), None).unwrap();
+        // Created, then typed in and saved — which is the whole point of having
+        // created it.
+        std::fs::write(&path, "fn main() {}\n").unwrap();
+
+        perform(
+            &deco_editor::FileOperation::DeleteIfEmpty(path.clone()),
+            None,
+        )
+        .expect_err("undoing the create must not take the contents with it");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "fn main() {}\n",
+            "the work is still there"
+        );
+
+        // Still empty, and it goes.
+        let untouched = dir.join("untouched.rs");
+        perform(
+            &deco_editor::FileOperation::CreateFile(untouched.clone()),
+            None,
+        )
+        .unwrap();
+        perform(
+            &deco_editor::FileOperation::DeleteIfEmpty(untouched.clone()),
+            None,
+        )
+        .unwrap();
+        assert!(!untouched.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn undoing_a_new_folder_refuses_once_it_holds_anything() {
+        let dir = scratch("undo-folder");
+        let made = dir.join("pkg");
+        perform(
+            &deco_editor::FileOperation::CreateFolder(made.clone()),
+            None,
+        )
+        .unwrap();
+        std::fs::write(made.join("mod.rs"), "pub fn x() {}\n").unwrap();
+
+        perform(
+            &deco_editor::FileOperation::DeleteIfEmpty(made.clone()),
+            None,
+        )
+        .expect_err("undoing the create must not recursively delete a tree");
+        assert!(
+            made.join("mod.rs").is_file(),
+            "the file added since is still there"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
