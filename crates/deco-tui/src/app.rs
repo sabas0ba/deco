@@ -837,6 +837,15 @@ impl Driver {
                         // every one of them and would let go of every tab in the
                         // workspace for a delete that never happened.
                         if remote.is_none() {
+                            // Whatever failed, the listing that said it would
+                            // work is now suspect — a create refused because
+                            // another program claimed the name means the tree is
+                            // missing that name, and without a re-read every
+                            // retry fails against the same stale picture. There
+                            // is no watcher to notice it any other way.
+                            if let Some(parent) = operation.parent() {
+                                session.invalidate_directory(parent);
+                            }
                             reconcile_failed_delete(session, lsp, &operation, error.kind());
                         }
                     }
@@ -1264,9 +1273,6 @@ fn reconcile_failed_delete(
         session.clear_file_undo();
     }
 
-    if let Some(parent) = operation.parent() {
-        session.invalidate_directory(parent);
-    }
     // And the subtree: the directory itself may survive, so re-reading its
     // parent rediscovers it and leaves its own listing — and every expanded one
     // below — describing files that have gone.

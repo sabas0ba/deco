@@ -1656,12 +1656,7 @@ impl Session {
     /// and then saved it, being told it is now plain text would undo a decision
     /// nobody revisited.
     pub fn rename_to(&mut self, path: PathBuf) -> Outcome {
-        let chosen_by_hand = self.document.language()
-            != self
-                .document
-                .path
-                .as_deref()
-                .and_then(crate::document::language_for_path);
+        let chosen_by_hand = self.document.language_pinned;
         self.document.path = Some(path.clone());
         if !chosen_by_hand {
             self.set_language(None);
@@ -1722,6 +1717,9 @@ impl Session {
                 .map(str::to_owned),
         };
         self.document.language_id = resolved;
+        // `Some` is a choice; `None` is "work it out from the name again", which
+        // is what unpinning means.
+        self.document.language_pinned = language.is_some();
         self.document.syntax = deco_syntax::Syntax::new(self.document.language());
         self.resolve_document_settings();
         self.refresh_context();
@@ -3106,6 +3104,17 @@ impl Session {
         if explorer.rows().iter().any(|other| other.path == to) {
             return Outcome::Message(crate::files::FileError::Exists(name.to_owned()).to_string());
         }
+        // A tab can hold a path the tree does not show: a file deleted by
+        // another program stays open here until something notices. Renaming onto
+        // it would leave two buffers for one path, and whichever was saved last
+        // would silently win — which is what `Session::open` exists to prevent,
+        // reached by a different road.
+        let name = name.to_owned();
+        if self.tab_of(&to).is_some() {
+            return Outcome::Message(format!(
+                "a tab is still open on `{name}` — close it before renaming onto it"
+            ));
+        }
 
         let operation = crate::files::Operation::Rename { from: row.path, to };
         self.record_file_operation(&operation);
@@ -3291,11 +3300,7 @@ impl Session {
 
         // A language the user picked by hand outranks the new extension, which
         // is the rule save-as follows too.
-        let chosen_by_hand = document.language()
-            != document
-                .path
-                .as_deref()
-                .and_then(crate::document::language_for_path);
+        let chosen_by_hand = document.language_pinned;
         let previous_path = document.path.clone();
         document.path = Some(to);
         if !chosen_by_hand {
@@ -8050,6 +8055,40 @@ mod tests {
         assert!(
             !rows.iter().find(|r| r.name == "src").unwrap().expanded,
             "nor its expansion"
+        );
+    }
+
+    #[test]
+    fn pinning_the_language_a_name_already_implies_still_counts_as_choosing() {
+        let mut s = with_tree();
+        s.open(PathBuf::from("/w/main.rs"), "fn main() {}\n");
+        assert_eq!(s.document.language(), Some("rust"));
+        // Choosing Rust for a file already inferred as Rust: by value alone this
+        // is indistinguishable from never having chosen.
+        s.set_language(Some("rust"));
+
+        let index = s.tab_of(Path::new("/w/main.rs")).expect("it is open");
+        s.retarget_tab(index, PathBuf::from("/w/main.txt"));
+        assert_eq!(
+            s.document_at_index_mut(index).unwrap().language(),
+            Some("rust"),
+            "a language pinned by hand survives a rename, whatever the new name \
+             would have implied"
+        );
+    }
+
+    #[test]
+    fn renaming_onto_a_path_a_tab_still_holds_is_refused() {
+        let mut s = with_tree();
+        // A file another program deleted, still open here — the tree no longer
+        // lists it, so nothing else stands in the way.
+        s.open(PathBuf::from("/w/gone.rs"), "fn gone() {}\n");
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+        s.run("list.focusDown", None, 0); // Cargo.toml
+
+        assert!(
+            matches!(s.rename_in_tree("gone.rs"), Outcome::Message(_)),
+            "two buffers for one path is how a save silently loses the other"
         );
     }
 

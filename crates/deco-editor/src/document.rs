@@ -189,6 +189,14 @@ pub struct Document {
     pub path: Option<PathBuf>,
     /// The detected language id.
     pub language_id: Option<String>,
+    /// Whether the language was chosen by hand rather than from the file name.
+    ///
+    /// Recorded rather than worked out by comparing the language against what
+    /// the extension implies: picking Rust for a `.rs` file — to pin it before a
+    /// rename, say — is indistinguishable from never having picked anything if
+    /// the two are only compared by value, and the choice would then be lost the
+    /// moment the file was renamed to something the extension no longer covers.
+    pub language_pinned: bool,
     /// Settings resolved for this document's language.
     pub settings: EditorSettings,
     /// Whether the buffer differs from what is on disk.
@@ -266,6 +274,7 @@ impl Document {
             history: History::default(),
             path: None,
             language_id: None,
+            language_pinned: false,
             settings,
             indentation: deco_config::indent::Guess::default(),
             wrap_override: None,
@@ -298,6 +307,7 @@ impl Document {
             path: Some(path),
             syntax: Syntax::new(language_id.as_deref()),
             language_id,
+            language_pinned: false,
             settings,
             indentation: deco_config::indent::guess(text),
             wrap_override: None,
