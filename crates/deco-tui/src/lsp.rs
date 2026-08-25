@@ -1033,8 +1033,36 @@ impl Lsp {
             if self.open.as_deref() == Some(path.as_path()) {
                 self.open = None;
                 self.sent = None;
+                // And everything in flight about it. A reply that was already on
+                // its way writes itself back into the session when it lands —
+                // `Update::SemanticTokens` only checks that the request id still
+                // matches — which would undo the very cleanup that closing the
+                // document just did. Nothing would clear it afterwards either:
+                // `changed` returns early for a document with no path, so the
+                // stale spans would sit over the buffer for good.
+                self.forget_requests();
             }
         }
+    }
+
+    /// Drops every request whose answer would write into the session.
+    ///
+    /// Not a cancellation on the wire: the server may still reply, and the reply
+    /// is discarded because nothing is waiting for that id any more. `$/cancelRequest`
+    /// would be politer to the server and makes no difference here.
+    fn forget_requests(&mut self) {
+        self.hover = None;
+        self.hover_request = None;
+        self.definition_request = None;
+        self.references_request = None;
+        self.semantic_request = None;
+        self.suggest = None;
+        self.completion_request = None;
+        self.format_request = None;
+        self.rename_request = None;
+        self.code_action_request = None;
+        self.resolve_request = None;
+        self.code_actions.clear();
     }
 
     pub fn attach(&mut self, session: &mut Session) {
@@ -1295,18 +1323,10 @@ impl Lsp {
                     self.supervisor = None;
                     self.language = None;
                     self.open = None;
-                    self.hover = None;
-                    self.hover_request = None;
-                    self.definition_request = None;
-                    self.references_request = None;
-                    self.semantic_request = None;
-                    self.suggest = None;
-                    self.completion_request = None;
-                    self.format_request = None;
-                    self.rename_request = None;
-                    self.code_action_request = None;
-                    self.resolve_request = None;
-                    self.code_actions.clear();
+                    // The same set closing a deleted document drops, so a new
+                    // kind of request cannot be added to one place and forgotten
+                    // in the other.
+                    self.forget_requests();
                     // The features that were on offer went with the server.
                     self.sync_context(session);
                     return true;
