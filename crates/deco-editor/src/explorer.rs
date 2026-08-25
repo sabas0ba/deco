@@ -204,6 +204,64 @@ impl Explorer {
         }
     }
 
+    /// Drops everything the tree remembers at or under `prefix`.
+    ///
+    /// For something that has *gone*, rather than merely changed. Invalidating
+    /// would keep the expansion state and the map entry, so a directory later
+    /// created with the same name would come back already open — and, until its
+    /// listing arrived, showing the rows of the one that was deleted.
+    pub fn forget_under(&mut self, prefix: &Path) {
+        self.listings.retain(|dir, _| !dir.starts_with(prefix));
+        self.expanded.retain(|dir| !dir.starts_with(prefix));
+        if self
+            .revealing
+            .as_deref()
+            .is_some_and(|p| p.starts_with(prefix))
+        {
+            self.revealing = None;
+        }
+        self.clamp();
+    }
+
+    /// Moves what the tree remembers about `from` to `to`.
+    ///
+    /// A rename does not change what is *in* a directory, and a listing holds
+    /// names rather than paths — so the contents are still right and only the
+    /// key is wrong. Re-keying keeps a renamed directory open with its rows
+    /// intact, which is what a rename looks like from the outside, and leaves
+    /// nothing behind for the old name to inherit if it is created again.
+    pub fn rekey_under(&mut self, from: &Path, to: &Path) {
+        let moved: Vec<PathBuf> = self
+            .listings
+            .keys()
+            .filter(|dir| dir.starts_with(from))
+            .cloned()
+            .collect();
+        for old in moved {
+            let Ok(rest) = old.strip_prefix(from) else {
+                continue;
+            };
+            let new = if rest.as_os_str().is_empty() {
+                to.to_path_buf()
+            } else {
+                to.join(rest)
+            };
+            if let Some(contents) = self.listings.remove(&old) {
+                self.listings.insert(new, contents);
+            }
+        }
+        for dir in self.expanded.iter_mut() {
+            if let Ok(rest) = dir.strip_prefix(from) {
+                *dir = if rest.as_os_str().is_empty() {
+                    to.to_path_buf()
+                } else {
+                    to.join(rest)
+                };
+            }
+        }
+        self.clamp();
+    }
+
     /// Whether the root's listing has arrived.
     ///
     /// The difference between "this workspace is empty" and "nobody has read it
@@ -652,6 +710,51 @@ mod tests {
             Some(Path::new("/w/src/deep")),
             "the expanded listing below it is stale too"
         );
+    }
+
+    #[test]
+    fn a_deleted_directory_leaves_nothing_for_its_name_to_inherit() {
+        let mut explorer = tree();
+        explorer.select_first(); // src
+        explorer.expand();
+        explorer.fill(Path::new("/w/src"), vec![Entry::file("old.rs")]);
+        assert!(explorer.rows().iter().any(|r| r.name == "old.rs"));
+
+        explorer.forget_under(Path::new("/w/src"));
+        // The parent is re-read and a *new* `src` appears, empty.
+        explorer.fill(Path::new("/w"), vec![Entry::dir("src")]);
+        assert!(
+            !explorer.rows().iter().any(|r| r.name == "old.rs"),
+            "a directory created with the old name must not show the old one's rows"
+        );
+        let src = explorer
+            .rows()
+            .into_iter()
+            .find(|r| r.name == "src")
+            .expect("it is there");
+        assert!(!src.expanded, "nor come back already open");
+    }
+
+    #[test]
+    fn a_renamed_directory_keeps_its_rows_and_its_expansion() {
+        let mut explorer = tree();
+        explorer.select_first();
+        explorer.expand();
+        explorer.fill(Path::new("/w/src"), vec![Entry::file("main.rs")]);
+
+        explorer.rekey_under(Path::new("/w/src"), Path::new("/w/source"));
+        explorer.fill(
+            Path::new("/w"),
+            vec![Entry::dir("source"), Entry::file("Cargo.toml")],
+        );
+
+        let rows: Vec<_> = explorer.rows().into_iter().map(|r| r.name).collect();
+        assert!(rows.contains(&"source".to_owned()));
+        assert!(
+            rows.contains(&"main.rs".to_owned()),
+            "the contents came with it — a rename does not change them"
+        );
+        assert_eq!(explorer.wanted(), None, "and nothing needs re-reading");
     }
 
     #[test]

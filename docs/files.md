@@ -180,6 +180,13 @@ history survives. Any other failure could have taken part of the tree, and the
 barrier goes up — an undo over a state that never existed is worse than an undo
 you no longer have.
 
+What the tree remembered about a directory goes when the directory does. It
+would otherwise keep its rows and its open state under that name, so creating a
+directory called the same thing later would show the deleted one's contents,
+already expanded. A **rename** keeps them instead of dropping them — the contents
+did not change, only the name — so a renamed folder stays open with its rows
+intact, which is what a rename looks like from the outside.
+
 A tab is let go only when the disk says its file is **definitely** gone. The
 permission problem that stopped a delete can also stop the check, and a file that
 merely cannot be looked at is not a file that has been removed.

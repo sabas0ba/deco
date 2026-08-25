@@ -3470,6 +3470,24 @@ impl Session {
         }
         if let (Some(explorer), Some(parent)) = (self.explorer.as_mut(), operation.parent()) {
             explorer.invalidate(parent);
+            // What the tree remembered about the thing that moved or went. The
+            // parent alone is not enough: a deleted directory keeps its cached
+            // listing and its expansion, so creating one with the same name
+            // later would show the old one's rows, already open. A rename is
+            // re-keyed rather than forgotten — the contents did not change, and
+            // a listing holds names rather than paths.
+            match operation {
+                crate::files::Operation::Delete {
+                    path,
+                    directory: true,
+                }
+                | crate::files::Operation::DeleteIfEmpty {
+                    path,
+                    directory: true,
+                } => explorer.forget_under(path),
+                crate::files::Operation::Rename { from, to } => explorer.rekey_under(from, to),
+                _ => {}
+            }
             // The selection follows what was just made or moved. Without this,
             // creating a file leaves the selection on whatever was highlighted
             // before, and the next key — `F2`, `delete` — acts on *that*, which
@@ -7998,6 +8016,40 @@ mod tests {
             Outcome::Handled,
             "pressing enter on the seeded prompt must not rename the file to a \
              trimmed version of its own name"
+        );
+    }
+
+    #[test]
+    fn a_deleted_directorys_rows_do_not_come_back_with_its_name() {
+        let mut s = with_tree();
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+        s.run("list.expand", None, 0); // open `src`
+        s.fill_directory(
+            Path::new("/w/src"),
+            vec![crate::explorer::Entry::file("old.rs")],
+        );
+        assert!(s
+            .explorer()
+            .unwrap()
+            .rows()
+            .iter()
+            .any(|r| r.name == "old.rs"));
+
+        let Outcome::FileOperation(deleted) = s.delete_in_tree() else {
+            panic!("expected a delete");
+        };
+        s.file_operation_done(&deleted);
+        // A directory of the same name exists again — a fresh, empty one.
+        s.fill_directory(Path::new("/w"), vec![crate::explorer::Entry::dir("src")]);
+
+        let rows = s.explorer().unwrap().rows();
+        assert!(
+            !rows.iter().any(|r| r.name == "old.rs"),
+            "the deleted directory's rows must not be inherited by its name"
+        );
+        assert!(
+            !rows.iter().find(|r| r.name == "src").unwrap().expanded,
+            "nor its expansion"
         );
     }
 
