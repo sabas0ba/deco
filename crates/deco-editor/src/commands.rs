@@ -318,6 +318,10 @@ pub const PENDING: &[(&str, &str)] = &[
 
 pub const PALETTE: &[(&str, &str)] = &[
     ("undo", "Undo"),
+    ("explorer.newFile", "File: New File"),
+    ("explorer.newFolder", "File: New Folder"),
+    ("renameFile", "File: Rename"),
+    ("deleteFile", "File: Delete"),
     ("redo", "Redo"),
     ("editor.action.selectAll", "Select All"),
     ("expandLineSelection", "Expand Line Selection"),

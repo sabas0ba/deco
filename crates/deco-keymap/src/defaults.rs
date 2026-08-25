@@ -167,12 +167,16 @@ pub const DEFAULT_KEYBINDINGS_JSONC: &str = r#"[
     // and `delete` mean something else in the text, which is why both are gated.
     { "key": "f2",           "command": "renameFile",           "when": "sideBarFocus" },
     { "key": "delete",       "command": "deleteFile",           "when": "sideBarFocus" },
-    { "key": "ctrl+n",       "command": "explorer.newFile",     "when": "sideBarFocus" },
+    // `mac` overrides on both, or the general `cmd+n` rule above wins on macOS
+    // and the platform-standard key opens an untitled editor instead of the
+    // tree's prompt. A focus-specific rule only overrides a general one when it
+    // is bound for the same platform.
+    { "key": "ctrl+n",       "mac": "cmd+n",       "command": "explorer.newFile",   "when": "sideBarFocus" },
+    { "key": "ctrl+shift+n", "mac": "cmd+shift+n", "command": "explorer.newFolder", "when": "sideBarFocus" },
     // The tree's own undo. The general `ctrl+z` above is gated on
     // `textInputFocus`, which is false while a region has the keyboard — so
     // without this the key does not resolve at all in the tree.
     { "key": "ctrl+z",       "mac": "cmd+z",       "command": "undo", "when": "sideBarFocus" },
-    { "key": "ctrl+shift+n", "command": "explorer.newFolder",   "when": "sideBarFocus" },
     { "key": "ctrl+shift+e", "mac": "cmd+shift+e", "command": "workbench.files.action.focusFilesExplorer" },
 
     // ---- Quick open -----------------------------------------------------

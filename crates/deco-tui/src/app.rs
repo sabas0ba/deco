@@ -1136,7 +1136,13 @@ fn perform(
             // refused that already, but between its listing and this call is a
             // window, and silently replacing somebody's file is the one outcome
             // worth a second check.
-            if to.exists() {
+            //
+            // Not on a case-only rename, though. On the case-insensitive
+            // filesystems macOS and Windows usually have, `Foo.rs` *is*
+            // `foo.rs`, so this check sees the source itself and would refuse
+            // every change of capitalisation. Canonicalising both tells the two
+            // cases apart: same file, or a different one in the way.
+            if to.exists() && !same_file(from, to) {
                 return Err(io::Error::new(
                     io::ErrorKind::AlreadyExists,
                     format!("{} already exists", to.display()),
@@ -1180,6 +1186,20 @@ fn perform(
                 }
             }
         }
+    }
+}
+
+/// Whether two paths name the same file on disk.
+///
+/// By canonicalising rather than comparing strings, so that a case-only rename
+/// on a case-insensitive filesystem is recognised as the file renaming itself.
+/// A path that cannot be canonicalised is not the same file as anything — the
+/// caller only asks when `to` exists, so failing here means something changed
+/// underneath and refusing is the safe answer.
+fn same_file(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
     }
 }
 

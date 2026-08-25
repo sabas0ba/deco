@@ -139,7 +139,22 @@ check and the attempt is a window another program can use. So the frontend
 refuses to create over a file that appeared in the meantime, and refuses a
 rename onto a name that got taken, rather than truncating or replacing. When the
 disk says no, the operation comes back off the undo stack — `ctrl+z` must never
-offer to undo something that did not happen.
+offer to undo something that did not happen, and an undo that failed stays there
+to be tried again.
+
+Creating is safe against that window: `create_new` is one operation, and the
+filesystem is what refuses. **Renaming is not.** The check that the target is
+free and the rename itself are two calls, and a file appearing between them is
+replaced rather than refused. Closing it needs a no-replace rename, which the
+standard library does not offer on any platform — it means `renameat2` on Linux,
+`renamex_np` on macOS and `MoveFileEx` on Windows, three pieces of unsafe
+platform code with a runtime fallback each, in a codebase with one `unsafe` in
+it. That is worth doing as its own change rather than being smuggled in here, so
+for now the window is named rather than closed.
+
+A rename that only changes capitalisation works on a case-insensitive
+filesystem, where `Foo.rs` and `foo.rs` are the same file: the check asks whether
+the target is *a different file*, not whether the name is taken.
 
 Over a [remote connection](remote.md) these are refused by name: the protocol
 reads, writes and lists, and has no create, rename or delete yet. Refusing is
