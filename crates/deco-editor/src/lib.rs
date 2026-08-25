@@ -10,6 +10,7 @@
 
 pub mod commands;
 pub mod document;
+pub mod explorer;
 pub mod find;
 pub mod input;
 pub mod layout;
@@ -19,6 +20,7 @@ pub mod workspace;
 
 pub use commands::{Clipboard, Context, MemoryClipboard, Outcome};
 pub use document::{Document, View};
+pub use explorer::{Explorer, Row as ExplorerRow};
 pub use find::Find;
 pub use prompt::{Prompt, PromptKind};
 pub use session::{Focus, Pane, Session};

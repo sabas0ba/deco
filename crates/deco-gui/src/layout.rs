@@ -302,13 +302,17 @@ pub fn layout(session: &Session, width: f32, height: f32, metrics: Metrics) -> L
         cursor: caret,
         current_line,
         text_left,
-        chrome: chrome_lines(&regions, metrics),
+        chrome: chrome_lines(session, &regions, metrics),
         colors,
     }
 }
 
 /// The side bar, the panel and the rules between them, as positioned text.
-fn chrome_lines(regions: &deco_editor::layout::Regions, metrics: Metrics) -> Vec<ChromeLine> {
+fn chrome_lines(
+    session: &Session,
+    regions: &deco_editor::layout::Regions,
+    metrics: Metrics,
+) -> Vec<ChromeLine> {
     let mut out = Vec::new();
     let cell = |x: usize, y: usize| {
         (
@@ -319,11 +323,38 @@ fn chrome_lines(regions: &deco_editor::layout::Regions, metrics: Metrics) -> Vec
 
     if let Some(rect) = regions.side_bar {
         let (x, y) = cell(rect.x, rect.y);
+        let explorer = session.explorer();
         out.push(ChromeLine {
-            text: "SIDE BAR".to_owned(),
+            text: match explorer {
+                Some(_) => "EXPLORER".to_owned(),
+                None => "SIDE BAR".to_owned(),
+            },
             x: x + metrics.padding,
             y,
         });
+        // The same rows the terminal draws, positioned by this frontend's
+        // metrics — the model decided what they say, and two frontends
+        // disagreeing about that is the thing keeping it in the session avoids.
+        if let Some(explorer) = explorer {
+            let head = deco_editor::session::EXPLORER_CHROME_ROWS;
+            for (index, row) in explorer
+                .visible(rect.height.saturating_sub(head))
+                .into_iter()
+                .enumerate()
+            {
+                let marker = match (row.is_dir, row.expanded) {
+                    (true, true) => "▾ ",
+                    (true, false) => "▸ ",
+                    (false, _) => "  ",
+                };
+                let (x, y) = cell(rect.x, rect.y + head + index);
+                out.push(ChromeLine {
+                    text: format!("{}{marker}{}", "  ".repeat(row.depth), row.name),
+                    x: x + metrics.padding,
+                    y,
+                });
+            }
+        }
     }
     if let Some(rect) = regions.panel {
         let (x, y) = cell(rect.x, rect.y);
@@ -443,6 +474,30 @@ mod tests {
             "{:?}",
             laid.chrome
         );
+    }
+
+    #[test]
+    fn the_side_bar_draws_the_same_tree_rows_the_terminal_does() {
+        use deco_editor::explorer::Entry;
+        let mut session = with_chrome(true, false);
+        session.set_workspace_root("/w");
+        session.fill_directory(
+            std::path::Path::new("/w"),
+            vec![Entry::dir("src"), Entry::file("Cargo.toml")],
+        );
+        session.run("workbench.files.action.focusFilesExplorer", None, 0);
+        session.run("list.expand", None, 0);
+        session.fill_directory(std::path::Path::new("/w/src"), vec![Entry::file("main.rs")]);
+
+        let texts: Vec<String> = layout(&session, 800.0, 400.0, metrics())
+            .chrome
+            .into_iter()
+            .map(|line| line.text)
+            .collect();
+        assert!(texts.contains(&"EXPLORER".to_owned()), "{texts:?}");
+        assert!(texts.contains(&"▾ src".to_owned()), "{texts:?}");
+        assert!(texts.contains(&"    main.rs".to_owned()), "{texts:?}");
+        assert!(texts.contains(&"  Cargo.toml".to_owned()), "{texts:?}");
     }
 
     #[test]
