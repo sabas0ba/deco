@@ -142,6 +142,13 @@ disk says no, the operation comes back off the undo stack — `ctrl+z` must neve
 offer to undo something that did not happen, and an undo that failed stays there
 to be tried again.
 
+**Where a path leads is checked, not just how it is spelled.** The tree can only
+compare spellings — it has no filesystem — so a directory replaced by a symlink
+since it was listed would resolve elsewhere, and every call follows it: `New
+File` in a `src` that is now a link to somewhere else would write there. Before
+anything is created, renamed or removed, the directory it is in is resolved and
+has to still be inside the workspace.
+
 Creating is safe against that window: `create_new` is one operation, and the
 filesystem is what refuses. **Renaming is not.** The check that the target is
 free and the rename itself are two calls, and a file appearing between them is
@@ -151,6 +158,13 @@ standard library does not offer on any platform — it means `renameat2` on Linu
 platform code with a runtime fallback each, in a codebase with one `unsafe` in
 it. That is worth doing as its own change rather than being smuggled in here, so
 for now the window is named rather than closed.
+
+The symlink check has a cousin of the same window: something can replace a
+directory between the check and the call. Closing that needs `openat` with
+`O_NOFOLLOW` and a handle per path component, which the standard library also
+has on no platform. What the check does close is the case that actually happens
+— a link sitting in the workspace, left by a build or a package manager — rather
+than an attacker racing in the microseconds between two calls.
 
 **A delete removes what the tree was showing**, not what is on disk when the
 frontend gets there. The confirmation names a file or a folder, and that is what

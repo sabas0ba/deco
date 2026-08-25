@@ -811,7 +811,10 @@ impl Driver {
             // The tree decided what should happen to a file; doing it needs a
             // filesystem, which is this side.
             Outcome::FileOperation(operation) => {
-                match perform(&operation, remote.as_mut()) {
+                let root = session
+                    .explorer()
+                    .map(|explorer| explorer.root().to_path_buf());
+                match perform(&operation, remote.as_mut(), root.as_deref()) {
                     Ok(()) => {
                         session.file_operation_done(&operation);
                         // A delete may have detached open documents; the server
@@ -1126,6 +1129,7 @@ const LSP_POLL_INTERVAL: Duration = Duration::from_millis(50);
 fn perform(
     operation: &deco_editor::FileOperation,
     remote: Option<&mut deco_remote::Client>,
+    root: Option<&Path>,
 ) -> io::Result<()> {
     use deco_editor::FileOperation;
 
@@ -1136,6 +1140,15 @@ fn perform(
         return Err(io::Error::other(
             "changing files over a remote connection is not implemented yet",
         ));
+    }
+
+    // The session checked that the path is inside the workspace, but it can only
+    // compare the *spelling*: it has no filesystem. A directory replaced by a
+    // symlink since the tree listed it resolves elsewhere, and every call below
+    // follows it — so `New File` in a `src` that is now a link to `/outside`
+    // would write there, having been told it was writing inside the workspace.
+    if let Some(root) = root {
+        inside_after_links(root, operation.parent().unwrap_or(Path::new("")))?;
     }
 
     match operation {
@@ -1272,6 +1285,33 @@ fn reconcile_failed_delete(
         }
     }
     lsp.close_deleted(session);
+}
+
+/// Refuses a directory that resolves outside `root` once symlinks are followed.
+///
+/// `canonicalize` is what turns the session's spelling-based check into one
+/// about where the path actually leads. It closes the case that matters in
+/// practice — a link sitting in the workspace, put there by a build or a
+/// package manager — but not a racing one: something can still replace an
+/// ancestor between this and the call below. Closing *that* needs `openat` with
+/// `O_NOFOLLOW` and a directory handle per component, which the standard library
+/// has on no platform. `docs/files.md` names the window, next to the rename one
+/// it is a cousin of.
+fn inside_after_links(root: &Path, dir: &Path) -> io::Result<()> {
+    let real_root = std::fs::canonicalize(root)?;
+    let real_dir = std::fs::canonicalize(dir)?;
+    if real_dir.starts_with(&real_root) {
+        return Ok(());
+    }
+    Err(io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        format!(
+            "{} leads outside the workspace — something replaced a directory \
+             with a link to {}",
+            dir.display(),
+            real_dir.display()
+        ),
+    ))
 }
 
 /// Whether two paths name the same file on disk.
@@ -1532,8 +1572,12 @@ mod tests {
         std::fs::write(&path, "someone else got here first\n").unwrap();
 
         // The tree's listing said this name was free; the disk disagrees.
-        let error = perform(&deco_editor::FileOperation::CreateFile(path.clone()), None)
-            .expect_err("creating over an existing file must fail");
+        let error = perform(
+            &deco_editor::FileOperation::CreateFile(path.clone()),
+            None,
+            Some(&dir),
+        )
+        .expect_err("creating over an existing file must fail");
         assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
@@ -1557,6 +1601,7 @@ mod tests {
                 to: to.clone(),
             },
             None,
+            Some(&dir),
         )
         .expect_err("a rename must not replace a file");
         assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
@@ -1569,7 +1614,12 @@ mod tests {
     fn create_rename_and_delete_do_what_they_say() {
         let dir = scratch("roundtrip");
         let made = dir.join("new.rs");
-        perform(&deco_editor::FileOperation::CreateFile(made.clone()), None).unwrap();
+        perform(
+            &deco_editor::FileOperation::CreateFile(made.clone()),
+            None,
+            Some(&dir),
+        )
+        .unwrap();
         assert!(made.is_file());
         assert_eq!(std::fs::read_to_string(&made).unwrap(), "");
 
@@ -1580,6 +1630,7 @@ mod tests {
                 to: moved.clone(),
             },
             None,
+            Some(&dir),
         )
         .unwrap();
         assert!(!made.exists() && moved.is_file());
@@ -1590,6 +1641,7 @@ mod tests {
                 directory: false,
             },
             None,
+            Some(&dir),
         )
         .unwrap();
         assert!(!moved.exists());
@@ -1600,7 +1652,12 @@ mod tests {
     fn undoing_a_create_refuses_once_the_file_has_content() {
         let dir = scratch("undo-create");
         let path = dir.join("new.rs");
-        perform(&deco_editor::FileOperation::CreateFile(path.clone()), None).unwrap();
+        perform(
+            &deco_editor::FileOperation::CreateFile(path.clone()),
+            None,
+            Some(&dir),
+        )
+        .unwrap();
         // Created, then typed in and saved — which is the whole point of having
         // created it.
         std::fs::write(&path, "fn main() {}\n").unwrap();
@@ -1611,6 +1668,7 @@ mod tests {
                 directory: false,
             },
             None,
+            Some(&dir),
         )
         .expect_err("undoing the create must not take the contents with it");
         assert_eq!(
@@ -1624,6 +1682,7 @@ mod tests {
         perform(
             &deco_editor::FileOperation::CreateFile(untouched.clone()),
             None,
+            Some(&dir),
         )
         .unwrap();
         perform(
@@ -1632,6 +1691,7 @@ mod tests {
                 directory: false,
             },
             None,
+            Some(&dir),
         )
         .unwrap();
         assert!(!untouched.exists());
@@ -1645,6 +1705,7 @@ mod tests {
         perform(
             &deco_editor::FileOperation::CreateFolder(made.clone()),
             None,
+            Some(&dir),
         )
         .unwrap();
         std::fs::write(made.join("mod.rs"), "pub fn x() {}\n").unwrap();
@@ -1655,6 +1716,7 @@ mod tests {
                 directory: true,
             },
             None,
+            Some(&dir),
         )
         .expect_err("undoing the create must not recursively delete a tree");
         assert!(
@@ -1689,6 +1751,7 @@ mod tests {
                     to: to.clone(),
                 },
                 None,
+                Some(&dir),
             )
             .expect_err("a rename must not silently remove a symlink");
             assert!(
@@ -1697,6 +1760,34 @@ mod tests {
             );
             assert!(from.exists(), "and so is the file that was to move");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_symlinked_directory_cannot_be_used_to_write_outside_the_workspace() {
+        let dir = scratch("escape");
+        let workspace = dir.join("workspace");
+        let outside = dir.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        // `src` was a directory when the tree listed it; it is a link now.
+        std::os::unix::fs::symlink(&outside, workspace.join("src")).unwrap();
+
+        // The session's own check passes: the spelling is inside the workspace.
+        let wanted = workspace.join("src").join("planted.rs");
+        assert!(wanted.starts_with(&workspace));
+
+        perform(
+            &deco_editor::FileOperation::CreateFile(wanted),
+            None,
+            Some(&workspace),
+        )
+        .expect_err("a link out of the workspace must not be written through");
+        assert!(
+            !outside.join("planted.rs").exists(),
+            "and nothing was written where it led"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
