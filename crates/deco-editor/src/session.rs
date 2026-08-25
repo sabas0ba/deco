@@ -331,6 +331,19 @@ pub struct Session {
     panel: bool,
     /// Which region has the keyboard.
     focus: Focus,
+    /// File operations that can be taken back, most recent last.
+    ///
+    /// The explorer's own undo, separate from the text's — which is what VS Code
+    /// does too, and the only arrangement that makes sense here: `ctrl+z` in a
+    /// buffer means "put my characters back", and having it also move files
+    /// because the last thing you did happened to be in the tree would make it
+    /// unpredictable in both places. Focus decides which stack a press reaches,
+    /// the same way it decides everything else.
+    ///
+    /// Holds the *inverse* of what was done, so undoing is running what is on
+    /// top. A delete contributes nothing — it has no inverse — so it clears the
+    /// stack rather than leaving entries below it that `ctrl+z` would jump to.
+    explorer_undo: Vec<crate::files::Operation>,
     /// The workspace tree, once a frontend has said where the workspace is.
     ///
     /// `None` until then, because the session does not derive the root itself:
@@ -509,6 +522,7 @@ impl Session {
             panel: false,
             focus: Focus::Editor,
             explorer: None,
+            explorer_undo: Vec::new(),
             // Replaced by the first `resize`, which every frontend does before
             // it draws. The default matches `View`'s so a session nobody sized
             // still lays out sensibly under test.
@@ -1238,6 +1252,23 @@ impl Session {
             // what the frontend says when a binding is a typo.
             "list.focusDown" | "list.focusUp" | "list.focusFirst" | "list.focusLast"
             | "list.expand" | "list.collapse" | "list.select" => self.explorer_key(command),
+            // The tree's undo, reached by the same key as the text's and told
+            // apart by what has the keyboard. Before the focus guard for the
+            // same reason the list keys are, and after the workspace-edit arm
+            // above so that a shared text step still wins when there is one —
+            // that arm only matches when the document has one to undo.
+            "undo" if self.focus == Focus::SideBar => self.undo_file_operation(),
+            // The prompts the tree's mutations ask through. They act on what is
+            // *selected* in the tree, which is model state and exists whether or
+            // not the tree has the keyboard — so no focus guard here, and
+            // invoking one from the palette works. The keys are what needs
+            // telling apart, and the keymap does it: `F2` and `delete` are bound
+            // to these only under `sideBarFocus`, so in the text they still
+            // rename a symbol and delete a character.
+            "explorer.newFile" => self.open_tree_prompt(PromptKind::NewFile),
+            "explorer.newFolder" => self.open_tree_prompt(PromptKind::NewFolder),
+            "renameFile" => self.open_rename_file(),
+            "deleteFile" => self.open_tree_prompt(PromptKind::ConfirmDelete),
             "workbench.action.focusSideBar" => self.focus_region(Focus::SideBar),
             "workbench.action.focusPanel" => self.focus_region(Focus::Panel),
             // VS Code's way back to the text from anywhere in the chrome.
@@ -1819,6 +1850,28 @@ impl Session {
         };
         match prompt.kind() {
             PromptKind::GoToLine => self.go_to_line(prompt.text()),
+            PromptKind::NewFile => {
+                let name = prompt.text().to_owned();
+                self.create_in_tree(&name, false)
+            }
+            PromptKind::NewFolder => {
+                let name = prompt.text().to_owned();
+                self.create_in_tree(&name, true)
+            }
+            PromptKind::RenameFile => {
+                let name = prompt.text().to_owned();
+                self.rename_in_tree(&name)
+            }
+            PromptKind::ConfirmDelete => {
+                // Only a typed `y` goes through. Enter on an empty box is what
+                // happens when somebody dismisses a prompt they did not read,
+                // and it must not be the answer that deletes their file.
+                if prompt.text().trim().eq_ignore_ascii_case("y") {
+                    self.delete_in_tree()
+                } else {
+                    Outcome::Message("nothing was deleted".to_owned())
+                }
+            }
             PromptKind::Commands => match prompt.selected() {
                 Some(entry) => {
                     let id = entry.id.clone();
@@ -2906,6 +2959,286 @@ impl Session {
             ));
         }
         Outcome::Handled
+    }
+
+    /// Opens one of the tree's prompts, refusing when there is nothing to ask
+    /// about.
+    fn open_tree_prompt(&mut self, kind: PromptKind) -> Outcome {
+        if self.explorer.is_none() {
+            return Outcome::Message("there is no workspace open".to_owned());
+        }
+        if kind == PromptKind::ConfirmDelete {
+            let Some(row) = self.explorer.as_ref().and_then(crate::Explorer::selection) else {
+                return Outcome::Message(crate::files::FileError::NoSelection.to_string());
+            };
+            // The name is in the question, so "delete permanently?" is never
+            // asked about a file the reader has to go and look up.
+            let what = if row.is_dir {
+                format!("{} and everything in it", row.name)
+            } else {
+                row.name
+            };
+            // The box opens empty and the name goes in the status line: what is
+            // typed is only the answer, and the thing being deleted is named
+            // where it can be read without retyping it.
+            self.prompt = Some(Prompt::seeded(kind, String::new()));
+            self.status = Some(format!("delete {what}? this cannot be undone"));
+            self.refresh_context();
+            return Outcome::Handled;
+        }
+        self.prompt = Some(Prompt::seeded(kind, String::new()));
+        self.refresh_context();
+        Outcome::Handled
+    }
+
+    /// `F2` in the tree: the rename box, seeded with the current name.
+    fn open_rename_file(&mut self) -> Outcome {
+        let Some(row) = self.explorer.as_ref().and_then(crate::Explorer::selection) else {
+            return Outcome::Message(crate::files::FileError::NoSelection.to_string());
+        };
+        self.prompt = Some(Prompt::seeded(PromptKind::RenameFile, row.name));
+        self.refresh_context();
+        Outcome::Handled
+    }
+
+    /// Builds the operation a typed name means, against what is selected.
+    ///
+    /// The directory a new file goes in is the selected row when it is a
+    /// directory, and the selected row's parent when it is a file — which is
+    /// what VS Code does, and what makes "new file" mean "next to this one"
+    /// without a second question.
+    fn target_dir(&self) -> Option<std::path::PathBuf> {
+        let explorer = self.explorer.as_ref()?;
+        match explorer.selection() {
+            Some(row) if row.is_dir => Some(row.path),
+            Some(row) => row.path.parent().map(Path::to_path_buf),
+            // An empty tree still has a root to create things in.
+            None => Some(explorer.root().to_path_buf()),
+        }
+    }
+
+    /// `explorer.newFile` / `explorer.newFolder`: the name having been typed.
+    ///
+    /// Separate from opening the prompt, which is a frontend's job — this is the
+    /// half that decides whether the answer is allowed.
+    pub fn create_in_tree(&mut self, name: &str, folder: bool) -> Outcome {
+        let Some(explorer) = self.explorer.as_ref() else {
+            return Outcome::Message("no workspace to create anything in".to_owned());
+        };
+        let root = explorer.root().to_path_buf();
+        let name = match crate::files::check_name(name) {
+            Ok(name) => name,
+            Err(error) => return Outcome::Message(error.to_string()),
+        };
+        let Some(dir) = self.target_dir() else {
+            return Outcome::Message(crate::files::FileError::NoSelection.to_string());
+        };
+        let path = dir.join(name);
+        if let Err(error) = crate::files::check_inside(&root, &path) {
+            return Outcome::Message(error.to_string());
+        }
+        // Whether it exists is a question for the filesystem, and the tree's
+        // answer is good enough to refuse on without asking: it lists what is
+        // there. A race with another program is caught by the frontend, which
+        // reports back and takes the undo entry off again.
+        if explorer.rows().iter().any(|row| row.path == path) {
+            return Outcome::Message(crate::files::FileError::Exists(name.to_owned()).to_string());
+        }
+
+        let operation = if folder {
+            crate::files::Operation::CreateFolder(path)
+        } else {
+            // A created file is opened — that is the contract on
+            // `Outcome::FileOperation` — so the keyboard goes with it, exactly
+            // as it does for enter on an existing row. Without this, creating a
+            // file and starting to type is an editor that ignores you: the
+            // caret is in the tree, and the tree swallows the editor's keys.
+            self.focus = Focus::Editor;
+            crate::files::Operation::CreateFile(path)
+        };
+        self.record_file_operation(&operation);
+        self.refresh_context();
+        Outcome::FileOperation(operation)
+    }
+
+    /// `renameFile`: the new name having been typed.
+    pub fn rename_in_tree(&mut self, name: &str) -> Outcome {
+        let Some(explorer) = self.explorer.as_ref() else {
+            return Outcome::Message("no workspace to rename anything in".to_owned());
+        };
+        let root = explorer.root().to_path_buf();
+        let Some(row) = explorer.selection() else {
+            return Outcome::Message(crate::files::FileError::NoSelection.to_string());
+        };
+        let name = match crate::files::check_name(name) {
+            Ok(name) => name,
+            Err(error) => return Outcome::Message(error.to_string()),
+        };
+        let Some(dir) = row.path.parent() else {
+            return Outcome::Message(crate::files::FileError::NoSelection.to_string());
+        };
+        let to = dir.join(name);
+        if to == row.path {
+            // Not an error, and not worth doing: renaming a file to what it is
+            // called would still hit the disk and still invalidate the listing.
+            return Outcome::Handled;
+        }
+        if let Err(error) = crate::files::check_inside(&root, &to) {
+            return Outcome::Message(error.to_string());
+        }
+        if explorer.rows().iter().any(|other| other.path == to) {
+            return Outcome::Message(crate::files::FileError::Exists(name.to_owned()).to_string());
+        }
+
+        let operation = crate::files::Operation::Rename { from: row.path, to };
+        self.record_file_operation(&operation);
+        Outcome::FileOperation(operation)
+    }
+
+    /// `deleteFile`: the confirmation having been given.
+    pub fn delete_in_tree(&mut self) -> Outcome {
+        let Some(explorer) = self.explorer.as_ref() else {
+            return Outcome::Message("no workspace to delete anything from".to_owned());
+        };
+        let root = explorer.root().to_path_buf();
+        let Some(row) = explorer.selection() else {
+            return Outcome::Message(crate::files::FileError::NoSelection.to_string());
+        };
+        if let Err(error) = crate::files::check_inside(&root, &row.path) {
+            return Outcome::Message(error.to_string());
+        }
+        // The root itself is not a row, so this cannot delete the workspace —
+        // checked anyway, because the cost of being wrong is the whole project.
+        if row.path == root {
+            return Outcome::Message("the workspace itself cannot be deleted".to_owned());
+        }
+
+        let operation = crate::files::Operation::Delete(row.path);
+        self.record_file_operation(&operation);
+        Outcome::FileOperation(operation)
+    }
+
+    /// Points the tab at `index` at a different path.
+    ///
+    /// The buffer, its history and its unsaved changes all stay: the file moved,
+    /// the document did not. Re-resolving the settings is what makes renaming
+    /// `notes.txt` to `notes.md` start highlighting it as Markdown, unless the
+    /// language was chosen by hand — in which case the choice outranks the
+    /// extension, the same rule [`Session::rename_to`] follows for save-as.
+    fn retarget_tab(&mut self, index: usize, to: PathBuf) {
+        // Display order is `left`, then the active document, then `right` — the
+        // same arithmetic `tab_of` inverts to produce these indices.
+        let active = self.active_tab();
+        let document = if index == active {
+            &mut self.document
+        } else if index < active {
+            match self.left.get_mut(index) {
+                Some(tab) => &mut tab.document,
+                None => return,
+            }
+        } else {
+            match self.right.get_mut(index - active - 1) {
+                Some(tab) => &mut tab.document,
+                // An index no tab has: nothing to retarget, and inventing one
+                // would be worse than doing nothing.
+                None => return,
+            }
+        };
+
+        let chosen_by_hand = document.language()
+            != document
+                .path
+                .as_deref()
+                .and_then(crate::document::language_for_path);
+        document.path = Some(to);
+        if index == active {
+            if !chosen_by_hand {
+                self.set_language(None);
+            }
+            self.resolve_document_settings();
+        }
+    }
+
+    /// Puts an operation's inverse on the explorer's stack, or clears it.
+    fn record_file_operation(&mut self, operation: &crate::files::Operation) {
+        match operation.inverse() {
+            Some(inverse) => self.explorer_undo.push(inverse),
+            // Nothing below a delete can be undone either: running an older
+            // inverse would put a file back beside one that is now gone, which
+            // is not the state anything was in.
+            None => self.explorer_undo.clear(),
+        }
+    }
+
+    /// Whether the tree has anything to undo.
+    pub fn can_undo_file_operation(&self) -> bool {
+        !self.explorer_undo.is_empty()
+    }
+
+    /// `undo` while the tree has the keyboard: takes back the last operation.
+    fn undo_file_operation(&mut self) -> Outcome {
+        let Some(operation) = self.explorer_undo.pop() else {
+            return Outcome::Message("nothing in the tree to undo".to_owned());
+        };
+        // Its own inverse goes back on, so undo and redo are the same key twice
+        // — and a failed one is put back by `file_operation_failed`.
+        if let Some(inverse) = operation.inverse() {
+            self.explorer_undo.push(inverse);
+        }
+        Outcome::FileOperation(operation)
+    }
+
+    /// Takes an operation back off the stack after the disk refused it.
+    ///
+    /// The core recorded it before the frontend tried, because the frontend has
+    /// to be told what to do before it can do it. When it does not work, the
+    /// stack has to forget it — otherwise `ctrl+z` would offer to undo something
+    /// that never happened.
+    pub fn file_operation_failed(&mut self, operation: &crate::files::Operation, reason: &str) {
+        if let Some(inverse) = operation.inverse() {
+            if self.explorer_undo.last() == Some(&inverse) {
+                self.explorer_undo.pop();
+            }
+        }
+        self.status = Some(format!("could not {}: {reason}", operation.describe()));
+    }
+
+    /// Retargets an open tab after its file moved, and re-reads the tree.
+    ///
+    /// Called by the frontend once the rename has actually happened. The tab and
+    /// the file move together — that is the whole reason renaming goes through
+    /// the session rather than being something the tree does on its own.
+    pub fn file_operation_done(&mut self, operation: &crate::files::Operation) {
+        if let crate::files::Operation::Rename { from, to } = operation {
+            if let Some(index) = self.tab_of(from) {
+                self.retarget_tab(index, to.clone());
+            }
+        }
+        if let (Some(explorer), Some(parent)) = (self.explorer.as_mut(), operation.parent()) {
+            explorer.invalidate(parent);
+            // The selection follows what was just made or moved. Without this,
+            // creating a file leaves the selection on whatever was highlighted
+            // before, and the next key — `F2`, `delete` — acts on *that*, which
+            // is the wrong file and a destructive kind of wrong.
+            //
+            // `reveal` rather than a direct selection because the row does not
+            // exist yet: the directory has just been invalidated and is read
+            // again on the next turn. Landing the selection when the listing
+            // arrives is exactly what `reveal` is for.
+            match operation {
+                crate::files::Operation::CreateFile(path)
+                | crate::files::Operation::CreateFolder(path) => explorer.reveal(path),
+                crate::files::Operation::Rename { to, .. } => explorer.reveal(to),
+                // Nothing to select: it is gone, and the clamp inside `fill`
+                // puts the selection on a row that still exists.
+                crate::files::Operation::Delete(_) => {}
+            }
+        }
+        // A file that was deleted or renamed away is no longer where the tree
+        // has its selection; re-reading the directory is what fixes that, and
+        // the clamp inside `fill` keeps the selection on a row that exists.
+        self.status = Some(operation.describe());
+        self.refresh_context();
     }
 
     /// Tells the session where the workspace is, creating the tree.
@@ -6738,6 +7071,336 @@ mod tests {
         assert_eq!(
             s.explorer().unwrap().selection().map(|r| r.path),
             Some(PathBuf::from("/w/src/main.rs"))
+        );
+    }
+
+    // ---- Changing the files themselves -------------------------------------
+
+    #[test]
+    fn a_new_file_lands_beside_the_selected_one() {
+        let mut s = with_tree();
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+        s.run("list.focusDown", None, 0); // Cargo.toml, a file
+        assert_eq!(
+            s.create_in_tree("notes.md", false),
+            Outcome::FileOperation(crate::files::Operation::CreateFile(PathBuf::from(
+                "/w/notes.md"
+            ))),
+            "a file's sibling, not a child of it"
+        );
+    }
+
+    #[test]
+    fn a_new_file_inside_the_selected_directory() {
+        let mut s = with_tree();
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+        // `src`, a directory, is the first row.
+        assert_eq!(
+            s.create_in_tree("main.rs", false),
+            Outcome::FileOperation(crate::files::Operation::CreateFile(PathBuf::from(
+                "/w/src/main.rs"
+            )))
+        );
+    }
+
+    #[test]
+    fn a_name_with_a_path_in_it_is_refused() {
+        let mut s = with_tree();
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+        assert!(matches!(
+            s.create_in_tree("../../etc/passwd", false),
+            Outcome::Message(_)
+        ));
+        assert!(
+            !s.can_undo_file_operation(),
+            "a refusal leaves nothing on the stack"
+        );
+    }
+
+    #[test]
+    fn creating_something_that_is_already_there_is_refused() {
+        let mut s = with_tree();
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+        s.run("list.focusDown", None, 0);
+        assert!(matches!(
+            s.create_in_tree("Cargo.toml", false),
+            Outcome::Message(_)
+        ));
+    }
+
+    #[test]
+    fn renaming_a_file_moves_the_tab_that_holds_it() {
+        let mut s = with_tree();
+        s.open(PathBuf::from("/w/Cargo.toml"), "[package]\n");
+        // A second tab, so the rename has to find the right one.
+        s.open(PathBuf::from("/w/other.rs"), "fn other() {}\n");
+
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+        s.run("list.focusDown", None, 0);
+        let outcome = s.rename_in_tree("Cargo.lock");
+        let operation = match outcome {
+            Outcome::FileOperation(operation) => operation,
+            other => panic!("expected an operation, got {other:?}"),
+        };
+
+        s.file_operation_done(&operation);
+        assert!(
+            s.tab_of(Path::new("/w/Cargo.lock")).is_some(),
+            "the tab followed the file"
+        );
+        assert!(s.tab_of(Path::new("/w/Cargo.toml")).is_none());
+        assert!(
+            s.tab_of(Path::new("/w/other.rs")).is_some(),
+            "the other tab was left alone"
+        );
+    }
+
+    #[test]
+    fn renaming_a_file_keeps_its_unsaved_text() {
+        let mut s = with_tree();
+        s.open(PathBuf::from("/w/Cargo.toml"), "[package]\n");
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+        s.run("list.focusDown", None, 0);
+        let Outcome::FileOperation(operation) = s.rename_in_tree("Cargo.lock") else {
+            panic!("expected an operation");
+        };
+        s.file_operation_done(&operation);
+        assert_eq!(s.document.buffer.text(), "[package]\n");
+    }
+
+    #[test]
+    fn what_was_just_created_is_what_is_selected() {
+        let mut s = with_tree();
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+        // `src` is selected, so the new file goes inside it.
+        let Outcome::FileOperation(operation) = s.create_in_tree("new.rs", false) else {
+            panic!("expected an operation");
+        };
+        s.file_operation_done(&operation);
+
+        // `src` was selected, so the file went inside it — and revealing it
+        // opened `src`, whose listing is now what the tree is waiting for.
+        assert_eq!(s.directory_wanted().as_deref(), Some(Path::new("/w/src")));
+        s.fill_directory(
+            Path::new("/w/src"),
+            vec![crate::explorer::Entry::file("new.rs")],
+        );
+        assert_eq!(
+            s.explorer().unwrap().selection().map(|r| r.path),
+            Some(PathBuf::from("/w/src/new.rs")),
+            "the next F2 or delete must act on what was just made, not on what \
+             happened to be highlighted before"
+        );
+    }
+
+    #[test]
+    fn undoing_a_create_deletes_it_and_undoing_a_rename_puts_it_back() {
+        let mut s = with_tree();
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+        let Outcome::FileOperation(create) = s.create_in_tree("new.rs", false) else {
+            panic!("expected an operation");
+        };
+        s.file_operation_done(&create);
+
+        // Creating a file put the keyboard in it; the tree's undo needs the
+        // tree, which is the trip back a person makes with `ctrl+shift+e`.
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+        assert!(s.can_undo_file_operation());
+        assert_eq!(
+            s.run("undo", None, 0),
+            Outcome::FileOperation(crate::files::Operation::Delete(PathBuf::from(
+                "/w/src/new.rs"
+            ))),
+            "undoing a create removes what it made"
+        );
+    }
+
+    #[test]
+    fn undoing_a_rename_through_the_prompts_puts_the_name_back() {
+        // The whole sequence as a person does it, prompts included — which is
+        // what the demonstration does, and where a focus bug would show.
+        let mut s = with_tree();
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+        s.run("list.focusDown", None, 0); // Cargo.toml
+
+        assert_eq!(s.run("renameFile", None, 0), Outcome::Handled);
+        for c in "cargo.lock".chars() {
+            s.handle_chord(Chord::char(c), 0);
+        }
+        let accepted = s.handle_chord(Chord::parse("enter").unwrap(), 0);
+        let Outcome::FileOperation(rename) = accepted else {
+            panic!("accepting the prompt should rename, got {accepted:?}");
+        };
+        s.file_operation_done(&rename);
+
+        assert_eq!(
+            s.focus(),
+            Focus::SideBar,
+            "answering the tree's prompt leaves the keyboard in the tree"
+        );
+        let undone = s.run("undo", None, 0);
+        assert_eq!(
+            undone,
+            Outcome::FileOperation(crate::files::Operation::Rename {
+                from: PathBuf::from("/w/cargo.lock"),
+                to: PathBuf::from("/w/Cargo.toml"),
+            }),
+            "ctrl+z in the tree puts the name back"
+        );
+    }
+
+    #[test]
+    fn creating_a_file_leaves_the_keyboard_where_the_new_file_is() {
+        // The sequence the demonstration walks: create through the prompt, then
+        // type. If the keyboard were still in the tree, the typing would be
+        // swallowed and the demonstration would show an editor that ignores it.
+        let mut s = with_tree();
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+        s.run("explorer.newFile", None, 0);
+        for c in "new.rs".chars() {
+            s.handle_chord(Chord::char(c), 0);
+        }
+        let Outcome::FileOperation(created) = s.handle_chord(Chord::parse("enter").unwrap(), 0)
+        else {
+            panic!("accepting the prompt should create the file");
+        };
+        s.file_operation_done(&created);
+        // What the frontend does with a created file.
+        s.open(PathBuf::from("/w/src/new.rs"), "");
+
+        assert_eq!(
+            s.focus(),
+            Focus::Editor,
+            "a created file is opened, and the keyboard goes with it"
+        );
+        s.handle_chord(Chord::char('x'), 0);
+        assert_eq!(
+            s.document.buffer.text(),
+            "x",
+            "typing after creating a file goes into the file"
+        );
+    }
+
+    #[test]
+    fn the_trees_undo_works_after_the_document_has_been_typed_in() {
+        // The demonstration's whole sequence. Typing into the new file leaves
+        // the *document* with an undo history, and the tree's `ctrl+z` has to
+        // keep meaning the tree's undo — the two stacks are told apart by focus,
+        // not by which was used last.
+        let mut s = with_tree();
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+        s.run("explorer.newFile", None, 0);
+        for c in "new.rs".chars() {
+            s.handle_chord(Chord::char(c), 0);
+        }
+        let Outcome::FileOperation(created) = s.handle_chord(Chord::parse("enter").unwrap(), 0)
+        else {
+            panic!("expected a create");
+        };
+        s.file_operation_done(&created);
+        // The frontend's half: re-read the directory that changed, which is
+        // what lets the reveal land the selection on the new file.
+        assert_eq!(s.directory_wanted().as_deref(), Some(Path::new("/w/src")));
+        s.fill_directory(
+            Path::new("/w/src"),
+            vec![crate::explorer::Entry::file("new.rs")],
+        );
+        s.open(PathBuf::from("/w/src/new.rs"), "");
+        for c in "hello".chars() {
+            s.handle_chord(Chord::char(c), 0);
+        }
+        assert_eq!(s.document.buffer.text(), "hello");
+
+        // Back to the tree and rename it.
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+        s.run("renameFile", None, 0);
+        for c in "other.rs".chars() {
+            s.handle_chord(Chord::char(c), 0);
+        }
+        let Outcome::FileOperation(renamed) = s.handle_chord(Chord::parse("enter").unwrap(), 0)
+        else {
+            panic!("expected a rename");
+        };
+        s.file_operation_done(&renamed);
+        s.fill_directory(
+            Path::new("/w/src"),
+            vec![crate::explorer::Entry::file("other.rs")],
+        );
+
+        assert_eq!(s.focus(), Focus::SideBar);
+        assert_eq!(
+            s.handle_chord(Chord::parse("ctrl+z").unwrap(), 0),
+            Outcome::FileOperation(crate::files::Operation::Rename {
+                from: PathBuf::from("/w/src/other.rs"),
+                to: PathBuf::from("/w/src/new.rs"),
+            }),
+            "the tree's undo, not the document's"
+        );
+        assert_eq!(
+            s.document.buffer.text(),
+            "hello",
+            "and the text was left alone"
+        );
+    }
+
+    #[test]
+    fn a_delete_cannot_be_undone_and_does_not_offer_an_older_one() {
+        let mut s = with_tree();
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+        let Outcome::FileOperation(create) = s.create_in_tree("new.rs", false) else {
+            panic!("expected an operation");
+        };
+        s.file_operation_done(&create);
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+        assert!(s.can_undo_file_operation());
+
+        // Now delete something. The create below it must not become what
+        // `ctrl+z` offers — that would undo the wrong thing entirely.
+        s.run("list.focusDown", None, 0);
+        let Outcome::FileOperation(_) = s.delete_in_tree() else {
+            panic!("expected an operation");
+        };
+        assert!(
+            !s.can_undo_file_operation(),
+            "a delete clears the stack rather than hiding under it"
+        );
+        assert!(matches!(s.run("undo", None, 0), Outcome::Message(_)));
+    }
+
+    #[test]
+    fn an_operation_the_disk_refused_comes_back_off_the_stack() {
+        let mut s = with_tree();
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+        let Outcome::FileOperation(operation) = s.create_in_tree("new.rs", false) else {
+            panic!("expected an operation");
+        };
+        assert!(s.can_undo_file_operation());
+
+        s.file_operation_failed(&operation, "permission denied");
+        assert!(
+            !s.can_undo_file_operation(),
+            "nothing happened, so there is nothing to undo"
+        );
+    }
+
+    #[test]
+    fn the_trees_undo_does_not_touch_the_text() {
+        let mut s = with_tree();
+        s.open(PathBuf::from("/w/Cargo.toml"), "[package]\n");
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+        let Outcome::FileOperation(create) = s.create_in_tree("new.rs", false) else {
+            panic!("expected an operation");
+        };
+        s.file_operation_done(&create);
+
+        // Back to the text, and `ctrl+z` there is the document's own undo.
+        s.run("workbench.action.focusActiveEditorGroup", None, 0);
+        assert_ne!(
+            s.run("undo", None, 0),
+            Outcome::FileOperation(crate::files::Operation::Delete(PathBuf::from(
+                "/w/src/new.rs"
+            ))),
+            "undo in the text must not move files"
         );
     }
 

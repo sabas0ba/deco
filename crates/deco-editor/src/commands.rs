@@ -191,6 +191,15 @@ pub enum Outcome {
     /// On a remote workspace that is the connection rather than `std::fs`, and
     /// the tree does not know the difference.
     ListDirectory(std::path::PathBuf),
+    /// The frontend should carry out this change to the files themselves.
+    ///
+    /// The core has decided it is allowed — the name is a name, the path is
+    /// inside the workspace, nothing is in the way — and has already recorded it
+    /// on the explorer's undo stack. What is left is the part that needs a
+    /// filesystem. The frontend reports back with
+    /// [`Session::file_operation_failed`](crate::Session::file_operation_failed)
+    /// if the disk disagrees, which takes the entry back off the stack.
+    FileOperation(crate::files::Operation),
 }
 
 /// The title of a command deco binds but has not built, if `id` is one.

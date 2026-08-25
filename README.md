@@ -174,7 +174,8 @@ thin painter.
 | Search in files (`ctrl+shift+f`) | Yes — bounded and synchronous, and it says so |
 | Command palette (`ctrl+shift+p`), quick open (`ctrl+p`), go to line (`ctrl+g`) | Yes |
 | Side bar and panel (`ctrl+b`, `ctrl+j`, `workbench.sideBar.location`) | Regions, focus and the context keys — see [Chrome](docs/chrome.md). The side bar holds the file tree; the panel is still empty and says what it is waiting for |
-| File tree / explorer (`ctrl+shift+e`, `list.*`, `revealInExplorer`) | Walk it, expand it, open files with it — read one directory at a time, `files.exclude` honoured, works on a remote workspace. **Read-only**: no new file, rename, delete or drag, and no watcher — see [The file tree](docs/files.md) |
+| File tree / explorer (`ctrl+shift+e`, `list.*`, `revealInExplorer`) | Walk it, expand it, open files with it — read one directory at a time, `files.exclude` honoured, works on a remote workspace |
+| Changing files from the tree (`explorer.newFile`, `explorer.newFolder`, `renameFile`, `deleteFile`) | New file, new folder, rename and delete, with an undo of the tree's own; a rename retargets the open tab. Deleting is confirmed and cannot be undone — there is no trash, so `files.enableTrash` is not honoured. No drag, and none of it over a remote connection yet — see [The file tree](docs/files.md) |
 | Word wrap (`editor.wordWrap`, `editor.wrappingIndent`, `alt+z`) | Yes in the terminal |
 | Detected indentation (`editor.detectIndentation`) | Yes — the status bar says when a file overruled the setting |
 | Auto-closing brackets (`editor.autoClosingBrackets`) | Yes — no `autoSurround`, no `autoClosingDelete` |

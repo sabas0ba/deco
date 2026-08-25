@@ -808,6 +808,23 @@ impl Driver {
                 }
                 lsp.saved(session);
             }
+            // The tree decided what should happen to a file; doing it needs a
+            // filesystem, which is this side.
+            Outcome::FileOperation(operation) => {
+                match perform(&operation, remote.as_mut()) {
+                    Ok(()) => {
+                        session.file_operation_done(&operation);
+                        // A new file is opened, because creating one you then
+                        // have to go and find is two steps where VS Code has
+                        // one. Nothing is read: it is empty, and reading it back
+                        // to prove that would be a round trip for no answer.
+                        if let deco_editor::FileOperation::CreateFile(path) = &operation {
+                            session.open(path.clone(), "");
+                        }
+                    }
+                    Err(error) => session.file_operation_failed(&operation, &error.to_string()),
+                }
+            }
             // Quick open and search named a file; reading it is this
             // side's job.
             Outcome::OpenFile { path: target, at } => {
@@ -1082,6 +1099,61 @@ fn printable(chord: &deco_keymap::keys::Chord) -> Option<char> {
 /// feels delayed, and 20 wakeups a second on an idle editor is not measurable.
 const LSP_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
+/// Carries out one of the tree's file operations.
+///
+/// The core has already decided it is allowed — the name is a name, the path is
+/// inside the workspace, nothing in the listing is in the way. What is left is
+/// the part that can still fail for reasons no amount of checking predicts: a
+/// permission, a full disk, another program getting there first.
+///
+/// `create_new` rather than `File::create` for a new file, so that a file which
+/// appeared between the check and here is not silently truncated. That race is
+/// exactly why the frontend re-checks rather than trusting the tree's listing.
+fn perform(
+    operation: &deco_editor::FileOperation,
+    remote: Option<&mut deco_remote::Client>,
+) -> io::Result<()> {
+    use deco_editor::FileOperation;
+
+    if remote.is_some() {
+        // The protocol reads, writes and lists; it has no create, rename or
+        // delete. Refused by name rather than half-done locally, which would
+        // change a file on this machine and report success about the other one.
+        return Err(io::Error::other(
+            "changing files over a remote connection is not implemented yet",
+        ));
+    }
+
+    match operation {
+        FileOperation::CreateFile(path) => std::fs::File::options()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map(drop),
+        FileOperation::CreateFolder(path) => std::fs::create_dir(path),
+        FileOperation::Rename { from, to } => {
+            // `rename` would overwrite an existing `to` on Unix. The tree
+            // refused that already, but between its listing and this call is a
+            // window, and silently replacing somebody's file is the one outcome
+            // worth a second check.
+            if to.exists() {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!("{} already exists", to.display()),
+                ));
+            }
+            std::fs::rename(from, to)
+        }
+        FileOperation::Delete(path) => {
+            if path.is_dir() {
+                std::fs::remove_dir_all(path)
+            } else {
+                std::fs::remove_file(path)
+            }
+        }
+    }
+}
+
 /// Answers every directory listing the file tree is waiting on.
 ///
 /// A loop rather than one listing, because the tree asks for one at a time and
@@ -1310,6 +1382,78 @@ fn save(session: &mut Session, remote: Option<&mut deco_remote::Client>) -> Resu
 mod tests {
     use super::*;
     use deco_theme::Rgba;
+
+    /// A scratch directory of this test's own.
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("deco-perform-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        dir
+    }
+
+    #[test]
+    fn creating_a_file_that_appeared_since_the_check_does_not_truncate_it() {
+        let dir = scratch("create");
+        let path = dir.join("taken.rs");
+        std::fs::write(&path, "someone else got here first\n").unwrap();
+
+        // The tree's listing said this name was free; the disk disagrees.
+        let error = perform(&deco_editor::FileOperation::CreateFile(path.clone()), None)
+            .expect_err("creating over an existing file must fail");
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "someone else got here first\n",
+            "the file that was already there is untouched"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn renaming_onto_an_existing_file_is_refused_rather_than_overwriting() {
+        let dir = scratch("rename");
+        let from = dir.join("a.rs");
+        let to = dir.join("b.rs");
+        std::fs::write(&from, "moving\n").unwrap();
+        std::fs::write(&to, "in the way\n").unwrap();
+
+        let error = perform(
+            &deco_editor::FileOperation::Rename {
+                from: from.clone(),
+                to: to.clone(),
+            },
+            None,
+        )
+        .expect_err("a rename must not replace a file");
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read_to_string(&to).unwrap(), "in the way\n");
+        assert!(from.exists(), "and the source is still there");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn create_rename_and_delete_do_what_they_say() {
+        let dir = scratch("roundtrip");
+        let made = dir.join("new.rs");
+        perform(&deco_editor::FileOperation::CreateFile(made.clone()), None).unwrap();
+        assert!(made.is_file());
+        assert_eq!(std::fs::read_to_string(&made).unwrap(), "");
+
+        let moved = dir.join("moved.rs");
+        perform(
+            &deco_editor::FileOperation::Rename {
+                from: made.clone(),
+                to: moved.clone(),
+            },
+            None,
+        )
+        .unwrap();
+        assert!(!made.exists() && moved.is_file());
+
+        perform(&deco_editor::FileOperation::Delete(moved.clone()), None).unwrap();
+        assert!(!moved.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn a_remote_directorys_contents_come_out_of_the_flat_listing() {
