@@ -3058,6 +3058,18 @@ impl Session {
         if explorer.rows().iter().any(|row| row.path == path) {
             return Outcome::Message(crate::files::FileError::Exists(name.to_owned()).to_string());
         }
+        // The same check renaming makes, for the same reason: a tab can hold a
+        // path the tree does not show, when another program deleted the file and
+        // nothing here has noticed. Creating it again would succeed on disk and
+        // then `Session::open` would switch to the *old* buffer rather than the
+        // empty file — leaving the two disagreeing, and a save putting the old
+        // contents back.
+        let name = name.to_owned();
+        if self.tab_of(&path).is_some() {
+            return Outcome::Message(format!(
+                "a tab is still open on `{name}` — close it before making a new one"
+            ));
+        }
 
         let operation = if folder {
             crate::files::Operation::CreateFolder(path)
@@ -3116,7 +3128,11 @@ impl Session {
             ));
         }
 
-        let operation = crate::files::Operation::Rename { from: row.path, to };
+        let operation = crate::files::Operation::Rename {
+            from: row.path,
+            to,
+            expect: None,
+        };
         self.record_file_operation(&operation);
         Outcome::FileOperation(operation)
     }
@@ -3375,6 +3391,19 @@ impl Session {
         }
     }
 
+    /// Attaches what the moved file looks like to the undo waiting for it.
+    ///
+    /// Called by the frontend after a rename it has just carried out, because
+    /// only it can look at the file. Undoing a rename otherwise names a path and
+    /// trusts it — and a path is not a file: another program can remove the one
+    /// that was renamed and leave something else where it was.
+    pub fn stamp_last_undo(&mut self, stamp: crate::files::Stamp) {
+        if let Some(crate::files::Operation::Rename { expect, .. }) = self.explorer_undo.last_mut()
+        {
+            *expect = Some(stamp);
+        }
+    }
+
     /// Whether the tree has anything to undo.
     pub fn can_undo_file_operation(&self) -> bool {
         !self.explorer_undo.is_empty()
@@ -3451,7 +3480,7 @@ impl Session {
         if matches!(operation, crate::files::Operation::Delete { .. }) {
             self.explorer_undo.clear();
         }
-        if let crate::files::Operation::Rename { from, to } = operation {
+        if let crate::files::Operation::Rename { from, to, .. } = operation {
             // Every tab *under* `from`, not just one whose path equals it.
             // Renaming a directory moves its whole subtree on disk, and a tab
             // still pointing into the old tree would save to a path that is no
@@ -3490,7 +3519,7 @@ impl Session {
                     path,
                     directory: true,
                 } => explorer.forget_under(path),
-                crate::files::Operation::Rename { from, to } => explorer.rekey_under(from, to),
+                crate::files::Operation::Rename { from, to, .. } => explorer.rekey_under(from, to),
                 _ => {}
             }
             // The selection follows what was just made or moved. Without this,
@@ -7540,6 +7569,7 @@ mod tests {
             Outcome::FileOperation(crate::files::Operation::Rename {
                 from: PathBuf::from("/w/cargo.lock"),
                 to: PathBuf::from("/w/Cargo.toml"),
+                expect: None,
             }),
             "ctrl+z in the tree puts the name back"
         );
@@ -7629,6 +7659,7 @@ mod tests {
             Outcome::FileOperation(crate::files::Operation::Rename {
                 from: PathBuf::from("/w/src/other.rs"),
                 to: PathBuf::from("/w/src/new.rs"),
+                expect: None,
             }),
             "the tree's undo, not the document's"
         );
@@ -8089,6 +8120,22 @@ mod tests {
         assert!(
             matches!(s.rename_in_tree("gone.rs"), Outcome::Message(_)),
             "two buffers for one path is how a save silently loses the other"
+        );
+    }
+
+    #[test]
+    fn creating_onto_a_path_a_tab_still_holds_is_refused() {
+        let mut s = with_tree();
+        // Deleted by another program, still open here, so the tree does not
+        // list it and nothing else stands in the way.
+        s.open(PathBuf::from("/w/gone.rs"), "fn gone() {}\n");
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+        s.run("list.focusDown", None, 0); // Cargo.toml, so the parent is `/w`
+
+        assert!(
+            matches!(s.create_in_tree("gone.rs", false), Outcome::Message(_)),
+            "creating it would make an empty file that the old buffer then \
+             writes over"
         );
     }
 

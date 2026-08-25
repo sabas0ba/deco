@@ -51,6 +51,25 @@ pub enum FileError {
     Outside(PathBuf),
 }
 
+/// What a file looked like at a moment, as far as `std` can say.
+///
+/// Size and modification time, which is what is portable: a real identity is the
+/// inode on Unix and a file index on Windows, and the standard library exposes
+/// the second only behind an unstable feature. So this is *evidence* that the
+/// file at a path is still the one that was there, not proof — a replacement
+/// made after the fact has a later modification time, which is the case worth
+/// catching, and one contrived to match would get through.
+///
+/// Refusing on a mismatch is the point: the alternative is moving somebody
+/// else's file on a keystroke meant to undo your own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stamp {
+    /// How big it was.
+    pub len: u64,
+    /// When it was last written, if the platform said.
+    pub modified: Option<std::time::SystemTime>,
+}
+
 /// A change to the files themselves, for a frontend to carry out.
 ///
 /// Every variant names absolute paths. Resolving a typed name against the
@@ -71,6 +90,17 @@ pub enum Operation {
         from: PathBuf,
         /// What it should be called.
         to: PathBuf,
+        /// What the file at `from` looked like when this was decided.
+        ///
+        /// Only ever set on the *inverse* of a rename that has happened, by
+        /// [`Session::stamp_last_undo`](crate::Session::stamp_last_undo). Undoing
+        /// a rename otherwise names a path and nothing else: if another program
+        /// removed the renamed file and put a different one at the same path,
+        /// `ctrl+z` would move *that* file back and point the buffer at it, and
+        /// the next save would write over its contents.
+        ///
+        /// Evidence rather than identity — see [`Stamp`].
+        expect: Option<Stamp>,
     },
     /// Remove it. A directory goes with everything in it.
     Delete {
@@ -137,9 +167,12 @@ impl Operation {
                 path: path.clone(),
                 directory: true,
             }),
-            Self::Rename { from, to } => Some(Self::Rename {
+            Self::Rename { from, to, .. } => Some(Self::Rename {
                 from: to.clone(),
                 to: from.clone(),
+                // Filled in once the rename has actually happened; there is
+                // nothing to stamp until then.
+                expect: None,
             }),
             Self::Delete { .. } => None,
             // Undoing the undo of a create would be creating it again, which is
@@ -154,7 +187,7 @@ impl Operation {
         match self {
             Self::CreateFile(path) => format!("created {}", name_of(path)),
             Self::CreateFolder(path) => format!("created {}/", name_of(path)),
-            Self::Rename { from, to } => {
+            Self::Rename { from, to, .. } => {
                 format!("renamed {} to {}", name_of(from), name_of(to))
             }
             Self::Delete { path, .. } | Self::DeleteIfEmpty { path, .. } => {
@@ -227,12 +260,14 @@ mod tests {
         let rename = Operation::Rename {
             from: PathBuf::from("/w/a.rs"),
             to: PathBuf::from("/w/b.rs"),
+            expect: None,
         };
         assert_eq!(
             rename.inverse(),
             Some(Operation::Rename {
                 from: PathBuf::from("/w/b.rs"),
                 to: PathBuf::from("/w/a.rs"),
+                expect: None,
             })
         );
 
@@ -264,6 +299,7 @@ mod tests {
             Operation::Rename {
                 from: PathBuf::from("/w/src/a.rs"),
                 to: PathBuf::from("/w/src/b.rs"),
+                expect: None,
             }
             .parent(),
             Some(Path::new("/w/src"))

@@ -816,6 +816,15 @@ impl Driver {
                     .map(|explorer| explorer.root().to_path_buf());
                 match perform(&operation, remote.as_mut(), root.as_deref()) {
                     Ok(()) => {
+                        // What the file looks like now, so undoing this rename
+                        // can tell it apart from whatever might replace it.
+                        // Before `file_operation_done`, which is what puts the
+                        // undo entry in reach.
+                        if let deco_editor::FileOperation::Rename { to, .. } = &operation {
+                            if let Some(stamp) = stamp_of(to) {
+                                session.stamp_last_undo(stamp);
+                            }
+                        }
                         session.file_operation_done(&operation);
                         // A delete may have detached open documents; the server
                         // still has them open under URIs that name nothing.
@@ -1167,7 +1176,26 @@ fn perform(
             .open(path)
             .map(drop),
         FileOperation::CreateFolder(path) => std::fs::create_dir(path),
-        FileOperation::Rename { from, to } => {
+        FileOperation::Rename { from, to, expect } => {
+            // An undo carries what the file looked like when it was moved. If
+            // that no longer matches, something replaced it, and moving *that*
+            // back would be shifting somebody else's file on a keystroke meant
+            // to undo your own — then pointing the buffer at it, so the next
+            // save would write over its contents.
+            if let Some(expected) = expect {
+                match stamp_of(from) {
+                    Some(now) if &now == expected => {}
+                    _ => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::AlreadyExists,
+                            format!(
+                                "{} is not the file that was renamed any more",
+                                from.display()
+                            ),
+                        ))
+                    }
+                }
+            }
             // `rename` would overwrite an existing `to` on Unix. The tree
             // refused that already, but between its listing and this call is a
             // window, and silently replacing somebody's file is the one outcome
@@ -1318,6 +1346,15 @@ fn inside_after_links(root: &Path, dir: &Path) -> io::Result<()> {
             real_dir.display()
         ),
     ))
+}
+
+/// What the file at `path` looks like, or `None` if it cannot be seen.
+fn stamp_of(path: &Path) -> Option<deco_editor::files::Stamp> {
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    Some(deco_editor::files::Stamp {
+        len: meta.len(),
+        modified: meta.modified().ok(),
+    })
 }
 
 /// Whether two paths name the same file on disk.
@@ -1605,6 +1642,7 @@ mod tests {
             &deco_editor::FileOperation::Rename {
                 from: from.clone(),
                 to: to.clone(),
+                expect: None,
             },
             None,
             Some(&dir),
@@ -1634,6 +1672,7 @@ mod tests {
             &deco_editor::FileOperation::Rename {
                 from: made.clone(),
                 to: moved.clone(),
+                expect: None,
             },
             None,
             Some(&dir),
@@ -1755,6 +1794,7 @@ mod tests {
                 &deco_editor::FileOperation::Rename {
                     from: from.clone(),
                     to: to.clone(),
+                    expect: None,
                 },
                 None,
                 Some(&dir),
@@ -1794,6 +1834,79 @@ mod tests {
             !outside.join("planted.rs").exists(),
             "and nothing was written where it led"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn undoing_a_rename_refuses_once_something_else_holds_the_name() {
+        let dir = scratch("undo-rename");
+        let from = dir.join("a.rs");
+        let to = dir.join("b.rs");
+        std::fs::write(&from, "mine\n").unwrap();
+        perform(
+            &deco_editor::FileOperation::Rename {
+                from: from.clone(),
+                to: to.clone(),
+                expect: None,
+            },
+            None,
+            Some(&dir),
+        )
+        .unwrap();
+        let stamp = stamp_of(&to).expect("it is there");
+
+        // Another program takes `b.rs` away and leaves something else in its
+        // place. Undoing the rename must not move *that*.
+        std::fs::remove_file(&to).unwrap();
+        std::fs::write(&to, "somebody else's, and longer\n").unwrap();
+
+        perform(
+            &deco_editor::FileOperation::Rename {
+                from: to.clone(),
+                to: from.clone(),
+                expect: Some(stamp),
+            },
+            None,
+            Some(&dir),
+        )
+        .expect_err("the file that was renamed is not there any more");
+        assert_eq!(
+            std::fs::read_to_string(&to).unwrap(),
+            "somebody else's, and longer\n",
+            "and it was left where it was"
+        );
+        assert!(!from.exists(), "nor was anything put back");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn undoing_a_rename_works_when_the_file_is_still_the_one_that_moved() {
+        let dir = scratch("undo-rename-ok");
+        let from = dir.join("a.rs");
+        let to = dir.join("b.rs");
+        std::fs::write(&from, "mine\n").unwrap();
+        perform(
+            &deco_editor::FileOperation::Rename {
+                from: from.clone(),
+                to: to.clone(),
+                expect: None,
+            },
+            None,
+            Some(&dir),
+        )
+        .unwrap();
+
+        perform(
+            &deco_editor::FileOperation::Rename {
+                from: to.clone(),
+                to: from.clone(),
+                expect: stamp_of(&to),
+            },
+            None,
+            Some(&dir),
+        )
+        .expect("nothing touched it, so the undo goes through");
+        assert_eq!(std::fs::read_to_string(&from).unwrap(), "mine\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

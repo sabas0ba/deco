@@ -102,6 +102,14 @@ because that was the last thing you did would be unpredictable in both places.
 That holds even when the document has a [workspace edit](find-and-replace.md)
 waiting to be undone: in the tree, `ctrl+z` is the tree's.
 
+**Undoing a rename checks the file is still the one that moved.** A path is not
+a file: another program can take the renamed file away and leave something else
+where it was, and an undo that trusted the path alone would move *that* back and
+then point your buffer at it. Size and modification time are recorded when the
+rename happens and checked when it is undone — evidence rather than proof, since
+a real identity is an inode on Unix and a file index on Windows and the standard
+library offers the second only behind an unstable feature. A mismatch refuses.
+
 **Undoing a create only removes what the create made.** If you made a file and
 have since typed in it and saved, `ctrl+z` in the tree refuses rather than taking
 the file and its contents with it:

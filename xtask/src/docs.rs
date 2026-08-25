@@ -393,7 +393,7 @@ impl Take {
                 self.workspace
                     .push((format!("{}/", relative(path)), String::new()));
             }
-            FileOperation::Rename { from, to } => {
+            FileOperation::Rename { from, to, .. } => {
                 let (from, to) = (relative(from), relative(to));
                 for (path, _) in self.workspace.iter_mut() {
                     if *path == from {
