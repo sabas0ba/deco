@@ -3080,6 +3080,13 @@ impl Session {
         let Some(row) = explorer.selection() else {
             return Outcome::Message(crate::files::FileError::NoSelection.to_string());
         };
+        // Before trimming. The prompt opens seeded with the current name, so
+        // accepting it unchanged must change nothing — and on a filesystem that
+        // allows a name like `" report "`, trimming first would turn pressing
+        // enter into a rename nobody asked for.
+        if name == row.name {
+            return Outcome::Handled;
+        }
         let name = match crate::files::check_name(name) {
             Ok(name) => name,
             Err(error) => return Outcome::Message(error.to_string()),
@@ -7973,6 +7980,25 @@ mod tests {
         // state that never existed.
         s.clear_file_undo();
         assert!(!s.can_undo_file_operation());
+    }
+
+    #[test]
+    fn accepting_the_rename_prompt_unchanged_changes_nothing() {
+        let mut s = with_tree();
+        // A name a filesystem may allow and `check_name` would trim.
+        s.fill_directory(
+            Path::new("/w"),
+            vec![crate::explorer::Entry::file(" report ")],
+        );
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+        assert_eq!(s.explorer().unwrap().selection().unwrap().name, " report ");
+
+        assert_eq!(
+            s.rename_in_tree(" report "),
+            Outcome::Handled,
+            "pressing enter on the seeded prompt must not rename the file to a \
+             trimmed version of its own name"
+        );
     }
 
     #[test]

@@ -834,7 +834,7 @@ impl Driver {
                         // every one of them and would let go of every tab in the
                         // workspace for a delete that never happened.
                         if remote.is_none() {
-                            reconcile_failed_delete(session, lsp, &operation);
+                            reconcile_failed_delete(session, lsp, &operation, error.kind());
                         }
                     }
                 }
@@ -1156,7 +1156,13 @@ fn perform(
             // `foo.rs`, so this check sees the source itself and would refuse
             // every change of capitalisation. Canonicalising both tells the two
             // cases apart: same file, or a different one in the way.
-            if to.exists() && !same_file(from, to) {
+            //
+            // `symlink_metadata` rather than `exists`, which follows links: a
+            // dangling symlink at the destination answers `false` to `exists`
+            // and would be silently replaced. The tree cannot show one either —
+            // `list_dir` reports only real files and directories — so it is
+            // invisible from both sides, and needs no race to be hit.
+            if std::fs::symlink_metadata(to).is_ok() && !same_file(from, to) {
                 return Err(io::Error::new(
                     io::ErrorKind::AlreadyExists,
                     format!("{} already exists", to.display()),
@@ -1218,6 +1224,7 @@ fn reconcile_failed_delete(
     session: &mut Session,
     lsp: &mut Lsp,
     operation: &deco_editor::FileOperation,
+    error: io::ErrorKind,
 ) {
     use deco_editor::FileOperation;
     let (path, recursive) = match operation {
@@ -1230,7 +1237,17 @@ fn reconcile_failed_delete(
     // either did it or did not, so their failure means nothing went — and
     // throwing away the undo history for that would cost the user their earlier
     // work for no reason.
-    if recursive {
+    //
+    // Nor does every recursive failure mean something went: a directory that was
+    // already gone, or that is not a directory at all, fails before touching
+    // anything. Those two are the errors that say so; every other failure could
+    // have removed part of the tree, and the barrier goes up because an undo
+    // over a state that never existed is worse than a lost undo.
+    let changed_nothing = matches!(
+        error,
+        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+    );
+    if recursive && !changed_nothing {
         session.clear_file_undo();
     }
 
@@ -1245,7 +1262,12 @@ fn reconcile_failed_delete(
     // Per file, because half a directory survives and only the disk knows which
     // half.
     for held in session.open_paths_under(path) {
-        if !held.exists() {
+        // `try_exists` rather than `exists`, which answers `false` for a file it
+        // cannot stat. The same permission problem that stopped the delete can
+        // hide a file that is still there, and letting go of a tab whose file
+        // survived is the wrong way to be wrong. Only a definite `false`
+        // detaches; an error leaves the tab attached.
+        if matches!(held.try_exists(), Ok(false)) {
             session.detach_tabs_under(&held);
         }
     }
@@ -1639,6 +1661,42 @@ mod tests {
             made.join("mod.rs").is_file(),
             "the file added since is still there"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_rename_will_not_replace_a_dangling_symlink() {
+        let dir = scratch("dangling");
+        let from = dir.join("real.rs");
+        std::fs::write(&from, "moving\n").unwrap();
+        let to = dir.join("link.rs");
+        // A symlink to nothing: `exists` answers false for it, and the tree
+        // cannot show it either.
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(dir.join("nowhere.rs"), &to).unwrap();
+        #[cfg(not(unix))]
+        {
+            let _ = &to;
+            return;
+        }
+
+        #[cfg(unix)]
+        {
+            assert!(!to.exists(), "the premise: it looks absent");
+            perform(
+                &deco_editor::FileOperation::Rename {
+                    from: from.clone(),
+                    to: to.clone(),
+                },
+                None,
+            )
+            .expect_err("a rename must not silently remove a symlink");
+            assert!(
+                std::fs::symlink_metadata(&to).is_ok(),
+                "the link is still there"
+            );
+            assert!(from.exists(), "and so is the file that was to move");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

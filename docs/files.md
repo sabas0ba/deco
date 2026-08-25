@@ -174,6 +174,15 @@ below it describe a state that never existed.
 
 Only a *recursive* delete can half happen. Removing one file, or one empty
 directory, either worked or did not — so a refusal there costs no undo history.
+Nor does every recursive failure: a directory that was already gone, or that
+turned out not to be a directory, failed before touching anything, and the
+history survives. Any other failure could have taken part of the tree, and the
+barrier goes up — an undo over a state that never existed is worse than an undo
+you no longer have.
+
+A tab is let go only when the disk says its file is **definitely** gone. The
+permission problem that stopped a delete can also stop the check, and a file that
+merely cannot be looked at is not a file that has been removed.
 
 A rename can take a file's language away — `main.rs` to `main.txt`. What the
 language server said goes with it, since nothing would ever replace it: no
@@ -182,7 +191,15 @@ would otherwise sit there for good.
 
 A rename that only changes capitalisation works on a case-insensitive
 filesystem, where `Foo.rs` and `foo.rs` are the same file: the check asks whether
-the target is *a different file*, not whether the name is taken.
+the target is *a different file*, not whether the name is taken. It asks about
+the directory entry rather than what it leads to, so a symlink pointing at
+nothing still counts as something in the way — it would otherwise be invisible
+from both sides, since the tree lists only real files and directories.
+
+Accepting the rename prompt without editing it does nothing at all, compared
+before any tidying of the text: on a filesystem that allows a name like
+`" report "`, trimming first would make pressing enter a rename nobody asked
+for.
 
 Over a [remote connection](remote.md) these are refused by name: the protocol
 reads, writes and lists, and has no create, rename or delete yet. Refusing is
