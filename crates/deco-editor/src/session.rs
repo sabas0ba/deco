@@ -3189,6 +3189,24 @@ impl Session {
         }
     }
 
+    /// Re-reads `dir` and everything the tree knows below it.
+    pub fn invalidate_subtree(&mut self, dir: &Path) {
+        if let Some(explorer) = self.explorer.as_mut() {
+            explorer.invalidate_under(dir);
+        }
+    }
+
+    /// Throws away the tree's undo history.
+    ///
+    /// For a recursive delete that may have half happened: something
+    /// irreversible went, so every inverse below it describes a state that never
+    /// existed. The same barrier a completed delete puts up, reached from the
+    /// path where the delete reported failure.
+    pub fn clear_file_undo(&mut self) {
+        self.explorer_undo.clear();
+        self.pending_undo = None;
+    }
+
     /// Throws away the analysis attached to one tab.
     fn clear_analysis_of_tab(&mut self, index: usize) {
         let active = self.active_tab();
@@ -7937,6 +7955,24 @@ mod tests {
             s.tab_of(Path::new("/w/src/kept.rs")).is_some(),
             "the file that survived keeps its tab"
         );
+    }
+
+    #[test]
+    fn a_half_finished_delete_puts_the_same_barrier_up() {
+        let mut s = with_tree();
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+        let Outcome::FileOperation(created) = s.create_in_tree("new.rs", false) else {
+            panic!("expected a create");
+        };
+        s.file_operation_done(&created);
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+        assert!(s.can_undo_file_operation());
+
+        // A recursive delete that removed part of a tree and then stopped:
+        // something irreversible went, so the inverses below it describe a
+        // state that never existed.
+        s.clear_file_undo();
+        assert!(!s.can_undo_file_operation());
     }
 
     #[test]

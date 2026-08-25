@@ -827,29 +827,14 @@ impl Driver {
                     }
                     Err(error) => {
                         session.file_operation_failed(&operation, &error.to_string());
-                        // A recursive delete can remove half a tree and then
-                        // stop — on a locked entry, or one created underneath
-                        // it. The half that went is as gone as if it had all
-                        // worked, so the listing is re-read and any tab whose
-                        // file no longer exists is let go. Doing this only on
-                        // success left the tree showing rows that were not there
-                        // and tabs that would recreate their files on save.
-                        if let deco_editor::FileOperation::Delete { path, .. }
-                        | deco_editor::FileOperation::DeleteIfEmpty { path, .. } = &operation
-                        {
-                            if let Some(parent) = operation.parent() {
-                                session.invalidate_directory(parent);
-                            }
-                            // Per file, not per subtree: a partial delete takes
-                            // some of a directory's contents and leaves the
-                            // rest, so only the disk can say which tabs have
-                            // lost their file.
-                            for held in session.open_paths_under(path) {
-                                if !held.exists() {
-                                    session.detach_tabs_under(&held);
-                                }
-                            }
-                            lsp.close_deleted(session);
+                        // Only for a delete this machine actually attempted. A
+                        // remote session refuses every mutation before touching
+                        // either filesystem, and the paths are the far end's —
+                        // testing them with a local `exists` says "gone" about
+                        // every one of them and would let go of every tab in the
+                        // workspace for a delete that never happened.
+                        if remote.is_none() {
+                            reconcile_failed_delete(session, lsp, &operation);
                         }
                     }
                 }
@@ -1222,6 +1207,49 @@ fn perform(
             }
         }
     }
+}
+
+/// Puts the tree and the tabs back in step after a delete reported failure.
+///
+/// `remove_dir_all` can take part of a tree and then stop, so "it failed" does
+/// not mean "nothing happened". Everything here is driven by what is on disk
+/// now rather than by what was asked for.
+fn reconcile_failed_delete(
+    session: &mut Session,
+    lsp: &mut Lsp,
+    operation: &deco_editor::FileOperation,
+) {
+    use deco_editor::FileOperation;
+    let (path, recursive) = match operation {
+        FileOperation::Delete { path, directory } => (path, *directory),
+        FileOperation::DeleteIfEmpty { path, .. } => (path, false),
+        _ => return,
+    };
+
+    // Only a recursive delete can half happen. `remove_file` and `remove_dir`
+    // either did it or did not, so their failure means nothing went — and
+    // throwing away the undo history for that would cost the user their earlier
+    // work for no reason.
+    if recursive {
+        session.clear_file_undo();
+    }
+
+    if let Some(parent) = operation.parent() {
+        session.invalidate_directory(parent);
+    }
+    // And the subtree: the directory itself may survive, so re-reading its
+    // parent rediscovers it and leaves its own listing — and every expanded one
+    // below — describing files that have gone.
+    session.invalidate_subtree(path);
+
+    // Per file, because half a directory survives and only the disk knows which
+    // half.
+    for held in session.open_paths_under(path) {
+        if !held.exists() {
+            session.detach_tabs_under(&held);
+        }
+    }
+    lsp.close_deleted(session);
 }
 
 /// Whether two paths name the same file on disk.

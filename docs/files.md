@@ -166,8 +166,14 @@ go with the file, and the language server is told the document is closed.
 That holds when a delete only *partly* works, too. Removing a directory can take
 some of it and then stop — on an entry that is locked, or one another program
 made underneath. The half that went is as gone as if it had all worked, so the
-tree re-reads the directory and each tab is checked against the disk one file at
-a time rather than the whole subtree being let go or none of it.
+tree re-reads the directory **and everything below it**, and each tab is checked
+against the disk one file at a time rather than the whole subtree being let go or
+none of it. The tree's undo history goes as well, for the same reason a
+completed delete clears it: something irreversible happened, and the entries
+below it describe a state that never existed.
+
+Only a *recursive* delete can half happen. Removing one file, or one empty
+directory, either worked or did not — so a refusal there costs no undo history.
 
 A rename can take a file's language away — `main.rs` to `main.txt`. What the
 language server said goes with it, since nothing would ever replace it: no

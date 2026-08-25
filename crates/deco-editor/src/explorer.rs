@@ -186,6 +186,24 @@ impl Explorer {
         }
     }
 
+    /// Forgets the contents of `prefix` and of everything under it.
+    ///
+    /// What a half-finished recursive delete needs: the directory itself may
+    /// survive, so re-reading its *parent* rediscovers it and leaves its own
+    /// cached listing — and every expanded listing below that — describing files
+    /// that are gone.
+    pub fn invalidate_under(&mut self, prefix: &Path) {
+        let stale: Vec<PathBuf> = self
+            .listings
+            .keys()
+            .filter(|dir| dir.starts_with(prefix))
+            .cloned()
+            .collect();
+        for dir in stale {
+            self.listings.insert(dir, Contents::Pending);
+        }
+    }
+
     /// Whether the root's listing has arrived.
     ///
     /// The difference between "this workspace is empty" and "nobody has read it
@@ -610,6 +628,30 @@ mod tests {
         assert!(explorer.loaded(), "read, and it is empty");
         assert!(explorer.is_empty());
         assert_eq!(explorer.wanted(), None);
+    }
+
+    #[test]
+    fn a_refresh_can_reach_a_whole_subtree() {
+        let mut explorer = tree();
+        explorer.select_first();
+        explorer.expand();
+        explorer.fill(Path::new("/w/src"), vec![Entry::dir("deep")]);
+        explorer.select_next();
+        explorer.expand();
+        explorer.fill(Path::new("/w/src/deep"), vec![Entry::file("main.rs")]);
+        assert_eq!(explorer.wanted(), None);
+
+        // Something removed part of `src`. Re-reading only its parent would
+        // rediscover `src` and leave these listings describing files that have
+        // gone.
+        explorer.invalidate_under(Path::new("/w/src"));
+        assert_eq!(explorer.wanted().as_deref(), Some(Path::new("/w/src")));
+        explorer.fill(Path::new("/w/src"), vec![Entry::dir("deep")]);
+        assert_eq!(
+            explorer.wanted().as_deref(),
+            Some(Path::new("/w/src/deep")),
+            "the expanded listing below it is stale too"
+        );
     }
 
     #[test]
