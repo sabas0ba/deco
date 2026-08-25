@@ -3131,6 +3131,64 @@ impl Session {
         Outcome::FileOperation(operation)
     }
 
+    /// Lets go of every tab holding something under `gone`, and says how many.
+    ///
+    /// The buffers stay and their paths are dropped: the text is still the
+    /// user's, and where it should live is a question only they can answer. A
+    /// tab left pointing at a deleted path would recreate the file on the next
+    /// save, or fail when its directory had gone too.
+    ///
+    /// Public because a *failed* recursive delete needs it as much as a
+    /// successful one: `remove_dir_all` can remove half a tree and then stop,
+    /// and the half that went is as gone as if it had all worked.
+    pub fn detach_tabs_under(&mut self, gone: &Path) -> usize {
+        let gone = normalise(gone);
+        let affected = self.tabs_under(&gone);
+        let held: Vec<PathBuf> = affected
+            .iter()
+            .filter_map(|index| self.path_of_tab(*index))
+            .collect();
+        // The paths first, while the tabs still have them: the server is holding
+        // these open under URIs that no longer name anything.
+        self.closed_documents.extend(held);
+
+        let mut detached = 0usize;
+        for index in affected {
+            let Some(document) = self.document_at_index_mut(index) else {
+                continue;
+            };
+            document.path = None;
+            document.dirty = true;
+            // Diagnostics and semantic tokens describe a file that is not there.
+            // Every path that would refresh them returns early once the path is
+            // `None`, so leaving them would keep squiggles from a deleted file on
+            // screen for as long as the buffer lived.
+            self.clear_analysis_of_tab(index);
+            detached += 1;
+        }
+        detached
+    }
+
+    /// The paths of every open tab holding something under `path`.
+    ///
+    /// For a caller that has a filesystem and wants to ask about each one — a
+    /// recursive delete that failed part way has removed some of these and not
+    /// others, and only the disk knows which.
+    pub fn open_paths_under(&self, path: &Path) -> Vec<PathBuf> {
+        let under = normalise(path);
+        self.tabs_under(&under)
+            .into_iter()
+            .filter_map(|index| self.path_of_tab(index))
+            .collect()
+    }
+
+    /// Re-reads the directory a listing may have changed under.
+    pub fn invalidate_directory(&mut self, dir: &Path) {
+        if let Some(explorer) = self.explorer.as_mut() {
+            explorer.invalidate(dir);
+        }
+    }
+
     /// Throws away the analysis attached to one tab.
     fn clear_analysis_of_tab(&mut self, index: usize) {
         let active = self.active_tab();
@@ -3201,6 +3259,11 @@ impl Session {
             return;
         };
 
+        // Set when the inferred language changed, to whether there was one
+        // before — a rename *away* from a recognised extension has to take the
+        // server's work with it, and the server itself.
+        let mut language_changed: Option<bool> = None;
+
         // A language the user picked by hand outranks the new extension, which
         // is the rule save-as follows too.
         let chosen_by_hand = document.language()
@@ -3208,6 +3271,7 @@ impl Session {
                 .path
                 .as_deref()
                 .and_then(crate::document::language_for_path);
+        let previous_path = document.path.clone();
         document.path = Some(to);
         if !chosen_by_hand {
             let inferred = document
@@ -3216,11 +3280,13 @@ impl Session {
                 .and_then(crate::document::language_for_path)
                 .map(str::to_owned);
             if inferred != document.language_id {
+                let had_language = document.language_id.is_some();
                 document.language_id = inferred;
                 // The lexer goes with it. `set_language` rebuilds this and
                 // `retarget_tab` did not, so a file renamed across languages
                 // reported the new one and kept being highlighted as the old.
                 document.syntax = deco_syntax::Syntax::new(document.language());
+                language_changed = Some(had_language);
             }
         }
         let language = document.language().map(str::to_owned);
@@ -3233,6 +3299,19 @@ impl Session {
         if let Some(document) = self.document_at_index_mut(index) {
             document.settings = settings;
             document.apply_overrides();
+        }
+        // Semantic tokens and diagnostics came from a server that was told about
+        // the old path and the old language. When the rename takes the language
+        // away entirely there is no server to correct them either — `attach`
+        // returns early for a document with no language — so tokens from before
+        // would keep overriding the freshly rebuilt lexer for good.
+        if let Some(had_language) = language_changed {
+            self.clear_analysis_of_tab(index);
+            if had_language {
+                if let Some(previous) = previous_path {
+                    self.closed_documents.push(previous);
+                }
+            }
         }
         if index == self.active_tab() {
             self.report_unsupported();
@@ -3332,30 +3411,7 @@ impl Session {
         if let crate::files::Operation::Delete { path, .. }
         | crate::files::Operation::DeleteIfEmpty { path, .. } = operation
         {
-            let gone = normalise(path);
-            let affected = self.tabs_under(&gone);
-            // The paths first, while the tabs still have them: the server is
-            // holding these open under URIs that no longer name anything, and
-            // only a frontend can tell it otherwise.
-            let held: Vec<PathBuf> = affected
-                .iter()
-                .filter_map(|index| self.path_of_tab(*index))
-                .collect();
-            self.closed_documents.extend(held);
-            for index in affected {
-                let Some(document) = self.document_at_index_mut(index) else {
-                    continue;
-                };
-                document.path = None;
-                document.dirty = true;
-                // Diagnostics and semantic tokens describe a file that is not
-                // there. Every path that would refresh them returns early once
-                // the path is `None`, so leaving them would keep squiggles and
-                // highlighting from a deleted file on screen for as long as the
-                // buffer lived.
-                self.clear_analysis_of_tab(index);
-                detached_tabs += 1;
-            }
+            detached_tabs = self.detach_tabs_under(path);
         }
 
         // Nothing below a delete can be undone either: running an older inverse
@@ -7826,6 +7882,60 @@ mod tests {
         assert!(
             s.take_closed_documents().is_empty(),
             "and taking them is what forgets them"
+        );
+    }
+
+    #[test]
+    fn renaming_away_from_a_language_drops_what_the_server_said() {
+        let mut s = with_tree();
+        s.open(PathBuf::from("/w/main.rs"), "fn main() {}\n");
+        s.semantic_tokens = vec![deco_lsp::requests::SemanticSpan {
+            range: deco_core::position::Range::new(
+                deco_core::position::Position::new(0, 0),
+                deco_core::position::Position::new(0, 2),
+            ),
+            token_type: "keyword".to_owned(),
+            modifiers: Vec::new(),
+        }];
+        let index = s.tab_of(Path::new("/w/main.rs")).expect("it is open");
+
+        // `.txt` has no language, so no server will ever correct these.
+        s.retarget_tab(index, PathBuf::from("/w/main.txt"));
+        assert!(
+            s.semantic_tokens.is_empty(),
+            "tokens from the old language must not outlive it — nothing would \
+             ever replace them"
+        );
+        assert_eq!(
+            s.take_closed_documents(),
+            vec![PathBuf::from("/w/main.rs")],
+            "and the server is told the file it knew is closed"
+        );
+    }
+
+    #[test]
+    fn tabs_can_be_let_go_one_file_at_a_time() {
+        // What a half-finished recursive delete needs: some of a directory's
+        // files are gone and the rest are not, and only the disk knows which.
+        let mut s = with_tree();
+        s.fill_directory(
+            Path::new("/w/src"),
+            vec![
+                crate::explorer::Entry::file("gone.rs"),
+                crate::explorer::Entry::file("kept.rs"),
+            ],
+        );
+        s.open(PathBuf::from("/w/src/gone.rs"), "fn gone() {}\n");
+        s.open(PathBuf::from("/w/src/kept.rs"), "fn kept() {}\n");
+
+        let under = s.open_paths_under(Path::new("/w/src"));
+        assert_eq!(under.len(), 2, "both tabs are under it");
+
+        assert_eq!(s.detach_tabs_under(Path::new("/w/src/gone.rs")), 1);
+        assert!(s.tab_of(Path::new("/w/src/gone.rs")).is_none());
+        assert!(
+            s.tab_of(Path::new("/w/src/kept.rs")).is_some(),
+            "the file that survived keeps its tab"
         );
     }
 

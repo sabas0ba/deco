@@ -163,6 +163,17 @@ stays, its path is dropped, and the status line says so. The text is still
 yours — where it should live is a question only you can answer. Its diagnostics
 go with the file, and the language server is told the document is closed.
 
+That holds when a delete only *partly* works, too. Removing a directory can take
+some of it and then stop — on an entry that is locked, or one another program
+made underneath. The half that went is as gone as if it had all worked, so the
+tree re-reads the directory and each tab is checked against the disk one file at
+a time rather than the whole subtree being let go or none of it.
+
+A rename can take a file's language away — `main.rs` to `main.txt`. What the
+language server said goes with it, since nothing would ever replace it: no
+server runs for a file with no language, so the old squiggles and highlighting
+would otherwise sit there for good.
+
 A rename that only changes capitalisation works on a case-insensitive
 filesystem, where `Foo.rs` and `foo.rs` are the same file: the check asks whether
 the target is *a different file*, not whether the name is taken.

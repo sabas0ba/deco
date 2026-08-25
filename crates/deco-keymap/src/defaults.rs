@@ -166,7 +166,10 @@ pub const DEFAULT_KEYBINDINGS_JSONC: &str = r#"[
     // Changing the files themselves. VS Code's identifiers, and its keys — `F2`
     // and `delete` mean something else in the text, which is why both are gated.
     { "key": "f2",           "command": "renameFile",           "when": "sideBarFocus" },
-    { "key": "delete",       "command": "deleteFile",           "when": "sideBarFocus" },
+    // `cmd+backspace` on macOS, where the key labelled Delete reports as
+    // Backspace and forward-delete is the awkward one. VS Code's explorer binds
+    // the same pair.
+    { "key": "delete",       "mac": "cmd+backspace", "command": "deleteFile",  "when": "sideBarFocus" },
     // `mac` overrides on both, or the general `cmd+n` rule above wins on macOS
     // and the platform-standard key opens an untitled editor instead of the
     // tree's prompt. A focus-specific rule only overrides a general one when it

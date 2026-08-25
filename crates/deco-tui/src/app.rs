@@ -825,7 +825,33 @@ impl Driver {
                             session.open(path.clone(), "");
                         }
                     }
-                    Err(error) => session.file_operation_failed(&operation, &error.to_string()),
+                    Err(error) => {
+                        session.file_operation_failed(&operation, &error.to_string());
+                        // A recursive delete can remove half a tree and then
+                        // stop — on a locked entry, or one created underneath
+                        // it. The half that went is as gone as if it had all
+                        // worked, so the listing is re-read and any tab whose
+                        // file no longer exists is let go. Doing this only on
+                        // success left the tree showing rows that were not there
+                        // and tabs that would recreate their files on save.
+                        if let deco_editor::FileOperation::Delete { path, .. }
+                        | deco_editor::FileOperation::DeleteIfEmpty { path, .. } = &operation
+                        {
+                            if let Some(parent) = operation.parent() {
+                                session.invalidate_directory(parent);
+                            }
+                            // Per file, not per subtree: a partial delete takes
+                            // some of a directory's contents and leaves the
+                            // rest, so only the disk can say which tabs have
+                            // lost their file.
+                            for held in session.open_paths_under(path) {
+                                if !held.exists() {
+                                    session.detach_tabs_under(&held);
+                                }
+                            }
+                            lsp.close_deleted(session);
+                        }
+                    }
                 }
             }
             // Quick open and search named a file; reading it is this

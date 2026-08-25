@@ -1025,6 +1025,15 @@ impl Lsp {
             if let Some(supervisor) = self.supervisor.as_mut() {
                 let _ = supervisor.did_close(&path);
             }
+            // The cache has to forget it too. `sync_open` skips `didOpen` when
+            // the cached path already matches, so leaving it would mean a file
+            // deleted and then recreated under the same name was never reopened
+            // — the server had dropped it, and every edit after that went
+            // nowhere.
+            if self.open.as_deref() == Some(path.as_path()) {
+                self.open = None;
+                self.sent = None;
+            }
         }
     }
 
