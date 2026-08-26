@@ -3121,8 +3121,15 @@ impl Session {
         // it would leave two buffers for one path, and whichever was saved last
         // would silently win — which is what `Session::open` exists to prevent,
         // reached by a different road.
+        //
+        // At *or under* it, because renaming a directory moves its whole
+        // subtree: with `/w/b/x` open and `/w/a` renamed to `/w/b`, an exact
+        // comparison against `/w/b` passes and then `/w/a/x` retargets onto the
+        // path `/w/b/x` already holds — two buffers for one file by a longer
+        // route. `open_paths_under` catches both, since a file path is its own
+        // only descendant.
         let name = name.to_owned();
-        if self.tab_of(&to).is_some() {
+        if !self.open_paths_under(&to).is_empty() {
             return Outcome::Message(format!(
                 "a tab is still open on `{name}` — close it before renaming onto it"
             ));
@@ -3398,6 +3405,13 @@ impl Session {
     /// trusts it — and a path is not a file: another program can remove the one
     /// that was renamed and leave something else where it was.
     pub fn stamp_last_undo(&mut self, stamp: crate::files::Stamp) {
+        // Not while an undo is being carried out. That operation was *popped*
+        // into `pending_undo`, so the top of the stack is the entry before it —
+        // stamping there would describe the wrong file, and the next `ctrl+z`
+        // would refuse to undo a rename that was perfectly undoable.
+        if self.pending_undo.is_some() {
+            return;
+        }
         if let Some(crate::files::Operation::Rename { expect, .. }) = self.explorer_undo.last_mut()
         {
             *expect = Some(stamp);
@@ -8136,6 +8150,76 @@ mod tests {
             matches!(s.create_in_tree("gone.rs", false), Outcome::Message(_)),
             "creating it would make an empty file that the old buffer then \
              writes over"
+        );
+    }
+
+    #[test]
+    fn renaming_a_directory_onto_one_holding_an_open_file_is_refused() {
+        let mut s = with_tree();
+        // `/w/b/x.rs` is open; `b` was removed by another program, so the tree
+        // does not list it and the name looks free.
+        s.open(PathBuf::from("/w/b/x.rs"), "fn x() {}\n");
+        s.fill_directory(
+            Path::new("/w"),
+            vec![
+                crate::explorer::Entry::dir("a"),
+                crate::explorer::Entry::file("Cargo.toml"),
+            ],
+        );
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+        assert_eq!(s.explorer().unwrap().selection().unwrap().name, "a");
+
+        assert!(
+            matches!(s.rename_in_tree("b"), Outcome::Message(_)),
+            "renaming a directory onto one whose subtree a tab still holds \
+             would make two buffers for the same file"
+        );
+    }
+
+    #[test]
+    fn stamping_does_not_touch_the_entry_below_the_one_being_undone() {
+        let mut s = with_tree();
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+        s.run("list.focusDown", None, 0); // Cargo.toml
+        let Outcome::FileOperation(first) = s.rename_in_tree("Cargo.lock") else {
+            panic!("expected a rename");
+        };
+        s.file_operation_done(&first);
+        s.fill_directory(
+            Path::new("/w"),
+            vec![
+                crate::explorer::Entry::dir("src"),
+                crate::explorer::Entry::file("Cargo.lock"),
+            ],
+        );
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+        let Outcome::FileOperation(second) = s.rename_in_tree("Cargo.toml2") else {
+            panic!("expected a second rename");
+        };
+        s.file_operation_done(&second);
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+
+        // Undoing the second: the frontend stamps whatever it just moved, and
+        // that must not land on the first rename's entry, which is now on top.
+        let Outcome::FileOperation(undo) = s.run("undo", None, 0) else {
+            panic!("expected an undo");
+        };
+        s.stamp_last_undo(crate::files::Stamp {
+            len: 999,
+            modified: None,
+        });
+        s.file_operation_done(&undo);
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+
+        let Outcome::FileOperation(crate::files::Operation::Rename { expect, .. }) =
+            s.run("undo", None, 0)
+        else {
+            panic!("the earlier rename should still be undoable");
+        };
+        assert_eq!(
+            expect, None,
+            "the first rename's entry must not carry a stamp taken from the \
+             second rename's file"
         );
     }
 
