@@ -513,7 +513,16 @@ impl Lsp {
     /// offers definitions, or escape swallowed with no hover on screen — and
     /// that is the hardest kind of bug to notice.
     fn sync_context(&self, session: &mut Session) {
-        let capabilities = self.supervisor.as_ref().map(Supervisor::capabilities);
+        // A server the session has no *document* with offers nothing: it was
+        // never told about this buffer, so `F2` and `F12` would either do
+        // nothing or ask it about a URI it has never seen. That happens when the
+        // open file is deleted, or renamed to something with no language — the
+        // server survives, the document does not.
+        let capabilities = self
+            .open
+            .as_ref()
+            .and(self.supervisor.as_ref())
+            .map(Supervisor::capabilities);
         let has =
             |f: fn(&deco_lsp::ServerCapabilities) -> bool| capabilities.map(f).unwrap_or(false);
 
@@ -1043,6 +1052,8 @@ impl Lsp {
                 self.forget_requests();
             }
         }
+        // The `when` clauses go with it: nothing is open, so nothing is offered.
+        self.sync_context(session);
     }
 
     /// Drops every request whose answer would write into the session.
@@ -1895,6 +1906,29 @@ mod tests {
                 .unwrap_or_else(|error| panic!("{scope:?}: {error}"));
         }
         settings
+    }
+
+    #[test]
+    fn a_server_with_no_document_offers_nothing() {
+        let mut s = session(Settings::default());
+        let lsp = Lsp::new(&mut s, None);
+        // Whatever a supervisor might be running, nothing is open — so `F2` and
+        // `F12` must not resolve. Their `when` clauses gate on these, and a key
+        // that reaches a server which was never told about this buffer either
+        // does nothing or asks about a URI it has never seen.
+        lsp.sync_context(&mut s);
+        for key in [
+            "editorHasRenameProvider",
+            "editorHasDefinitionProvider",
+            "editorHasHoverProvider",
+            "editorHasReferenceProvider",
+        ] {
+            assert_eq!(
+                s.context.get(key),
+                Some(&json!(false)),
+                "{key} must be false with no document open"
+            );
+        }
     }
 
     #[test]
