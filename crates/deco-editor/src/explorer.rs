@@ -791,7 +791,9 @@ mod tests {
         // `starts_with` is component-based, so `/w/src` matches the prefix
         // `/w/src` — the question is whether anything *inside* it is known.
         assert!(
-            !known.iter().any(|p| p.parent() == Some(Path::new("/w/src"))),
+            !known
+                .iter()
+                .any(|p| p.parent() == Some(Path::new("/w/src"))),
             "a directory nobody opened has not been read, so nothing under it \
              is known"
         );
