@@ -3568,21 +3568,21 @@ impl Session {
             // What the tree remembered about the thing that moved or went. The
             // parent alone is not enough: a deleted directory keeps its cached
             // listing and its expansion, so creating one with the same name
-            // later would show the old one's rows, already open. A rename is
-            // re-keyed rather than forgotten — the contents did not change, and
-            // a listing holds names rather than paths.
-            match operation {
-                crate::files::Operation::Delete {
-                    path,
-                    directory: true,
-                }
-                | crate::files::Operation::DeleteIfEmpty {
-                    path,
-                    directory: true,
-                    ..
-                } => explorer.forget_under(path),
-                crate::files::Operation::Rename { from, to, .. } => explorer.rekey_under(from, to),
-                _ => {}
+            // later would show the old one's rows, already open.
+            //
+            // This half is only what *left* a path. What arrives at one is
+            // below, in one place rather than per-operation.
+            if let crate::files::Operation::Delete {
+                path,
+                directory: true,
+            }
+            | crate::files::Operation::DeleteIfEmpty {
+                path,
+                directory: true,
+                ..
+            } = operation
+            {
+                explorer.forget_under(path);
             }
             // The selection follows what was just made or moved. Without this,
             // creating a file leaves the selection on whatever was highlighted
@@ -3593,20 +3593,40 @@ impl Session {
             // exist yet: the directory has just been invalidated and is read
             // again on the next turn. Landing the selection when the listing
             // arrives is exactly what `reveal` is for.
+            // One rule, at every place something new arrives at a path: forget
+            // what the tree remembered there first.
+            //
+            // A directory removed outside deco leaves its listing and its
+            // expansion behind when a later mutation refreshes only the parent —
+            // the row goes, the memory does not. Whatever then takes that name
+            // inherits it: an empty folder rendering the old one's children, a
+            // renamed directory showing a stranger's, a file with a subtree
+            // hanging off it. In each case the tree never asks for a listing,
+            // because it believes it already has one.
+            //
+            // Stated once here rather than at each arm, having now been three
+            // separate findings — created folder, renamed destination, and the
+            // created *file* that nobody has reported yet.
+            let arriving = match operation {
+                crate::files::Operation::CreateFile(path)
+                | crate::files::Operation::CreateFolder(path) => Some(path),
+                crate::files::Operation::Rename { to, .. } => Some(to),
+                crate::files::Operation::Delete { .. }
+                | crate::files::Operation::DeleteIfEmpty { .. } => None,
+            };
+            if let Some(path) = arriving {
+                explorer.forget_under(path);
+            }
+
             match operation {
-                crate::files::Operation::CreateFolder(path) => {
-                    // Anything the tree still remembers under this name belongs
-                    // to a directory that is gone — removed outside deco, its
-                    // listing and expansion left behind by a refresh of the
-                    // parent alone. The folder just created is empty, and
-                    // without this it would render the old one's children the
-                    // moment the parent listing arrived, and never ask for a
-                    // listing of its own.
-                    explorer.forget_under(path);
-                    explorer.reveal(path);
+                crate::files::Operation::CreateFile(path)
+                | crate::files::Operation::CreateFolder(path) => explorer.reveal(path),
+                // After the forget above, so the source's own listings and
+                // expansion land on a name with nothing left under it.
+                crate::files::Operation::Rename { from, to, .. } => {
+                    explorer.rekey_under(from, to);
+                    explorer.reveal(to);
                 }
-                crate::files::Operation::CreateFile(path) => explorer.reveal(path),
-                crate::files::Operation::Rename { to, .. } => explorer.reveal(to),
                 // Nothing to select: it is gone, and the clamp inside `fill`
                 // puts the selection on a row that still exists.
                 crate::files::Operation::Delete { .. }
@@ -8352,6 +8372,96 @@ mod tests {
                 .iter()
                 .any(|r| r.name == "old.rs"),
             "a new folder must not show the rows of the one that had its name"
+        );
+    }
+
+    #[test]
+    fn a_renamed_directory_does_not_inherit_the_destinations_leftovers() {
+        // Puts the selection on a named path, whatever the tree's shape is.
+        // Renaming the wrong row would prove nothing, and the clamp after a
+        // refill moves the selection on its own.
+        fn focus(s: &mut Session, path: &str) {
+            s.run("workbench.files.action.focusFilesExplorer", None, 0);
+            s.run("list.focusFirst", None, 0);
+            for _ in 0..64 {
+                let at = s
+                    .explorer()
+                    .and_then(|e| e.selection())
+                    .is_some_and(|row| row.path == Path::new(path));
+                if at {
+                    return;
+                }
+                s.run("list.focusDown", None, 0);
+            }
+            panic!("no row for {path}");
+        }
+
+        let mut s = with_tree();
+        s.fill_directory(
+            Path::new("/w"),
+            vec![
+                crate::explorer::Entry::dir("a"),
+                crate::explorer::Entry::dir("b"),
+            ],
+        );
+
+        // `a` holds a directory of its own, which nobody opens: after the
+        // rename it is the row that must be asked about rather than assumed.
+        focus(&mut s, "/w/a");
+        s.run("list.expand", None, 0);
+        s.fill_directory(
+            Path::new("/w/a"),
+            vec![
+                crate::explorer::Entry::dir("sub"),
+                crate::explorer::Entry::file("mine.rs"),
+            ],
+        );
+
+        // `b` holds a directory with the same name, and *that* one is open —
+        // so the tree remembers something a level below `b` that re-keying `a`
+        // over it cannot overwrite, because `a` has no listing that deep.
+        focus(&mut s, "/w/b");
+        s.run("list.expand", None, 0);
+        s.fill_directory(Path::new("/w/b"), vec![crate::explorer::Entry::dir("sub")]);
+        focus(&mut s, "/w/b/sub");
+        s.run("list.expand", None, 0);
+        s.fill_directory(
+            Path::new("/w/b/sub"),
+            vec![crate::explorer::Entry::file("theirs.rs")],
+        );
+        assert!(s
+            .explorer()
+            .unwrap()
+            .rows()
+            .iter()
+            .any(|r| r.name == "theirs.rs"));
+
+        // `b` is removed outside deco and a later refresh of the parent drops
+        // its row — while its listings and expansions stay cached behind it.
+        s.fill_directory(Path::new("/w"), vec![crate::explorer::Entry::dir("a")]);
+
+        // Now rename `a` onto the free name `b`.
+        focus(&mut s, "/w/a");
+        let Outcome::FileOperation(renamed) = s.rename_in_tree("b") else {
+            panic!("expected a rename");
+        };
+        s.file_operation_done(&renamed);
+        s.fill_directory(Path::new("/w"), vec![crate::explorer::Entry::dir("b")]);
+
+        let names: Vec<String> = s
+            .explorer()
+            .unwrap()
+            .rows()
+            .into_iter()
+            .map(|r| r.name)
+            .collect();
+        assert!(
+            names.contains(&"mine.rs".to_owned()),
+            "the renamed directory keeps its own contents: {names:?}"
+        );
+        assert!(
+            !names.contains(&"theirs.rs".to_owned()),
+            "and none of what the old `b` left behind: {names:?}"
         );
     }
 
