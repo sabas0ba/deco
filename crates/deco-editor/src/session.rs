@@ -3458,9 +3458,30 @@ impl Session {
     /// Pressing it repeatedly now walks back through the history, and there is
     /// no redo for the tree.
     fn undo_file_operation(&mut self) -> Outcome {
-        let Some(operation) = self.explorer_undo.pop() else {
+        let Some(operation) = self.explorer_undo.last().cloned() else {
             return Outcome::Message("nothing in the tree to undo".to_owned());
         };
+        // The same collision `rename_in_tree` refuses, asked again here. The
+        // entry was recorded when the destination was free, and it need not
+        // still be: rename `a` to `b`, open a new `a`, let something remove it,
+        // and undoing would move `b` back onto the path that tab still holds —
+        // two buffers for one file, from the key that is supposed to put things
+        // as they were.
+        //
+        // Checked before popping, so a refusal leaves the undo where it is to be
+        // tried again once the tab is closed.
+        if let crate::files::Operation::Rename { to, .. } = &operation {
+            if !self.open_paths_under(to).is_empty() {
+                let name = to
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| to.display().to_string());
+                return Outcome::Message(format!(
+                    "a tab is still open on `{name}` — close it before undoing this"
+                ));
+            }
+        }
+        self.explorer_undo.pop();
         self.pending_undo = Some(operation.clone());
         Outcome::FileOperation(operation)
     }
@@ -3573,8 +3594,18 @@ impl Session {
             // again on the next turn. Landing the selection when the listing
             // arrives is exactly what `reveal` is for.
             match operation {
-                crate::files::Operation::CreateFile(path)
-                | crate::files::Operation::CreateFolder(path) => explorer.reveal(path),
+                crate::files::Operation::CreateFolder(path) => {
+                    // Anything the tree still remembers under this name belongs
+                    // to a directory that is gone — removed outside deco, its
+                    // listing and expansion left behind by a refresh of the
+                    // parent alone. The folder just created is empty, and
+                    // without this it would render the old one's children the
+                    // moment the parent listing arrived, and never ask for a
+                    // listing of its own.
+                    explorer.forget_under(path);
+                    explorer.reveal(path);
+                }
+                crate::files::Operation::CreateFile(path) => explorer.reveal(path),
                 crate::files::Operation::Rename { to, .. } => explorer.reveal(to),
                 // Nothing to select: it is gone, and the clamp inside `fill`
                 // puts the selection on a row that still exists.
@@ -8250,6 +8281,77 @@ mod tests {
             expect, None,
             "the first rename's entry must not carry a stamp taken from the \
              second rename's file"
+        );
+    }
+
+    #[test]
+    fn undoing_a_rename_onto_a_path_a_tab_holds_is_refused() {
+        let mut s = with_tree();
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+        s.run("list.focusDown", None, 0); // Cargo.toml
+        let Outcome::FileOperation(renamed) = s.rename_in_tree("Cargo.lock") else {
+            panic!("expected a rename");
+        };
+        s.file_operation_done(&renamed);
+
+        // A new `Cargo.toml` gets opened, then removed by another program — so
+        // the tree does not list it and the path looks free again.
+        s.open(PathBuf::from("/w/Cargo.toml"), "someone else's\n");
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+
+        assert!(
+            matches!(s.run("undo", None, 0), Outcome::Message(_)),
+            "undoing onto a path a tab still holds would make two buffers for it"
+        );
+        assert!(
+            s.can_undo_file_operation(),
+            "and the undo stays available for once the tab is closed"
+        );
+    }
+
+    #[test]
+    fn a_new_folder_does_not_inherit_a_vanished_ones_children() {
+        let mut s = with_tree();
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+        s.run("list.expand", None, 0); // open `src`
+        s.fill_directory(
+            Path::new("/w/src"),
+            vec![crate::explorer::Entry::file("old.rs")],
+        );
+        assert!(s
+            .explorer()
+            .unwrap()
+            .rows()
+            .iter()
+            .any(|r| r.name == "old.rs"));
+
+        // `src` is removed outside deco. Something refreshes the *parent* — a
+        // sibling mutation does exactly that — so the row goes, while `src`'s
+        // own listing and expansion stay cached behind it.
+        s.fill_directory(
+            Path::new("/w"),
+            vec![crate::explorer::Entry::file("Cargo.toml")],
+        );
+
+        let Outcome::FileOperation(made) = s.create_in_tree("src", true) else {
+            panic!("expected a create");
+        };
+        s.file_operation_done(&made);
+        s.fill_directory(
+            Path::new("/w"),
+            vec![
+                crate::explorer::Entry::dir("src"),
+                crate::explorer::Entry::file("Cargo.toml"),
+            ],
+        );
+
+        assert!(
+            !s.explorer()
+                .unwrap()
+                .rows()
+                .iter()
+                .any(|r| r.name == "old.rs"),
+            "a new folder must not show the rows of the one that had its name"
         );
     }
 
