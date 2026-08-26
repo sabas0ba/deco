@@ -820,10 +820,17 @@ impl Driver {
                         // can tell it apart from whatever might replace it.
                         // Before `file_operation_done`, which is what puts the
                         // undo entry in reach.
-                        if let deco_editor::FileOperation::Rename { to, .. } = &operation {
-                            if let Some(stamp) = stamp_of(to) {
-                                session.stamp_last_undo(stamp);
-                            }
+                        // A rename's destination, or what a create just made:
+                        // both undo by acting on a path, and both need to know
+                        // the thing at that path is still theirs.
+                        let made = match &operation {
+                            deco_editor::FileOperation::Rename { to, .. } => Some(to),
+                            deco_editor::FileOperation::CreateFile(path)
+                            | deco_editor::FileOperation::CreateFolder(path) => Some(path),
+                            _ => None,
+                        };
+                        if let Some(stamp) = made.and_then(|path| stamp_of(path)) {
+                            session.stamp_last_undo(stamp);
                         }
                         session.file_operation_done(&operation);
                         // A delete may have detached open documents; the server
@@ -855,7 +862,7 @@ impl Driver {
                             if let Some(parent) = operation.parent() {
                                 session.invalidate_directory(parent);
                             }
-                            reconcile_failed_delete(session, lsp, &operation, error.kind());
+                            reconcile_failed_delete(session, lsp, &operation);
                         }
                     }
                 }
@@ -1237,7 +1244,25 @@ fn perform(
         // fails on a directory with anything in it, which is exactly the
         // refusal wanted, and gets it from the operating system rather than
         // from a check with a race under it.
-        FileOperation::DeleteIfEmpty { path, directory } => {
+        FileOperation::DeleteIfEmpty {
+            path,
+            directory,
+            expect,
+        } => {
+            // Empty is not an identity. Another program can remove what was
+            // created and leave a different empty file or directory in its
+            // place, and undoing the create would delete that instead.
+            if let Some(expected) = expect {
+                match stamp_of(path) {
+                    Some(now) if &now == expected => {}
+                    _ => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::AlreadyExists,
+                            format!("{} is not what was created any more", path.display()),
+                        ))
+                    }
+                }
+            }
             if *directory {
                 std::fs::remove_dir(path).map_err(|error| {
                     io::Error::new(
@@ -1274,7 +1299,6 @@ fn reconcile_failed_delete(
     session: &mut Session,
     lsp: &mut Lsp,
     operation: &deco_editor::FileOperation,
-    error: io::ErrorKind,
 ) {
     use deco_editor::FileOperation;
     let (path, recursive) = match operation {
@@ -1283,28 +1307,32 @@ fn reconcile_failed_delete(
         _ => return,
     };
 
-    // Only a recursive delete can half happen. `remove_file` and `remove_dir`
-    // either did it or did not, so their failure means nothing went — and
-    // throwing away the undo history for that would cost the user their earlier
-    // work for no reason.
-    //
-    // Nor does every recursive failure mean something went: a directory that was
-    // already gone, or that is not a directory at all, fails before touching
-    // anything. Those two are the errors that say so; every other failure could
-    // have removed part of the tree, and the barrier goes up because an undo
-    // over a state that never existed is worse than a lost undo.
-    let changed_nothing = matches!(
-        error,
-        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
-    );
-    if recursive && !changed_nothing {
-        session.clear_file_undo();
-    }
-
     // And the subtree: the directory itself may survive, so re-reading its
     // parent rediscovers it and leaves its own listing — and every expanded one
     // below — describing files that have gone.
     session.invalidate_subtree(path);
+
+    // Only a recursive delete can half happen: `remove_file` and `remove_dir`
+    // either did it or did not. And even a recursive failure need not mean
+    // anything went — a `PermissionDenied` on the directory itself stops it
+    // before it opens anything. So the barrier goes up on *evidence* rather
+    // than on the error kind: something the tree knew about, or something a tab
+    // is holding, has actually gone.
+    //
+    // Bounded by what has been read, which is what is on screen — the tree only
+    // knows the directories somebody expanded. A file removed out of a
+    // collapsed directory is invisible here, and so is the undo it would have
+    // invalidated; naming that is better than a check that walks a workspace to
+    // answer a question about a keystroke.
+    let mut anything_went = false;
+    if recursive {
+        for known in session.known_paths_under(path) {
+            if matches!(known.try_exists(), Ok(false)) {
+                anything_went = true;
+                break;
+            }
+        }
+    }
 
     // Per file, because half a directory survives and only the disk knows which
     // half.
@@ -1315,8 +1343,12 @@ fn reconcile_failed_delete(
         // survived is the wrong way to be wrong. Only a definite `false`
         // detaches; an error leaves the tab attached.
         if matches!(held.try_exists(), Ok(false)) {
+            anything_went = true;
             session.detach_tabs_under(&held);
         }
+    }
+    if recursive && anything_went {
+        session.clear_file_undo();
     }
     lsp.close_deleted(session);
 }
@@ -1711,6 +1743,7 @@ mod tests {
             &deco_editor::FileOperation::DeleteIfEmpty {
                 path: path.clone(),
                 directory: false,
+                expect: None,
             },
             None,
             Some(&dir),
@@ -1734,6 +1767,7 @@ mod tests {
             &deco_editor::FileOperation::DeleteIfEmpty {
                 path: untouched.clone(),
                 directory: false,
+                expect: None,
             },
             None,
             Some(&dir),
@@ -1759,6 +1793,7 @@ mod tests {
             &deco_editor::FileOperation::DeleteIfEmpty {
                 path: made.clone(),
                 directory: true,
+                expect: None,
             },
             None,
             Some(&dir),
@@ -1907,6 +1942,42 @@ mod tests {
         )
         .expect("nothing touched it, so the undo goes through");
         assert_eq!(std::fs::read_to_string(&from).unwrap(), "mine\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn undoing_a_create_refuses_once_something_else_holds_the_name() {
+        let dir = scratch("undo-create-swapped");
+        let made = dir.join("new.rs");
+        perform(
+            &deco_editor::FileOperation::CreateFile(made.clone()),
+            None,
+            Some(&dir),
+        )
+        .unwrap();
+        let stamp = stamp_of(&made).expect("it is there");
+
+        // Removed and replaced by a *different* empty file. Emptiness alone
+        // cannot tell them apart, which is the point.
+        std::fs::remove_file(&made).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::File::create(&made).unwrap();
+
+        let refused = perform(
+            &deco_editor::FileOperation::DeleteIfEmpty {
+                path: made.clone(),
+                directory: false,
+                expect: Some(stamp),
+            },
+            None,
+            Some(&dir),
+        );
+        // On a filesystem whose timestamps are too coarse to tell the two
+        // apart, this legitimately goes through — the stamp is evidence, not
+        // proof, and the test says so rather than pretending otherwise.
+        if refused.is_err() {
+            assert!(made.exists(), "the replacement was left alone");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -262,6 +262,30 @@ impl Explorer {
         self.clamp();
     }
 
+    /// Every path the tree knows about at or under `prefix`.
+    ///
+    /// Only what has actually been read — expanded directories and their
+    /// entries — so it is bounded by what is on screen rather than by what the
+    /// workspace contains. For a caller with a filesystem that wants to find out
+    /// whether any of it has gone.
+    pub fn known_paths_under(&self, prefix: &Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        for (dir, contents) in &self.listings {
+            if !dir.starts_with(prefix) {
+                continue;
+            }
+            if dir != prefix {
+                out.push(dir.clone());
+            }
+            if let Contents::Known(entries) = contents {
+                out.extend(entries.iter().map(|entry| dir.join(&entry.name)));
+            }
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+
     /// Whether the root's listing has arrived.
     ///
     /// The difference between "this workspace is empty" and "nobody has read it
@@ -755,6 +779,29 @@ mod tests {
             "the contents came with it — a rename does not change them"
         );
         assert_eq!(explorer.wanted(), None, "and nothing needs re-reading");
+    }
+
+    #[test]
+    fn what_the_tree_knows_is_bounded_by_what_was_read() {
+        let mut explorer = tree();
+        // Nothing expanded: the root's entries are all it knows.
+        let known = explorer.known_paths_under(Path::new("/w"));
+        assert!(known.contains(&PathBuf::from("/w/src")));
+        assert!(known.contains(&PathBuf::from("/w/Cargo.toml")));
+        // `starts_with` is component-based, so `/w/src` matches the prefix
+        // `/w/src` — the question is whether anything *inside* it is known.
+        assert!(
+            !known.iter().any(|p| p.parent() == Some(Path::new("/w/src"))),
+            "a directory nobody opened has not been read, so nothing under it \
+             is known"
+        );
+
+        explorer.select_first();
+        explorer.expand();
+        explorer.fill(Path::new("/w/src"), vec![Entry::file("main.rs")]);
+        assert!(explorer
+            .known_paths_under(Path::new("/w/src"))
+            .contains(&PathBuf::from("/w/src/main.rs")));
     }
 
     #[test]

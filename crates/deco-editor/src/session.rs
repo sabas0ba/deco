@@ -3221,6 +3221,17 @@ impl Session {
             .collect()
     }
 
+    /// Every path the tree knows about at or under `path`.
+    ///
+    /// For a caller that has a filesystem and needs to find out whether a delete
+    /// that reported failure removed anything after all.
+    pub fn known_paths_under(&self, path: &Path) -> Vec<PathBuf> {
+        self.explorer
+            .as_ref()
+            .map(|explorer| explorer.known_paths_under(path))
+            .unwrap_or_default()
+    }
+
     /// Re-reads the directory a listing may have changed under.
     pub fn invalidate_directory(&mut self, dir: &Path) {
         if let Some(explorer) = self.explorer.as_mut() {
@@ -3412,9 +3423,12 @@ impl Session {
         if self.pending_undo.is_some() {
             return;
         }
-        if let Some(crate::files::Operation::Rename { expect, .. }) = self.explorer_undo.last_mut()
-        {
-            *expect = Some(stamp);
+        match self.explorer_undo.last_mut() {
+            Some(crate::files::Operation::Rename { expect, .. })
+            | Some(crate::files::Operation::DeleteIfEmpty { expect, .. }) => {
+                *expect = Some(stamp);
+            }
+            _ => {}
         }
     }
 
@@ -3532,6 +3546,7 @@ impl Session {
                 | crate::files::Operation::DeleteIfEmpty {
                     path,
                     directory: true,
+                    ..
                 } => explorer.forget_under(path),
                 crate::files::Operation::Rename { from, to, .. } => explorer.rekey_under(from, to),
                 _ => {}
@@ -7548,6 +7563,7 @@ mod tests {
             Outcome::FileOperation(crate::files::Operation::DeleteIfEmpty {
                 path: PathBuf::from("/w/src/new.rs"),
                 directory: false,
+                expect: None,
             }),
             "undoing a create removes what it made — and only if it is still \
              what was made, rather than taking whatever has been written since"
@@ -8283,6 +8299,7 @@ mod tests {
             Outcome::FileOperation(crate::files::Operation::DeleteIfEmpty {
                 path: PathBuf::from("/w/src/new.rs"),
                 directory: false,
+                expect: None,
             }),
             "undo in the text must not move files"
         );

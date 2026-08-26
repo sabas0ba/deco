@@ -110,7 +110,11 @@ rename happens and checked when it is undone — evidence rather than proof, sin
 a real identity is an inode on Unix and a file index on Windows and the standard
 library offers the second only behind an unstable feature. A mismatch refuses.
 
-**Undoing a create only removes what the create made.** If you made a file and
+**Undoing a create only removes what the create made**, and only if it is still
+that thing. Empty is not an identity: another program can take away what was
+just created and leave a *different* empty file or folder at the same path. The
+same size-and-time evidence a rename's undo carries is recorded when the create
+succeeds, and a mismatch refuses. If you made a file and
 have since typed in it and saved, `ctrl+z` in the tree refuses rather than taking
 the file and its contents with it:
 
@@ -196,11 +200,15 @@ below it describe a state that never existed.
 
 Only a *recursive* delete can half happen. Removing one file, or one empty
 directory, either worked or did not — so a refusal there costs no undo history.
-Nor does every recursive failure: a directory that was already gone, or that
-turned out not to be a directory, failed before touching anything, and the
-history survives. Any other failure could have taken part of the tree, and the
-barrier goes up — an undo over a state that never existed is worse than an undo
-you no longer have.
+And a recursive failure only costs it if something **actually went**: the tree
+re-checks what it knew about, and what any tab is holding, against the disk. A
+permission error on the directory itself stops the delete before it opens
+anything, and the history survives that untouched.
+
+The check is bounded by what has been read, which is what is on screen: the tree
+only knows the directories somebody expanded. A file removed out of a collapsed
+directory is invisible to it — better to say so than to walk a whole workspace to
+answer a question about one keystroke.
 
 What the tree remembered about a directory goes when the directory does. It
 would otherwise keep its rows and its open state under that name, so creating a

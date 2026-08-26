@@ -134,6 +134,14 @@ pub enum Operation {
         /// [`Operation::Delete`]'s: undoing "new file" must not remove someone
         /// else's directory that has taken its name.
         directory: bool,
+        /// What the created entry looked like, once it existed.
+        ///
+        /// Emptiness alone does not identify it: another program can remove what
+        /// was just created and leave a *different* empty file or directory at
+        /// the same path, and the undo would delete that instead. The same
+        /// evidence a rename's undo carries, for the same reason — see
+        /// [`Stamp`].
+        expect: Option<Stamp>,
     },
 }
 
@@ -162,10 +170,14 @@ impl Operation {
             Self::CreateFile(path) => Some(Self::DeleteIfEmpty {
                 path: path.clone(),
                 directory: false,
+                // Filled in once the file exists; there is nothing to look at
+                // until then.
+                expect: None,
             }),
             Self::CreateFolder(path) => Some(Self::DeleteIfEmpty {
                 path: path.clone(),
                 directory: true,
+                expect: None,
             }),
             Self::Rename { from, to, .. } => Some(Self::Rename {
                 from: to.clone(),
@@ -253,6 +265,7 @@ mod tests {
             Some(Operation::DeleteIfEmpty {
                 path: PathBuf::from("/w/new.rs"),
                 directory: false,
+                expect: None,
             }),
             "undoing a create must not take content that was added since"
         );
