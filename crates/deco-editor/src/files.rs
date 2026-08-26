@@ -101,6 +101,14 @@ pub enum Operation {
         ///
         /// Evidence rather than identity — see [`Stamp`].
         expect: Option<Stamp>,
+        /// Whether the tree was showing a directory when this was decided.
+        ///
+        /// The same reason [`Operation::Delete`] carries it. A directory
+        /// replaced by a file since the tree read it would otherwise be moved as
+        /// though it were still a directory — and
+        /// [`Session::file_operation_done`](crate::Session::file_operation_done)
+        /// would retarget every tab *below* the old path onto a regular file.
+        directory: bool,
     },
     /// Remove it. A directory goes with everything in it.
     Delete {
@@ -179,12 +187,19 @@ impl Operation {
                 directory: true,
                 expect: None,
             }),
-            Self::Rename { from, to, .. } => Some(Self::Rename {
+            Self::Rename {
+                from,
+                to,
+                directory,
+                ..
+            } => Some(Self::Rename {
                 from: to.clone(),
                 to: from.clone(),
                 // Filled in once the rename has actually happened; there is
                 // nothing to stamp until then.
                 expect: None,
+                // Moving it back moves the same kind of thing.
+                directory: *directory,
             }),
             Self::Delete { .. } => None,
             // Undoing the undo of a create would be creating it again, which is
@@ -274,6 +289,7 @@ mod tests {
             from: PathBuf::from("/w/a.rs"),
             to: PathBuf::from("/w/b.rs"),
             expect: None,
+            directory: false,
         };
         assert_eq!(
             rename.inverse(),
@@ -281,6 +297,7 @@ mod tests {
                 from: PathBuf::from("/w/b.rs"),
                 to: PathBuf::from("/w/a.rs"),
                 expect: None,
+                directory: false,
             })
         );
 
@@ -313,6 +330,7 @@ mod tests {
                 from: PathBuf::from("/w/src/a.rs"),
                 to: PathBuf::from("/w/src/b.rs"),
                 expect: None,
+                directory: false,
             }
             .parent(),
             Some(Path::new("/w/src"))

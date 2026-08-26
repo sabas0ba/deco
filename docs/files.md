@@ -178,8 +178,12 @@ has on no platform. What the check does close is the case that actually happens
 — a link sitting in the workspace, left by a build or a package manager — rather
 than an attacker racing in the microseconds between two calls.
 
-**A delete removes what the tree was showing**, not what is on disk when the
-frontend gets there. The confirmation names a file or a folder, and that is what
+**A rename and a delete act on what the tree was showing**, not on what is on
+disk when the frontend gets there. A folder replaced by a file since it was read
+is refused rather than moved as though it were still a folder — which would
+retarget every tab below the old path onto a regular file.
+
+A delete is the same: The confirmation names a file or a folder, and that is what
 is carried out — so a file replaced by a directory since the tree last read it is
 refused rather than recursively deleted, which is what asking the disk instead
 would have done. The tree has no watcher, so its picture really can be stale.

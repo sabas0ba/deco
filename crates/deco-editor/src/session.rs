@@ -3136,6 +3136,7 @@ impl Session {
         }
 
         let operation = crate::files::Operation::Rename {
+            directory: row.is_dir,
             from: row.path,
             to,
             expect: None,
@@ -3236,6 +3237,17 @@ impl Session {
     pub fn invalidate_directory(&mut self, dir: &Path) {
         if let Some(explorer) = self.explorer.as_mut() {
             explorer.invalidate(dir);
+        }
+    }
+
+    /// Drops what the tree remembers about `dir` and everything below it.
+    ///
+    /// For a path that is no longer the directory it was: invalidating would
+    /// leave it in the map to be read again and answered as an empty folder,
+    /// which is what it will look like from now on.
+    pub fn forget_subtree(&mut self, dir: &Path) {
+        if let Some(explorer) = self.explorer.as_mut() {
+            explorer.forget_under(dir);
         }
     }
 
@@ -7600,6 +7612,7 @@ mod tests {
                 from: PathBuf::from("/w/cargo.lock"),
                 to: PathBuf::from("/w/Cargo.toml"),
                 expect: None,
+                directory: false,
             }),
             "ctrl+z in the tree puts the name back"
         );
@@ -7690,6 +7703,7 @@ mod tests {
                 from: PathBuf::from("/w/src/other.rs"),
                 to: PathBuf::from("/w/src/new.rs"),
                 expect: None,
+                directory: false,
             }),
             "the tree's undo, not the document's"
         );

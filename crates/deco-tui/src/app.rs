@@ -1174,7 +1174,31 @@ fn perform(
             .open(path)
             .map(drop),
         FileOperation::CreateFolder(path) => std::fs::create_dir(path),
-        FileOperation::Rename { from, to, expect } => {
+        FileOperation::Rename {
+            from,
+            to,
+            expect,
+            directory,
+        } => {
+            // The kind the tree was showing, not the kind on disk now. A
+            // directory replaced by a file since it was read would otherwise be
+            // moved as though it were still a directory, and every tab below the
+            // old path retargeted onto a regular file — the same reinterpretation
+            // a delete is already stopped from making.
+            match std::fs::symlink_metadata(from) {
+                Ok(meta) if meta.is_dir() == *directory => {}
+                Ok(_) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "{} is not the {} the tree was showing any more",
+                            from.display(),
+                            if *directory { "folder" } else { "file" }
+                        ),
+                    ))
+                }
+                Err(error) => return Err(error),
+            }
             // An undo carries what the file looked like when it was moved. If
             // that no longer matches, something replaced it, and moving *that*
             // back would be shifting somebody else's file on a keystroke meant
@@ -1293,6 +1317,18 @@ fn reconcile_failure(session: &mut Session, lsp: &mut Lsp, operation: &deco_edit
     // same stale picture. There is no watcher to notice it any other way.
     if let Some(parent) = operation.parent() {
         session.invalidate_directory(parent);
+        // But re-reading it is no use if it is not a directory any more.
+        // `list_dir` answers an unreadable or non-directory path with an empty
+        // listing, so the tree would go on showing it as an empty folder for
+        // good — and every create in it would go on failing — while the entry
+        // that would correct it sits in the listing *above*. So that one is
+        // re-read too, and what the tree remembers below is dropped.
+        if !parent.is_dir() {
+            if let Some(above) = parent.parent() {
+                session.invalidate_directory(above);
+            }
+            session.forget_subtree(parent);
+        }
     }
 
     // And a failed rename's *source*, subtree and all. The usual reason a
@@ -1701,6 +1737,7 @@ mod tests {
                 from: from.clone(),
                 to: to.clone(),
                 expect: None,
+                directory: false,
             },
             None,
             Some(&dir),
@@ -1731,6 +1768,7 @@ mod tests {
                 from: made.clone(),
                 to: moved.clone(),
                 expect: None,
+                directory: false,
             },
             None,
             Some(&dir),
@@ -1856,6 +1894,7 @@ mod tests {
                     from: from.clone(),
                     to: to.clone(),
                     expect: None,
+                    directory: false,
                 },
                 None,
                 Some(&dir),
@@ -1909,6 +1948,7 @@ mod tests {
                 from: from.clone(),
                 to: to.clone(),
                 expect: None,
+                directory: false,
             },
             None,
             Some(&dir),
@@ -1926,6 +1966,7 @@ mod tests {
                 from: to.clone(),
                 to: from.clone(),
                 expect: Some(stamp),
+                directory: false,
             },
             None,
             Some(&dir),
@@ -1951,6 +1992,7 @@ mod tests {
                 from: from.clone(),
                 to: to.clone(),
                 expect: None,
+                directory: false,
             },
             None,
             Some(&dir),
@@ -1962,6 +2004,7 @@ mod tests {
                 from: to.clone(),
                 to: from.clone(),
                 expect: stamp_of(&to),
+                directory: false,
             },
             None,
             Some(&dir),
@@ -2019,6 +2062,80 @@ mod tests {
     }
 
     #[test]
+    fn a_rename_refuses_a_source_that_is_no_longer_what_was_shown() {
+        let dir = scratch("rename-type");
+        let was_a_dir = dir.join("d");
+        // The tree read a directory; something has since put a file there.
+        std::fs::write(&was_a_dir, "not a directory any more\n").unwrap();
+
+        perform(
+            &deco_editor::FileOperation::Rename {
+                from: was_a_dir.clone(),
+                to: dir.join("renamed"),
+                expect: None,
+                directory: true,
+            },
+            None,
+            Some(&dir),
+        )
+        .expect_err("what the tree showed is not what is there");
+        assert!(
+            was_a_dir.is_file() && !dir.join("renamed").exists(),
+            "and nothing was moved"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_parent_that_stopped_being_a_directory_is_forgotten() {
+        let dir = scratch("stale-parent");
+        let inner = dir.join("d");
+        std::fs::create_dir_all(&inner).unwrap();
+        std::fs::write(inner.join("a.rs"), "a\n").unwrap();
+
+        let mut session = Session::new(
+            deco_config::Settings::with_defaults(),
+            None,
+            deco_keymap::binding::Platform::Linux,
+        );
+        session.resize(100, 30);
+        session.set_workspace_root(&dir);
+        read_tree(&mut session, &dir);
+        session.run("workbench.files.action.focusFilesExplorer", None, 0);
+        session.run("list.expand", None, 0);
+        read_tree(&mut session, &dir);
+        assert!(session
+            .known_paths_under(&inner)
+            .contains(&inner.join("a.rs")));
+
+        // `d` becomes a file. Creating in it fails, and re-reading `d` alone
+        // would answer "empty folder" for ever.
+        std::fs::remove_dir_all(&inner).unwrap();
+        std::fs::write(&inner, "now a file\n").unwrap();
+        let mut lsp = Lsp::new(&mut session, None);
+        reconcile_failure(
+            &mut session,
+            &mut lsp,
+            &deco_editor::FileOperation::CreateFile(inner.join("new.rs")),
+        );
+
+        // Re-reading `d` alone proves nothing: invalidating it empties what the
+        // tree knows either way, and `list_dir` would answer "empty folder"
+        // for ever. The listing *above* is what has to be asked for again, so
+        // that `d` stops being shown as a directory at all.
+        read_tree(&mut session, &dir);
+        let row = session
+            .explorer()
+            .and_then(|e| e.rows().into_iter().find(|r| r.path == inner))
+            .expect("it is still listed, as something");
+        assert!(
+            !row.is_dir,
+            "the tree must stop showing a path as a folder once it is a file"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_failed_rename_makes_the_tree_re_read_its_source() {
         // The wiring, not just the model: a failed rename has to reach
         // `invalidate_subtree`, or the source directory keeps showing children
@@ -2057,6 +2174,7 @@ mod tests {
                 from: inner.clone(),
                 to: dir.join("renamed"),
                 expect: None,
+                directory: false,
             },
         );
 
