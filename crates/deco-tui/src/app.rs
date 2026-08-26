@@ -1307,6 +1307,16 @@ fn reconcile_failed_delete(
         _ => return,
     };
 
+    // What the tree knew, taken *before* anything is invalidated: invalidating
+    // turns those listings back into "not read yet", and a scan afterwards finds
+    // nothing to check. Which is what made the whole tree half of the evidence
+    // below dead — only an open tab could ever have raised the barrier.
+    let known: Vec<PathBuf> = if recursive {
+        session.known_paths_under(path)
+    } else {
+        Vec::new()
+    };
+
     // And the subtree: the directory itself may survive, so re-reading its
     // parent rediscovers it and leaves its own listing — and every expanded one
     // below — describing files that have gone.
@@ -1319,20 +1329,14 @@ fn reconcile_failed_delete(
     // than on the error kind: something the tree knew about, or something a tab
     // is holding, has actually gone.
     //
-    // Bounded by what has been read, which is what is on screen — the tree only
+    // Bounded by what had been read, which is what is on screen — the tree only
     // knows the directories somebody expanded. A file removed out of a
     // collapsed directory is invisible here, and so is the undo it would have
     // invalidated; naming that is better than a check that walks a workspace to
     // answer a question about a keystroke.
-    let mut anything_went = false;
-    if recursive {
-        for known in session.known_paths_under(path) {
-            if matches!(known.try_exists(), Ok(false)) {
-                anything_went = true;
-                break;
-            }
-        }
-    }
+    let mut anything_went = known
+        .iter()
+        .any(|known| matches!(known.try_exists(), Ok(false)));
 
     // Per file, because half a directory survives and only the disk knows which
     // half.
@@ -1978,6 +1982,93 @@ mod tests {
         if refused.is_err() {
             assert!(made.exists(), "the replacement was left alone");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Answers every listing the tree is waiting on, from the real disk.
+    fn read_tree(session: &mut Session, root: &Path) {
+        for _ in 0..crate::files::MAX_DEPTH {
+            let Some(wanted) = session.directory_wanted() else {
+                return;
+            };
+            let entries = crate::files::list_dir(root, &wanted, &session.settings);
+            session.fill_directory(&wanted, entries);
+        }
+    }
+
+    #[test]
+    fn a_partial_delete_raises_the_barrier_from_what_the_tree_knew() {
+        // The evidence the barrier rests on is what the tree had *read*, so a
+        // partial delete has to be caught even when no tab was open on any of
+        // it. Taking that snapshot after invalidating the subtree silently
+        // disabled this whole half.
+        let dir = scratch("partial-evidence");
+        let inner = dir.join("d");
+        std::fs::create_dir_all(&inner).unwrap();
+        std::fs::write(inner.join("a.rs"), "a\n").unwrap();
+        std::fs::write(inner.join("b.rs"), "b\n").unwrap();
+
+        let mut session = Session::new(
+            deco_config::Settings::with_defaults(),
+            None,
+            deco_keymap::binding::Platform::Linux,
+        );
+        session.resize(100, 30);
+        session.set_workspace_root(&dir);
+        read_tree(&mut session, &dir);
+
+        // Something to lose, recorded before `d` is read — creating invalidates
+        // the directory it lands in.
+        session.run("workbench.files.action.focusFilesExplorer", None, 0);
+        let deco_editor::Outcome::FileOperation(created) = session.create_in_tree("kept.rs", false)
+        else {
+            panic!("expected a create");
+        };
+        session.file_operation_done(&created);
+        std::fs::write(dir.join("kept.rs"), "").unwrap();
+        read_tree(&mut session, &dir);
+
+        // Open `d` so the tree reads what is in it.
+        session.run("workbench.files.action.focusFilesExplorer", None, 0);
+        while session
+            .explorer()
+            .and_then(|e| e.selection())
+            .map(|row| row.name != "d")
+            .unwrap_or(false)
+        {
+            session.run("list.focusDown", None, 0);
+        }
+        session.run("list.expand", None, 0);
+        read_tree(&mut session, &dir);
+        assert!(
+            session
+                .known_paths_under(&inner)
+                .contains(&inner.join("a.rs")),
+            "the tree read `d`, so it knows what was in it"
+        );
+        assert!(
+            session.can_undo_file_operation(),
+            "and the create is undoable"
+        );
+
+        // A recursive delete that took one child and then stopped. No tab was
+        // ever open on any of it.
+        std::fs::remove_file(inner.join("a.rs")).unwrap();
+        let mut lsp = Lsp::new(&mut session, None);
+        reconcile_failed_delete(
+            &mut session,
+            &mut lsp,
+            &deco_editor::FileOperation::Delete {
+                path: inner.clone(),
+                directory: true,
+            },
+        );
+
+        assert!(
+            !session.can_undo_file_operation(),
+            "part of the tree went, so the earlier undos describe a state that \
+             never existed"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
