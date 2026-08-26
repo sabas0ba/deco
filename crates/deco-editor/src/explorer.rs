@@ -713,6 +713,38 @@ mod tests {
     }
 
     #[test]
+    fn a_stale_subtree_is_re_read_rather_than_shown_again() {
+        // What a failed rename leaves behind: the source directory's listing is
+        // still `Known`, so expanding it asks for nothing and the rows it holds
+        // are whatever was there before.
+        let mut explorer = tree();
+        explorer.select_first();
+        explorer.expand();
+        explorer.fill(Path::new("/w/src"), vec![Entry::file("old.rs")]);
+        assert!(explorer.rows().iter().any(|r| r.name == "old.rs"));
+        assert_eq!(explorer.wanted(), None, "nothing is outstanding");
+
+        explorer.invalidate_under(Path::new("/w/src"));
+        assert_eq!(
+            explorer.wanted().as_deref(),
+            Some(Path::new("/w/src")),
+            "it has to be asked for again before its rows can be believed"
+        );
+        explorer.fill(Path::new("/w/src"), Vec::new());
+        assert!(
+            !explorer.rows().iter().any(|r| r.name == "old.rs"),
+            "and the answer replaces them"
+        );
+        assert!(
+            explorer
+                .rows()
+                .iter()
+                .any(|r| r.name == "src" && r.expanded),
+            "while the directory stays open — invalidating is not forgetting"
+        );
+    }
+
+    #[test]
     fn a_refresh_can_reach_a_whole_subtree() {
         let mut explorer = tree();
         explorer.select_first();

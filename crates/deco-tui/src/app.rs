@@ -853,16 +853,7 @@ impl Driver {
                         // every one of them and would let go of every tab in the
                         // workspace for a delete that never happened.
                         if remote.is_none() {
-                            // Whatever failed, the listing that said it would
-                            // work is now suspect — a create refused because
-                            // another program claimed the name means the tree is
-                            // missing that name, and without a re-read every
-                            // retry fails against the same stale picture. There
-                            // is no watcher to notice it any other way.
-                            if let Some(parent) = operation.parent() {
-                                session.invalidate_directory(parent);
-                            }
-                            reconcile_failed_delete(session, lsp, &operation);
+                            reconcile_failure(session, lsp, &operation);
                         }
                     }
                 }
@@ -1288,6 +1279,37 @@ fn perform(
             }
         }
     }
+}
+
+/// Puts the tree and the tabs back in step after a mutation reported failure.
+///
+/// Only for one this machine actually attempted: a remote session refuses every
+/// mutation before touching either filesystem, and the paths are the far end's,
+/// so a local `exists` would say "gone" about all of them.
+fn reconcile_failure(session: &mut Session, lsp: &mut Lsp, operation: &deco_editor::FileOperation) {
+    // Whatever failed, the listing that said it would work is now suspect — a
+    // create refused because another program claimed the name means the tree is
+    // missing that name, and without a re-read every retry fails against the
+    // same stale picture. There is no watcher to notice it any other way.
+    if let Some(parent) = operation.parent() {
+        session.invalidate_directory(parent);
+    }
+
+    // And a failed rename's *source*, subtree and all. The usual reason a
+    // rename fails is that something changed underneath it — including the
+    // source being removed — and the parent alone leaves that directory's own
+    // cached listing describing children it may no longer have. Recreate it
+    // under the old name later and they come back for good, because expanding a
+    // directory whose listing is already `Known` asks for nothing.
+    //
+    // Invalidated rather than forgotten: the source usually still exists, the
+    // rename having failed for some other reason, so re-reading it is right and
+    // throwing away its expansion is not.
+    if let deco_editor::FileOperation::Rename { from, .. } = operation {
+        session.invalidate_subtree(from);
+    }
+
+    reconcile_failed_delete(session, lsp, operation);
 }
 
 /// Puts the tree and the tabs back in step after a delete reported failure.
@@ -1994,6 +2016,59 @@ mod tests {
             let entries = crate::files::list_dir(root, &wanted, &session.settings);
             session.fill_directory(&wanted, entries);
         }
+    }
+
+    #[test]
+    fn a_failed_rename_makes_the_tree_re_read_its_source() {
+        // The wiring, not just the model: a failed rename has to reach
+        // `invalidate_subtree`, or the source directory keeps showing children
+        // it may no longer have.
+        let dir = scratch("failed-rename");
+        let inner = dir.join("d");
+        std::fs::create_dir_all(&inner).unwrap();
+        std::fs::write(inner.join("old.rs"), "old\n").unwrap();
+
+        let mut session = Session::new(
+            deco_config::Settings::with_defaults(),
+            None,
+            deco_keymap::binding::Platform::Linux,
+        );
+        session.resize(100, 30);
+        session.set_workspace_root(&dir);
+        read_tree(&mut session, &dir);
+        session.run("workbench.files.action.focusFilesExplorer", None, 0);
+        session.run("list.expand", None, 0);
+        read_tree(&mut session, &dir);
+        assert!(
+            session
+                .known_paths_under(&inner)
+                .contains(&inner.join("old.rs")),
+            "the tree has read `d`"
+        );
+        assert_eq!(session.directory_wanted(), None, "and wants nothing");
+
+        // The rename fails, because `d` went away underneath it.
+        std::fs::remove_dir_all(&inner).unwrap();
+        let mut lsp = Lsp::new(&mut session, None);
+        reconcile_failure(
+            &mut session,
+            &mut lsp,
+            &deco_editor::FileOperation::Rename {
+                from: inner.clone(),
+                to: dir.join("renamed"),
+                expect: None,
+            },
+        );
+
+        // Specifically the *source's* listing. Invalidating the parent alone
+        // would satisfy a looser assertion and prove nothing about this fix.
+        assert!(
+            session.known_paths_under(&inner).is_empty(),
+            "the source's own listing must be asked for again rather than \
+             believed: {:?}",
+            session.known_paths_under(&inner)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
