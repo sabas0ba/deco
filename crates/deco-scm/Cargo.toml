@@ -1,0 +1,12 @@
+[package]
+name = "deco-scm"
+description = "What `git` says about a workspace, by running the binary rather than linking a library"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+thiserror.workspace = true

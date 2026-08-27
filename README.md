@@ -276,6 +276,7 @@ crates/
   deco-editor   the command set and the editor session — no terminal, no window
   deco-ext      manifests, activation, and the capability model
   deco-remote   remote authorities, SSH/WSL/container transports, wire framing
+  deco-scm      what `git` says: porcelain v2 parsed, the binary run, no library
   deco-tui      terminal frontend (crossterm)
   deco-gui      GPU frontend (winit + wgpu + glyphon), behind the `gui` feature
   deco          the binary
@@ -293,13 +294,14 @@ not exist *at all* yet — git, an integrated terminal, tasks, a test runner,
 self-update, debugging — each have a plan in the
 [Roadmap](docs/roadmap.md):
 
-- **The file tree reads but does not write.** `ctrl+b` shows it, `ctrl+shift+e`
-  focuses it, and the arrows walk it; a directory is read when it is opened, so a
-  large workspace costs what is on screen. Creating, renaming and deleting are
-  not built — the `WorkspaceEdit` machinery they should land through
-  [already exists](docs/files.md#not-built-yet), so that is the next piece rather
-  than a missing foundation. Nor is there a watcher: a file another program
-  creates appears when the directory is read again.
+- **The file tree has no watcher, no mouse and no remote.** `ctrl+b` shows it,
+  `ctrl+shift+e` focuses it, and the arrows walk it; a directory is read when it
+  is opened, so a large workspace costs what is on screen. Creating, renaming
+  and deleting are built, with an undo stack of the tree's own. What is missing:
+  a file another program creates appears only when the directory is read again;
+  it is keyboard-only in both frontends, so there is no drag and therefore no
+  gesture for moving a file to another folder; and the mutations do not yet go
+  over a remote connection. See [The file tree](docs/files.md#not-built-yet).
 - **The panel is built and empty.** `ctrl+j` opens a real region — the split,
   the focus and VS Code's context keys are all there, and both frontends draw it
   — but the terminal, problems and output that belong in it do not exist yet. It
@@ -376,7 +378,7 @@ self-update, debugging — each have a plan in the
   there a results view that stays open — the matches are a picker. Replacing
   across the workspace is built: `ctrl+shift+h` asks what to look for and what to
   put there, and lands as one undoable edit.
-- **Tabs, splits, quick open and search in files, but no file tree.**
+- **Tabs, splits, quick open and search in files.**
   Several documents open at once, one per tab (see [Tabs](docs/tabs.md)); `ctrl+p`
   opens any file in the workspace and `ctrl+shift+f` searches all of them,
   bounded and saying so; `ctrl+o` types a path for a file outside it, `ctrl+k s`
