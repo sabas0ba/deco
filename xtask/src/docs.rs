@@ -151,6 +151,10 @@ fn demos() -> Vec<Demo> {
             build: file_tree,
         },
         Demo {
+            name: "file-mutations",
+            build: file_mutations,
+        },
+        Demo {
             name: "tabs",
             build: tabs,
         },
@@ -328,6 +332,18 @@ impl Take {
             // would show typing going into whatever was already there — a
             // demonstration of something the editor does not do, which is the
             // one thing these files exist to make impossible.
+            // The same bargain for the tree's mutations: the session decided
+            // what should happen to a file, and this demonstration is the thing
+            // with the "filesystem". Applying it to the in-memory workspace is
+            // what makes the frames after show the tree as it really would be.
+            if let deco_editor::Outcome::FileOperation(ref operation) = outcome {
+                let operation = operation.clone();
+                self.apply_file_operation(&operation);
+                self.session.file_operation_done(&operation);
+                if let deco_editor::FileOperation::CreateFile(path) = &operation {
+                    self.session.open(path.clone(), "");
+                }
+            }
             if let deco_editor::Outcome::OpenFile { path, at } = outcome {
                 let relative = path
                     .strip_prefix("/demo")
@@ -350,6 +366,54 @@ impl Take {
             self.capture(key, 1);
         }
         self
+    }
+
+    /// Carries out one of the tree's operations on the in-memory workspace.
+    ///
+    /// A rename moves every path *under* the old one, not just the entry
+    /// itself — renaming a directory in the real filesystem takes its contents
+    /// with it, and a demonstration where it did not would be showing something
+    /// the editor does not do.
+    fn apply_file_operation(&mut self, operation: &deco_editor::FileOperation) {
+        use deco_editor::FileOperation;
+        let relative = |path: &Path| {
+            path.strip_prefix("/demo")
+                .expect("a demonstration only changes files in its own workspace")
+                .to_string_lossy()
+                .into_owned()
+        };
+        match operation {
+            FileOperation::CreateFile(path) => {
+                self.workspace.push((relative(path), String::new()));
+            }
+            // Directories are implied by the paths under them, so an empty one
+            // needs a marker to exist at all — the trailing slash the workspace
+            // shape already uses.
+            FileOperation::CreateFolder(path) => {
+                self.workspace
+                    .push((format!("{}/", relative(path)), String::new()));
+            }
+            FileOperation::Rename { from, to, .. } => {
+                let (from, to) = (relative(from), relative(to));
+                for (path, _) in self.workspace.iter_mut() {
+                    if *path == from {
+                        *path = to.clone();
+                    } else if let Some(rest) = path.strip_prefix(&format!("{from}/")) {
+                        *path = format!("{to}/{rest}");
+                    }
+                }
+            }
+            // The demonstration's workspace holds no content for a created
+            // file, so "if empty" is always true here — the refusal is a
+            // property of the real filesystem, and belongs to the frontend's
+            // tests rather than to a picture.
+            FileOperation::Delete { path, .. } | FileOperation::DeleteIfEmpty { path, .. } => {
+                let gone = relative(path);
+                let under = format!("{gone}/");
+                self.workspace
+                    .retain(|(path, _)| *path != gone && !path.starts_with(&under));
+            }
+        }
     }
 
     /// Gives the file tree a workspace to show, and roots it there.
@@ -958,6 +1022,45 @@ fn file_tree() -> String {
     take.press_and_hold(&["enter"], 5);
     take.type_text("// ");
     take.capture("the caret is in the file the tree opened", 5);
+    take.finish()
+}
+
+fn file_mutations() -> String {
+    let mut take = Take::new("main.rs", SAMPLE);
+    take.workspace(&[
+        ("Cargo.toml", "[package]\nname = \"demo\"\n"),
+        ("src/main.rs", SAMPLE),
+        ("src/lib.rs", "pub mod parse;\n"),
+    ]);
+    take.press_and_hold(&["ctrl+b"], 3);
+    take.press_and_hold(&["ctrl+shift+e"], 3);
+
+    // Into `src`, so the new file lands beside its siblings rather than at the
+    // root — the directory a new file goes in is the one that is selected.
+    take.press_and_hold(&["right"], 3).press(&["down"]);
+    take.capture("src/lib.rs selected", 3);
+
+    // `ctrl+n` in the tree is a new file, not a new untitled buffer.
+    take.press_and_hold(&["ctrl+n"], 3);
+    take.type_text("parse.rs");
+    take.press_and_hold(&["enter"], 5);
+
+    // It was created *and* opened, and the keyboard went with it — so this
+    // types into the new file.
+    take.type_text("pub fn parse() {}");
+    take.capture("created, opened, and being typed into", 5);
+
+    // Back to the tree to rename it. `F2` here is the file; `F2` in the text is
+    // the symbol under the cursor, and they are told apart by what has focus.
+    take.press_and_hold(&["ctrl+shift+e"], 3);
+    take.press_and_hold(&["f2"], 4);
+    take.type_text("lexer.rs");
+    take.press_and_hold(&["enter"], 5);
+    take.capture("renamed — and the tab followed it", 5);
+
+    // The tree's own undo. `ctrl+z` here puts the file back; in the text it
+    // would put characters back.
+    take.press_and_hold(&["ctrl+z"], 6);
     take.finish()
 }
 

@@ -62,6 +62,22 @@ pub enum PromptKind {
     ExtensionConsent,
     /// A decision already made about an extension, to be taken back.
     ExtensionPermissions,
+    /// `explorer.newFile`: what to call the new file.
+    NewFile,
+    /// `explorer.newFolder`: what to call the new directory.
+    NewFolder,
+    /// `F2` in the tree: what to call the selected file instead.
+    ///
+    /// Distinct from [`PromptKind::Rename`], which renames a *symbol* through
+    /// the language server. Same key, different thing, told apart by what has
+    /// the keyboard — and worth two kinds rather than one, because accepting
+    /// them does entirely different work.
+    RenameFile,
+    /// `delete` in the tree: whether to really remove it.
+    ///
+    /// A prompt rather than a bare key because there is no trash to take it out
+    /// of afterwards, and no undo entry either.
+    ConfirmDelete,
 }
 
 impl PromptKind {
@@ -83,6 +99,10 @@ impl PromptKind {
             Self::CodeActions => "Code action:",
             Self::ExtensionConsent => "Extension permission:",
             Self::ExtensionPermissions => "Forget which decision?",
+            Self::NewFile => "New file:",
+            Self::NewFolder => "New folder:",
+            Self::RenameFile => "Rename file to:",
+            Self::ConfirmDelete => "Delete permanently? (y/n)",
         }
     }
 
@@ -117,6 +137,11 @@ impl PromptKind {
             (Self::ExtensionConsent, _) => "",
             (Self::ExtensionPermissions, 1) => "decision",
             (Self::ExtensionPermissions, _) => "decisions",
+            // All typed, or answered with a key: nothing to count.
+            (Self::NewFile, _)
+            | (Self::NewFolder, _)
+            | (Self::RenameFile, _)
+            | (Self::ConfirmDelete, _) => "",
         }
     }
 
@@ -142,6 +167,10 @@ impl PromptKind {
             Self::CodeActions => "the code-action list",
             Self::ExtensionConsent => "an extension's permission request",
             Self::ExtensionPermissions => "the list of permission decisions",
+            Self::NewFile => "new file",
+            Self::NewFolder => "new folder",
+            Self::RenameFile => "rename file",
+            Self::ConfirmDelete => "the delete confirmation",
         }
     }
 

@@ -513,7 +513,16 @@ impl Lsp {
     /// offers definitions, or escape swallowed with no hover on screen — and
     /// that is the hardest kind of bug to notice.
     fn sync_context(&self, session: &mut Session) {
-        let capabilities = self.supervisor.as_ref().map(Supervisor::capabilities);
+        // A server the session has no *document* with offers nothing: it was
+        // never told about this buffer, so `F2` and `F12` would either do
+        // nothing or ask it about a URI it has never seen. That happens when the
+        // open file is deleted, or renamed to something with no language — the
+        // server survives, the document does not.
+        let capabilities = self
+            .open
+            .as_ref()
+            .and(self.supervisor.as_ref())
+            .map(Supervisor::capabilities);
         let has =
             |f: fn(&deco_lsp::ServerCapabilities) -> bool| capabilities.map(f).unwrap_or(false);
 
@@ -1009,6 +1018,64 @@ impl Lsp {
     ///
     /// Idempotent: calling it for a document whose server is already running
     /// does nothing, which is what lets the event loop call it freely.
+    /// Tells the server about files a delete took away.
+    ///
+    /// A deleted file's document is still open as far as the server is
+    /// concerned, under a URI that no longer names anything — so it keeps
+    /// answering about it, and its diagnostics outlive the file. Drained from
+    /// the session, so each deletion produces one `didClose` per file.
+    pub fn close_deleted(&mut self, session: &mut Session) {
+        for path in session.take_closed_documents() {
+            if !self.enabled {
+                continue;
+            }
+            // A server that never had it open, or that has since stopped, is
+            // not an error worth showing anybody: the file is gone either way.
+            if let Some(supervisor) = self.supervisor.as_mut() {
+                let _ = supervisor.did_close(&path);
+            }
+            // The cache has to forget it too. `sync_open` skips `didOpen` when
+            // the cached path already matches, so leaving it would mean a file
+            // deleted and then recreated under the same name was never reopened
+            // — the server had dropped it, and every edit after that went
+            // nowhere.
+            if self.open.as_deref() == Some(path.as_path()) {
+                self.open = None;
+                self.sent = None;
+                // And everything in flight about it. A reply that was already on
+                // its way writes itself back into the session when it lands —
+                // `Update::SemanticTokens` only checks that the request id still
+                // matches — which would undo the very cleanup that closing the
+                // document just did. Nothing would clear it afterwards either:
+                // `changed` returns early for a document with no path, so the
+                // stale spans would sit over the buffer for good.
+                self.forget_requests();
+            }
+        }
+        // The `when` clauses go with it: nothing is open, so nothing is offered.
+        self.sync_context(session);
+    }
+
+    /// Drops every request whose answer would write into the session.
+    ///
+    /// Not a cancellation on the wire: the server may still reply, and the reply
+    /// is discarded because nothing is waiting for that id any more. `$/cancelRequest`
+    /// would be politer to the server and makes no difference here.
+    fn forget_requests(&mut self) {
+        self.hover = None;
+        self.hover_request = None;
+        self.definition_request = None;
+        self.references_request = None;
+        self.semantic_request = None;
+        self.suggest = None;
+        self.completion_request = None;
+        self.format_request = None;
+        self.rename_request = None;
+        self.code_action_request = None;
+        self.resolve_request = None;
+        self.code_actions.clear();
+    }
+
     pub fn attach(&mut self, session: &mut Session) {
         if !self.enabled {
             return;
@@ -1267,18 +1334,10 @@ impl Lsp {
                     self.supervisor = None;
                     self.language = None;
                     self.open = None;
-                    self.hover = None;
-                    self.hover_request = None;
-                    self.definition_request = None;
-                    self.references_request = None;
-                    self.semantic_request = None;
-                    self.suggest = None;
-                    self.completion_request = None;
-                    self.format_request = None;
-                    self.rename_request = None;
-                    self.code_action_request = None;
-                    self.resolve_request = None;
-                    self.code_actions.clear();
+                    // The same set closing a deleted document drops, so a new
+                    // kind of request cannot be added to one place and forgotten
+                    // in the other.
+                    self.forget_requests();
                     // The features that were on offer went with the server.
                     self.sync_context(session);
                     return true;
@@ -1847,6 +1906,29 @@ mod tests {
                 .unwrap_or_else(|error| panic!("{scope:?}: {error}"));
         }
         settings
+    }
+
+    #[test]
+    fn a_server_with_no_document_offers_nothing() {
+        let mut s = session(Settings::default());
+        let lsp = Lsp::new(&mut s, None);
+        // Whatever a supervisor might be running, nothing is open — so `F2` and
+        // `F12` must not resolve. Their `when` clauses gate on these, and a key
+        // that reaches a server which was never told about this buffer either
+        // does nothing or asks about a URI it has never seen.
+        lsp.sync_context(&mut s);
+        for key in [
+            "editorHasRenameProvider",
+            "editorHasDefinitionProvider",
+            "editorHasHoverProvider",
+            "editorHasReferenceProvider",
+        ] {
+            assert_eq!(
+                s.context.get(key),
+                Some(&json!(false)),
+                "{key} must be false with no document open"
+            );
+        }
     }
 
     #[test]

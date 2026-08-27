@@ -808,6 +808,56 @@ impl Driver {
                 }
                 lsp.saved(session);
             }
+            // The tree decided what should happen to a file; doing it needs a
+            // filesystem, which is this side.
+            Outcome::FileOperation(operation) => {
+                let root = session
+                    .explorer()
+                    .map(|explorer| explorer.root().to_path_buf());
+                match perform(&operation, remote.as_mut(), root.as_deref()) {
+                    Ok(()) => {
+                        // What the file looks like now, so undoing this rename
+                        // can tell it apart from whatever might replace it.
+                        // Before `file_operation_done`, which is what puts the
+                        // undo entry in reach.
+                        // A rename's destination, or what a create just made:
+                        // both undo by acting on a path, and both need to know
+                        // the thing at that path is still theirs.
+                        let made = match &operation {
+                            deco_editor::FileOperation::Rename { to, .. } => Some(to),
+                            deco_editor::FileOperation::CreateFile(path)
+                            | deco_editor::FileOperation::CreateFolder(path) => Some(path),
+                            _ => None,
+                        };
+                        if let Some(stamp) = made.and_then(|path| stamp_of(path)) {
+                            session.stamp_last_undo(stamp);
+                        }
+                        session.file_operation_done(&operation);
+                        // A delete may have detached open documents; the server
+                        // still has them open under URIs that name nothing.
+                        lsp.close_deleted(session);
+                        // A new file is opened, because creating one you then
+                        // have to go and find is two steps where VS Code has
+                        // one. Nothing is read: it is empty, and reading it back
+                        // to prove that would be a round trip for no answer.
+                        if let deco_editor::FileOperation::CreateFile(path) = &operation {
+                            session.open(path.clone(), "");
+                        }
+                    }
+                    Err(error) => {
+                        session.file_operation_failed(&operation, &error.to_string());
+                        // Only for a delete this machine actually attempted. A
+                        // remote session refuses every mutation before touching
+                        // either filesystem, and the paths are the far end's —
+                        // testing them with a local `exists` says "gone" about
+                        // every one of them and would let go of every tab in the
+                        // workspace for a delete that never happened.
+                        if remote.is_none() {
+                            reconcile_failure(session, lsp, &operation);
+                        }
+                    }
+                }
+            }
             // Quick open and search named a file; reading it is this
             // side's job.
             Outcome::OpenFile { path: target, at } => {
@@ -1082,6 +1132,339 @@ fn printable(chord: &deco_keymap::keys::Chord) -> Option<char> {
 /// feels delayed, and 20 wakeups a second on an idle editor is not measurable.
 const LSP_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
+/// Carries out one of the tree's file operations.
+///
+/// The core has already decided it is allowed — the name is a name, the path is
+/// inside the workspace, nothing in the listing is in the way. What is left is
+/// the part that can still fail for reasons no amount of checking predicts: a
+/// permission, a full disk, another program getting there first.
+///
+/// `create_new` rather than `File::create` for a new file, so that a file which
+/// appeared between the check and here is not silently truncated. That race is
+/// exactly why the frontend re-checks rather than trusting the tree's listing.
+fn perform(
+    operation: &deco_editor::FileOperation,
+    remote: Option<&mut deco_remote::Client>,
+    root: Option<&Path>,
+) -> io::Result<()> {
+    use deco_editor::FileOperation;
+
+    if remote.is_some() {
+        // The protocol reads, writes and lists; it has no create, rename or
+        // delete. Refused by name rather than half-done locally, which would
+        // change a file on this machine and report success about the other one.
+        return Err(io::Error::other(
+            "changing files over a remote connection is not implemented yet",
+        ));
+    }
+
+    // The session checked that the path is inside the workspace, but it can only
+    // compare the *spelling*: it has no filesystem. A directory replaced by a
+    // symlink since the tree listed it resolves elsewhere, and every call below
+    // follows it — so `New File` in a `src` that is now a link to `/outside`
+    // would write there, having been told it was writing inside the workspace.
+    if let Some(root) = root {
+        inside_after_links(root, operation.parent().unwrap_or(Path::new("")))?;
+    }
+
+    match operation {
+        FileOperation::CreateFile(path) => std::fs::File::options()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map(drop),
+        FileOperation::CreateFolder(path) => std::fs::create_dir(path),
+        FileOperation::Rename {
+            from,
+            to,
+            expect,
+            directory,
+        } => {
+            // The kind the tree was showing, not the kind on disk now. A
+            // directory replaced by a file since it was read would otherwise be
+            // moved as though it were still a directory, and every tab below the
+            // old path retargeted onto a regular file — the same reinterpretation
+            // a delete is already stopped from making.
+            match std::fs::symlink_metadata(from) {
+                Ok(meta) if meta.is_dir() == *directory => {}
+                Ok(_) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "{} is not the {} the tree was showing any more",
+                            from.display(),
+                            if *directory { "folder" } else { "file" }
+                        ),
+                    ))
+                }
+                Err(error) => return Err(error),
+            }
+            // An undo carries what the file looked like when it was moved. If
+            // that no longer matches, something replaced it, and moving *that*
+            // back would be shifting somebody else's file on a keystroke meant
+            // to undo your own — then pointing the buffer at it, so the next
+            // save would write over its contents.
+            if let Some(expected) = expect {
+                match stamp_of(from) {
+                    Some(now) if &now == expected => {}
+                    _ => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::AlreadyExists,
+                            format!(
+                                "{} is not the file that was renamed any more",
+                                from.display()
+                            ),
+                        ))
+                    }
+                }
+            }
+            // `rename` would overwrite an existing `to` on Unix. The tree
+            // refused that already, but between its listing and this call is a
+            // window, and silently replacing somebody's file is the one outcome
+            // worth a second check.
+            //
+            // Not on a case-only rename, though. On the case-insensitive
+            // filesystems macOS and Windows usually have, `Foo.rs` *is*
+            // `foo.rs`, so this check sees the source itself and would refuse
+            // every change of capitalisation. Canonicalising both tells the two
+            // cases apart: same file, or a different one in the way.
+            //
+            // `symlink_metadata` rather than `exists`, which follows links: a
+            // dangling symlink at the destination answers `false` to `exists`
+            // and would be silently replaced. The tree cannot show one either —
+            // `list_dir` reports only real files and directories — so it is
+            // invisible from both sides, and needs no race to be hit.
+            if std::fs::symlink_metadata(to).is_ok() && !same_file(from, to) {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!("{} already exists", to.display()),
+                ));
+            }
+            std::fs::rename(from, to)
+        }
+        // Dispatched on what the tree was showing when this was confirmed, not
+        // on what is on disk now. The tree has no watcher, so if a file has been
+        // replaced by a directory since, asking the disk would find a directory
+        // and delete it recursively — having asked the user about a file.
+        // `remove_file` on a directory fails, which is the refusal wanted.
+        FileOperation::Delete {
+            path,
+            directory: true,
+        } => std::fs::remove_dir_all(path),
+        FileOperation::Delete {
+            path,
+            directory: false,
+        } => std::fs::remove_file(path),
+        // Undoing a create. `remove_dir` rather than `remove_dir_all` — it
+        // fails on a directory with anything in it, which is exactly the
+        // refusal wanted, and gets it from the operating system rather than
+        // from a check with a race under it.
+        FileOperation::DeleteIfEmpty {
+            path,
+            directory,
+            expect,
+        } => {
+            // Empty is not an identity. Another program can remove what was
+            // created and leave a different empty file or directory in its
+            // place, and undoing the create would delete that instead.
+            if let Some(expected) = expect {
+                match stamp_of(path) {
+                    Some(now) if &now == expected => {}
+                    _ => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::AlreadyExists,
+                            format!("{} is not what was created any more", path.display()),
+                        ))
+                    }
+                }
+            }
+            if *directory {
+                std::fs::remove_dir(path).map_err(|error| {
+                    io::Error::new(
+                        error.kind(),
+                        format!("{} is no longer empty", path.display()),
+                    )
+                })
+            } else {
+                // A file has to be checked, there being no "unlink if empty".
+                // The window between this and the unlink is real and the cost of
+                // losing it is small: something written in that instant is lost.
+                // Refusing outright would be worse — it would mean a create
+                // could never be undone on a filesystem anyone else is using.
+                match std::fs::metadata(path) {
+                    Ok(meta) if meta.len() > 0 => Err(io::Error::other(format!(
+                        "{} has been written to since it was created — delete it \
+                         yourself if that is what you meant",
+                        path.display()
+                    ))),
+                    Ok(_) => std::fs::remove_file(path),
+                    Err(error) => Err(error),
+                }
+            }
+        }
+    }
+}
+
+/// Puts the tree and the tabs back in step after a mutation reported failure.
+///
+/// Only for one this machine actually attempted: a remote session refuses every
+/// mutation before touching either filesystem, and the paths are the far end's,
+/// so a local `exists` would say "gone" about all of them.
+fn reconcile_failure(session: &mut Session, lsp: &mut Lsp, operation: &deco_editor::FileOperation) {
+    // Whatever failed, the listing that said it would work is now suspect — a
+    // create refused because another program claimed the name means the tree is
+    // missing that name, and without a re-read every retry fails against the
+    // same stale picture. There is no watcher to notice it any other way.
+    if let Some(parent) = operation.parent() {
+        session.invalidate_directory(parent);
+        // But re-reading it is no use if it is not a directory any more.
+        // `list_dir` answers an unreadable or non-directory path with an empty
+        // listing, so the tree would go on showing it as an empty folder for
+        // good — and every create in it would go on failing — while the entry
+        // that would correct it sits in the listing *above*. So that one is
+        // re-read too, and what the tree remembers below is dropped.
+        if !parent.is_dir() {
+            if let Some(above) = parent.parent() {
+                session.invalidate_directory(above);
+            }
+            session.forget_subtree(parent);
+        }
+    }
+
+    // And a failed rename's *source*, subtree and all. The usual reason a
+    // rename fails is that something changed underneath it — including the
+    // source being removed — and the parent alone leaves that directory's own
+    // cached listing describing children it may no longer have. Recreate it
+    // under the old name later and they come back for good, because expanding a
+    // directory whose listing is already `Known` asks for nothing.
+    //
+    // Invalidated rather than forgotten: the source usually still exists, the
+    // rename having failed for some other reason, so re-reading it is right and
+    // throwing away its expansion is not.
+    if let deco_editor::FileOperation::Rename { from, .. } = operation {
+        session.invalidate_subtree(from);
+    }
+
+    reconcile_failed_delete(session, lsp, operation);
+}
+
+/// Puts the tree and the tabs back in step after a delete reported failure.
+///
+/// `remove_dir_all` can take part of a tree and then stop, so "it failed" does
+/// not mean "nothing happened". Everything here is driven by what is on disk
+/// now rather than by what was asked for.
+fn reconcile_failed_delete(
+    session: &mut Session,
+    lsp: &mut Lsp,
+    operation: &deco_editor::FileOperation,
+) {
+    use deco_editor::FileOperation;
+    let (path, recursive) = match operation {
+        FileOperation::Delete { path, directory } => (path, *directory),
+        FileOperation::DeleteIfEmpty { path, .. } => (path, false),
+        _ => return,
+    };
+
+    // What the tree knew, taken *before* anything is invalidated: invalidating
+    // turns those listings back into "not read yet", and a scan afterwards finds
+    // nothing to check. Which is what made the whole tree half of the evidence
+    // below dead — only an open tab could ever have raised the barrier.
+    let known: Vec<PathBuf> = if recursive {
+        session.known_paths_under(path)
+    } else {
+        Vec::new()
+    };
+
+    // And the subtree: the directory itself may survive, so re-reading its
+    // parent rediscovers it and leaves its own listing — and every expanded one
+    // below — describing files that have gone.
+    session.invalidate_subtree(path);
+
+    // Only a recursive delete can half happen: `remove_file` and `remove_dir`
+    // either did it or did not. And even a recursive failure need not mean
+    // anything went — a `PermissionDenied` on the directory itself stops it
+    // before it opens anything. So the barrier goes up on *evidence* rather
+    // than on the error kind: something the tree knew about, or something a tab
+    // is holding, has actually gone.
+    //
+    // Bounded by what had been read, which is what is on screen — the tree only
+    // knows the directories somebody expanded. A file removed out of a
+    // collapsed directory is invisible here, and so is the undo it would have
+    // invalidated; naming that is better than a check that walks a workspace to
+    // answer a question about a keystroke.
+    let mut anything_went = known
+        .iter()
+        .any(|known| matches!(known.try_exists(), Ok(false)));
+
+    // Per file, because half a directory survives and only the disk knows which
+    // half.
+    for held in session.open_paths_under(path) {
+        // `try_exists` rather than `exists`, which answers `false` for a file it
+        // cannot stat. The same permission problem that stopped the delete can
+        // hide a file that is still there, and letting go of a tab whose file
+        // survived is the wrong way to be wrong. Only a definite `false`
+        // detaches; an error leaves the tab attached.
+        if matches!(held.try_exists(), Ok(false)) {
+            anything_went = true;
+            session.detach_tabs_under(&held);
+        }
+    }
+    if recursive && anything_went {
+        session.clear_file_undo();
+    }
+    lsp.close_deleted(session);
+}
+
+/// Refuses a directory that resolves outside `root` once symlinks are followed.
+///
+/// `canonicalize` is what turns the session's spelling-based check into one
+/// about where the path actually leads. It closes the case that matters in
+/// practice — a link sitting in the workspace, put there by a build or a
+/// package manager — but not a racing one: something can still replace an
+/// ancestor between this and the call below. Closing *that* needs `openat` with
+/// `O_NOFOLLOW` and a directory handle per component, which the standard library
+/// has on no platform. `docs/files.md` names the window, next to the rename one
+/// it is a cousin of.
+fn inside_after_links(root: &Path, dir: &Path) -> io::Result<()> {
+    let real_root = std::fs::canonicalize(root)?;
+    let real_dir = std::fs::canonicalize(dir)?;
+    if real_dir.starts_with(&real_root) {
+        return Ok(());
+    }
+    Err(io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        format!(
+            "{} leads outside the workspace — something replaced a directory \
+             with a link to {}",
+            dir.display(),
+            real_dir.display()
+        ),
+    ))
+}
+
+/// What the file at `path` looks like, or `None` if it cannot be seen.
+fn stamp_of(path: &Path) -> Option<deco_editor::files::Stamp> {
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    Some(deco_editor::files::Stamp {
+        len: meta.len(),
+        modified: meta.modified().ok(),
+    })
+}
+
+/// Whether two paths name the same file on disk.
+///
+/// By canonicalising rather than comparing strings, so that a case-only rename
+/// on a case-insensitive filesystem is recognised as the file renaming itself.
+/// A path that cannot be canonicalised is not the same file as anything — the
+/// caller only asks when `to` exists, so failing here means something changed
+/// underneath and refusing is the safe answer.
+fn same_file(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
 /// Answers every directory listing the file tree is waiting on.
 ///
 /// A loop rather than one listing, because the tree asks for one at a time and
@@ -1310,6 +1693,577 @@ fn save(session: &mut Session, remote: Option<&mut deco_remote::Client>) -> Resu
 mod tests {
     use super::*;
     use deco_theme::Rgba;
+
+    /// A scratch directory of this test's own.
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("deco-perform-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        dir
+    }
+
+    #[test]
+    fn creating_a_file_that_appeared_since_the_check_does_not_truncate_it() {
+        let dir = scratch("create");
+        let path = dir.join("taken.rs");
+        std::fs::write(&path, "someone else got here first\n").unwrap();
+
+        // The tree's listing said this name was free; the disk disagrees.
+        let error = perform(
+            &deco_editor::FileOperation::CreateFile(path.clone()),
+            None,
+            Some(&dir),
+        )
+        .expect_err("creating over an existing file must fail");
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "someone else got here first\n",
+            "the file that was already there is untouched"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn renaming_onto_an_existing_file_is_refused_rather_than_overwriting() {
+        let dir = scratch("rename");
+        let from = dir.join("a.rs");
+        let to = dir.join("b.rs");
+        std::fs::write(&from, "moving\n").unwrap();
+        std::fs::write(&to, "in the way\n").unwrap();
+
+        let error = perform(
+            &deco_editor::FileOperation::Rename {
+                from: from.clone(),
+                to: to.clone(),
+                expect: None,
+                directory: false,
+            },
+            None,
+            Some(&dir),
+        )
+        .expect_err("a rename must not replace a file");
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read_to_string(&to).unwrap(), "in the way\n");
+        assert!(from.exists(), "and the source is still there");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn create_rename_and_delete_do_what_they_say() {
+        let dir = scratch("roundtrip");
+        let made = dir.join("new.rs");
+        perform(
+            &deco_editor::FileOperation::CreateFile(made.clone()),
+            None,
+            Some(&dir),
+        )
+        .unwrap();
+        assert!(made.is_file());
+        assert_eq!(std::fs::read_to_string(&made).unwrap(), "");
+
+        let moved = dir.join("moved.rs");
+        perform(
+            &deco_editor::FileOperation::Rename {
+                from: made.clone(),
+                to: moved.clone(),
+                expect: None,
+                directory: false,
+            },
+            None,
+            Some(&dir),
+        )
+        .unwrap();
+        assert!(!made.exists() && moved.is_file());
+
+        perform(
+            &deco_editor::FileOperation::Delete {
+                path: moved.clone(),
+                directory: false,
+            },
+            None,
+            Some(&dir),
+        )
+        .unwrap();
+        assert!(!moved.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn undoing_a_create_refuses_once_the_file_has_content() {
+        let dir = scratch("undo-create");
+        let path = dir.join("new.rs");
+        perform(
+            &deco_editor::FileOperation::CreateFile(path.clone()),
+            None,
+            Some(&dir),
+        )
+        .unwrap();
+        // Created, then typed in and saved — which is the whole point of having
+        // created it.
+        std::fs::write(&path, "fn main() {}\n").unwrap();
+
+        perform(
+            &deco_editor::FileOperation::DeleteIfEmpty {
+                path: path.clone(),
+                directory: false,
+                expect: None,
+            },
+            None,
+            Some(&dir),
+        )
+        .expect_err("undoing the create must not take the contents with it");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "fn main() {}\n",
+            "the work is still there"
+        );
+
+        // Still empty, and it goes.
+        let untouched = dir.join("untouched.rs");
+        perform(
+            &deco_editor::FileOperation::CreateFile(untouched.clone()),
+            None,
+            Some(&dir),
+        )
+        .unwrap();
+        perform(
+            &deco_editor::FileOperation::DeleteIfEmpty {
+                path: untouched.clone(),
+                directory: false,
+                expect: None,
+            },
+            None,
+            Some(&dir),
+        )
+        .unwrap();
+        assert!(!untouched.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn undoing_a_new_folder_refuses_once_it_holds_anything() {
+        let dir = scratch("undo-folder");
+        let made = dir.join("pkg");
+        perform(
+            &deco_editor::FileOperation::CreateFolder(made.clone()),
+            None,
+            Some(&dir),
+        )
+        .unwrap();
+        std::fs::write(made.join("mod.rs"), "pub fn x() {}\n").unwrap();
+
+        perform(
+            &deco_editor::FileOperation::DeleteIfEmpty {
+                path: made.clone(),
+                directory: true,
+                expect: None,
+            },
+            None,
+            Some(&dir),
+        )
+        .expect_err("undoing the create must not recursively delete a tree");
+        assert!(
+            made.join("mod.rs").is_file(),
+            "the file added since is still there"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_rename_will_not_replace_a_dangling_symlink() {
+        let dir = scratch("dangling");
+        let from = dir.join("real.rs");
+        std::fs::write(&from, "moving\n").unwrap();
+        let to = dir.join("link.rs");
+        // A symlink to nothing: `exists` answers false for it, and the tree
+        // cannot show it either.
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(dir.join("nowhere.rs"), &to).unwrap();
+        #[cfg(not(unix))]
+        {
+            let _ = &to;
+            return;
+        }
+
+        #[cfg(unix)]
+        {
+            assert!(!to.exists(), "the premise: it looks absent");
+            perform(
+                &deco_editor::FileOperation::Rename {
+                    from: from.clone(),
+                    to: to.clone(),
+                    expect: None,
+                    directory: false,
+                },
+                None,
+                Some(&dir),
+            )
+            .expect_err("a rename must not silently remove a symlink");
+            assert!(
+                std::fs::symlink_metadata(&to).is_ok(),
+                "the link is still there"
+            );
+            assert!(from.exists(), "and so is the file that was to move");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_symlinked_directory_cannot_be_used_to_write_outside_the_workspace() {
+        let dir = scratch("escape");
+        let workspace = dir.join("workspace");
+        let outside = dir.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        // `src` was a directory when the tree listed it; it is a link now.
+        std::os::unix::fs::symlink(&outside, workspace.join("src")).unwrap();
+
+        // The session's own check passes: the spelling is inside the workspace.
+        let wanted = workspace.join("src").join("planted.rs");
+        assert!(wanted.starts_with(&workspace));
+
+        perform(
+            &deco_editor::FileOperation::CreateFile(wanted),
+            None,
+            Some(&workspace),
+        )
+        .expect_err("a link out of the workspace must not be written through");
+        assert!(
+            !outside.join("planted.rs").exists(),
+            "and nothing was written where it led"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn undoing_a_rename_refuses_once_something_else_holds_the_name() {
+        let dir = scratch("undo-rename");
+        let from = dir.join("a.rs");
+        let to = dir.join("b.rs");
+        std::fs::write(&from, "mine\n").unwrap();
+        perform(
+            &deco_editor::FileOperation::Rename {
+                from: from.clone(),
+                to: to.clone(),
+                expect: None,
+                directory: false,
+            },
+            None,
+            Some(&dir),
+        )
+        .unwrap();
+        let stamp = stamp_of(&to).expect("it is there");
+
+        // Another program takes `b.rs` away and leaves something else in its
+        // place. Undoing the rename must not move *that*.
+        std::fs::remove_file(&to).unwrap();
+        std::fs::write(&to, "somebody else's, and longer\n").unwrap();
+
+        perform(
+            &deco_editor::FileOperation::Rename {
+                from: to.clone(),
+                to: from.clone(),
+                expect: Some(stamp),
+                directory: false,
+            },
+            None,
+            Some(&dir),
+        )
+        .expect_err("the file that was renamed is not there any more");
+        assert_eq!(
+            std::fs::read_to_string(&to).unwrap(),
+            "somebody else's, and longer\n",
+            "and it was left where it was"
+        );
+        assert!(!from.exists(), "nor was anything put back");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn undoing_a_rename_works_when_the_file_is_still_the_one_that_moved() {
+        let dir = scratch("undo-rename-ok");
+        let from = dir.join("a.rs");
+        let to = dir.join("b.rs");
+        std::fs::write(&from, "mine\n").unwrap();
+        perform(
+            &deco_editor::FileOperation::Rename {
+                from: from.clone(),
+                to: to.clone(),
+                expect: None,
+                directory: false,
+            },
+            None,
+            Some(&dir),
+        )
+        .unwrap();
+
+        perform(
+            &deco_editor::FileOperation::Rename {
+                from: to.clone(),
+                to: from.clone(),
+                expect: stamp_of(&to),
+                directory: false,
+            },
+            None,
+            Some(&dir),
+        )
+        .expect("nothing touched it, so the undo goes through");
+        assert_eq!(std::fs::read_to_string(&from).unwrap(), "mine\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn undoing_a_create_refuses_once_something_else_holds_the_name() {
+        let dir = scratch("undo-create-swapped");
+        let made = dir.join("new.rs");
+        perform(
+            &deco_editor::FileOperation::CreateFile(made.clone()),
+            None,
+            Some(&dir),
+        )
+        .unwrap();
+        let stamp = stamp_of(&made).expect("it is there");
+
+        // Removed and replaced by a *different* empty file. Emptiness alone
+        // cannot tell them apart, which is the point.
+        std::fs::remove_file(&made).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::File::create(&made).unwrap();
+
+        let refused = perform(
+            &deco_editor::FileOperation::DeleteIfEmpty {
+                path: made.clone(),
+                directory: false,
+                expect: Some(stamp),
+            },
+            None,
+            Some(&dir),
+        );
+        // On a filesystem whose timestamps are too coarse to tell the two
+        // apart, this legitimately goes through — the stamp is evidence, not
+        // proof, and the test says so rather than pretending otherwise.
+        if refused.is_err() {
+            assert!(made.exists(), "the replacement was left alone");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Answers every listing the tree is waiting on, from the real disk.
+    fn read_tree(session: &mut Session, root: &Path) {
+        for _ in 0..crate::files::MAX_DEPTH {
+            let Some(wanted) = session.directory_wanted() else {
+                return;
+            };
+            let entries = crate::files::list_dir(root, &wanted, &session.settings);
+            session.fill_directory(&wanted, entries);
+        }
+    }
+
+    #[test]
+    fn a_rename_refuses_a_source_that_is_no_longer_what_was_shown() {
+        let dir = scratch("rename-type");
+        let was_a_dir = dir.join("d");
+        // The tree read a directory; something has since put a file there.
+        std::fs::write(&was_a_dir, "not a directory any more\n").unwrap();
+
+        perform(
+            &deco_editor::FileOperation::Rename {
+                from: was_a_dir.clone(),
+                to: dir.join("renamed"),
+                expect: None,
+                directory: true,
+            },
+            None,
+            Some(&dir),
+        )
+        .expect_err("what the tree showed is not what is there");
+        assert!(
+            was_a_dir.is_file() && !dir.join("renamed").exists(),
+            "and nothing was moved"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_parent_that_stopped_being_a_directory_is_forgotten() {
+        let dir = scratch("stale-parent");
+        let inner = dir.join("d");
+        std::fs::create_dir_all(&inner).unwrap();
+        std::fs::write(inner.join("a.rs"), "a\n").unwrap();
+
+        let mut session = Session::new(
+            deco_config::Settings::with_defaults(),
+            None,
+            deco_keymap::binding::Platform::Linux,
+        );
+        session.resize(100, 30);
+        session.set_workspace_root(&dir);
+        read_tree(&mut session, &dir);
+        session.run("workbench.files.action.focusFilesExplorer", None, 0);
+        session.run("list.expand", None, 0);
+        read_tree(&mut session, &dir);
+        assert!(session
+            .known_paths_under(&inner)
+            .contains(&inner.join("a.rs")));
+
+        // `d` becomes a file. Creating in it fails, and re-reading `d` alone
+        // would answer "empty folder" for ever.
+        std::fs::remove_dir_all(&inner).unwrap();
+        std::fs::write(&inner, "now a file\n").unwrap();
+        let mut lsp = Lsp::new(&mut session, None);
+        reconcile_failure(
+            &mut session,
+            &mut lsp,
+            &deco_editor::FileOperation::CreateFile(inner.join("new.rs")),
+        );
+
+        // Re-reading `d` alone proves nothing: invalidating it empties what the
+        // tree knows either way, and `list_dir` would answer "empty folder"
+        // for ever. The listing *above* is what has to be asked for again, so
+        // that `d` stops being shown as a directory at all.
+        read_tree(&mut session, &dir);
+        let row = session
+            .explorer()
+            .and_then(|e| e.rows().into_iter().find(|r| r.path == inner))
+            .expect("it is still listed, as something");
+        assert!(
+            !row.is_dir,
+            "the tree must stop showing a path as a folder once it is a file"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_rename_makes_the_tree_re_read_its_source() {
+        // The wiring, not just the model: a failed rename has to reach
+        // `invalidate_subtree`, or the source directory keeps showing children
+        // it may no longer have.
+        let dir = scratch("failed-rename");
+        let inner = dir.join("d");
+        std::fs::create_dir_all(&inner).unwrap();
+        std::fs::write(inner.join("old.rs"), "old\n").unwrap();
+
+        let mut session = Session::new(
+            deco_config::Settings::with_defaults(),
+            None,
+            deco_keymap::binding::Platform::Linux,
+        );
+        session.resize(100, 30);
+        session.set_workspace_root(&dir);
+        read_tree(&mut session, &dir);
+        session.run("workbench.files.action.focusFilesExplorer", None, 0);
+        session.run("list.expand", None, 0);
+        read_tree(&mut session, &dir);
+        assert!(
+            session
+                .known_paths_under(&inner)
+                .contains(&inner.join("old.rs")),
+            "the tree has read `d`"
+        );
+        assert_eq!(session.directory_wanted(), None, "and wants nothing");
+
+        // The rename fails, because `d` went away underneath it.
+        std::fs::remove_dir_all(&inner).unwrap();
+        let mut lsp = Lsp::new(&mut session, None);
+        reconcile_failure(
+            &mut session,
+            &mut lsp,
+            &deco_editor::FileOperation::Rename {
+                from: inner.clone(),
+                to: dir.join("renamed"),
+                expect: None,
+                directory: false,
+            },
+        );
+
+        // Specifically the *source's* listing. Invalidating the parent alone
+        // would satisfy a looser assertion and prove nothing about this fix.
+        assert!(
+            session.known_paths_under(&inner).is_empty(),
+            "the source's own listing must be asked for again rather than \
+             believed: {:?}",
+            session.known_paths_under(&inner)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_partial_delete_raises_the_barrier_from_what_the_tree_knew() {
+        // The evidence the barrier rests on is what the tree had *read*, so a
+        // partial delete has to be caught even when no tab was open on any of
+        // it. Taking that snapshot after invalidating the subtree silently
+        // disabled this whole half.
+        let dir = scratch("partial-evidence");
+        let inner = dir.join("d");
+        std::fs::create_dir_all(&inner).unwrap();
+        std::fs::write(inner.join("a.rs"), "a\n").unwrap();
+        std::fs::write(inner.join("b.rs"), "b\n").unwrap();
+
+        let mut session = Session::new(
+            deco_config::Settings::with_defaults(),
+            None,
+            deco_keymap::binding::Platform::Linux,
+        );
+        session.resize(100, 30);
+        session.set_workspace_root(&dir);
+        read_tree(&mut session, &dir);
+
+        // Something to lose, recorded before `d` is read — creating invalidates
+        // the directory it lands in.
+        session.run("workbench.files.action.focusFilesExplorer", None, 0);
+        let deco_editor::Outcome::FileOperation(created) = session.create_in_tree("kept.rs", false)
+        else {
+            panic!("expected a create");
+        };
+        session.file_operation_done(&created);
+        std::fs::write(dir.join("kept.rs"), "").unwrap();
+        read_tree(&mut session, &dir);
+
+        // Open `d` so the tree reads what is in it.
+        session.run("workbench.files.action.focusFilesExplorer", None, 0);
+        while session
+            .explorer()
+            .and_then(|e| e.selection())
+            .map(|row| row.name != "d")
+            .unwrap_or(false)
+        {
+            session.run("list.focusDown", None, 0);
+        }
+        session.run("list.expand", None, 0);
+        read_tree(&mut session, &dir);
+        assert!(
+            session
+                .known_paths_under(&inner)
+                .contains(&inner.join("a.rs")),
+            "the tree read `d`, so it knows what was in it"
+        );
+        assert!(
+            session.can_undo_file_operation(),
+            "and the create is undoable"
+        );
+
+        // A recursive delete that took one child and then stopped. No tab was
+        // ever open on any of it.
+        std::fs::remove_file(inner.join("a.rs")).unwrap();
+        let mut lsp = Lsp::new(&mut session, None);
+        reconcile_failed_delete(
+            &mut session,
+            &mut lsp,
+            &deco_editor::FileOperation::Delete {
+                path: inner.clone(),
+                directory: true,
+            },
+        );
+
+        assert!(
+            !session.can_undo_file_operation(),
+            "part of the tree went, so the earlier undos describe a state that \
+             never existed"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn a_remote_directorys_contents_come_out_of_the_flat_listing() {

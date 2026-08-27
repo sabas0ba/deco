@@ -186,6 +186,106 @@ impl Explorer {
         }
     }
 
+    /// Forgets the contents of `prefix` and of everything under it.
+    ///
+    /// What a half-finished recursive delete needs: the directory itself may
+    /// survive, so re-reading its *parent* rediscovers it and leaves its own
+    /// cached listing — and every expanded listing below that — describing files
+    /// that are gone.
+    pub fn invalidate_under(&mut self, prefix: &Path) {
+        let stale: Vec<PathBuf> = self
+            .listings
+            .keys()
+            .filter(|dir| dir.starts_with(prefix))
+            .cloned()
+            .collect();
+        for dir in stale {
+            self.listings.insert(dir, Contents::Pending);
+        }
+    }
+
+    /// Drops everything the tree remembers at or under `prefix`.
+    ///
+    /// For something that has *gone*, rather than merely changed. Invalidating
+    /// would keep the expansion state and the map entry, so a directory later
+    /// created with the same name would come back already open — and, until its
+    /// listing arrived, showing the rows of the one that was deleted.
+    pub fn forget_under(&mut self, prefix: &Path) {
+        self.listings.retain(|dir, _| !dir.starts_with(prefix));
+        self.expanded.retain(|dir| !dir.starts_with(prefix));
+        if self
+            .revealing
+            .as_deref()
+            .is_some_and(|p| p.starts_with(prefix))
+        {
+            self.revealing = None;
+        }
+        self.clamp();
+    }
+
+    /// Moves what the tree remembers about `from` to `to`.
+    ///
+    /// A rename does not change what is *in* a directory, and a listing holds
+    /// names rather than paths — so the contents are still right and only the
+    /// key is wrong. Re-keying keeps a renamed directory open with its rows
+    /// intact, which is what a rename looks like from the outside, and leaves
+    /// nothing behind for the old name to inherit if it is created again.
+    pub fn rekey_under(&mut self, from: &Path, to: &Path) {
+        let moved: Vec<PathBuf> = self
+            .listings
+            .keys()
+            .filter(|dir| dir.starts_with(from))
+            .cloned()
+            .collect();
+        for old in moved {
+            let Ok(rest) = old.strip_prefix(from) else {
+                continue;
+            };
+            let new = if rest.as_os_str().is_empty() {
+                to.to_path_buf()
+            } else {
+                to.join(rest)
+            };
+            if let Some(contents) = self.listings.remove(&old) {
+                self.listings.insert(new, contents);
+            }
+        }
+        for dir in self.expanded.iter_mut() {
+            if let Ok(rest) = dir.strip_prefix(from) {
+                *dir = if rest.as_os_str().is_empty() {
+                    to.to_path_buf()
+                } else {
+                    to.join(rest)
+                };
+            }
+        }
+        self.clamp();
+    }
+
+    /// Every path the tree knows about at or under `prefix`.
+    ///
+    /// Only what has actually been read — expanded directories and their
+    /// entries — so it is bounded by what is on screen rather than by what the
+    /// workspace contains. For a caller with a filesystem that wants to find out
+    /// whether any of it has gone.
+    pub fn known_paths_under(&self, prefix: &Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        for (dir, contents) in &self.listings {
+            if !dir.starts_with(prefix) {
+                continue;
+            }
+            if dir != prefix {
+                out.push(dir.clone());
+            }
+            if let Contents::Known(entries) = contents {
+                out.extend(entries.iter().map(|entry| dir.join(&entry.name)));
+            }
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+
     /// Whether the root's listing has arrived.
     ///
     /// The difference between "this workspace is empty" and "nobody has read it
@@ -610,6 +710,132 @@ mod tests {
         assert!(explorer.loaded(), "read, and it is empty");
         assert!(explorer.is_empty());
         assert_eq!(explorer.wanted(), None);
+    }
+
+    #[test]
+    fn a_stale_subtree_is_re_read_rather_than_shown_again() {
+        // What a failed rename leaves behind: the source directory's listing is
+        // still `Known`, so expanding it asks for nothing and the rows it holds
+        // are whatever was there before.
+        let mut explorer = tree();
+        explorer.select_first();
+        explorer.expand();
+        explorer.fill(Path::new("/w/src"), vec![Entry::file("old.rs")]);
+        assert!(explorer.rows().iter().any(|r| r.name == "old.rs"));
+        assert_eq!(explorer.wanted(), None, "nothing is outstanding");
+
+        explorer.invalidate_under(Path::new("/w/src"));
+        assert_eq!(
+            explorer.wanted().as_deref(),
+            Some(Path::new("/w/src")),
+            "it has to be asked for again before its rows can be believed"
+        );
+        explorer.fill(Path::new("/w/src"), Vec::new());
+        assert!(
+            !explorer.rows().iter().any(|r| r.name == "old.rs"),
+            "and the answer replaces them"
+        );
+        assert!(
+            explorer
+                .rows()
+                .iter()
+                .any(|r| r.name == "src" && r.expanded),
+            "while the directory stays open — invalidating is not forgetting"
+        );
+    }
+
+    #[test]
+    fn a_refresh_can_reach_a_whole_subtree() {
+        let mut explorer = tree();
+        explorer.select_first();
+        explorer.expand();
+        explorer.fill(Path::new("/w/src"), vec![Entry::dir("deep")]);
+        explorer.select_next();
+        explorer.expand();
+        explorer.fill(Path::new("/w/src/deep"), vec![Entry::file("main.rs")]);
+        assert_eq!(explorer.wanted(), None);
+
+        // Something removed part of `src`. Re-reading only its parent would
+        // rediscover `src` and leave these listings describing files that have
+        // gone.
+        explorer.invalidate_under(Path::new("/w/src"));
+        assert_eq!(explorer.wanted().as_deref(), Some(Path::new("/w/src")));
+        explorer.fill(Path::new("/w/src"), vec![Entry::dir("deep")]);
+        assert_eq!(
+            explorer.wanted().as_deref(),
+            Some(Path::new("/w/src/deep")),
+            "the expanded listing below it is stale too"
+        );
+    }
+
+    #[test]
+    fn a_deleted_directory_leaves_nothing_for_its_name_to_inherit() {
+        let mut explorer = tree();
+        explorer.select_first(); // src
+        explorer.expand();
+        explorer.fill(Path::new("/w/src"), vec![Entry::file("old.rs")]);
+        assert!(explorer.rows().iter().any(|r| r.name == "old.rs"));
+
+        explorer.forget_under(Path::new("/w/src"));
+        // The parent is re-read and a *new* `src` appears, empty.
+        explorer.fill(Path::new("/w"), vec![Entry::dir("src")]);
+        assert!(
+            !explorer.rows().iter().any(|r| r.name == "old.rs"),
+            "a directory created with the old name must not show the old one's rows"
+        );
+        let src = explorer
+            .rows()
+            .into_iter()
+            .find(|r| r.name == "src")
+            .expect("it is there");
+        assert!(!src.expanded, "nor come back already open");
+    }
+
+    #[test]
+    fn a_renamed_directory_keeps_its_rows_and_its_expansion() {
+        let mut explorer = tree();
+        explorer.select_first();
+        explorer.expand();
+        explorer.fill(Path::new("/w/src"), vec![Entry::file("main.rs")]);
+
+        explorer.rekey_under(Path::new("/w/src"), Path::new("/w/source"));
+        explorer.fill(
+            Path::new("/w"),
+            vec![Entry::dir("source"), Entry::file("Cargo.toml")],
+        );
+
+        let rows: Vec<_> = explorer.rows().into_iter().map(|r| r.name).collect();
+        assert!(rows.contains(&"source".to_owned()));
+        assert!(
+            rows.contains(&"main.rs".to_owned()),
+            "the contents came with it — a rename does not change them"
+        );
+        assert_eq!(explorer.wanted(), None, "and nothing needs re-reading");
+    }
+
+    #[test]
+    fn what_the_tree_knows_is_bounded_by_what_was_read() {
+        let mut explorer = tree();
+        // Nothing expanded: the root's entries are all it knows.
+        let known = explorer.known_paths_under(Path::new("/w"));
+        assert!(known.contains(&PathBuf::from("/w/src")));
+        assert!(known.contains(&PathBuf::from("/w/Cargo.toml")));
+        // `starts_with` is component-based, so `/w/src` matches the prefix
+        // `/w/src` — the question is whether anything *inside* it is known.
+        assert!(
+            !known
+                .iter()
+                .any(|p| p.parent() == Some(Path::new("/w/src"))),
+            "a directory nobody opened has not been read, so nothing under it \
+             is known"
+        );
+
+        explorer.select_first();
+        explorer.expand();
+        explorer.fill(Path::new("/w/src"), vec![Entry::file("main.rs")]);
+        assert!(explorer
+            .known_paths_under(Path::new("/w/src"))
+            .contains(&PathBuf::from("/w/src/main.rs")));
     }
 
     #[test]
