@@ -1466,6 +1466,23 @@ fn indentation(session: &Session) -> String {
     }
 }
 
+/// The branch and how far the working tree has drifted from it.
+///
+/// Empty when nobody has run `git status` yet, when there is no git, or when
+/// the folder is not a repository — the three are indistinguishable from here
+/// and all three mean the same thing on screen, which is nothing. VS Code does
+/// the same: no repository, no segment.
+///
+/// The text itself is `deco_scm::Status::summary` rather than assembled here:
+/// what to say is a decision about git, and this function's business is only
+/// where it goes.
+fn branch_summary(session: &Session) -> String {
+    match session.scm_status() {
+        Some(status) => format!("{}  ", status.summary()),
+        None => String::new(),
+    }
+}
+
 fn status_bar(session: &Session, width: usize, palette: &Palette) -> Row {
     let cursor = session.view.cursor();
     let dirty = if session.document.dirty { "*" } else { "" };
@@ -1478,8 +1495,13 @@ fn status_bar(session: &Session, width: usize, palette: &Palette) -> Row {
             None => format!(" {}{} ", session.document.title(), dirty),
         },
     };
+    // The branch first in the right-hand group: it is about the workspace,
+    // where everything after it is about this file, and the two read better
+    // apart than interleaved. VS Code puts it at the far left instead, which
+    // deco cannot do — that end is the document title and the message line.
     let right = format!(
-        " {}{}  {}  Ln {}, Col {} ",
+        " {}{}{}  {}  Ln {}, Col {} ",
+        branch_summary(session),
         problem_summary(session),
         language,
         indentation(session),
@@ -4140,6 +4162,61 @@ mod tests {
         let frame = render(&session("const a = {\n  b: 1,\n};\n"), 60, 8);
         let bar = frame.rows.last().unwrap().plain();
         assert!(bar.contains("Spaces: 2 (detected)"), "{bar:?}");
+    }
+
+    /// What `git status --porcelain=v2 --branch -z` writes for a branch with
+    /// `changed` files differing from `HEAD`.
+    fn scm(branch: &str, changed: usize) -> deco_scm::Status {
+        let mut records = format!("# branch.oid 1c9d4e5\0# branch.head {branch}\0");
+        for n in 0..changed {
+            records.push_str(&format!("? file{n}.rs\0"));
+        }
+        deco_scm::parse(&records).expect("git's own format")
+    }
+
+    #[test]
+    fn the_branch_and_what_differs_from_it_reach_the_status_bar() {
+        let mut session = session("fn a() {}\n");
+        session.fill_scm(Some(scm("main", 3)));
+        let frame = render(&session, 100, 8);
+        let bar = frame.rows.last().unwrap().plain();
+        assert!(bar.contains("main ±3"), "{bar:?}");
+    }
+
+    #[test]
+    fn a_workspace_with_no_git_says_nothing_rather_than_something_empty() {
+        // Three different situations reach the renderer as `None` — nobody has
+        // asked yet, there is no git, this is not a repository — and all three
+        // mean the same thing on screen. A stray separator would be the one
+        // visible difference between them.
+        let before = render(&session("fn a() {}\n"), 100, 8)
+            .rows
+            .last()
+            .unwrap()
+            .plain();
+        let mut session = session("fn a() {}\n");
+        session.fill_scm(Some(scm("main", 0)));
+        let after = render(&session, 100, 8).rows.last().unwrap().plain();
+        assert!(after.contains("main"), "{after:?}");
+        assert!(
+            !before.contains('±') && !before.contains("  main"),
+            "nothing at all, not a gap where the branch would be: {before:?}"
+        );
+    }
+
+    #[test]
+    fn git_enabled_false_takes_the_branch_off_the_bar() {
+        let mut session = session("fn a() {}\n");
+        session.settings.set(
+            deco_config::Scope::User,
+            "git.enabled",
+            serde_json::Value::Bool(false),
+        );
+        // Filled anyway: a setting changed after a run must take what is on
+        // screen with it, not wait for the next one.
+        session.fill_scm(Some(scm("main", 3)));
+        let bar = render(&session, 100, 8).rows.last().unwrap().plain();
+        assert!(!bar.contains("main"), "{bar:?}");
     }
 
     #[test]

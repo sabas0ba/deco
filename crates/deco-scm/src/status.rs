@@ -194,9 +194,10 @@ impl Status {
 
     /// The one-line form for a status bar.
     ///
-    /// Lives here rather than in a renderer so the two frontends cannot drift:
-    /// the same workspace has to read the same way in the terminal and in the
-    /// window.
+    /// Lives here rather than in a renderer because it is a decision about
+    /// what to say, not about how to paint it. The GPU frontend has no status
+    /// bar yet; when it grows one, this is what it will show, and the two will
+    /// not have to be kept in step by hand.
     ///
     /// Markers rather than words, and each omitted at zero — the same bargain
     /// the problem tallies make, for the same reason: a permanent `0 changed`

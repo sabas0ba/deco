@@ -358,6 +358,8 @@ pub struct Driver {
     /// Kept rather than recomputed per keystroke so the tree cannot end up
     /// reading one root while it was built against another.
     tree_root: Option<PathBuf>,
+    /// What `git` says about the workspace, collected off the loop.
+    scm: crate::scm::Scm,
 }
 
 impl Driver {
@@ -385,6 +387,7 @@ impl Driver {
             crate::lsp::Location::Here => workspace_root(started_with.as_deref()),
         };
         let remote = remote.map(|remote| remote.client);
+        let remote_is_local = remote.is_none();
         let mut lsp =
             Lsp::with_location(session, workspace_root(started_with.as_deref()), location);
         // Started the same way in both cases. A remote session runs its servers on
@@ -437,6 +440,16 @@ impl Driver {
             height,
             dirty: true,
             edited_at: None,
+            scm: crate::scm::Scm::new(
+                &session.settings,
+                // Only for a workspace on this machine. In a remote session
+                // `tree_root` is a path on the far end, and running git here
+                // against it would either fail or — worse, if a directory of
+                // that name happens to exist locally — report a different
+                // repository's branch as though it were the one being edited.
+                // Git over a connection is its own piece of work.
+                tree_root.clone().filter(|_| remote_is_local),
+            ),
             tree_root,
         }
     }
@@ -494,6 +507,9 @@ impl Driver {
         };
         *dirty |= lsp.poll(session, &mut files);
         hosts.poll(session, &mut files, now_ms);
+        // After the others rather than beside them: a `git status` that landed
+        // this turn should be on the same frame as whatever caused it.
+        self.dirty |= self.scm.poll(session);
     }
 
     /// A moment with no keystroke in it: the same poll, plus the auto-save clock.

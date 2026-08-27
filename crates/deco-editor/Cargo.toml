@@ -13,6 +13,7 @@ deco-config.workspace = true
 deco-core.workspace = true
 deco-keymap.workspace = true
 deco-lsp.workspace = true
+deco-scm.workspace = true
 deco-syntax.workspace = true
 deco-theme.workspace = true
 serde_json.workspace = true

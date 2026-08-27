@@ -372,6 +372,22 @@ pub struct Session {
     /// Handed out here because this is the layer that can see more than one
     /// document; a buffer's history only holds the number it was given.
     next_group: u64,
+    /// What `git status` last said, if anyone has run it.
+    ///
+    /// Fed, exactly as directory listings are, and for the same reason: the
+    /// core has no filesystem and no way to spawn a process. `None` covers
+    /// three different situations that look the same from here — nobody has
+    /// asked yet, there is no git, this is not a repository — and the frontend
+    /// that ran the command is the one that can tell them apart.
+    scm: Option<deco_scm::Status>,
+    /// Whether the status is stale.
+    ///
+    /// The same shape as [`Session::directory_wanted`]: the session says what
+    /// it would like to know, and whoever can find out does. Set when
+    /// something has happened that a `git status` would report differently —
+    /// not on a keystroke, because running git on every key would be a
+    /// process per character.
+    scm_wanted: bool,
 }
 
 /// Applies `edits` to one document and its view.
@@ -539,6 +555,10 @@ impl Session {
             // still lays out sensibly under test.
             screen: (80, 24),
             next_group: 0,
+            scm: None,
+            // Wanted from the start: the branch is worth showing before the
+            // first save, not after it.
+            scm_wanted: true,
             replacing_in_files: false,
             replace_query: String::new(),
         };
@@ -2900,6 +2920,7 @@ impl Session {
             if holds(&tab.document) {
                 tab.document.dirty = false;
                 tab.document.history.break_group();
+                self.scm_changed();
                 return;
             }
         }
@@ -2909,6 +2930,10 @@ impl Session {
     pub fn mark_saved(&mut self) {
         self.document.dirty = false;
         self.document.history.break_group();
+        // A write is the commonest reason `git status` now says something
+        // else. Set on the *active* path only, which `mark_saved_at` reaches
+        // through here for the active document and below for the rest.
+        self.scm_changed();
         self.refresh_context();
     }
 
@@ -3563,6 +3588,9 @@ impl Session {
                 self.retarget_tab(index, moved);
             }
         }
+        // A file that now exists, or no longer does, is a line `git status`
+        // did not have before.
+        self.scm_changed();
         if let (Some(explorer), Some(parent)) = (self.explorer.as_mut(), operation.parent()) {
             explorer.invalidate(parent);
             // What the tree remembered about the thing that moved or went. The
@@ -3679,6 +3707,64 @@ impl Session {
     /// reveal arrives a level at a time rather than in one blocking walk.
     pub fn directory_wanted(&self) -> Option<std::path::PathBuf> {
         self.explorer.as_ref().and_then(crate::Explorer::wanted)
+    }
+
+    /// Whether `git.enabled` leaves the feature on.
+    ///
+    /// VS Code's setting, with VS Code's default of `true`. Read here rather
+    /// than in a frontend so that the two cannot disagree about it, and so
+    /// that turning git off is one answer rather than one per frontend.
+    pub fn git_enabled(&self) -> bool {
+        self.settings.get_bool("git.enabled", None).unwrap_or(true)
+    }
+
+    /// Whether a fresh `git status` would be worth running.
+    ///
+    /// Always `false` when `git.enabled` is off: a setting that turns the
+    /// feature off has to stop the process from being spawned, not just hide
+    /// what it found.
+    pub fn scm_wanted(&self) -> bool {
+        self.scm_wanted && self.git_enabled()
+    }
+
+    /// What `git status` last said, if anything.
+    ///
+    /// Nothing at all once `git.enabled` is off, whatever was found before it
+    /// was: a setting that turns the feature off has to take what is on screen
+    /// with it, not only stop the next run.
+    pub fn scm_status(&self) -> Option<&deco_scm::Status> {
+        self.git_enabled().then_some(self.scm.as_ref()).flatten()
+    }
+
+    /// Says a run has begun, so the question does not need asking again.
+    ///
+    /// Separate from [`Session::fill_scm`] and called *first*, which is what
+    /// makes a change during a run survive it: something saved while git is
+    /// still thinking sets the flag again, the answer arrives and is stored
+    /// without clearing it, and the next poll starts a fresh run. Clearing on
+    /// the answer instead would drop that save silently, and the status bar
+    /// would sit there being wrong until the one after it.
+    pub fn scm_started(&mut self) {
+        self.scm_wanted = false;
+    }
+
+    /// Hands over what `git status` said.
+    ///
+    /// `None` is a real answer, not "keep what you had": there is no git, or
+    /// this is not a repository, or git refused. Keeping a stale branch name on
+    /// screen after the repository went away would be worse than showing
+    /// nothing.
+    pub fn fill_scm(&mut self, status: Option<deco_scm::Status>) {
+        self.scm = status;
+    }
+
+    /// Says the status is stale.
+    ///
+    /// Called for the things git would report differently: a save, a file
+    /// created, renamed or deleted, and coming back to a window that may have
+    /// been left while a commit happened in a terminal.
+    pub fn scm_changed(&mut self) {
+        self.scm_wanted = true;
     }
 
     /// Hands the tree what a directory contains.

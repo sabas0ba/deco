@@ -19,6 +19,7 @@ pub mod files;
 pub mod keys;
 pub mod lsp;
 pub mod render;
+pub mod scm;
 pub mod suggest;
 pub mod themes;
 
