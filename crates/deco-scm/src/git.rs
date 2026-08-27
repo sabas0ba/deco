@@ -135,13 +135,35 @@ impl Git {
         Ok(status::parse(&output)?)
     }
 
+    /// Where the repository containing `directory` begins.
+    ///
+    /// Needed because every path git reports is relative to *this*, not to the
+    /// folder deco was started in — and those differ whenever someone opens a
+    /// subdirectory of a repository, which is an ordinary thing to do. Asking
+    /// once and keeping the answer is what lets [`Git::committed`] and
+    /// [`Status`] speak the same coordinates.
+    pub fn root(&self, directory: &Path) -> Result<PathBuf, ScmError> {
+        let output = self.run(directory, &["rev-parse", "--show-toplevel"])?;
+        let root = output.trim_end_matches(['\n', '\r']);
+        if root.is_empty() {
+            return Err(ScmError::NotARepository(directory.to_path_buf()));
+        }
+        Ok(PathBuf::from(root))
+    }
+
     /// The committed text of a file, to compare a buffer against.
     ///
-    /// `path` is relative to the repository root, which is what
-    /// [`Status`] reports and what `HEAD:` expects. An absolute path or one
-    /// starting `../` would be resolved by git against the working directory
-    /// instead, and quietly read a different file — so it is refused here
-    /// rather than trusted.
+    /// `path` is relative to the **repository root** — the same coordinates
+    /// [`Status`] reports in, and what [`Git::root`] is for. Not relative to
+    /// `directory`: `git show HEAD:a` reads the repository's `a` however deep
+    /// in the tree it is run from, which is the property that makes one path
+    /// mean one file. (`HEAD:./a` would be the other thing, resolved against
+    /// the working directory — the two disagree the moment a workspace is a
+    /// subdirectory, and a gutter drawn from the wrong blob looks exactly like
+    /// a gutter drawn from the right one.)
+    ///
+    /// An absolute path or one containing `..` is refused rather than passed
+    /// on, for the same reason: git would resolve it somewhere else entirely.
     ///
     /// `Ok(None)` when the file is not in `HEAD`: it is new, or on an unborn
     /// branch where nothing is. That is not an error, and the caller's answer
@@ -163,10 +185,7 @@ impl Git {
         // `--textconv` is deliberately *not* passed: a repository can configure
         // a filter that runs an arbitrary program to render a file, and the
         // gutter is not worth executing someone's `.gitattributes` for.
-        //
-        // `./` anchors the name to the repository root even if it begins with
-        // a dash or looks like a revision.
-        match self.run(directory, &["show", &format!("HEAD:./{path}")]) {
+        match self.run(directory, &["show", &format!("HEAD:{path}")]) {
             Ok(text) => Ok(Some(text)),
             // The three ways git says "there is no committed text for this",
             // none of them a failure. Quoted from git 2.43 rather than guessed:
@@ -415,6 +434,56 @@ mod tests {
             Ok(None),
             "`git init` and nothing committed: there is no HEAD to read"
         );
+    }
+
+    #[test]
+    fn a_path_means_the_same_file_however_deep_git_is_run() {
+        let Some(git) = git_or_skip() else { return };
+        let dir = scratch_repo(&git, "subdir");
+        std::fs::create_dir_all(dir.join("sub")).expect("a directory");
+        std::fs::write(dir.join("a.txt"), "ROOT\n").expect("a file");
+        std::fs::write(dir.join("sub/a.txt"), "SUB\n").expect("a file");
+        commit(&git, &dir);
+
+        // The same repository-relative path, asked from two depths. Opening a
+        // subdirectory of a repository is an ordinary thing to do, and the
+        // answer must not depend on where deco happened to be started.
+        let from_root = git.committed(&dir, Path::new("sub/a.txt"));
+        let from_sub = git.committed(&dir.join("sub"), Path::new("sub/a.txt"));
+        // And the root's own file, from inside the subdirectory — the case
+        // that `HEAD:./a.txt` gets wrong, because `./` is resolved against the
+        // working directory and would find `sub/a.txt` instead.
+        let root_file_from_sub = git.committed(&dir.join("sub"), Path::new("a.txt"));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let text = |result: Result<Option<String>, ScmError>| result.expect("a committed file");
+        assert_eq!(text(from_root).as_deref(), Some("SUB\n"));
+        assert_eq!(
+            text(from_sub).as_deref(),
+            Some("SUB\n"),
+            "one path, one file, whatever directory git was run in"
+        );
+        assert_eq!(
+            text(root_file_from_sub).as_deref(),
+            Some("ROOT\n"),
+            "`a.txt` is the repository's, not the subdirectory's"
+        );
+    }
+
+    #[test]
+    fn the_repository_root_is_where_git_says_it_is() {
+        let Some(git) = git_or_skip() else { return };
+        let dir = scratch_repo(&git, "toplevel");
+        std::fs::create_dir_all(dir.join("sub")).expect("a directory");
+        std::fs::write(dir.join("a.txt"), "one\n").expect("a file");
+        commit(&git, &dir);
+
+        let found = git.root(&dir.join("sub"));
+        let _ = std::fs::remove_dir_all(&dir);
+        // Canonicalised on both sides: a temporary directory is a symlink on
+        // macOS, and git reports where the link goes.
+        let found = found.expect("a repository").canonicalize().ok();
+        assert_eq!(found, dir.canonicalize().ok());
     }
 
     #[test]

@@ -35,6 +35,13 @@ pub struct Scm {
     root: Option<PathBuf>,
     /// The run that has not answered yet.
     inflight: Option<Receiver<Result<Status, ScmError>>>,
+    /// Where the repository begins, once it has been asked.
+    ///
+    /// Not the same as [`Scm::root`], which is the folder deco was started in.
+    /// Opening a subdirectory of a repository is ordinary, and every path git
+    /// reports — and every path it will answer about — is relative to the
+    /// repository, so the two have to be told apart.
+    repo_root: Option<PathBuf>,
     /// Why there will never be an answer, once that is known.
     ///
     /// Kept rather than shown. There is nowhere to put it yet: the panel that
@@ -62,6 +69,7 @@ impl Scm {
                 None => Git::default(),
             },
             root,
+            repo_root: None,
             inflight: None,
             unavailable: None,
         }
@@ -102,12 +110,33 @@ impl Scm {
         let Some(path) = session.committed_wanted() else {
             return false;
         };
-        // The cache is keyed by the path the editor holds; git wants it
-        // relative to the repository. A file outside the workspace — opened
-        // with `ctrl+o` — has no answer here, and saying so is what stops it
-        // being asked about on every poll.
-        let text = match path.strip_prefix(&root) {
-            Ok(relative) => self.git.committed(&root, relative).unwrap_or(None),
+        // Asked once and kept. Without it every path would be stripped against
+        // the folder deco was started in, which is only the repository root
+        // when nobody opened a subdirectory — and when they did, the blob
+        // fetched would be a different file's, silently.
+        if self.repo_root.is_none() {
+            match self.git.root(&root) {
+                Ok(found) => self.repo_root = Some(found),
+                Err(error) => {
+                    if permanent(&error) {
+                        self.unavailable = Some(error.to_string());
+                    }
+                    // Answered rather than left standing: a repository that
+                    // cannot say where it begins cannot say what a file used
+                    // to hold either, and the alternative is asking on every
+                    // poll for the rest of the session.
+                    session.fill_committed(path, None);
+                    return true;
+                }
+            }
+        }
+        let repo_root = self.repo_root.clone().unwrap_or_else(|| root.clone());
+        // The cache is keyed by the path the editor holds; git answers about
+        // paths relative to the repository. A file outside it — opened with
+        // `ctrl+o` — has no answer here, and saying so is what stops it being
+        // asked about on every poll.
+        let text = match path.strip_prefix(&repo_root) {
+            Ok(relative) => self.git.committed(&repo_root, relative).unwrap_or(None),
             Err(_) => None,
         };
         session.fill_committed(path, text);
