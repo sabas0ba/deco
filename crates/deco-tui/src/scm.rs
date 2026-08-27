@@ -81,7 +81,37 @@ impl Scm {
     pub fn poll(&mut self, session: &mut Session) -> bool {
         let changed = self.collect(session);
         self.start(session);
-        changed
+        changed | self.fetch_committed(session)
+    }
+
+    /// Fetches the committed text of one file the session is missing.
+    ///
+    /// One per poll rather than all at once: this is a process each, and the
+    /// file being looked at is the first one asked about, so the gutter that
+    /// matters fills in immediately and the rest follow over the next few
+    /// turns. Blocking, unlike the status — `git show` of one blob is a read
+    /// of one object rather than a walk of the working tree, and putting it on
+    /// a thread would mean a second channel for a wait that does not happen.
+    fn fetch_committed(&mut self, session: &mut Session) -> bool {
+        if self.unavailable.is_some() {
+            return false;
+        }
+        let Some(root) = self.root.clone() else {
+            return false;
+        };
+        let Some(path) = session.committed_wanted() else {
+            return false;
+        };
+        // The cache is keyed by the path the editor holds; git wants it
+        // relative to the repository. A file outside the workspace — opened
+        // with `ctrl+o` — has no answer here, and saying so is what stops it
+        // being asked about on every poll.
+        let text = match path.strip_prefix(&root) {
+            Ok(relative) => self.git.committed(&root, relative).unwrap_or(None),
+            Err(_) => None,
+        };
+        session.fill_committed(path, text);
+        true
     }
 
     /// Takes the answer, if there is one waiting.
@@ -285,6 +315,55 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         panic!("the save made during the first run never got one of its own");
+    }
+
+    #[test]
+    fn a_files_committed_text_reaches_the_session() {
+        let mut session = session();
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let mut scm = Scm::new(&session.settings, Some(root.clone()));
+        if matches!(scm.git.status(&root), Err(ScmError::NoBinary(_))) {
+            eprintln!("skipped: no git on this machine");
+            return;
+        }
+        // This very file, committed, with an edit that is not.
+        let path = root.join("src/scm.rs");
+        session.open(path.clone(), "// nothing like the committed text\n");
+
+        assert_eq!(session.committed_wanted(), Some(path.clone()));
+        scm.poll(&mut session);
+        session.refresh_diffs();
+
+        let diff = session
+            .diff_marks(&path)
+            .expect("the committed text has arrived");
+        assert!(
+            !diff.is_empty(),
+            "a buffer holding one line that is not what was committed differs"
+        );
+        assert_eq!(
+            session.committed_wanted(),
+            None,
+            "and it is not asked about again"
+        );
+    }
+
+    #[test]
+    fn a_file_outside_the_workspace_is_answered_rather_than_re_asked() {
+        let mut session = session();
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let mut scm = Scm::new(&session.settings, Some(root.clone()));
+        if matches!(scm.git.status(&root), Err(ScmError::NoBinary(_))) {
+            eprintln!("skipped: no git on this machine");
+            return;
+        }
+        // `ctrl+o` reaches anywhere. Nothing here can say what HEAD had for it,
+        // and answering "nothing" is what stops the question being asked on
+        // every poll for the rest of the session.
+        let outside = PathBuf::from("/etc/hostname");
+        session.open(outside.clone(), "elsewhere\n");
+        scm.poll(&mut session);
+        assert_eq!(session.committed_wanted(), None);
     }
 
     #[test]

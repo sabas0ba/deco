@@ -388,6 +388,42 @@ pub struct Session {
     /// not on a keystroke, because running git on every key would be a
     /// process per character.
     scm_wanted: bool,
+    /// What `HEAD` had for each open file, and the marks derived from it.
+    ///
+    /// Split in two because the halves change at wildly different rates. The
+    /// committed text costs a process and changes only when someone commits;
+    /// the buffer changes on every keystroke and comparing them is pure. So
+    /// the text is fetched once and kept, and the diff is recomputed here as
+    /// the file is typed into — which is what makes the marks track an edit
+    /// live without a `git` per character.
+    committed: std::collections::HashMap<PathBuf, Committed>,
+}
+
+/// The path an operation *emptied*, if it emptied one.
+///
+/// The counterpart to [`crate::files::Operation::arriving`]: a rename leaves
+/// its source behind and a delete leaves its path behind, and anything cached
+/// about either is now about a file that is not there.
+fn moved_from(operation: &crate::files::Operation) -> Option<&Path> {
+    match operation {
+        crate::files::Operation::Rename { from, .. } => Some(from),
+        crate::files::Operation::Delete { path, .. }
+        | crate::files::Operation::DeleteIfEmpty { path, .. } => Some(path),
+        crate::files::Operation::CreateFile(_) | crate::files::Operation::CreateFolder(_) => None,
+    }
+}
+
+/// One file's committed text, and the last diff taken against it.
+#[derive(Debug, Clone)]
+struct Committed {
+    /// What `git show HEAD:<path>` said, or `None` when the file is not in
+    /// `HEAD` at all — new, or on a branch with nothing committed.
+    text: Option<String>,
+    /// The marks, and the buffer version they were computed from.
+    ///
+    /// The version is the whole point: without it every render would diff the
+    /// file again, and with it the work happens once per edit.
+    marks: Option<(i32, deco_scm::Diff)>,
 }
 
 /// Applies `edits` to one document and its view.
@@ -559,6 +595,7 @@ impl Session {
             // Wanted from the start: the branch is worth showing before the
             // first save, not after it.
             scm_wanted: true,
+            committed: std::collections::HashMap::new(),
             replacing_in_files: false,
             replace_query: String::new(),
         };
@@ -3604,6 +3641,16 @@ impl Session {
         // A file that now exists, or no longer does, is a line `git status`
         // did not have before.
         self.scm_changed();
+        // And whatever was cached about the paths it touched is about a file
+        // that is no longer there — or, at the destination, about one that
+        // never was. Both sides, because a rename empties one and fills the
+        // other.
+        for path in [operation.arriving(), moved_from(operation)]
+            .into_iter()
+            .flatten()
+        {
+            self.forget_committed_under(path);
+        }
         if let (Some(explorer), Some(parent)) = (self.explorer.as_mut(), operation.parent()) {
             explorer.invalidate(parent);
             // What the tree remembered about the thing that moved or went. The
@@ -3764,7 +3811,120 @@ impl Session {
     /// screen after the repository went away would be worse than showing
     /// nothing.
     pub fn fill_scm(&mut self, status: Option<deco_scm::Status>) {
+        // A different commit means every file's committed text may be
+        // different too, so what is cached is thrown away rather than kept.
+        // This is what makes a `git commit` in another terminal clear the
+        // gutter instead of leaving every open file drawing against the
+        // version before it.
+        let was = self.scm.as_ref().and_then(|status| status.commit.clone());
+        let now = status.as_ref().and_then(|status| status.commit.clone());
+        if was != now {
+            self.committed.clear();
+        }
         self.scm = status;
+    }
+
+    /// A file whose committed text nobody has fetched yet.
+    ///
+    /// The same shape as [`Session::directory_wanted`]: one at a time, and the
+    /// frontend answers with [`Session::fill_committed`]. Only open documents,
+    /// because only an open document has a gutter to draw.
+    pub fn committed_wanted(&self) -> Option<PathBuf> {
+        if !self.git_enabled() || !self.gutter_marks_enabled() {
+            return None;
+        }
+        self.documents()
+            .filter_map(|document| document.path.clone())
+            .find(|path| !self.committed.contains_key(path))
+    }
+
+    /// Hands over what `HEAD` had for a file.
+    ///
+    /// `None` means it is not in `HEAD` — added since the last commit, or on a
+    /// branch with nothing committed. That is an answer: every line of the file
+    /// is new. Stored either way, so the question is not asked again on every
+    /// poll.
+    pub fn fill_committed(&mut self, path: PathBuf, text: Option<String>) {
+        self.committed.insert(
+            path,
+            Committed {
+                text,
+                // Computed on first use rather than here: the buffer may not
+                // even be the one this is about yet.
+                marks: None,
+            },
+        );
+    }
+
+    /// Whether `git.decorations.enabled` leaves the gutter marks on.
+    ///
+    /// VS Code's setting and VS Code's default of `true`. Separate from
+    /// `git.enabled`, which turns the whole feature off — someone who wants the
+    /// branch in the bar but no marks beside their lines has said so with this
+    /// one.
+    pub fn gutter_marks_enabled(&self) -> bool {
+        self.settings
+            .get_bool("git.decorations.enabled", None)
+            .unwrap_or(true)
+    }
+
+    /// Brings every open file's marks up to date with its buffer.
+    ///
+    /// Called by a frontend before it draws, which is why this is separate from
+    /// [`Session::diff_marks`]: a renderer holds the session by shared
+    /// reference, and computing on demand there would mean either a diff per
+    /// frame or interior mutability. Cheap when nothing has changed — one
+    /// version comparison per open document.
+    pub fn refresh_diffs(&mut self) {
+        if !self.git_enabled() || !self.gutter_marks_enabled() {
+            return;
+        }
+        let open: Vec<(PathBuf, i32, String)> = self
+            .documents()
+            .filter_map(|document| {
+                let path = document.path.clone()?;
+                Some((path, document.buffer.version(), document.buffer.text()))
+            })
+            .collect();
+        for (path, version, text) in open {
+            let Some(entry) = self.committed.get(&path) else {
+                continue;
+            };
+            if entry.marks.as_ref().map(|(at, _)| *at) == Some(version) {
+                continue;
+            }
+            // A file with no committed text is not "no marks": every line of
+            // it is an addition, which is what an empty left-hand side gives.
+            let head = entry.text.clone().unwrap_or_default();
+            let diff = deco_scm::diff(&head, &text);
+            if let Some(entry) = self.committed.get_mut(&path) {
+                entry.marks = Some((version, diff));
+            }
+        }
+    }
+
+    /// What changed in `path` since it was committed, as of the last
+    /// [`Session::refresh_diffs`].
+    ///
+    /// `None` when the committed text has not arrived, when nothing has
+    /// computed the marks yet, or when they are switched off.
+    pub fn diff_marks(&self, path: &Path) -> Option<&deco_scm::Diff> {
+        if !self.git_enabled() || !self.gutter_marks_enabled() {
+            return None;
+        }
+        self.committed
+            .get(path)
+            .and_then(|entry| entry.marks.as_ref())
+            .map(|(_, diff)| diff)
+    }
+
+    /// Forgets what was cached for everything at or under `path`.
+    ///
+    /// A file that moved or went takes its committed text with it: the entry is
+    /// keyed by path, and leaving it would hand the *next* file to take that
+    /// name a diff against a stranger's history.
+    fn forget_committed_under(&mut self, path: &Path) {
+        self.committed.retain(|held, _| !held.starts_with(path));
     }
 
     /// Says the status is stale.
@@ -8468,6 +8628,125 @@ mod tests {
                 .any(|r| r.name == "old.rs"),
             "a new folder must not show the rows of the one that had its name"
         );
+    }
+
+    /// What `git status --porcelain=v2 --branch -z` writes for a branch at
+    /// `commit`.
+    fn scm_at(commit: &str) -> deco_scm::Status {
+        deco_scm::parse(&format!("# branch.oid {commit}\0# branch.head main\0"))
+            .expect("git's own format")
+    }
+
+    #[test]
+    fn the_marks_follow_the_buffer_rather_than_the_file_on_disk() {
+        let mut s = with_tree();
+        s.open(PathBuf::from("/w/a.rs"), "one\ntwo\n");
+        s.fill_committed(PathBuf::from("/w/a.rs"), Some("one\ntwo\n".to_owned()));
+        s.refresh_diffs();
+        assert!(
+            s.diff_marks(Path::new("/w/a.rs"))
+                .expect("the committed text has arrived")
+                .is_empty(),
+            "nothing typed yet, so nothing differs"
+        );
+
+        // Typed, not saved. The whole point: a gutter that waited for a write
+        // would be describing the file rather than the screen.
+        s.run("cursorEnd", None, 0);
+        s.run("type", Some(&json!({ "text": "!" })), 0);
+        s.refresh_diffs();
+        let diff = s.diff_marks(Path::new("/w/a.rs")).expect("still open");
+        assert_eq!(diff.mark_at(0), Some(deco_scm::Mark::Modified));
+        assert_eq!(diff.mark_at(1), None, "and only the line that was touched");
+    }
+
+    #[test]
+    fn a_file_with_nothing_committed_is_all_addition() {
+        let mut s = with_tree();
+        s.open(PathBuf::from("/w/new.rs"), "one\ntwo\n");
+        // `None` is git saying the file is not in HEAD — added since the last
+        // commit. Every line of it is new, which is not the same as no marks.
+        s.fill_committed(PathBuf::from("/w/new.rs"), None);
+
+        s.refresh_diffs();
+        let diff = s.diff_marks(Path::new("/w/new.rs")).expect("an answer");
+        assert_eq!(diff.mark_at(0), Some(deco_scm::Mark::Added));
+        assert_eq!(diff.mark_at(1), Some(deco_scm::Mark::Added));
+    }
+
+    #[test]
+    fn a_commit_somewhere_else_throws_the_committed_text_away() {
+        let mut s = with_tree();
+        s.open(PathBuf::from("/w/a.rs"), "one\n");
+        s.fill_scm(Some(scm_at("1111111")));
+        s.fill_committed(PathBuf::from("/w/a.rs"), Some("old\n".to_owned()));
+        assert_eq!(s.committed_wanted(), None, "it has been answered");
+
+        // Someone commits in a terminal. Every file's committed text may now
+        // be something else, and a gutter drawn against the old one would be
+        // wrong in a way nothing on screen would explain.
+        s.fill_scm(Some(scm_at("2222222")));
+        assert_eq!(
+            s.committed_wanted(),
+            Some(PathBuf::from("/w/a.rs")),
+            "the file is asked about again rather than kept"
+        );
+    }
+
+    #[test]
+    fn the_same_commit_reported_again_keeps_what_was_fetched() {
+        let mut s = with_tree();
+        s.open(PathBuf::from("/w/a.rs"), "one\n");
+        s.fill_scm(Some(scm_at("1111111")));
+        s.fill_committed(PathBuf::from("/w/a.rs"), Some("old\n".to_owned()));
+
+        // A save refreshes the status without moving HEAD. Re-fetching every
+        // open file's committed text on every save would be a process per file
+        // per keystroke-ish, to learn what was already known.
+        s.fill_scm(Some(scm_at("1111111")));
+        assert_eq!(s.committed_wanted(), None);
+    }
+
+    #[test]
+    fn turning_the_decorations_off_stops_the_fetch_as_well_as_the_marks() {
+        let mut s = with_tree();
+        s.settings.set(
+            deco_config::Scope::User,
+            "git.decorations.enabled",
+            serde_json::Value::Bool(false),
+        );
+        s.open(PathBuf::from("/w/a.rs"), "one\n");
+        assert_eq!(
+            s.committed_wanted(),
+            None,
+            "a setting that only hid the marks would still pay for them"
+        );
+        s.fill_committed(PathBuf::from("/w/a.rs"), Some("other\n".to_owned()));
+        s.refresh_diffs();
+        assert!(s.diff_marks(Path::new("/w/a.rs")).is_none());
+    }
+
+    #[test]
+    fn a_renamed_file_does_not_keep_the_old_names_history() {
+        let mut s = with_tree();
+        s.open(PathBuf::from("/w/a.rs"), "one\n");
+        s.fill_committed(PathBuf::from("/w/a.rs"), Some("one\n".to_owned()));
+
+        let renamed = crate::files::Operation::Rename {
+            from: PathBuf::from("/w/a.rs"),
+            to: PathBuf::from("/w/b.rs"),
+            expect: None,
+            directory: false,
+        };
+        s.file_operation_done(&renamed);
+
+        // The entry is keyed by path. Left behind, the next file to be called
+        // `a.rs` would be diffed against a stranger's history.
+        assert!(
+            s.committed_wanted().is_some(),
+            "the moved file is asked about under its new name"
+        );
+        assert!(s.diff_marks(Path::new("/w/a.rs")).is_none());
     }
 
     #[test]

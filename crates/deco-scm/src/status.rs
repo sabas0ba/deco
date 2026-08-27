@@ -142,6 +142,14 @@ pub struct FileStatus {
 pub struct Status {
     /// Where `HEAD` is.
     pub head: Head,
+    /// The commit `HEAD` names, or `None` on a branch with nothing on it yet.
+    ///
+    /// Kept even for a named branch, where it is not shown anywhere: it is the
+    /// only thing here that changes when someone commits, and a caller holding
+    /// the *committed text* of a file needs to know when to throw that away.
+    /// Without it a commit made in a terminal would leave every gutter drawing
+    /// against the wrong version until the file was closed.
+    pub commit: Option<String>,
     /// The tracked branch, when there is one.
     pub upstream: Option<Upstream>,
     /// Every file git had something to say about.
@@ -319,9 +327,11 @@ pub fn parse(output: &str) -> Result<Status, Malformed> {
 
     let oid = oid.ok_or_else(|| Malformed("no `# branch.oid` header".into()))?;
     let head = head.ok_or_else(|| Malformed("no `# branch.head` header".into()))?;
+    // `(initial)` is git saying there is no commit, not a commit called that.
+    let commit = (oid != "(initial)").then(|| oid.clone());
     let head = if head == "(detached)" {
         Head::Detached(oid)
-    } else if oid == "(initial)" {
+    } else if commit.is_none() {
         Head::Unborn(head)
     } else {
         Head::Branch(head)
@@ -342,6 +352,7 @@ pub fn parse(output: &str) -> Result<Status, Malformed> {
 
     Ok(Status {
         head,
+        commit,
         upstream,
         entries,
     })

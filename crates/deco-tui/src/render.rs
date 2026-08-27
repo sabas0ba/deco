@@ -65,6 +65,9 @@ struct Palette {
     ruler_bg: Rgba,
     status_fg: Rgba,
     status_bg: Rgba,
+    added_fg: Rgba,
+    modified_fg: Rgba,
+    deleted_fg: Rgba,
 }
 
 impl Palette {
@@ -76,6 +79,12 @@ impl Palette {
             fg,
             bg,
             gutter_fg: theme.color("editorLineNumber.foreground").unwrap_or(fg),
+            // The git marks. A theme with nothing to say about them falls back
+            // through `deco-theme`'s chain to its own diagnostic colours
+            // before it ever reaches the line-number colour here.
+            added_fg: theme.color("editorGutter.addedBackground").unwrap_or(fg),
+            modified_fg: theme.color("editorGutter.modifiedBackground").unwrap_or(fg),
+            deleted_fg: theme.color("editorGutter.deletedBackground").unwrap_or(fg),
             gutter_active_fg: theme
                 .color("editorLineNumber.activeForeground")
                 .unwrap_or(fg),
@@ -690,15 +699,43 @@ fn pane_rows(
             } else {
                 String::new()
             };
-            spans.push(Span {
-                text: format!("{label:>width$} ", width = gutter - 1),
-                fg: if line == cursor_line {
-                    palette.gutter_active_fg
-                } else {
-                    palette.gutter_fg
-                },
-                bg: palette.bg,
-            });
+            let number_fg = if line == cursor_line {
+                palette.gutter_active_fg
+            } else {
+                palette.gutter_fg
+            };
+            // The column between the numbers and the text is where VS Code
+            // puts its git marks, and it is already spare here. On a
+            // continuation row it stays blank: a wrapped line is one line, and
+            // repeating its mark would read as several.
+            let mark = visual
+                .numbered()
+                .then(|| git_mark(session, pane, line, palette))
+                .flatten();
+            match mark {
+                // Two spans, because the mark is a different colour from the
+                // number beside it.
+                Some((glyph, fg)) => {
+                    spans.push(Span {
+                        text: format!("{label:>width$}", width = gutter - 1),
+                        fg: number_fg,
+                        bg: palette.bg,
+                    });
+                    spans.push(Span {
+                        text: glyph.to_string(),
+                        fg,
+                        bg: palette.bg,
+                    });
+                }
+                // One, as it was before there were marks. Worth the branch:
+                // most lines of most files have nothing beside them, and a
+                // span per row that only ever holds a space is a span per row.
+                None => spans.push(Span {
+                    text: format!("{label:>width$} ", width = gutter - 1),
+                    fg: number_fg,
+                    bg: palette.bg,
+                }),
+            }
         }
 
         let text = buffer
@@ -1464,6 +1501,33 @@ fn indentation(session: &Session) -> String {
     } else {
         unit
     }
+}
+
+/// What to draw in the gutter's mark column for `line`, if anything.
+///
+/// Shape as well as colour. VS Code separates *added* from *modified* by
+/// colour alone, which is a distinction anyone who cannot tell its green from
+/// its blue does not get; a heavy bar against a light one costs nothing and
+/// carries the same information without it.
+///
+/// - `┃` — lines that are not in the committed file at all.
+/// - `│` — lines that are there and say something else.
+/// - `▔` — lines were removed just above this one. It sits on the cell's top
+///   edge because that is where they were; there is nothing left to draw
+///   beside.
+fn git_mark(
+    session: &Session,
+    pane: &deco_editor::Pane<'_>,
+    line: usize,
+    palette: &Palette,
+) -> Option<(char, Rgba)> {
+    let path = pane.document.path.as_deref()?;
+    let mark = session.diff_marks(path)?.mark_at(line)?;
+    Some(match mark {
+        deco_scm::Mark::Added => ('┃', palette.added_fg),
+        deco_scm::Mark::Modified => ('│', palette.modified_fg),
+        deco_scm::Mark::Deleted => ('▔', palette.deleted_fg),
+    })
 }
 
 /// The branch and how far the working tree has drifted from it.
@@ -4202,6 +4266,63 @@ mod tests {
             !before.contains('±') && !before.contains("  main"),
             "nothing at all, not a gap where the branch would be: {before:?}"
         );
+    }
+
+    /// The gutter's mark column, top to bottom, as a string.
+    fn marks(session: &Session) -> String {
+        render(session, 60, 8)
+            .rows
+            .iter()
+            .take(4)
+            .map(|row| {
+                let gutter = gutter_width(session);
+                row.plain().chars().nth(gutter - 1).unwrap_or(' ')
+            })
+            .collect()
+    }
+
+    #[test]
+    fn changed_lines_are_marked_in_the_gutter() {
+        let mut session = session("one\nTWO\nthree\nnew\n");
+        session.fill_committed(
+            session.document.path.clone().expect("a path"),
+            Some("one\ntwo\nthree\n".to_owned()),
+        );
+        session.refresh_diffs();
+        assert_eq!(
+            marks(&session),
+            " │ ┃",
+            "line 2 says something else, line 4 was not there at all"
+        );
+    }
+
+    #[test]
+    fn a_removed_line_is_marked_where_it_was() {
+        let mut session = session("one\nthree\n");
+        session.fill_committed(
+            session.document.path.clone().expect("a path"),
+            Some("one\ntwo\nthree\n".to_owned()),
+        );
+        session.refresh_diffs();
+        // Nothing is left to draw beside, so the mark belongs to the line that
+        // took its place — on the cell's top edge, where the removed line was.
+        assert_eq!(marks(&session), " ▔  ");
+    }
+
+    #[test]
+    fn git_decorations_false_leaves_the_gutter_alone() {
+        let mut session = session("one\nTWO\n");
+        session.settings.set(
+            deco_config::Scope::User,
+            "git.decorations.enabled",
+            serde_json::Value::Bool(false),
+        );
+        session.fill_committed(
+            session.document.path.clone().expect("a path"),
+            Some("one\ntwo\n".to_owned()),
+        );
+        session.refresh_diffs();
+        assert_eq!(marks(&session), "    ", "the setting turns the marks off");
     }
 
     #[test]
