@@ -644,6 +644,7 @@ dependencies = [
  "deco-core",
  "deco-editor",
  "deco-keymap",
+ "deco-scm",
  "deco-theme",
  "glyphon",
  "pollster",

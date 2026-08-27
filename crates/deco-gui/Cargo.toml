@@ -12,6 +12,7 @@ authors.workspace = true
 deco-config.workspace = true
 deco-core.workspace = true
 deco-editor.workspace = true
+deco-scm.workspace = true
 deco-keymap.workspace = true
 deco-theme.workspace = true
 anyhow.workspace = true
