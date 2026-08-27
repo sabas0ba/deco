@@ -155,6 +155,10 @@ fn demos() -> Vec<Demo> {
             build: file_mutations,
         },
         Demo {
+            name: "git-status",
+            build: git_status,
+        },
+        Demo {
             name: "tabs",
             build: tabs,
         },
@@ -344,6 +348,16 @@ impl Take {
                     self.session.open(path.clone(), "");
                 }
             }
+            // The frontend's half again: the session decided the document
+            // should be written, and this demonstration is the thing with the
+            // "filesystem". Without it the tab would stay dirty, and — the
+            // reason it is here — the session would never mark its git status
+            // stale, so a demonstration of the status bar would show a count
+            // that never moved.
+            if matches!(outcome, deco_editor::Outcome::Save) {
+                self.write_open_document();
+                self.session.mark_saved();
+            }
             if let deco_editor::Outcome::OpenFile { path, at } = outcome {
                 let relative = path
                     .strip_prefix("/demo")
@@ -365,6 +379,46 @@ impl Take {
             self.resize_for_chrome();
             self.capture(key, 1);
         }
+        self
+    }
+
+    /// Puts what is on screen into the in-memory workspace, as a save would.
+    fn write_open_document(&mut self) {
+        let Some(path) = self.session.document.path.clone() else {
+            return;
+        };
+        let relative = path
+            .strip_prefix("/demo")
+            .expect("a demonstration only saves files in its own workspace")
+            .to_string_lossy()
+            .into_owned();
+        let text = self.session.document.buffer.text();
+        match self
+            .workspace
+            .iter_mut()
+            .find(|(candidate, _)| *candidate == relative)
+        {
+            Some((_, held)) => *held = text,
+            None => self.workspace.push((relative, text)),
+        }
+    }
+
+    /// Answers the session's standing question about git, if it has one.
+    ///
+    /// `output` is what `git status --porcelain=v2 --branch -z` would have
+    /// written. The demonstration is the thing with a `git` here, exactly as it
+    /// is the thing with a filesystem for the tree — and the gate is the point
+    /// rather than an optimisation: calling this when nothing has asked leaves
+    /// the bar alone, which is how a demonstration can show that typing does
+    /// not spawn a process and saving does.
+    fn git(&mut self, output: &str) -> &mut Self {
+        if !self.session.scm_wanted() {
+            return self;
+        }
+        self.session.scm_started();
+        self.session.fill_scm(Some(
+            deco_scm::parse(output).expect("a demonstration writes git's own format"),
+        ));
         self
     }
 
@@ -1022,6 +1076,56 @@ fn file_tree() -> String {
     take.press_and_hold(&["enter"], 5);
     take.type_text("// ");
     take.capture("the caret is in the file the tree opened", 5);
+    take.finish()
+}
+
+fn git_status() -> String {
+    // Assembled as the bytes `git status --porcelain=v2 --branch -z` writes,
+    // and parsed by the same code the editor uses. A `Status` built by hand
+    // here would be a demonstration of a struct rather than of git.
+    fn status(entries: &[&str]) -> String {
+        let mut out = String::from(
+            "# branch.oid 1c9d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d\0\
+             # branch.head main\0# branch.upstream origin/main\0# branch.ab +2 -0\0",
+        );
+        for entry in entries {
+            out.push_str(entry);
+            out.push('\0');
+        }
+        out
+    }
+    const MODIFIED: &str = "1 .M N... 100644 100644 100644 aaaaaaa bbbbbbb src/main.rs";
+    const UNTRACKED: &str = "? src/notes.md";
+
+    let mut take = Take::new("main.rs", SAMPLE);
+    take.workspace(&[
+        ("Cargo.toml", "[package]\nname = \"demo\"\n"),
+        ("src/main.rs", SAMPLE),
+    ]);
+    take.git(&status(&[]));
+    take.at(1, 8)
+        .capture("on `main`, two commits to push, nothing else to say", 5);
+
+    // Typing changes the file on screen and nothing else: `git` is not run per
+    // keystroke, so the bar is still describing the last thing it was told.
+    take.type_text("mut ");
+    take.git(&status(&[MODIFIED]))
+        .capture("edited, and the bar has not moved", 5);
+
+    // A save is what asks again — and the same `git` call is what answers.
+    take.press_and_hold(&["ctrl+s"], 2);
+    take.git(&status(&[MODIFIED]))
+        .capture("saving is what asks git again", 6);
+
+    // So is making a file. One more thing git has to say about, before it has
+    // ever been written to.
+    take.press_and_hold(&["ctrl+b"], 3)
+        .press_and_hold(&["ctrl+shift+e"], 3)
+        .press_and_hold(&["ctrl+n"], 3);
+    take.type_text("notes.md");
+    take.press_and_hold(&["enter"], 3);
+    take.git(&status(&[MODIFIED, UNTRACKED]))
+        .capture("a new file counts before it holds anything", 6);
     take.finish()
 }
 
