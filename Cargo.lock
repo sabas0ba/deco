@@ -618,6 +618,7 @@ dependencies = [
  "deco-core",
  "deco-keymap",
  "deco-lsp",
+ "deco-scm",
  "deco-syntax",
  "deco-theme",
  "serde_json",
@@ -685,6 +686,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "deco-scm"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "deco-syntax"
 version = "0.1.0"
 dependencies = [
@@ -714,6 +722,7 @@ dependencies = [
  "deco-keymap",
  "deco-lsp",
  "deco-remote",
+ "deco-scm",
  "deco-syntax",
  "deco-theme",
  "serde_json",
@@ -3414,6 +3423,7 @@ dependencies = [
  "deco-ext",
  "deco-keymap",
  "deco-lsp",
+ "deco-scm",
  "deco-theme",
  "deco-tui",
  "flate2",

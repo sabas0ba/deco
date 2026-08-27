@@ -167,6 +167,37 @@ impl Operation {
         }
     }
 
+    /// The path this operation puts something *at*, if it puts anything.
+    ///
+    /// Whoever holds a picture of the workspace has to forget what it
+    /// remembered here, and it has to do so whether the operation succeeded or
+    /// not:
+    ///
+    /// - **It worked.** What is at the path now is what this operation made,
+    ///   and any listing or expansion held under that name belongs to
+    ///   something that is gone.
+    /// - **It failed.** The path was checked as free before the attempt — a
+    ///   name the tree can see is already taken is refused without ever
+    ///   reaching a disk — so an operation that got as far as failing means
+    ///   the tree's picture of that path was wrong. Something else is there,
+    ///   put there by another program, and the old memory describes neither
+    ///   it nor anything else.
+    ///
+    /// The failure case is the one that hid: a directory removed outside deco
+    /// keeps its cached rows, a create against that name fails because someone
+    /// recreated it, and the refresh of the parent then renders a stranger's
+    /// directory using the dead one's children — without ever asking for a
+    /// listing, because it believes it has one.
+    ///
+    /// `None` for a delete: nothing arrives where something was removed.
+    pub fn arriving(&self) -> Option<&Path> {
+        match self {
+            Self::CreateFile(path) | Self::CreateFolder(path) => Some(path),
+            Self::Rename { to, .. } => Some(to),
+            Self::Delete { .. } | Self::DeleteIfEmpty { .. } => None,
+        }
+    }
+
     /// The operation that puts things back, if there is one.
     ///
     /// `None` for a delete: see the module docs. Returning `None` rather than a

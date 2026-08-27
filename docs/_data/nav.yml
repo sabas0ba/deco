@@ -19,6 +19,21 @@
   url: /tabs.html
   blurb: Several documents, one per tab; what a tab keeps
 
+- title: Chrome
+  path: chrome.md
+  url: /chrome.html
+  blurb: The side bar and the panel, and where the space comes from
+
+- title: The file tree
+  path: files.md
+  url: /files.html
+  blurb: Walking the workspace, opening files, and changing them
+
+- title: Git
+  path: git.md
+  url: /git.html
+  blurb: The branch and what differs from it, by running the binary
+
 - title: Syntax highlighting
   path: highlighting.md
   url: /highlighting.html

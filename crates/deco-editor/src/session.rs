@@ -372,6 +372,22 @@ pub struct Session {
     /// Handed out here because this is the layer that can see more than one
     /// document; a buffer's history only holds the number it was given.
     next_group: u64,
+    /// What `git status` last said, if anyone has run it.
+    ///
+    /// Fed, exactly as directory listings are, and for the same reason: the
+    /// core has no filesystem and no way to spawn a process. `None` covers
+    /// three different situations that look the same from here — nobody has
+    /// asked yet, there is no git, this is not a repository — and the frontend
+    /// that ran the command is the one that can tell them apart.
+    scm: Option<deco_scm::Status>,
+    /// Whether the status is stale.
+    ///
+    /// The same shape as [`Session::directory_wanted`]: the session says what
+    /// it would like to know, and whoever can find out does. Set when
+    /// something has happened that a `git status` would report differently —
+    /// not on a keystroke, because running git on every key would be a
+    /// process per character.
+    scm_wanted: bool,
 }
 
 /// Applies `edits` to one document and its view.
@@ -539,6 +555,10 @@ impl Session {
             // still lays out sensibly under test.
             screen: (80, 24),
             next_group: 0,
+            scm: None,
+            // Wanted from the start: the branch is worth showing before the
+            // first save, not after it.
+            scm_wanted: true,
             replacing_in_files: false,
             replace_query: String::new(),
         };
@@ -2900,6 +2920,7 @@ impl Session {
             if holds(&tab.document) {
                 tab.document.dirty = false;
                 tab.document.history.break_group();
+                self.scm_changed();
                 return;
             }
         }
@@ -2909,6 +2930,10 @@ impl Session {
     pub fn mark_saved(&mut self) {
         self.document.dirty = false;
         self.document.history.break_group();
+        // A write is the commonest reason `git status` now says something
+        // else. Set on the *active* path only, which `mark_saved_at` reaches
+        // through here for the active document and below for the rest.
+        self.scm_changed();
         self.refresh_context();
     }
 
@@ -3505,6 +3530,19 @@ impl Session {
                 }
             }
         }
+        // The path it was going to put something at is not what the tree
+        // thinks it is: the attempt only happened because the tree believed
+        // the name was free, so whatever it remembers there is a directory
+        // that is gone. Forgotten rather than invalidated, because the
+        // expansion is as stale as the listing — this is a different thing
+        // under the same name, not the same thing with different contents.
+        //
+        // The success path does exactly this, for exactly this reason. Without
+        // it here, the commonest way to *reach* the bug — a create refused
+        // because another program took the name — is the one case not covered.
+        if let (Some(explorer), Some(path)) = (self.explorer.as_mut(), operation.arriving()) {
+            explorer.forget_under(path);
+        }
         self.status = Some(format!("could not {}: {reason}", operation.describe()));
     }
 
@@ -3563,6 +3601,9 @@ impl Session {
                 self.retarget_tab(index, moved);
             }
         }
+        // A file that now exists, or no longer does, is a line `git status`
+        // did not have before.
+        self.scm_changed();
         if let (Some(explorer), Some(parent)) = (self.explorer.as_mut(), operation.parent()) {
             explorer.invalidate(parent);
             // What the tree remembered about the thing that moved or went. The
@@ -3604,17 +3645,13 @@ impl Session {
             // hanging off it. In each case the tree never asks for a listing,
             // because it believes it already has one.
             //
-            // Stated once here rather than at each arm, having now been three
-            // separate findings — created folder, renamed destination, and the
-            // created *file* that nobody has reported yet.
-            let arriving = match operation {
-                crate::files::Operation::CreateFile(path)
-                | crate::files::Operation::CreateFolder(path) => Some(path),
-                crate::files::Operation::Rename { to, .. } => Some(to),
-                crate::files::Operation::Delete { .. }
-                | crate::files::Operation::DeleteIfEmpty { .. } => None,
-            };
-            if let Some(path) = arriving {
+            // Stated once, on the operation itself, having now been four
+            // separate findings — created folder, renamed destination, the
+            // created *file* nobody reported, and the same three again on the
+            // path where the operation *failed*. See
+            // [`crate::files::Operation::arriving`], which both this and
+            // [`Session::file_operation_failed`] ask.
+            if let Some(path) = operation.arriving() {
                 explorer.forget_under(path);
             }
 
@@ -3679,6 +3716,64 @@ impl Session {
     /// reveal arrives a level at a time rather than in one blocking walk.
     pub fn directory_wanted(&self) -> Option<std::path::PathBuf> {
         self.explorer.as_ref().and_then(crate::Explorer::wanted)
+    }
+
+    /// Whether `git.enabled` leaves the feature on.
+    ///
+    /// VS Code's setting, with VS Code's default of `true`. Read here rather
+    /// than in a frontend so that the two cannot disagree about it, and so
+    /// that turning git off is one answer rather than one per frontend.
+    pub fn git_enabled(&self) -> bool {
+        self.settings.get_bool("git.enabled", None).unwrap_or(true)
+    }
+
+    /// Whether a fresh `git status` would be worth running.
+    ///
+    /// Always `false` when `git.enabled` is off: a setting that turns the
+    /// feature off has to stop the process from being spawned, not just hide
+    /// what it found.
+    pub fn scm_wanted(&self) -> bool {
+        self.scm_wanted && self.git_enabled()
+    }
+
+    /// What `git status` last said, if anything.
+    ///
+    /// Nothing at all once `git.enabled` is off, whatever was found before it
+    /// was: a setting that turns the feature off has to take what is on screen
+    /// with it, not only stop the next run.
+    pub fn scm_status(&self) -> Option<&deco_scm::Status> {
+        self.git_enabled().then_some(self.scm.as_ref()).flatten()
+    }
+
+    /// Says a run has begun, so the question does not need asking again.
+    ///
+    /// Separate from [`Session::fill_scm`] and called *first*, which is what
+    /// makes a change during a run survive it: something saved while git is
+    /// still thinking sets the flag again, the answer arrives and is stored
+    /// without clearing it, and the next poll starts a fresh run. Clearing on
+    /// the answer instead would drop that save silently, and the status bar
+    /// would sit there being wrong until the one after it.
+    pub fn scm_started(&mut self) {
+        self.scm_wanted = false;
+    }
+
+    /// Hands over what `git status` said.
+    ///
+    /// `None` is a real answer, not "keep what you had": there is no git, or
+    /// this is not a repository, or git refused. Keeping a stale branch name on
+    /// screen after the repository went away would be worse than showing
+    /// nothing.
+    pub fn fill_scm(&mut self, status: Option<deco_scm::Status>) {
+        self.scm = status;
+    }
+
+    /// Says the status is stale.
+    ///
+    /// Called for the things git would report differently: a save, a file
+    /// created, renamed or deleted, and coming back to a window that may have
+    /// been left while a commit happened in a terminal.
+    pub fn scm_changed(&mut self) {
+        self.scm_wanted = true;
     }
 
     /// Hands the tree what a directory contains.
@@ -8372,6 +8467,115 @@ mod tests {
                 .iter()
                 .any(|r| r.name == "old.rs"),
             "a new folder must not show the rows of the one that had its name"
+        );
+    }
+
+    #[test]
+    fn a_folder_that_could_not_be_made_still_clears_what_was_there() {
+        let mut s = with_tree();
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+        s.run("list.expand", None, 0); // open `src`
+        s.fill_directory(
+            Path::new("/w/src"),
+            vec![crate::explorer::Entry::file("old.rs")],
+        );
+
+        // `src` is removed outside deco, and a refresh of the parent alone
+        // drops its row while its listing and expansion stay cached behind it.
+        s.fill_directory(
+            Path::new("/w"),
+            vec![crate::explorer::Entry::file("Cargo.toml")],
+        );
+
+        // deco tries to make a folder called `src` — the tree says the name is
+        // free, which is the only reason this reaches a disk at all. It fails,
+        // because another program recreated `src` in the meantime.
+        let Outcome::FileOperation(made) = s.create_in_tree("src", true) else {
+            panic!("expected a create");
+        };
+        s.file_operation_failed(&made, "File exists (os error 17)");
+        s.fill_directory(
+            Path::new("/w"),
+            vec![
+                crate::explorer::Entry::dir("src"),
+                crate::explorer::Entry::file("Cargo.toml"),
+            ],
+        );
+
+        assert!(
+            !s.explorer()
+                .unwrap()
+                .rows()
+                .iter()
+                .any(|r| r.name == "old.rs"),
+            "a stranger's directory must not be drawn with the dead one's rows"
+        );
+    }
+
+    #[test]
+    fn a_rename_that_failed_does_not_dress_the_blocker_in_old_rows() {
+        let mut s = with_tree();
+        s.fill_directory(
+            Path::new("/w"),
+            vec![
+                crate::explorer::Entry::dir("a"),
+                crate::explorer::Entry::dir("b"),
+            ],
+        );
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+        s.run("list.focusFirst", None, 0);
+        s.run("list.expand", None, 0); // `a`
+        s.fill_directory(
+            Path::new("/w/a"),
+            vec![crate::explorer::Entry::file("mine.rs")],
+        );
+        while s
+            .explorer()
+            .and_then(|e| e.selection())
+            .map(|row| row.path != Path::new("/w/b"))
+            .unwrap_or(false)
+        {
+            s.run("list.focusDown", None, 0);
+        }
+        s.run("list.expand", None, 0); // `b`
+        s.fill_directory(
+            Path::new("/w/b"),
+            vec![crate::explorer::Entry::file("theirs.rs")],
+        );
+
+        // `b` goes, outside deco, and only the parent is refreshed.
+        s.fill_directory(Path::new("/w"), vec![crate::explorer::Entry::dir("a")]);
+
+        // Renaming `a` onto the free name `b` fails: something else took it
+        // back between the tree reading and deco trying.
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+        s.run("list.focusFirst", None, 0);
+        let Outcome::FileOperation(renamed) = s.rename_in_tree("b") else {
+            panic!("expected a rename");
+        };
+        s.file_operation_failed(&renamed, "File exists (os error 17)");
+        s.fill_directory(
+            Path::new("/w"),
+            vec![
+                crate::explorer::Entry::dir("a"),
+                crate::explorer::Entry::dir("b"),
+            ],
+        );
+
+        let names: Vec<String> = s
+            .explorer()
+            .unwrap()
+            .rows()
+            .into_iter()
+            .map(|r| r.name)
+            .collect();
+        assert!(
+            !names.contains(&"theirs.rs".to_owned()),
+            "whatever now holds `b` is not the `b` that had these: {names:?}"
+        );
+        assert!(
+            names.contains(&"mine.rs".to_owned()),
+            "and the source, which did not move, keeps its own: {names:?}"
         );
     }
 

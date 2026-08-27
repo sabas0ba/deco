@@ -25,7 +25,7 @@ What VS Code has and deco does not, grouped by how it blocks:
 
 | Missing | Depends on |
 | --- | --- |
-| Git — gutter diffs, branch in the status bar, stage and commit | a status-bar segment; its view is a side-bar tenant, beside the [file tree](files.md) |
+| Git — gutter diffs, stage and commit (the branch [is built](git.md)) | nothing for the gutter; the view is a side-bar tenant, beside the [file tree](files.md) |
 | Integrated terminal | a PTY dependency; its home is the [panel](chrome.md) |
 | Task runner (`tasks.json`, `ctrl+shift+b`) | the terminal, for somewhere to run |
 | Test runner | the task runner, and later the extension host |
@@ -59,29 +59,25 @@ written under them:
 
 ## Git
 
-**What VS Code has.** A source-control view (stage, unstage, commit, discard),
-gutter decorations for changed lines, the branch and dirty count in the status
-bar, and a `git.*` command family. VS Code implements all of it by running the
-`git` binary, not by linking a library.
+**Stage one is built** — the branch and what differs from it, in the status bar.
+It has [a page of its own](git.md), and `deco-scm` runs `git status
+--porcelain=v2 --branch -z` and parses it. What is below is the rest.
 
-**What deco has.** Nothing. `.git` appears in the code only as a directory to
-skip in search and a marker for finding the workspace root.
+**What VS Code has that deco still does not.** A source-control view (stage,
+unstage, commit, discard), gutter decorations for changed lines, and the rest of
+the `git.*` command family.
 
-**The plan.** Shell out to `git`, as VS Code does — it keeps the dependency
-count where it is (the binary adds no crate), it inherits the user's hooks and
-config, and a machine without git simply has the feature absent rather than a
-copy of libgit2 nobody asked for. Three stages, each useful alone:
+**The plan.** The same one stage one followed: shell out to `git`, as VS Code
+does. Two stages left, each useful alone:
 
-1. **Status bar**: branch name and a changed-file count, from `git status
-   --porcelain=v2 --branch`, refreshed on save and on focus. No UI to build —
-   the status bar exists.
-2. **Gutter**: changed/added/deleted line markers, from `git diff` of the
-   buffer against `HEAD`, computed the way everything else is — for the visible
-   rows, resumed from the earliest edited line.
-3. **The source-control view**: a side-bar tenant beside the tree, listing changed files;
-   `git.stage`, `git.unstage`, `git.commit` (message through the existing
-   prompt), `git.checkout` through the existing picker. `git.enabled` and
-   `git.decorations.enabled` are read with their VS Code meanings.
+1. **Gutter**: changed/added/deleted line markers, from `git diff` of the buffer
+   against `HEAD`, computed the way everything else is — for the visible rows,
+   resumed from the earliest edited line.
+2. **The source-control view**: a side-bar tenant beside the tree, listing
+   changed files; `git.stage`, `git.unstage`, `git.commit` (message through the
+   existing prompt), `git.checkout` through the existing picker.
+   `git.decorations.enabled` is read with its VS Code meaning, as `git.enabled`
+   and `git.path` already are.
 
 Diffing an open buffer against `HEAD` means diffing *unsaved* text; the diff
 runs against the buffer's content handed to `git diff --no-index` (or computed
@@ -90,13 +86,10 @@ the buffer.
 
 **Steps.**
 
-1. A `deco-scm` crate: spawn `git`, parse porcelain v2, one supervisor per
-   workspace modelled on `deco-lsp`'s server supervisor.
-2. Status-bar segment; refresh triggers; a workspace without git, or a machine
-   without the binary, shows nothing and logs why once.
-3. Line diff for the visible window; gutter marks in both frontends.
-4. The side-bar view and the `git.*` commands, last, because the first two are
-   most of the daily value.
+1. Line diff for the visible window; gutter marks in both frontends.
+2. The side-bar view and the `git.*` commands.
+3. Git over a remote connection — the status runs on the machine holding the
+   files, the way language servers and project search already do.
 
 ## The integrated terminal
 

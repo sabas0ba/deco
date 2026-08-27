@@ -176,6 +176,7 @@ thin painter.
 | Side bar and panel (`ctrl+b`, `ctrl+j`, `workbench.sideBar.location`) | Regions, focus and the context keys — see [Chrome](docs/chrome.md). The side bar holds the file tree; the panel is still empty and says what it is waiting for |
 | File tree / explorer (`ctrl+shift+e`, `list.*`, `revealInExplorer`) | Walk it, expand it, open files with it — read one directory at a time, `files.exclude` honoured, works on a remote workspace |
 | Changing files from the tree (`explorer.newFile`, `explorer.newFolder`, `renameFile`, `deleteFile`) | New file, new folder, rename and delete, with an undo of the tree's own; a rename retargets the open tab. Deleting is confirmed and cannot be undone — there is no trash, so `files.enableTrash` is not honoured. No drag, and none of it over a remote connection yet — see [The file tree](docs/files.md) |
+| Git — branch and changed count in the status bar (`git.enabled`, `git.path`) | The branch, how far it is from its upstream, and how many files differ from `HEAD`, from `git status --porcelain=v2`. Refreshed on a save or a file operation, never on a keystroke, and run on a thread. No gutter marks, no staging or committing, and nothing over a remote connection — see [Git](docs/git.md) |
 | Word wrap (`editor.wordWrap`, `editor.wrappingIndent`, `alt+z`) | Yes in the terminal |
 | Detected indentation (`editor.detectIndentation`) | Yes — the status bar says when a file overruled the setting |
 | Auto-closing brackets (`editor.autoClosingBrackets`) | Yes — no `autoSurround`, no `autoClosingDelete` |
@@ -276,6 +277,7 @@ crates/
   deco-editor   the command set and the editor session — no terminal, no window
   deco-ext      manifests, activation, and the capability model
   deco-remote   remote authorities, SSH/WSL/container transports, wire framing
+  deco-scm      what `git` says: porcelain v2 parsed, the binary run, no library
   deco-tui      terminal frontend (crossterm)
   deco-gui      GPU frontend (winit + wgpu + glyphon), behind the `gui` feature
   deco          the binary
@@ -289,17 +291,24 @@ frontends depend on everything.
 
 Named plainly, because a list of what works is only useful next to one of what
 does not. This list is the state of what exists; the larger features that do
-not exist *at all* yet — git, an integrated terminal, tasks, a test runner,
+not exist *at all* yet — an integrated terminal, tasks, a test runner,
 self-update, debugging — each have a plan in the
 [Roadmap](docs/roadmap.md):
 
-- **The file tree reads but does not write.** `ctrl+b` shows it, `ctrl+shift+e`
-  focuses it, and the arrows walk it; a directory is read when it is opened, so a
-  large workspace costs what is on screen. Creating, renaming and deleting are
-  not built — the `WorkspaceEdit` machinery they should land through
-  [already exists](docs/files.md#not-built-yet), so that is the next piece rather
-  than a missing foundation. Nor is there a watcher: a file another program
-  creates appears when the directory is read again.
+- **Git reads and does not write.** The branch, its distance from its upstream
+  and how many files differ from `HEAD` are in the status bar, refreshed on a
+  save or a file operation and run on a thread. There are no gutter marks for
+  changed lines, no staging, committing or checkout, and none of it over a
+  remote connection — a remote workspace's root is a path on the far machine.
+  See [Git](docs/git.md).
+- **The file tree has no watcher, no mouse and no remote.** `ctrl+b` shows it,
+  `ctrl+shift+e` focuses it, and the arrows walk it; a directory is read when it
+  is opened, so a large workspace costs what is on screen. Creating, renaming
+  and deleting are built, with an undo stack of the tree's own. What is missing:
+  a file another program creates appears only when the directory is read again;
+  it is keyboard-only in both frontends, so there is no drag and therefore no
+  gesture for moving a file to another folder; and the mutations do not yet go
+  over a remote connection. See [The file tree](docs/files.md#not-built-yet).
 - **The panel is built and empty.** `ctrl+j` opens a real region — the split,
   the focus and VS Code's context keys are all there, and both frontends draw it
   — but the terminal, problems and output that belong in it do not exist yet. It
@@ -376,7 +385,7 @@ self-update, debugging — each have a plan in the
   there a results view that stays open — the matches are a picker. Replacing
   across the workspace is built: `ctrl+shift+h` asks what to look for and what to
   put there, and lands as one undoable edit.
-- **Tabs, splits, quick open and search in files, but no file tree.**
+- **Tabs, splits, quick open and search in files.**
   Several documents open at once, one per tab (see [Tabs](docs/tabs.md)); `ctrl+p`
   opens any file in the workspace and `ctrl+shift+f` searches all of them,
   bounded and saying so; `ctrl+o` types a path for a file outside it, `ctrl+k s`
