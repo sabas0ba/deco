@@ -92,8 +92,16 @@ The same three reasons VS Code has:
 
 ## How it is read
 
-`git status --porcelain=v2 --branch -z`, run as an argument vector with no shell
-anywhere near it — a branch called `$(rm -rf ~)` is a legal branch name.
+`git status --porcelain=v2 --branch -z --untracked-files=all`, run as an
+argument vector with no shell anywhere near it — a branch called `$(rm -rf ~)`
+is a legal branch name.
+
+`--untracked-files=all` rather than git's default of `normal`, which collapses a
+new directory into one `? newdir/` record. The count above is one per *file*, and
+under the default a folder someone has just added with a dozen files in it would
+read as `±1` — an undercount, on one of the commonest things a person does. It
+costs a walk into untracked directories; ignored files are still left out, so the
+usual `target/` and `node_modules/` are not what is being walked.
 
 `-z` is not a performance choice. Without it, git C-quotes any path containing a
 space, a quote or a non-ASCII byte, and separates a rename's two paths with a tab

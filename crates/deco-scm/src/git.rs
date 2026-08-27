@@ -98,10 +98,23 @@ impl Git {
         // paths arrive unquoted (see `status::parse`); `--porcelain=v2`
         // because v1 cannot say which side of a change is staged.
         //
-        // `--untracked-files=normal` is git's default, but it is also what
-        // `status.showUntrackedFiles` can change out from under this, and a
-        // count that silently stopped including new files would be wrong in
-        // the quiet direction. Named so it means what it says here.
+        // `--untracked-files=all` rather than git's default of `normal`, which
+        // collapses a new directory into a single `? newdir/` record. The
+        // count is documented as one per *file*, and under `normal` a folder
+        // someone just added with a dozen files in it would read as `±1` — an
+        // undercount in the quiet direction, on one of the commonest things a
+        // person does.
+        //
+        // It is also named rather than left to the default because
+        // `status.showUntrackedFiles` can change that default out from under
+        // this, and what the bar counts should not depend on a setting deco
+        // does not read.
+        //
+        // What it costs: `all` descends into untracked directories, so a
+        // working tree with a large one that is *not* in `.gitignore` is
+        // slower to ask. Ignored files are still left out — nothing here
+        // passes `--ignored` — so the usual `target/` and `node_modules/` are
+        // not what is being walked.
         let output = self.run(
             directory,
             &[
@@ -109,7 +122,7 @@ impl Git {
                 "--porcelain=v2",
                 "--branch",
                 "-z",
-                "--untracked-files=normal",
+                "--untracked-files=all",
             ],
         )?;
         Ok(status::parse(&output)?)
@@ -216,6 +229,57 @@ mod tests {
         assert!(
             !status.head.label().is_empty(),
             "a checkout is on a branch or at a commit; both have a label"
+        );
+    }
+
+    /// A fresh repository in a directory of its own, removed when the test
+    /// ends. `git init` and nothing else: an unborn branch is a real state,
+    /// and one worth exercising against a real git.
+    fn scratch_repo(git: &Git, name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("deco-scm-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a temporary directory");
+        let status = std::process::Command::new(&git.program)
+            .args(["init", "--quiet"])
+            .current_dir(&dir)
+            .status()
+            .expect("git init");
+        assert!(status.success(), "git init failed in {}", dir.display());
+        dir
+    }
+
+    #[test]
+    fn every_file_in_a_new_directory_is_counted() {
+        let Some(git) = git_or_skip() else { return };
+        let dir = scratch_repo(&git, "untracked");
+        std::fs::create_dir_all(dir.join("newdir/sub")).expect("a directory");
+        for path in ["newdir/one.rs", "newdir/two.rs", "newdir/sub/three.rs"] {
+            std::fs::write(dir.join(path), "//\n").expect("a file");
+        }
+        std::fs::write(dir.join("loose.rs"), "//\n").expect("a file");
+
+        let status = git.status(&dir).expect("a fresh repository");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // Git's default of `--untracked-files=normal` reports one
+        // `? newdir/` record for the three inside it, which would make this
+        // 2 — an undercount of exactly the kind the count is supposed to
+        // rule out.
+        assert_eq!(
+            status.changed(),
+            4,
+            "a new folder's files each count: {:?}",
+            status
+                .entries
+                .iter()
+                .map(|entry| entry.path.clone())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(status.untracked(), 4);
+        assert!(
+            matches!(status.head, crate::status::Head::Unborn(_)),
+            "nothing has been committed, and git says so: {:?}",
+            status.head
         );
     }
 
