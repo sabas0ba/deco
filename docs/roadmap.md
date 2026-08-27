@@ -25,7 +25,7 @@ What VS Code has and deco does not, grouped by how it blocks:
 
 | Missing | Depends on |
 | --- | --- |
-| Git — gutter diffs, stage and commit (the branch [is built](git.md)) | nothing for the gutter; the view is a side-bar tenant, beside the [file tree](files.md) |
+| Git — stage and commit (the branch and the [gutter marks](git.md) are built) | the view is a side-bar tenant, beside the [file tree](files.md) |
 | Integrated terminal | a PTY dependency; its home is the [panel](chrome.md) |
 | Task runner (`tasks.json`, `ctrl+shift+b`) | the terminal, for somewhere to run |
 | Test runner | the task runner, and later the extension host |
@@ -59,35 +59,28 @@ written under them:
 
 ## Git
 
-**Stage one is built** — the branch and what differs from it, in the status bar.
-It has [a page of its own](git.md), and `deco-scm` runs `git status
---porcelain=v2 --branch -z` and parses it. What is below is the rest.
+**Two stages of three are built** — the branch and what differs from it in the
+status bar, and marks beside the lines that changed. Both have
+[a page of their own](git.md).
 
-**What VS Code has that deco still does not.** A source-control view (stage,
-unstage, commit, discard), gutter decorations for changed lines, and the rest of
-the `git.*` command family.
+**What VS Code has that deco still does not.** A source-control view: stage,
+unstage, commit, discard, and the `git.*` command family that drives them.
 
-**The plan.** The same one stage one followed: shell out to `git`, as VS Code
-does. Two stages left, each useful alone:
+**The plan.** The same one the first two followed: shell out to `git`, as VS
+Code does. A side-bar tenant beside the tree, listing the files `git status`
+already reports; `git.stage`, `git.unstage`, `git.commit` with its message
+through the existing prompt, `git.checkout` through the existing picker.
 
-1. **Gutter**: changed/added/deleted line markers, from `git diff` of the buffer
-   against `HEAD`, computed the way everything else is — for the visible rows,
-   resumed from the earliest edited line.
-2. **The source-control view**: a side-bar tenant beside the tree, listing
-   changed files; `git.stage`, `git.unstage`, `git.commit` (message through the
-   existing prompt), `git.checkout` through the existing picker.
-   `git.decorations.enabled` is read with its VS Code meaning, as `git.enabled`
-   and `git.path` already are.
-
-Diffing an open buffer against `HEAD` means diffing *unsaved* text; the diff
-runs against the buffer's content handed to `git diff --no-index` (or computed
-in-process against the blob), never against the file on disk pretending to be
-the buffer.
+This is the first thing here that *writes* to a repository, which is a
+different promise from reading one — and the reason it arrives with the view
+rather than as a set of commands: staging something you cannot see is not a
+feature anyone asked for.
 
 **Steps.**
 
-1. Line diff for the visible window; gutter marks in both frontends.
-2. The side-bar view and the `git.*` commands.
+1. The side-bar view, listing what `Status` reports, with the diff of a selected
+   file shown the way the gutter already computes it.
+2. The `git.*` commands, each confirmed by what the view is showing.
 3. Git over a remote connection — the status runs on the machine holding the
    files, the way language servers and project search already do.
 

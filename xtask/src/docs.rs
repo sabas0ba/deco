@@ -159,6 +159,10 @@ fn demos() -> Vec<Demo> {
             build: git_status,
         },
         Demo {
+            name: "git-gutter",
+            build: git_gutter,
+        },
+        Demo {
             name: "tabs",
             build: tabs,
         },
@@ -422,6 +426,25 @@ impl Take {
         self
     }
 
+    /// Says what `HEAD` had for the file on screen.
+    ///
+    /// The demonstration is the thing with a `git` here, as it is the thing
+    /// with a filesystem for the tree. Handed the committed text rather than a
+    /// diff: the marks that come out are computed by the editor's own code
+    /// from this and the buffer, so the frames cannot show a gutter the
+    /// editor would not draw.
+    fn committed(&mut self, text: &str) -> &mut Self {
+        let path = self
+            .session
+            .document
+            .path
+            .clone()
+            .expect("a demonstration opens a file");
+        self.session.fill_committed(path, Some(text.to_owned()));
+        self.session.refresh_diffs();
+        self
+    }
+
     /// Carries out one of the tree's operations on the in-memory workspace.
     ///
     /// A rename moves every path *under* the old one, not just the entry
@@ -567,6 +590,14 @@ impl Take {
 
     /// Captures the current screen.
     fn capture(&mut self, caption: &str, hold: u32) -> &mut Self {
+        // What `Driver::frame` does before it draws, and here for the same
+        // reason: the git marks are derived from the buffer, so they are
+        // brought up to date at the moment of drawing rather than by the
+        // renderer. Here rather than in `press`, because a frame can be taken
+        // without a key being pressed — and a demonstration showing the gutter
+        // as it was one edit ago would be showing something the editor does
+        // not do.
+        self.session.refresh_diffs();
         let frame = render::render(&self.session, COLUMNS, ROWS);
         self.shots.push(Shot {
             frame,
@@ -1126,6 +1157,39 @@ fn git_status() -> String {
     take.press_and_hold(&["enter"], 3);
     take.git(&status(&[MODIFIED, UNTRACKED]))
         .capture("a new file counts before it holds anything", 6);
+    take.finish()
+}
+
+fn git_gutter() -> String {
+    // The file as it was committed. The demonstration then edits it with real
+    // keys, so every mark on screen is one the editor worked out from this
+    // text and the buffer — not one the scenario asked for.
+    const HEAD: &str = "fn main() {\n    let total = 0;\n    let count = 2;\n\
+                            let extra = 4;\n    let last = 5;\n    report();\n}\n";
+
+    let mut take = Take::new("main.rs", HEAD);
+    take.committed(HEAD);
+    take.at(0, 0).capture(
+        "nothing edited since the last commit, so nothing beside it",
+        5,
+    );
+
+    // A line that says something else.
+    take.at(1, 0).press(&["end", "backspace", "backspace"]);
+    take.type_text("9;");
+    take.capture("`│` — this line differs from the committed one", 6);
+
+    // A line that was not there at all. Separated from the change above by an
+    // untouched line, which is what keeps the two marks distinct rather than
+    // one block: git reports a replaced run as a single hunk.
+    take.at(2, 0).press(&["end", "enter"]);
+    take.type_text("let sum = 3;");
+    take.capture("`┃` — this line is new", 6);
+
+    // And one taken away. Nothing is left to draw beside, so the mark sits on
+    // the top edge of the line that took its place.
+    take.at(5, 0).press_and_hold(&["ctrl+shift+k"], 6);
+    take.capture("`▔` — a line was removed just above", 6);
     take.finish()
 }
 

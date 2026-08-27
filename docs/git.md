@@ -3,9 +3,10 @@
 ![The branch in the status bar, unmoved by typing and refreshed by a save and a new file](img/git-status.svg)
 
 deco reads git the way VS Code does: by running the `git` binary and parsing
-what it says. No library is linked. The first of the three stages is built —
-**the branch and what differs from it, in the status bar**. The gutter marks and
-the source-control view are still [planned](roadmap.md#git).
+what it says. No library is linked. Two of the three stages are built — **the
+branch and what differs from it, in the status bar**, and **marks beside the
+lines that changed**. The source-control view is still
+[planned](roadmap.md#git).
 
 ```
 main ±2 ↑2
@@ -26,6 +27,44 @@ signal.
 one thing to think about, so it counts once — otherwise the bar would disagree
 with the list that the source-control view will show.
 
+## Marks beside the changed lines
+
+![Editing a committed file, and the three marks appearing as it changes](img/git-gutter.svg)
+
+| | |
+| --- | --- |
+| `┃` | the line is not in the committed file at all |
+| `│` | it is there, and says something else |
+| `▔` | lines were removed just above this one |
+
+**Shape as well as colour.** VS Code separates added from modified by colour
+alone, which is a distinction anyone who cannot tell its green from its blue
+does not get. A heavy bar against a light one carries the same thing without
+it, and costs nothing. The colours are VS Code's own —
+`editorGutter.addedBackground`, `editorGutter.modifiedBackground`,
+`editorGutter.deletedBackground` — so a theme that sets them is honoured.
+
+A deletion has nothing left to draw beside, so its mark sits on the **top edge**
+of the line that took the removed lines' place. And a run of lines *replaced* is
+one modified hunk, not an addition sitting on a deletion — which is what git
+reports and what a person means by "I changed this".
+
+**The marks follow the buffer, not the file on disk.** Type into a line and the
+mark appears as you type; type it back to what git has and the mark goes. That
+is the point of diffing in process: a gutter that waited for a save would be
+describing the file rather than the screen.
+
+Which is also why the two halves are fetched and computed separately. The
+committed text costs a process and only changes when someone commits — so
+`git status`'s commit id is watched, and when it moves the cached text is thrown
+away, which is what makes a `git commit` in another terminal clear the gutter.
+The comparison itself is pure, so it is redone as the file is typed into. One
+`git` per commit; none per keystroke.
+
+The GPU frontend works the marks out but does not paint them yet — the same
+state its selection and current-line rectangles are in. When it grows the rest
+of its drawing they are already the same answer the terminal shows.
+
 ## When it runs
 
 This is the part worth being careful about, because the alternative is a process
@@ -33,8 +72,9 @@ per keystroke.
 
 `git status` runs when something has happened that it would report differently:
 a **save**, a file **created, renamed or deleted** from the tree, and once at
-startup. Typing does not run it, which is what the animation above shows — the
-file is edited and the bar does not move until `ctrl+s`.
+startup. Typing does not run it, which is what the first animation shows — the
+file is edited and the bar does not move until `ctrl+s`. The *marks*, being
+pure, are a different matter: they keep up with every keystroke.
 
 It runs **on a thread**. On deco's own checkout `git status` is a few
 milliseconds; on a working tree with a million files it is not, and an editor
@@ -74,6 +114,7 @@ is showing nothing is a fact rather than an intention.
 | --- | --- |
 | `git.enabled` | VS Code's meaning and VS Code's default of `true`. Turning it off stops the process being spawned *and* takes the segment off the bar — a setting that only hid the result would still be paying for it |
 | `git.path` | Where `git` is, for a machine that keeps it somewhere unusual. Empty or unset means whatever `PATH` finds |
+| `git.decorations.enabled` | The gutter marks. Turning it off stops the committed text being fetched as well, not just the marks being drawn — the branch stays in the status bar |
 
 ## Why the binary and not a library
 
@@ -92,9 +133,22 @@ The same three reasons VS Code has:
 
 ## How it is read
 
-`git status --porcelain=v2 --branch -z --untracked-files=all`, run as an
-argument vector with no shell anywhere near it — a branch called `$(rm -rf ~)`
-is a legal branch name.
+`git status --porcelain=v2 --branch -z --untracked-files=all` for the bar, and
+`git show HEAD:<path>` for the committed text behind the marks. Both run as an
+argument vector with no shell anywhere near them — a branch called
+`$(rm -rf ~)` is a legal branch name.
+
+**Every path is relative to the repository**, which is what git reports in and
+answers about. Not to the folder deco was started in: opening a subdirectory of
+a repository is an ordinary thing to do, and the two coordinate systems
+disagree the moment somebody does. `git rev-parse --show-toplevel` is asked once
+so they cannot drift. (`HEAD:./a` would be the other thing — resolved against
+the working directory — and a gutter drawn from the wrong blob looks exactly
+like one drawn from the right blob.)
+
+`git show` is deliberately run **without** `--textconv`: a repository can
+configure a filter that runs an arbitrary program to render a file, and a
+gutter is not worth executing someone's `.gitattributes` for.
 
 `--untracked-files=all` rather than git's default of `normal`, which collapses a
 new directory into one `? newdir/` record. The count above is one per *file*, and
@@ -109,8 +163,15 @@ that a path may legally contain — so a parser would have to undo git's quoting
 exactly, and would get it wrong for precisely the files most likely to expose the
 mistake. With `-z` every field ends at a NUL and there is no quoting at all.
 
-The parser is pure: hand it the bytes, get back a status, with no process, no
-filesystem and no clock involved. A detached head, an unborn branch, a rename, a
+The diff is Myers' — the algorithm `git diff` itself uses. Its common prefix and
+suffix come off before the search starts, so an edit in a thousand-line file
+costs what the edit is worth rather than what the file is; and the search gives
+up after two thousand edits, because a file replaced wholesale has no gutter
+worth drawing. Past that the middle becomes one modified block and says so,
+rather than the marks quietly being approximate.
+
+The status parser is pure: hand it the bytes, get back a status, with no
+process, no filesystem and no clock involved. A detached head, an unborn branch, a rename, a
 merge conflict and a path with spaces in it are each a test with a string
 literal in it rather than a repository CI has to build.
 
@@ -129,11 +190,6 @@ Two environment variables go to the child, and each prevents a specific failure:
 Reading a repository and changing one are different promises, and the writing
 half arrives with the source-control view that gives you somewhere to see what
 you are about to do.
-
-**No gutter marks.** Which lines changed is the second stage: a diff of the open
-buffer against `HEAD`, computed for the visible rows the way everything else
-here is. It has to diff the *unsaved* text, not the file on disk pretending to be
-the buffer.
 
 **Nothing over a remote connection.** A remote workspace's root is a path on the
 far machine, so running git here against it would either fail or — worse, if a

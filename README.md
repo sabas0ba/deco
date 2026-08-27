@@ -176,7 +176,7 @@ thin painter.
 | Side bar and panel (`ctrl+b`, `ctrl+j`, `workbench.sideBar.location`) | Regions, focus and the context keys — see [Chrome](docs/chrome.md). The side bar holds the file tree; the panel is still empty and says what it is waiting for |
 | File tree / explorer (`ctrl+shift+e`, `list.*`, `revealInExplorer`) | Walk it, expand it, open files with it — read one directory at a time, `files.exclude` honoured, works on a remote workspace |
 | Changing files from the tree (`explorer.newFile`, `explorer.newFolder`, `renameFile`, `deleteFile`) | New file, new folder, rename and delete, with an undo of the tree's own; a rename retargets the open tab. Deleting is confirmed and cannot be undone — there is no trash, so `files.enableTrash` is not honoured. No drag, and none of it over a remote connection yet — see [The file tree](docs/files.md) |
-| Git — branch and changed count in the status bar (`git.enabled`, `git.path`) | The branch, how far it is from its upstream, and how many files differ from `HEAD`, from `git status --porcelain=v2`. Refreshed on a save or a file operation, never on a keystroke, and run on a thread. No gutter marks, no staging or committing, and nothing over a remote connection — see [Git](docs/git.md) |
+| Git — branch, changed count and gutter marks (`git.enabled`, `git.path`, `git.decorations.enabled`) | The branch, its distance from its upstream and how many files differ from `HEAD`, from `git status --porcelain=v2`; and `┃`/`│`/`▔` beside added, changed and removed lines, diffed against `git show HEAD:<path>` and following the buffer rather than the file on disk. No staging or committing, and nothing over a remote connection — see [Git](docs/git.md) |
 | Word wrap (`editor.wordWrap`, `editor.wrappingIndent`, `alt+z`) | Yes in the terminal |
 | Detected indentation (`editor.detectIndentation`) | Yes — the status bar says when a file overruled the setting |
 | Auto-closing brackets (`editor.autoClosingBrackets`) | Yes — no `autoSurround`, no `autoClosingDelete` |
@@ -277,7 +277,8 @@ crates/
   deco-editor   the command set and the editor session — no terminal, no window
   deco-ext      manifests, activation, and the capability model
   deco-remote   remote authorities, SSH/WSL/container transports, wire framing
-  deco-scm      what `git` says: porcelain v2 parsed, the binary run, no library
+  deco-scm      what `git` says: porcelain v2 parsed, a Myers line diff, the
+                binary run, no library
   deco-tui      terminal frontend (crossterm)
   deco-gui      GPU frontend (winit + wgpu + glyphon), behind the `gui` feature
   deco          the binary
@@ -296,10 +297,11 @@ self-update, debugging — each have a plan in the
 [Roadmap](docs/roadmap.md):
 
 - **Git reads and does not write.** The branch, its distance from its upstream
-  and how many files differ from `HEAD` are in the status bar, refreshed on a
-  save or a file operation and run on a thread. There are no gutter marks for
-  changed lines, no staging, committing or checkout, and none of it over a
-  remote connection — a remote workspace's root is a path on the far machine.
+  and how many files differ from `HEAD` are in the status bar; changed, added
+  and removed lines are marked in the gutter, following the buffer rather than
+  the file on disk. There is no staging, committing or checkout, and none of it
+  works over a remote connection — a remote workspace's root is a path on the
+  far machine. The GPU frontend computes the marks but does not paint them yet.
   See [Git](docs/git.md).
 - **The file tree has no watcher, no mouse and no remote.** `ctrl+b` shows it,
   `ctrl+shift+e` focuses it, and the arrows walk it; a directory is read when it
