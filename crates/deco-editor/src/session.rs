@@ -3530,6 +3530,19 @@ impl Session {
                 }
             }
         }
+        // The path it was going to put something at is not what the tree
+        // thinks it is: the attempt only happened because the tree believed
+        // the name was free, so whatever it remembers there is a directory
+        // that is gone. Forgotten rather than invalidated, because the
+        // expansion is as stale as the listing — this is a different thing
+        // under the same name, not the same thing with different contents.
+        //
+        // The success path does exactly this, for exactly this reason. Without
+        // it here, the commonest way to *reach* the bug — a create refused
+        // because another program took the name — is the one case not covered.
+        if let (Some(explorer), Some(path)) = (self.explorer.as_mut(), operation.arriving()) {
+            explorer.forget_under(path);
+        }
         self.status = Some(format!("could not {}: {reason}", operation.describe()));
     }
 
@@ -3632,17 +3645,13 @@ impl Session {
             // hanging off it. In each case the tree never asks for a listing,
             // because it believes it already has one.
             //
-            // Stated once here rather than at each arm, having now been three
-            // separate findings — created folder, renamed destination, and the
-            // created *file* that nobody has reported yet.
-            let arriving = match operation {
-                crate::files::Operation::CreateFile(path)
-                | crate::files::Operation::CreateFolder(path) => Some(path),
-                crate::files::Operation::Rename { to, .. } => Some(to),
-                crate::files::Operation::Delete { .. }
-                | crate::files::Operation::DeleteIfEmpty { .. } => None,
-            };
-            if let Some(path) = arriving {
+            // Stated once, on the operation itself, having now been four
+            // separate findings — created folder, renamed destination, the
+            // created *file* nobody reported, and the same three again on the
+            // path where the operation *failed*. See
+            // [`crate::files::Operation::arriving`], which both this and
+            // [`Session::file_operation_failed`] ask.
+            if let Some(path) = operation.arriving() {
                 explorer.forget_under(path);
             }
 
@@ -8458,6 +8467,115 @@ mod tests {
                 .iter()
                 .any(|r| r.name == "old.rs"),
             "a new folder must not show the rows of the one that had its name"
+        );
+    }
+
+    #[test]
+    fn a_folder_that_could_not_be_made_still_clears_what_was_there() {
+        let mut s = with_tree();
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+        s.run("list.expand", None, 0); // open `src`
+        s.fill_directory(
+            Path::new("/w/src"),
+            vec![crate::explorer::Entry::file("old.rs")],
+        );
+
+        // `src` is removed outside deco, and a refresh of the parent alone
+        // drops its row while its listing and expansion stay cached behind it.
+        s.fill_directory(
+            Path::new("/w"),
+            vec![crate::explorer::Entry::file("Cargo.toml")],
+        );
+
+        // deco tries to make a folder called `src` — the tree says the name is
+        // free, which is the only reason this reaches a disk at all. It fails,
+        // because another program recreated `src` in the meantime.
+        let Outcome::FileOperation(made) = s.create_in_tree("src", true) else {
+            panic!("expected a create");
+        };
+        s.file_operation_failed(&made, "File exists (os error 17)");
+        s.fill_directory(
+            Path::new("/w"),
+            vec![
+                crate::explorer::Entry::dir("src"),
+                crate::explorer::Entry::file("Cargo.toml"),
+            ],
+        );
+
+        assert!(
+            !s.explorer()
+                .unwrap()
+                .rows()
+                .iter()
+                .any(|r| r.name == "old.rs"),
+            "a stranger's directory must not be drawn with the dead one's rows"
+        );
+    }
+
+    #[test]
+    fn a_rename_that_failed_does_not_dress_the_blocker_in_old_rows() {
+        let mut s = with_tree();
+        s.fill_directory(
+            Path::new("/w"),
+            vec![
+                crate::explorer::Entry::dir("a"),
+                crate::explorer::Entry::dir("b"),
+            ],
+        );
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+        s.run("list.focusFirst", None, 0);
+        s.run("list.expand", None, 0); // `a`
+        s.fill_directory(
+            Path::new("/w/a"),
+            vec![crate::explorer::Entry::file("mine.rs")],
+        );
+        while s
+            .explorer()
+            .and_then(|e| e.selection())
+            .map(|row| row.path != Path::new("/w/b"))
+            .unwrap_or(false)
+        {
+            s.run("list.focusDown", None, 0);
+        }
+        s.run("list.expand", None, 0); // `b`
+        s.fill_directory(
+            Path::new("/w/b"),
+            vec![crate::explorer::Entry::file("theirs.rs")],
+        );
+
+        // `b` goes, outside deco, and only the parent is refreshed.
+        s.fill_directory(Path::new("/w"), vec![crate::explorer::Entry::dir("a")]);
+
+        // Renaming `a` onto the free name `b` fails: something else took it
+        // back between the tree reading and deco trying.
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+        s.run("list.focusFirst", None, 0);
+        let Outcome::FileOperation(renamed) = s.rename_in_tree("b") else {
+            panic!("expected a rename");
+        };
+        s.file_operation_failed(&renamed, "File exists (os error 17)");
+        s.fill_directory(
+            Path::new("/w"),
+            vec![
+                crate::explorer::Entry::dir("a"),
+                crate::explorer::Entry::dir("b"),
+            ],
+        );
+
+        let names: Vec<String> = s
+            .explorer()
+            .unwrap()
+            .rows()
+            .into_iter()
+            .map(|r| r.name)
+            .collect();
+        assert!(
+            !names.contains(&"theirs.rs".to_owned()),
+            "whatever now holds `b` is not the `b` that had these: {names:?}"
+        );
+        assert!(
+            names.contains(&"mine.rs".to_owned()),
+            "and the source, which did not move, keeps its own: {names:?}"
         );
     }
 
