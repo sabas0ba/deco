@@ -59,6 +59,13 @@ pub enum ScmError {
     /// git could not be run, or its output could not be read.
     #[error("could not run git: {0}")]
     Unusable(String),
+    /// A path that was not a plain name inside the working tree.
+    ///
+    /// Refused rather than passed to git: `HEAD:<path>` resolves an absolute
+    /// or `..`-bearing path against the working directory, so a caller that
+    /// handed one over would silently be shown a different file's contents.
+    #[error("`{0}` is not a path inside the working tree")]
+    NotInWorkingTree(String),
     /// git ran, said something, and it was not the documented format.
     #[error(transparent)]
     Malformed(#[from] Malformed),
@@ -126,6 +133,81 @@ impl Git {
             ],
         )?;
         Ok(status::parse(&output)?)
+    }
+
+    /// Where the repository containing `directory` begins.
+    ///
+    /// Needed because every path git reports is relative to *this*, not to the
+    /// folder deco was started in — and those differ whenever someone opens a
+    /// subdirectory of a repository, which is an ordinary thing to do. Asking
+    /// once and keeping the answer is what lets [`Git::committed`] and
+    /// [`Status`] speak the same coordinates.
+    pub fn root(&self, directory: &Path) -> Result<PathBuf, ScmError> {
+        let output = self.run(directory, &["rev-parse", "--show-toplevel"])?;
+        let root = output.trim_end_matches(['\n', '\r']);
+        if root.is_empty() {
+            return Err(ScmError::NotARepository(directory.to_path_buf()));
+        }
+        Ok(PathBuf::from(root))
+    }
+
+    /// The committed text of a file, to compare a buffer against.
+    ///
+    /// `path` is relative to the **repository root** — the same coordinates
+    /// [`Status`] reports in, and what [`Git::root`] is for. Not relative to
+    /// `directory`: `git show HEAD:a` reads the repository's `a` however deep
+    /// in the tree it is run from, which is the property that makes one path
+    /// mean one file. (`HEAD:./a` would be the other thing, resolved against
+    /// the working directory — the two disagree the moment a workspace is a
+    /// subdirectory, and a gutter drawn from the wrong blob looks exactly like
+    /// a gutter drawn from the right one.)
+    ///
+    /// An absolute path or one containing `..` is refused rather than passed
+    /// on, for the same reason: git would resolve it somewhere else entirely.
+    ///
+    /// `Ok(None)` when the file is not in `HEAD`: it is new, or on an unborn
+    /// branch where nothing is. That is not an error, and the caller's answer
+    /// to it is "every line is an addition" rather than "no marks".
+    pub fn committed(&self, directory: &Path, path: &Path) -> Result<Option<String>, ScmError> {
+        let Some(path) = path.to_str() else {
+            // `HEAD:<path>` is a string to git, and a path that is not UTF-8
+            // cannot be spelled in one. Nothing to show rather than something
+            // wrong.
+            return Ok(None);
+        };
+        if path.is_empty()
+            || Path::new(path).is_absolute()
+            || path.split('/').any(|part| part == "..")
+        {
+            return Err(ScmError::NotInWorkingTree(path.to_owned()));
+        }
+
+        // `--textconv` is deliberately *not* passed: a repository can configure
+        // a filter that runs an arbitrary program to render a file, and the
+        // gutter is not worth executing someone's `.gitattributes` for.
+        match self.run(directory, &["show", &format!("HEAD:{path}")]) {
+            Ok(text) => Ok(Some(text)),
+            // The three ways git says "there is no committed text for this",
+            // none of them a failure. Quoted from git 2.43 rather than guessed:
+            //
+            //   fatal: path 'new.rs' exists on disk, but not in 'HEAD'
+            //   fatal: path 'nosuch.rs' does not exist in 'HEAD'
+            //   fatal: invalid object name 'HEAD'.        (nothing committed)
+            //
+            // Matching English is why `LC_ALL=C` is set in `run`. Getting this
+            // wrong in the safe direction costs a gutter; the unsafe direction
+            // would be treating a real failure as an empty file and drawing
+            // every line as an addition, so anything unrecognised stays an
+            // error.
+            Err(ScmError::Refused { message, .. })
+                if message.contains("exists on disk, but not in")
+                    || message.contains("does not exist in")
+                    || message.contains("invalid object name 'HEAD'") =>
+            {
+                Ok(None)
+            }
+            Err(other) => Err(other),
+        }
     }
 
     /// Runs git in `directory` and hands back its stdout.
@@ -281,6 +363,144 @@ mod tests {
             "nothing has been committed, and git says so: {:?}",
             status.head
         );
+    }
+
+    /// Commits everything in `dir`, so there is a `HEAD` to read from.
+    ///
+    /// Identity is set on the repository rather than read from the machine:
+    /// a contributor with no `user.email` configured would otherwise have this
+    /// fail for a reason that is not their change.
+    fn commit(git: &Git, dir: &Path) {
+        for args in [
+            &["config", "user.email", "test@example.invalid"][..],
+            &["config", "user.name", "deco tests"][..],
+            &["add", "-A"][..],
+            &["commit", "--quiet", "-m", "fixture"][..],
+        ] {
+            let status = std::process::Command::new(&git.program)
+                .args(args)
+                .current_dir(dir)
+                .status()
+                .expect("git");
+            assert!(status.success(), "git {args:?} failed");
+        }
+    }
+
+    #[test]
+    fn the_committed_text_is_what_a_buffer_is_compared_against() {
+        let Some(git) = git_or_skip() else { return };
+        let dir = scratch_repo(&git, "committed");
+        std::fs::write(dir.join("a.rs"), "one\ntwo\n").expect("a file");
+        commit(&git, &dir);
+        // Changed on disk *and* further in the buffer. Neither should reach
+        // the answer: `HEAD` is what was committed.
+        std::fs::write(dir.join("a.rs"), "one\nEDITED\n").expect("a file");
+
+        let head = git
+            .committed(&dir, Path::new("a.rs"))
+            .expect("a committed file");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(head.as_deref(), Some("one\ntwo\n"));
+    }
+
+    #[test]
+    fn a_file_that_is_not_committed_yet_is_absent_rather_than_an_error() {
+        let Some(git) = git_or_skip() else { return };
+        let dir = scratch_repo(&git, "uncommitted");
+        std::fs::write(dir.join("a.rs"), "one\n").expect("a file");
+        commit(&git, &dir);
+        std::fs::write(dir.join("new.rs"), "fresh\n").expect("a file");
+
+        let new = git.committed(&dir, Path::new("new.rs"));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            new,
+            Ok(None),
+            "a new file has no committed text, which is not a failure — every \
+             line of it is an addition"
+        );
+    }
+
+    #[test]
+    fn an_unborn_branch_has_no_committed_text_for_anything() {
+        let Some(git) = git_or_skip() else { return };
+        let dir = scratch_repo(&git, "unborn");
+        std::fs::write(dir.join("a.rs"), "one\n").expect("a file");
+
+        let head = git.committed(&dir, Path::new("a.rs"));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            head,
+            Ok(None),
+            "`git init` and nothing committed: there is no HEAD to read"
+        );
+    }
+
+    #[test]
+    fn a_path_means_the_same_file_however_deep_git_is_run() {
+        let Some(git) = git_or_skip() else { return };
+        let dir = scratch_repo(&git, "subdir");
+        std::fs::create_dir_all(dir.join("sub")).expect("a directory");
+        std::fs::write(dir.join("a.txt"), "ROOT\n").expect("a file");
+        std::fs::write(dir.join("sub/a.txt"), "SUB\n").expect("a file");
+        commit(&git, &dir);
+
+        // The same repository-relative path, asked from two depths. Opening a
+        // subdirectory of a repository is an ordinary thing to do, and the
+        // answer must not depend on where deco happened to be started.
+        let from_root = git.committed(&dir, Path::new("sub/a.txt"));
+        let from_sub = git.committed(&dir.join("sub"), Path::new("sub/a.txt"));
+        // And the root's own file, from inside the subdirectory — the case
+        // that `HEAD:./a.txt` gets wrong, because `./` is resolved against the
+        // working directory and would find `sub/a.txt` instead.
+        let root_file_from_sub = git.committed(&dir.join("sub"), Path::new("a.txt"));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let text = |result: Result<Option<String>, ScmError>| result.expect("a committed file");
+        assert_eq!(text(from_root).as_deref(), Some("SUB\n"));
+        assert_eq!(
+            text(from_sub).as_deref(),
+            Some("SUB\n"),
+            "one path, one file, whatever directory git was run in"
+        );
+        assert_eq!(
+            text(root_file_from_sub).as_deref(),
+            Some("ROOT\n"),
+            "`a.txt` is the repository's, not the subdirectory's"
+        );
+    }
+
+    #[test]
+    fn the_repository_root_is_where_git_says_it_is() {
+        let Some(git) = git_or_skip() else { return };
+        let dir = scratch_repo(&git, "toplevel");
+        std::fs::create_dir_all(dir.join("sub")).expect("a directory");
+        std::fs::write(dir.join("a.txt"), "one\n").expect("a file");
+        commit(&git, &dir);
+
+        let found = git.root(&dir.join("sub"));
+        let _ = std::fs::remove_dir_all(&dir);
+        // Canonicalised on both sides: a temporary directory is a symlink on
+        // macOS, and git reports where the link goes.
+        let found = found.expect("a repository").canonicalize().ok();
+        assert_eq!(found, dir.canonicalize().ok());
+    }
+
+    #[test]
+    fn a_path_that_could_escape_the_working_tree_is_refused() {
+        let git = Git::default();
+        // Never reaches git: `HEAD:/etc/passwd` and `HEAD:../secrets` resolve
+        // against the working directory, so a caller handing one over would be
+        // shown a different file and told it was this one's history.
+        for bad in ["/etc/passwd", "../secrets.rs", "a/../../b.rs", ""] {
+            assert!(
+                matches!(
+                    git.committed(Path::new("."), Path::new(bad)),
+                    Err(ScmError::NotInWorkingTree(_))
+                ),
+                "{bad:?} was passed to git rather than refused"
+            );
+        }
     }
 
     #[test]

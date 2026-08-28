@@ -66,6 +66,12 @@ const DEFAULTS: &[(&str, Rgba, Rgba)] = &[
     ("editorWarning.foreground", hex(0xcca700), hex(0xbf8803)),
     ("editorInfo.foreground", hex(0x3794ff), hex(0x1a85ff)),
     ("editorGutter.background", hex(0x1f1f1f), hex(0xffffff)),
+    // The three git marks. Default Dark Modern and Default Light Modern
+    // agree on added and deleted and differ on modified, which is why
+    // this is a table rather than one colour.
+    ("editorGutter.addedBackground", hex(0x2ea043), hex(0x2ea043)),
+    ("editorGutter.modifiedBackground", hex(0x0078d4), hex(0x005fb8)),
+    ("editorGutter.deletedBackground", hex(0xf85149), hex(0xf85149)),
     // Widgets
     ("editorWidget.background", hex(0x202020), hex(0xf8f8f8)),
     ("editorWidget.border", hex(0x454545), hex(0xc8c8c8)),
@@ -157,6 +163,12 @@ pub fn fallback_chain(key: &str) -> &'static [&'static str] {
         "editorCursor.foreground" => &["editor.foreground"],
         "editorLineNumber.activeForeground" => &["editor.foreground"],
         "editorGutter.background" => &["editor.background"],
+        // A theme that colours diagnostics but says nothing about the git
+        // marks gets marks in its own palette rather than deco's greens
+        // and reds — the same reasoning as the line numbers above.
+        "editorGutter.addedBackground" => &["editorInfo.foreground"],
+        "editorGutter.modifiedBackground" => &["editorInfo.foreground"],
+        "editorGutter.deletedBackground" => &["editorError.foreground"],
         "editorWidget.background" => &["editor.background"],
         "panel.background" => &["editor.background"],
         "terminal.background" => &["panel.background", "editor.background"],

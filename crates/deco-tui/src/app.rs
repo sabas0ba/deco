@@ -464,6 +464,11 @@ impl Driver {
         // The find bar costs a row, so the text area's height depends on
         // whether it is open — which the last keypress may have changed.
         resize(session, self.width, self.height);
+        // The marks are derived from the buffer, so they are brought up to
+        // date here rather than in the renderer: `render` holds the session by
+        // shared reference, and a diff per frame would be the alternative.
+        // Cheap when nothing has been typed — one version compare per document.
+        session.refresh_diffs();
         self.dirty = false;
         // Both overlays, not just the hover. The completion list was built,
         // filtered, navigable with the arrow keys and acceptable with `tab` —

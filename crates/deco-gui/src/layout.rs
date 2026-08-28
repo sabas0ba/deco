@@ -66,6 +66,13 @@ pub struct LaidOutLine {
     pub y: f32,
     /// The gutter label, already padded.
     pub gutter: String,
+    /// What git says about this line, if anything.
+    ///
+    /// Computed rather than painted, like the selection rectangles beside it:
+    /// this frontend draws text and a caret so far. Kept here so that when it
+    /// grows the rest, the marks are already the same answer the terminal
+    /// draws rather than a second implementation of the question.
+    pub mark: Option<deco_scm::Mark>,
     /// The line's text, tabs expanded.
     pub text: String,
     /// Whether this is the line the primary cursor is on.
@@ -125,6 +132,12 @@ pub struct Colors {
     pub current_line: Rgba,
     /// The caret.
     pub cursor: Rgba,
+    /// A line that is not in the committed file.
+    pub added: Rgba,
+    /// A line that is there and says something else.
+    pub modified: Rgba,
+    /// Where lines were removed.
+    pub deleted: Rgba,
 }
 
 impl Colors {
@@ -141,6 +154,18 @@ impl Colors {
                 .unwrap_or(foreground),
             gutter_active: theme
                 .color("editorLineNumber.activeForeground")
+                .unwrap_or(foreground),
+            // The git marks, through `deco-theme`'s fallback chain — a theme
+            // that says nothing about them lands on its own diagnostic colours
+            // before it ever reaches this default.
+            added: theme
+                .color("editorGutter.addedBackground")
+                .unwrap_or(foreground),
+            modified: theme
+                .color("editorGutter.modifiedBackground")
+                .unwrap_or(foreground),
+            deleted: theme
+                .color("editorGutter.deletedBackground")
                 .unwrap_or(foreground),
             // Unlike the terminal, the GPU can blend, so translucent theme
             // colours are kept as-is and composited at draw time.
@@ -180,6 +205,15 @@ pub fn layout(session: &Session, width: f32, height: f32, metrics: Metrics) -> L
     let buffer = &session.document.buffer;
     let tab_size = session.document.settings.tab_size;
     let colors = Colors::from_session(session);
+
+    // Looked up once rather than per line: the answer is one diff for the
+    // whole document, and asking it per row would be the same lookup repeated
+    // for every row on screen.
+    let marks = session
+        .document
+        .path
+        .as_deref()
+        .and_then(|path| session.diff_marks(path));
 
     let digits = buffer.line_count().to_string().len().max(2);
     let gutter_columns = if session.document.settings.line_numbers == deco_config::LineNumbers::Off
@@ -265,6 +299,7 @@ pub fn layout(session: &Session, width: f32, height: f32, metrics: Metrics) -> L
             line,
             y,
             gutter,
+            mark: marks.as_ref().and_then(|diff| diff.mark_at(line)),
             text,
             is_cursor_line: line == cursor_line,
         });
@@ -555,6 +590,33 @@ mod tests {
 
         let wide = layout(&session(&"x\n".repeat(1000)), 400.0, 100.0, metrics());
         assert!(wide.text_left > narrow.text_left);
+    }
+
+    #[test]
+    fn the_git_marks_are_worked_out_even_though_they_are_not_painted_yet() {
+        // Computed, like the selection rectangles beside them. When this
+        // frontend grows the rest of its drawing, the marks are already the
+        // same answer the terminal shows rather than a second implementation
+        // of the question.
+        let mut session = session("one\nTWO\nthree\nnew\n");
+        session.fill_committed(
+            session.document.path.clone().expect("a path"),
+            Some("one\ntwo\nthree\n".to_owned()),
+        );
+        session.refresh_diffs();
+
+        let laid = layout(&session, 800.0, 400.0, metrics());
+        let marks: Vec<Option<deco_scm::Mark>> =
+            laid.lines.iter().take(4).map(|line| line.mark).collect();
+        assert_eq!(
+            marks,
+            vec![
+                None,
+                Some(deco_scm::Mark::Modified),
+                None,
+                Some(deco_scm::Mark::Added),
+            ]
+        );
     }
 
     #[test]
