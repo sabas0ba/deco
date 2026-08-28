@@ -163,6 +163,10 @@ fn demos() -> Vec<Demo> {
             build: git_gutter,
         },
         Demo {
+            name: "git-view",
+            build: git_view,
+        },
+        Demo {
             name: "tabs",
             build: tabs,
         },
@@ -247,6 +251,8 @@ const ROWS: usize = 14;
 struct Take {
     session: Session,
     shots: Vec<Shot>,
+    /// The demonstration's own index and working tree. See `Take::repository`.
+    scm: Vec<(String, char, char)>,
     /// The workspace the file tree is shown over, if a demonstration set one.
     ///
     /// The frontend's job in the real editor, done here by the demonstration —
@@ -287,6 +293,7 @@ impl Take {
         Self {
             session,
             shots: Vec::new(),
+            scm: Vec::new(),
             workspace: Vec::new(),
         }
     }
@@ -358,6 +365,14 @@ impl Take {
             // reason it is here — the session would never mark its git status
             // stale, so a demonstration of the status bar would show a count
             // that never moved.
+            if let deco_editor::Outcome::GitOperation(ref operation) = outcome {
+                let operation = operation.clone();
+                // Told first, then answered — the order a frontend does it in,
+                // and the order that leaves the standing question cleared
+                // rather than set.
+                self.session.git_operation_done(&operation);
+                self.apply_git(&operation);
+            }
             if matches!(outcome, deco_editor::Outcome::Save) {
                 self.write_open_document();
                 self.session.mark_saved();
@@ -424,6 +439,85 @@ impl Take {
             deco_scm::parse(output).expect("a demonstration writes git's own format"),
         ));
         self
+    }
+
+    /// Gives the demonstration an index and a working tree of its own.
+    ///
+    /// Each entry is a path and its two halves, in git's own letters — a space
+    /// where that side has nothing, `?` in the second for a file git has never
+    /// been told about. Kept rather than handed over once, because the
+    /// source-control view is a thing you *act on*: staging has to move a row
+    /// from one heading to another, and a demonstration that could not do that
+    /// would be a picture of a list rather than of a feature.
+    fn repository(&mut self, files: &[(&str, char, char)]) -> &mut Self {
+        self.scm = files
+            .iter()
+            .map(|(path, staged, worktree)| ((*path).to_owned(), *staged, *worktree))
+            .collect();
+        self.refresh_scm();
+        self
+    }
+
+    /// Hands the session what its own index would report.
+    fn refresh_scm(&mut self) {
+        let mut out = String::from(
+            "# branch.oid 1c9d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d\0\
+             # branch.head main\0# branch.upstream origin/main\0# branch.ab +0 -0\0",
+        );
+        for (path, staged, worktree) in &self.scm {
+            if *worktree == '?' {
+                out.push_str(&format!("? {path}\0"));
+                continue;
+            }
+            out.push_str(&format!(
+                "1 {staged}{worktree} N... 100644 100644 100644 aaaaaaa bbbbbbb {path}\0"
+            ));
+        }
+        self.session.scm_started();
+        self.session.fill_scm(Some(
+            deco_scm::parse(&out).expect("a demonstration writes git's own format"),
+        ));
+    }
+
+    /// Carries out a repository change on the demonstration's own index.
+    ///
+    /// The frontend's half again. The session decided what should happen to
+    /// the repository; this is the thing with one. Nothing here is a
+    /// simulation of git's *reasoning* — the session already refused whatever
+    /// it was going to refuse — only of its bookkeeping.
+    fn apply_git(&mut self, operation: &deco_scm::Operation) {
+        match operation {
+            deco_scm::Operation::Stage(path) => {
+                for (held, staged, worktree) in self.scm.iter_mut() {
+                    if held.as_str() == path.to_string_lossy() {
+                        // An untracked file becomes an addition; anything else
+                        // moves its working-tree letter across to the index.
+                        *staged = if *worktree == '?' { 'A' } else { *worktree };
+                        *worktree = '.';
+                    }
+                }
+            }
+            deco_scm::Operation::StageAll => {
+                for (_, staged, worktree) in self.scm.iter_mut() {
+                    *staged = if *worktree == '?' { 'A' } else { *worktree };
+                    *worktree = '.';
+                }
+            }
+            deco_scm::Operation::Unstage(path) => {
+                for (held, staged, worktree) in self.scm.iter_mut() {
+                    if held.as_str() == path.to_string_lossy() {
+                        *worktree = if *staged == 'A' { '?' } else { *staged };
+                        *staged = '.';
+                    }
+                }
+            }
+            // Everything staged is now what `HEAD` has, so it stops being a
+            // difference at all.
+            deco_scm::Operation::Commit(_) => {
+                self.scm.retain(|(_, staged, _)| *staged == '.');
+            }
+        }
+        self.refresh_scm();
     }
 
     /// Says what `HEAD` had for the file on screen.
@@ -1190,6 +1284,38 @@ fn git_gutter() -> String {
     // the top edge of the line that took its place.
     take.at(5, 0).press_and_hold(&["ctrl+shift+k"], 6);
     take.capture("`▔` — a line was removed just above", 6);
+    take.finish()
+}
+
+fn git_view() -> String {
+    let mut take = Take::new("main.rs", SAMPLE);
+    take.workspace(&[
+        ("Cargo.toml", "[package]\nname = \"demo\"\n"),
+        ("src/main.rs", SAMPLE),
+        ("src/notes.md", "# notes\n"),
+    ]);
+    // One file edited since the last commit, one git has never seen.
+    take.repository(&[("src/main.rs", '.', 'M'), ("src/notes.md", '.', '?')]);
+    take.at(1, 8).capture("two files differ from `HEAD`", 5);
+
+    // The side bar's other tenant. One key opens it, switches to it and takes
+    // the keyboard.
+    take.press_and_hold(&["ctrl+shift+g"], 6);
+
+    // Staging moves the row from one heading to another, which is the whole
+    // reason a file can appear under two. Through the palette, because VS Code
+    // has no default key for it either — its view is driven by the buttons on
+    // each row, and deco does not invent keys VS Code has not.
+    take.press(&["ctrl+shift+p"]);
+    take.type_text("stage all");
+    take.press_and_hold(&["enter"], 6);
+
+    // And a commit empties the list, because what was staged is now what
+    // `HEAD` has.
+    take.press(&["ctrl+enter"]);
+    take.type_text("first commit");
+    take.press_and_hold(&["enter"], 6);
+    take.capture("committed, and nothing differs any more", 6);
     take.finish()
 }
 

@@ -3,10 +3,9 @@
 ![The branch in the status bar, unmoved by typing and refreshed by a save and a new file](img/git-status.svg)
 
 deco reads git the way VS Code does: by running the `git` binary and parsing
-what it says. No library is linked. Two of the three stages are built — **the
-branch and what differs from it, in the status bar**, and **marks beside the
-lines that changed**. The source-control view is still
-[planned](roadmap.md#git).
+what it says. No library is linked. All three stages are built: **the branch and
+what differs from it, in the status bar**, **marks beside the lines that
+changed**, and **a source-control view** that stages, unstages and commits.
 
 ```
 main ±2 ↑2
@@ -64,6 +63,77 @@ The comparison itself is pure, so it is redone as the file is typed into. One
 The GPU frontend works the marks out but does not paint them yet — the same
 state its selection and current-line rectangles are in. When it grows the rest
 of its drawing they are already the same answer the terminal shows.
+
+## The source-control view
+
+![Opening the source-control view, staging both files and committing them](img/git-view.svg)
+
+`ctrl+shift+g` opens the side bar's other tenant, switches to it and gives it
+the keyboard — one key to reach a thing you mean to act on, which is what VS
+Code's `workbench.view.*` do. `ctrl+shift+e` goes back to the
+[file tree](files.md).
+
+Rows are grouped by what you would *do* about them, in the order they have to
+be dealt with: **Merge Changes** first because a conflict blocks everything
+else, then **Staged Changes**, **Changes**, **Untracked**. The letter beside
+each name is git's own — `M`, `A`, `D`, `R`, `U` for a conflict, `?` for
+something git has never been told about.
+
+**A file can appear twice.** Staged, and modified again since — two rows, under
+two headings, because unstaging the first and staging the second do opposite
+things to the same file. The status bar's `±` count deliberately does not do
+this: it answers "how many files need thinking about", and counting one twice
+there would make the bar disagree with itself.
+
+**The selection follows the file, not the row number.** Staging something
+reorders the list; an index that stayed put would leave the selection on a
+different file than the one you were looking at, and the next command would act
+on it.
+
+`enter` opens the file the selection is on, and the keyboard goes with it — the
+same bargain the tree makes.
+
+### The commands
+
+VS Code has no default key for most of these: its view is driven by the buttons
+on each row, and deco does not have buttons and will not invent keys VS Code has
+not. So they live in the command palette (`ctrl+shift+p`), which is how the
+animation above reaches them.
+
+| Command | What it does |
+| --- | --- |
+| `workbench.view.scm` | `ctrl+shift+g` — show the view and focus it |
+| `git.stage` | add the selected file's working-tree state to the index |
+| `git.stageAll` | add everything git reported |
+| `git.unstage` | take the selected file back out of the index |
+| `git.commit` | `ctrl+enter` — ask for a message, then record what is staged |
+| `git.refresh` | ask git again |
+
+**Every refusal happens before a process starts.** Staging something already
+staged would succeed and change nothing, and a message claiming otherwise is
+worse than one saying it could not. Committing with nothing staged never opens
+the message box at all — asking someone to write a commit message and *then*
+telling them there was nothing to commit is how a message gets lost.
+
+**The commit runs your hooks.** A `pre-commit` that reformats or refuses is
+yours, and inheriting it is the whole argument for shelling out rather than
+linking a library. Their stdin is closed and `GIT_TERMINAL_PROMPT` is `0`, so a
+hook that decides to ask a question fails rather than hanging with the editor
+holding its pipes.
+
+### What it deliberately will not do
+
+**Discard.** `git clean` and `git checkout --` throw away work with no undo and
+no trash, which is the same thing the [tree's delete](files.md) refuses to do
+quietly. Not built, rather than built without a way back.
+
+**Reach the network.** No push, pull or fetch. Those need credentials, and a
+credential prompt is a thing an editor has to be trusted with; reading and
+staging need neither.
+
+**Change a repository over a remote connection.** The repository is on the far
+machine, and staging here would change a different one and report success about
+theirs. Refused by name.
 
 ## When it runs
 
@@ -186,10 +256,15 @@ Two environment variables go to the child, and each prevents a specific failure:
 
 ## Not built yet
 
-**Nothing writes to a repository.** No staging, no committing, no checkout.
-Reading a repository and changing one are different promises, and the writing
-half arrives with the source-control view that gives you somewhere to see what
-you are about to do.
+**No checkout, and no branch list.** Switching branches can lose uncommitted
+work when it goes wrong, and doing it well needs to say what would be lost
+before it happens. That is its own piece of work rather than a line in this
+one.
+
+**No diff view.** The gutter says which lines changed in the file you are
+looking at; there is no side-by-side of a file you are not. The marks are
+computed for any open file, so the pieces are there, but a diff view is a
+second editor pane and that is a chapter of its own.
 
 **Nothing over a remote connection.** A remote workspace's root is a path on the
 far machine, so running git here against it would either fail or — worse, if a

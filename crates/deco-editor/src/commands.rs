@@ -329,6 +329,16 @@ pub const PALETTE: &[(&str, &str)] = &[
     ("explorer.newFolder", "File: New Folder"),
     ("renameFile", "File: Rename"),
     ("deleteFile", "File: Delete"),
+    // The repository's own. VS Code has no default key for these — its
+    // source-control view is driven by the buttons on each row — so the
+    // palette is how they are reached, and inventing keys VS Code does not
+    // have would be the one thing this project has said it will not do.
+    ("workbench.view.scm", "View: Show Source Control"),
+    ("git.stage", "Git: Stage Changes"),
+    ("git.stageAll", "Git: Stage All Changes"),
+    ("git.unstage", "Git: Unstage Changes"),
+    ("git.commit", "Git: Commit"),
+    ("git.refresh", "Git: Refresh"),
     ("redo", "Redo"),
     ("editor.action.selectAll", "Select All"),
     ("expandLineSelection", "Expand Line Selection"),

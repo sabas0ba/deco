@@ -25,7 +25,7 @@ What VS Code has and deco does not, grouped by how it blocks:
 
 | Missing | Depends on |
 | --- | --- |
-| Git — stage and commit (the branch and the [gutter marks](git.md) are built) | the view is a side-bar tenant, beside the [file tree](files.md) |
+| Git — checkout, discard, push/pull, a diff view ([the rest is built](git.md)) | nothing; each is its own decision about what it may lose or ask for |
 | Integrated terminal | a PTY dependency; its home is the [panel](chrome.md) |
 | Task runner (`tasks.json`, `ctrl+shift+b`) | the terminal, for somewhere to run |
 | Test runner | the task runner, and later the extension host |
@@ -59,30 +59,38 @@ written under them:
 
 ## Git
 
-**Two stages of three are built** — the branch and what differs from it in the
-status bar, and marks beside the lines that changed. Both have
-[a page of their own](git.md).
+**Built.** All three stages — the branch and what differs from it in the status
+bar, marks beside the changed lines, and a source-control view that stages,
+unstages and commits. It has [a page of its own](git.md); this chapter is what
+is left over.
 
-**What VS Code has that deco still does not.** A source-control view: stage,
-unstage, commit, discard, and the `git.*` command family that drives them.
+**What VS Code has that deco still does not.**
 
-**The plan.** The same one the first two followed: shell out to `git`, as VS
-Code does. A side-bar tenant beside the tree, listing the files `git status`
-already reports; `git.stage`, `git.unstage`, `git.commit` with its message
-through the existing prompt, `git.checkout` through the existing picker.
-
-This is the first thing here that *writes* to a repository, which is a
-different promise from reading one — and the reason it arrives with the view
-rather than as a set of commands: staging something you cannot see is not a
-feature anyone asked for.
+- **Checkout, and a branch list.** Switching branches can lose uncommitted work
+  when it goes wrong, and doing it well means saying what would be lost before
+  it happens rather than after. That is the piece of work, not the `git
+  checkout` call.
+- **Discard.** `git clean` and `git checkout --` throw away work with no undo
+  and no trash. deco's tree refuses to delete quietly for the same reason, and
+  this would need the same kind of answer.
+- **Push, pull, fetch.** These need credentials, and a credential prompt is a
+  thing an editor has to be trusted with. Worth doing deliberately rather than
+  as an afterthought to a view that already works.
+- **A diff view.** The gutter says which lines changed in the file on screen;
+  a side-by-side of a file you are not looking at is a second editor pane, and
+  that is a chapter of its own.
+- **Git over a remote connection.** The repository is on the far machine. The
+  status would have to run there, the way language servers and project search
+  already do — a protocol change rather than a local one.
 
 **Steps.**
 
-1. The side-bar view, listing what `Status` reports, with the diff of a selected
-   file shown the way the gutter already computes it.
-2. The `git.*` commands, each confirmed by what the view is showing.
-3. Git over a remote connection — the status runs on the machine holding the
-   files, the way language servers and project search already do.
+1. Git over the remote connection: status, committed text and the write
+   commands, all on the machine holding the files.
+2. A diff view, which the marks already compute the hunks for.
+3. Checkout, with what it would cost said first.
+4. Push, pull and fetch, once there is somewhere honest to put a credential
+   prompt.
 
 ## The integrated terminal
 
