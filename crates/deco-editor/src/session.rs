@@ -65,6 +65,21 @@ pub enum Focus {
     Panel,
 }
 
+/// Which tenant the side bar is showing.
+///
+/// VS Code calls these viewlets and switches between them with
+/// `workbench.view.*`: the container is one region, and what is in it is a
+/// choice. Two so far — search is the third the [chrome](crate::layout) names
+/// as waiting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SideBarView {
+    /// The [file tree](crate::explorer). What the side bar opens on.
+    #[default]
+    Explorer,
+    /// The [source-control view](crate::scm).
+    SourceControl,
+}
+
 /// Which way [`Session::goto_marker`] walks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Direction {
@@ -388,6 +403,14 @@ pub struct Session {
     /// not on a keystroke, because running git on every key would be a
     /// process per character.
     scm_wanted: bool,
+    /// Which tenant the side bar is showing.
+    side_bar_view: SideBarView,
+    /// The source-control view, rebuilt whenever a status arrives.
+    ///
+    /// Kept rather than derived per render because it holds a *selection*, and
+    /// a selection that was recomputed from the status every frame would forget
+    /// which file the user was standing on the moment anything changed.
+    source_control: crate::scm::SourceControl,
     /// What `HEAD` had for each open file, and the marks derived from it.
     ///
     /// Split in two because the halves change at wildly different rates. The
@@ -592,6 +615,8 @@ impl Session {
             screen: (80, 24),
             next_group: 0,
             scm: None,
+            side_bar_view: SideBarView::default(),
+            source_control: crate::scm::SourceControl::default(),
             // Wanted from the start: the branch is worth showing before the
             // first save, not after it.
             scm_wanted: true,
@@ -1163,9 +1188,24 @@ impl Session {
         // explorer having the keyboard, and `listFocus` for any list having it —
         // the explorer is the only list here, so today they agree, and a `when`
         // clause copied from VS Code that uses either one resolves.
-        let explorer_focus = self.focus == Focus::SideBar && self.explorer.is_some();
+        let in_side_bar = self.focus == Focus::SideBar;
+        let explorer_focus =
+            in_side_bar && self.explorer.is_some() && self.side_bar_view == SideBarView::Explorer;
         self.context.set("filesExplorerFocus", explorer_focus);
-        self.context.set("listFocus", explorer_focus);
+        // Every list, not just the tree — which is what VS Code means by it,
+        // and why the source-control view answers the same `list.*` keys.
+        let scm_focus = in_side_bar && self.side_bar_view == SideBarView::SourceControl;
+        self.context.set("listFocus", explorer_focus || scm_focus);
+        // VS Code sets `scmProvider` to the active provider's id. deco has one
+        // kind, so the presence of a repository is the whole of it: a `when`
+        // clause asking for `scmProvider == 'git'` resolves when git answered.
+        self.context.set(
+            "scmProvider",
+            match self.scm.is_some() {
+                true => serde_json::json!("git"),
+                false => serde_json::json!(""),
+            },
+        );
         self.context
             .set("explorerViewletVisible", regions.side_bar.is_some());
         // Everything below describes the text, and while a region has the
@@ -1314,7 +1354,10 @@ impl Session {
             "workbench.action.togglePanel" => self.toggle_panel(),
             "workbench.action.closeSidebar" => self.show_side_bar(false),
             "workbench.action.closePanel" => self.show_panel(false),
-            "workbench.files.action.focusFilesExplorer" => self.focus_region(Focus::SideBar),
+            "workbench.files.action.focusFilesExplorer" | "workbench.view.explorer" => {
+                self.show_side_bar_view(SideBarView::Explorer)
+            }
+            "workbench.view.scm" => self.show_side_bar_view(SideBarView::SourceControl),
             "revealInExplorer" => self.reveal_active_file(),
             // The tree's own keys. Routed before the focus guard below, because
             // unlike the editor's commands these are *for* whatever has the
@@ -3751,6 +3794,49 @@ impl Session {
         self.refresh_context();
     }
 
+    /// A `list.*` key, with the source-control view showing.
+    ///
+    /// Expanding and collapsing do nothing: the list is flat, and its headings
+    /// are drawn from the rows rather than being rows themselves. Handled
+    /// rather than refused, because the key is bound to `list.*` for every
+    /// list and refusing here would report a working binding as unknown.
+    fn source_control_key(&mut self, command: &str) -> Outcome {
+        match command {
+            "list.focusDown" => self.source_control.select_next(),
+            "list.focusUp" => self.source_control.select_previous(),
+            "list.focusFirst" => self.source_control.select_first(),
+            "list.focusLast" => self.source_control.select_last(),
+            "list.expand" | "list.collapse" => {}
+            "list.select" => {
+                let Some(row) = self.source_control.selection() else {
+                    return Outcome::Handled;
+                };
+                let Some(root) = self.workspace_root().map(|root| root.join(&row.path)) else {
+                    // The view lists paths relative to the repository, and
+                    // without a root there is nothing to resolve them against.
+                    return Outcome::Message(
+                        "there is no workspace to open this file from".to_owned(),
+                    );
+                };
+                // The keyboard follows the file, as it does out of the tree.
+                self.focus = Focus::Editor;
+                self.refresh_context();
+                return Outcome::OpenFile {
+                    path: root,
+                    at: None,
+                };
+            }
+            _ => {}
+        }
+        self.refresh_context();
+        Outcome::Handled
+    }
+
+    /// Where the workspace is rooted, if anywhere.
+    fn workspace_root(&self) -> Option<std::path::PathBuf> {
+        self.explorer.as_ref().map(|tree| tree.root().to_path_buf())
+    }
+
     /// The workspace tree, if a root has been set.
     pub fn explorer(&self) -> Option<&crate::Explorer> {
         self.explorer.as_ref()
@@ -3821,7 +3907,38 @@ impl Session {
         if was != now {
             self.committed.clear();
         }
+        match &status {
+            Some(status) => self.source_control.refresh(status),
+            // No repository, or git is gone. An empty view rather than the
+            // last one it had: a list of files to stage in a folder that is no
+            // longer a working tree is worse than nothing.
+            None => self.source_control = crate::scm::SourceControl::default(),
+        }
         self.scm = status;
+        self.refresh_context();
+    }
+
+    /// Which tenant the side bar is showing.
+    pub fn side_bar_view(&self) -> SideBarView {
+        self.side_bar_view
+    }
+
+    /// The source-control view.
+    pub fn source_control(&self) -> &crate::scm::SourceControl {
+        &self.source_control
+    }
+
+    /// Shows the side bar with `view` in it, and gives it the keyboard.
+    ///
+    /// VS Code's `workbench.view.*` do all three: a viewlet command opens the
+    /// container if it is closed, switches to that view, and focuses it. One
+    /// key to reach a thing you want to act on, rather than three.
+    fn show_side_bar_view(&mut self, view: SideBarView) -> Outcome {
+        self.side_bar_view = view;
+        if !self.side_bar {
+            self.show_side_bar(true);
+        }
+        self.focus_region(Focus::SideBar)
     }
 
     /// A file whose committed text nobody has fetched yet.
@@ -3976,6 +4093,13 @@ impl Session {
     fn explorer_key(&mut self, command: &str) -> Outcome {
         if self.focus != Focus::SideBar {
             return Outcome::Handled;
+        }
+        // Whichever tenant is showing. The bindings are `list.*` in VS Code
+        // too — one set of keys for every list in the workbench, and which
+        // list they reach is a matter of what has the keyboard rather than of
+        // a separate binding per view.
+        if self.side_bar_view == SideBarView::SourceControl {
+            return self.source_control_key(command);
         }
         let Some(explorer) = self.explorer.as_mut() else {
             return Outcome::Handled;
@@ -8747,6 +8871,114 @@ mod tests {
             "the moved file is asked about under its new name"
         );
         assert!(s.diff_marks(Path::new("/w/a.rs")).is_none());
+    }
+
+    /// A status with one modified and one untracked file.
+    fn dirty_status() -> deco_scm::Status {
+        deco_scm::parse(
+            "# branch.oid 1c9d4e5\0# branch.head main\0\
+             1 .M N... 100644 100644 100644 aaaaaaa bbbbbbb work.rs\0? new.rs\0",
+        )
+        .expect("git's own format")
+    }
+
+    #[test]
+    fn the_side_bar_opens_on_the_tree_and_switches_to_source_control() {
+        let mut s = with_tree();
+        assert_eq!(s.side_bar_view(), SideBarView::Explorer);
+
+        // One key: open the container, switch the view, take the keyboard.
+        assert!(matches!(
+            s.run("workbench.view.scm", None, 0),
+            Outcome::Handled
+        ));
+        assert_eq!(s.side_bar_view(), SideBarView::SourceControl);
+        assert_eq!(s.focus(), Focus::SideBar);
+        assert!(
+            s.regions().side_bar.is_some(),
+            "and the side bar is showing"
+        );
+
+        s.run("workbench.view.explorer", None, 0);
+        assert_eq!(s.side_bar_view(), SideBarView::Explorer);
+    }
+
+    #[test]
+    fn the_list_keys_reach_whichever_tenant_is_showing() {
+        let mut s = with_tree();
+        s.fill_scm(Some(dirty_status()));
+        s.run("workbench.view.scm", None, 0);
+
+        s.run("list.focusDown", None, 0);
+        assert_eq!(
+            s.source_control().selection().unwrap().path,
+            PathBuf::from("new.rs"),
+            "the same `list.*` keys, and what has the keyboard decides"
+        );
+
+        // Back to the tree, and the same key moves the tree instead.
+        s.run("workbench.view.explorer", None, 0);
+        s.run("list.focusFirst", None, 0);
+        s.run("list.focusDown", None, 0);
+        assert_eq!(
+            s.explorer().unwrap().selection().unwrap().name,
+            "Cargo.toml"
+        );
+        assert_eq!(
+            s.source_control().selection().unwrap().path,
+            PathBuf::from("new.rs"),
+            "and the view that does not have the keyboard is left alone"
+        );
+    }
+
+    #[test]
+    fn the_explorers_context_key_is_false_while_source_control_has_the_keyboard() {
+        let mut s = with_tree();
+        s.fill_scm(Some(dirty_status()));
+        s.run("workbench.view.scm", None, 0);
+
+        // `filesExplorerFocus` is what `explorer.newFile` and the tree's
+        // `ctrl+z` are gated on. Left true here, `ctrl+n` in the
+        // source-control view would create a file in the tree behind it.
+        assert_eq!(s.context.get("filesExplorerFocus"), Some(&json!(false)));
+        assert_eq!(
+            s.context.get("listFocus"),
+            Some(&json!(true)),
+            "but it is still a list, and `list.*` is bound on that"
+        );
+        assert_eq!(s.context.get("scmProvider"), Some(&json!("git")));
+    }
+
+    #[test]
+    fn a_folder_that_is_not_a_repository_empties_the_view() {
+        let mut s = with_tree();
+        s.fill_scm(Some(dirty_status()));
+        assert!(!s.source_control().is_empty());
+
+        // git went away, or the folder stopped being a working tree. A list of
+        // files to stage would be worse than nothing.
+        s.fill_scm(None);
+        assert!(s.source_control().is_empty());
+        assert_eq!(s.context.get("scmProvider"), Some(&json!("")));
+    }
+
+    #[test]
+    fn enter_in_the_source_control_view_opens_the_file() {
+        let mut s = with_tree();
+        s.fill_scm(Some(dirty_status()));
+        s.run("workbench.view.scm", None, 0);
+
+        // The view lists paths relative to the repository; opening one has to
+        // put the workspace root back on.
+        let Outcome::OpenFile { path, .. } = s.run("list.select", None, 0) else {
+            panic!("expected the file to open");
+        };
+        assert_eq!(path, PathBuf::from("/w/work.rs"));
+        assert_eq!(
+            s.focus(),
+            Focus::Editor,
+            "and the keyboard follows it, as it does out of the tree"
+        );
     }
 
     #[test]

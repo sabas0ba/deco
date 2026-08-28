@@ -16,6 +16,7 @@ pub mod find;
 pub mod input;
 pub mod layout;
 pub mod prompt;
+pub mod scm;
 pub mod session;
 pub mod workspace;
 
@@ -25,5 +26,6 @@ pub use explorer::{Explorer, Row as ExplorerRow};
 pub use files::{FileError, Operation as FileOperation};
 pub use find::Find;
 pub use prompt::{Prompt, PromptKind};
-pub use session::{Focus, Pane, Session};
+pub use scm::{Group as ScmGroup, Row as ScmRow, SourceControl};
+pub use session::{Focus, Pane, Session, SideBarView};
 pub use workspace::{Applied, Plan, WorkspaceError};

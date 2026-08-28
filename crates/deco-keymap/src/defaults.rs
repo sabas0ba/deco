@@ -181,6 +181,10 @@ pub const DEFAULT_KEYBINDINGS_JSONC: &str = r#"[
     // without this the key does not resolve at all in the tree.
     { "key": "ctrl+z",       "mac": "cmd+z",       "command": "undo", "when": "sideBarFocus" },
     { "key": "ctrl+shift+e", "mac": "cmd+shift+e", "command": "workbench.files.action.focusFilesExplorer" },
+    // The side bar's other tenant. Both of these open the container, switch to
+    // the view and give it the keyboard, which is what VS Code's
+    // `workbench.view.*` do — one key to reach a thing you mean to act on.
+    { "key": "ctrl+shift+g", "mac": "cmd+shift+g", "command": "workbench.view.scm" },
 
     // ---- Quick open -----------------------------------------------------
     // Last, so these win whenever a prompt holds the keyboard: a later rule takes
