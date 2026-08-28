@@ -1,6 +1,6 @@
 //! Changing a repository, rather than reading one.
 //!
-//! [`crate::status`] and [`crate::diff`] answer questions. This is the
+//! [`crate::status`] and [`mod@crate::diff`] answer questions. This is the
 //! vocabulary of what can be *asked for*, and it lives here rather than in the
 //! editor for the same reason [`Status`](crate::Status) does: the crate that
 //! runs `git` owns what git can be told, and the editor decides which of those
@@ -15,12 +15,12 @@ use std::path::{Path, PathBuf};
 /// A change to a repository, for a frontend to carry out.
 ///
 /// The first thing in deco that *writes* to one. The same division of labour
-/// the [file operations](crate::files) use — the core decides what should
+/// the editor's file operations use — the core decides what should
 /// happen and refuses what should not, whoever can run `git` carries it out —
 /// and for the same reason: the core cannot spawn a process.
 ///
 /// Every path is relative to the repository root, which is what
-/// [`deco_scm::Status`] reports and what git answers about. By the time an
+/// [`Status`](crate::Status) reports and what git answers about. By the time an
 /// operation exists the question of *which* file is already settled.
 ///
 /// # What is not here
