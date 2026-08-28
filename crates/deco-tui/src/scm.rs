@@ -143,6 +143,24 @@ impl Scm {
         true
     }
 
+    /// Carries out a repository change the session asked for.
+    ///
+    /// Blocking, and deliberately: `git add` and `git commit` are what the
+    /// user just pressed a key for, and an editor that carried on painting
+    /// while they happened would leave the view showing the state before them
+    /// with nothing to say why. They are also fast — an index write, not a
+    /// walk of the working tree.
+    pub fn apply(&mut self, session: &mut Session, operation: &deco_scm::Operation) {
+        let Some(root) = self.repo_root.clone().or_else(|| self.root.clone()) else {
+            session.git_operation_failed(operation, "there is no repository here");
+            return;
+        };
+        match self.git.apply(&root, operation) {
+            Ok(()) => session.git_operation_done(operation),
+            Err(error) => session.git_operation_failed(operation, &error.to_string()),
+        }
+    }
+
     /// Takes the answer, if there is one waiting.
     fn collect(&mut self, session: &mut Session) -> bool {
         let Some(receiver) = self.inflight.as_ref() else {

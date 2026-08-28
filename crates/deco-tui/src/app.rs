@@ -558,6 +558,7 @@ impl Driver {
             dirty,
             edited_at,
             tree_root,
+            scm,
             ..
         } = self;
         *dirty = true;
@@ -831,6 +832,21 @@ impl Driver {
             }
             // The tree decided what should happen to a file; doing it needs a
             // filesystem, which is this side.
+            Outcome::GitOperation(operation) => {
+                // Refused outright over a connection, for the same reason the
+                // tree's mutations are: the repository is on the far machine,
+                // and staging here would change a different one and report
+                // success about theirs.
+                if remote.is_some() {
+                    session.status = Some(
+                        "changing a repository over a remote connection is not built yet"
+                            .to_owned(),
+                    );
+                } else {
+                    scm.apply(session, &operation);
+                }
+                *dirty = true;
+            }
             Outcome::FileOperation(operation) => {
                 let root = session
                     .explorer()

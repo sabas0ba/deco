@@ -185,6 +185,10 @@ pub const DEFAULT_KEYBINDINGS_JSONC: &str = r#"[
     // the view and give it the keyboard, which is what VS Code's
     // `workbench.view.*` do — one key to reach a thing you mean to act on.
     { "key": "ctrl+shift+g", "mac": "cmd+shift+g", "command": "workbench.view.scm" },
+    // The repository's own keys, gated on the source-control view having the
+    // keyboard: `enter` opens a file there and means something else entirely in
+    // the text, and `ctrl+enter` is VS Code's own commit key.
+    { "key": "ctrl+enter",   "mac": "cmd+enter",   "command": "git.commit", "when": "sideBarFocus" },
 
     // ---- Quick open -----------------------------------------------------
     // Last, so these win whenever a prompt holds the keyboard: a later rule takes

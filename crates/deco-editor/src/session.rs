@@ -1358,6 +1358,17 @@ impl Session {
                 self.show_side_bar_view(SideBarView::Explorer)
             }
             "workbench.view.scm" => self.show_side_bar_view(SideBarView::SourceControl),
+            // The repository's own commands. Like the tree's `list.*`, these
+            // exist whatever has the keyboard and decide inside — an arm that
+            // stopped matching would report a working binding as unknown.
+            "git.stage" => self.stage_selected(),
+            "git.stageAll" => self.stage_all(),
+            "git.unstage" => self.unstage_selected(),
+            "git.commit" => self.ask_commit_message(),
+            "git.refresh" => {
+                self.scm_changed();
+                Outcome::Handled
+            }
             "revealInExplorer" => self.reveal_active_file(),
             // The tree's own keys. Routed before the focus guard below, because
             // unlike the editor's commands these are *for* whatever has the
@@ -1975,6 +1986,10 @@ impl Session {
             PromptKind::RenameFile => {
                 let name = prompt.text().to_owned();
                 self.rename_in_tree(&name)
+            }
+            PromptKind::CommitMessage => {
+                let message = prompt.text().trim().to_owned();
+                self.commit(message)
             }
             PromptKind::ConfirmDelete => {
                 // Only a typed `y` goes through. Enter on an empty box is what
@@ -3830,6 +3845,104 @@ impl Session {
         }
         self.refresh_context();
         Outcome::Handled
+    }
+
+    /// `git.stage`: add the selected file's working-tree state to the index.
+    ///
+    /// Refuses a row that is already staged rather than running `git add` on
+    /// it: the command would succeed and do nothing, and a status message
+    /// saying it staged something it did not is worse than one saying it could
+    /// not.
+    fn stage_selected(&mut self) -> Outcome {
+        let Some(row) = self.source_control.selection() else {
+            return Outcome::Message("nothing is selected in source control".to_owned());
+        };
+        if row.group == crate::scm::Group::Staged {
+            return Outcome::Message(format!("{} is already staged", row.name()));
+        }
+        Outcome::GitOperation(deco_scm::Operation::Stage(row.path.clone()))
+    }
+
+    /// `git.stageAll`: everything git reported.
+    fn stage_all(&mut self) -> Outcome {
+        // Nothing staged and nothing to stage are different answers, and the
+        // second is the one worth saying out loud.
+        let unstaged = self
+            .source_control
+            .rows()
+            .iter()
+            .any(|row| row.group != crate::scm::Group::Staged);
+        if !unstaged {
+            return Outcome::Message("there is nothing left to stage".to_owned());
+        }
+        Outcome::GitOperation(deco_scm::Operation::StageAll)
+    }
+
+    /// `git.unstage`: take the selected file back out of the index.
+    fn unstage_selected(&mut self) -> Outcome {
+        let Some(row) = self.source_control.selection() else {
+            return Outcome::Message("nothing is selected in source control".to_owned());
+        };
+        if row.group != crate::scm::Group::Staged {
+            return Outcome::Message(format!("{} is not staged", row.name()));
+        }
+        Outcome::GitOperation(deco_scm::Operation::Unstage(row.path.clone()))
+    }
+
+    /// `git.commit`: ask for a message.
+    ///
+    /// Refused before the box opens when there is nothing staged, rather than
+    /// after the message has been typed. Asking someone to write a commit
+    /// message and then telling them there was nothing to commit is the kind
+    /// of thing that loses the message.
+    fn ask_commit_message(&mut self) -> Outcome {
+        if self.scm.is_none() {
+            return Outcome::Message("this is not a git repository".to_owned());
+        }
+        if !self
+            .source_control
+            .rows()
+            .iter()
+            .any(|row| row.group == crate::scm::Group::Staged)
+        {
+            return Outcome::Message("nothing is staged to commit".to_owned());
+        }
+        self.prompt = Some(Prompt::plain(PromptKind::CommitMessage));
+        self.refresh_context();
+        Outcome::Handled
+    }
+
+    /// The commit itself, once a message has been typed.
+    fn commit(&mut self, message: String) -> Outcome {
+        if message.is_empty() {
+            // Enter on an empty box is what happens when somebody dismisses a
+            // prompt they did not mean to open. Git would refuse this too, but
+            // saying so here costs no process.
+            return Outcome::Message("a commit needs a message".to_owned());
+        }
+        Outcome::GitOperation(deco_scm::Operation::Commit(message))
+    }
+
+    /// Reports that a repository change happened, so what is on screen catches
+    /// up.
+    ///
+    /// The status is asked for again rather than being adjusted here: git is
+    /// the thing that knows what the index looks like now, and a view that
+    /// predicted the answer would drift from it the first time a hook changed
+    /// something.
+    pub fn git_operation_done(&mut self, operation: &deco_scm::Operation) {
+        self.status = Some(operation.describe());
+        self.scm_changed();
+        self.refresh_context();
+    }
+
+    /// Reports that one could not be carried out.
+    pub fn git_operation_failed(&mut self, operation: &deco_scm::Operation, reason: &str) {
+        self.status = Some(format!("could not {}: {reason}", operation.describe()));
+        // Asked for again even so: a refusal usually means the index is not
+        // what the view thought, and the view being wrong is what caused it.
+        self.scm_changed();
+        self.refresh_context();
     }
 
     /// Where the workspace is rooted, if anywhere.
@@ -8979,6 +9092,122 @@ mod tests {
             Focus::Editor,
             "and the keyboard follows it, as it does out of the tree"
         );
+    }
+
+    #[test]
+    fn staging_names_the_selected_file_relative_to_the_repository() {
+        let mut s = with_tree();
+        s.fill_scm(Some(dirty_status()));
+        s.run("workbench.view.scm", None, 0);
+
+        let Outcome::GitOperation(op) = s.run("git.stage", None, 0) else {
+            panic!("expected a stage");
+        };
+        assert_eq!(
+            op,
+            deco_scm::Operation::Stage(PathBuf::from("work.rs")),
+            "git answers about repository-relative paths, and the view holds them"
+        );
+    }
+
+    #[test]
+    fn staging_something_already_staged_is_refused_rather_than_run() {
+        let mut s = with_tree();
+        s.fill_scm(Some(
+            deco_scm::parse(
+                "# branch.oid 1c9d4e5\0# branch.head main\0\
+                 1 M. N... 100644 100644 100644 aaaaaaa bbbbbbb work.rs\0",
+            )
+            .expect("git's own format"),
+        ));
+        s.run("workbench.view.scm", None, 0);
+
+        // `git add` would succeed and change nothing. A message saying it
+        // staged something it did not is worse than one saying it could not.
+        assert!(matches!(s.run("git.stage", None, 0), Outcome::Message(_)));
+        assert!(
+            matches!(s.run("git.stageAll", None, 0), Outcome::Message(_)),
+            "and there is nothing left to stage either"
+        );
+    }
+
+    #[test]
+    fn unstaging_something_that_is_not_staged_is_refused() {
+        let mut s = with_tree();
+        s.fill_scm(Some(dirty_status()));
+        s.run("workbench.view.scm", None, 0);
+        assert!(matches!(s.run("git.unstage", None, 0), Outcome::Message(_)));
+    }
+
+    #[test]
+    fn committing_with_nothing_staged_never_asks_for_a_message() {
+        let mut s = with_tree();
+        s.fill_scm(Some(dirty_status()));
+        s.run("workbench.view.scm", None, 0);
+
+        // Refused before the box opens. Asking someone to write a commit
+        // message and *then* saying there was nothing to commit is how a
+        // message gets lost.
+        assert!(matches!(s.run("git.commit", None, 0), Outcome::Message(_)));
+        assert!(s.prompt.is_none());
+    }
+
+    #[test]
+    fn committing_asks_for_a_message_and_refuses_an_empty_one() {
+        let mut s = with_tree();
+        s.fill_scm(Some(
+            deco_scm::parse(
+                "# branch.oid 1c9d4e5\0# branch.head main\0\
+                 1 M. N... 100644 100644 100644 aaaaaaa bbbbbbb work.rs\0",
+            )
+            .expect("git's own format"),
+        ));
+        s.run("workbench.view.scm", None, 0);
+        s.run("git.commit", None, 0);
+        assert_eq!(
+            s.prompt.as_ref().map(|p| p.kind()),
+            Some(PromptKind::CommitMessage)
+        );
+
+        // Enter on an empty box is what happens when a prompt is dismissed
+        // rather than answered.
+        let enter = Chord::parse("enter").expect("a key");
+        assert!(matches!(s.handle_chord(enter, 0), Outcome::Message(_)));
+
+        s.run("git.commit", None, 0);
+        for c in "a real message".chars() {
+            s.handle_chord(Chord::char(c), 0);
+        }
+        let Outcome::GitOperation(op) = s.handle_chord(enter, 0) else {
+            panic!("expected a commit");
+        };
+        assert_eq!(op, deco_scm::Operation::Commit("a real message".to_owned()));
+    }
+
+    #[test]
+    fn a_repository_change_asks_git_again_rather_than_guessing() {
+        let mut s = with_tree();
+        // What the frontend does: mark the question taken, then answer it.
+        s.scm_started();
+        s.fill_scm(Some(dirty_status()));
+        assert!(!s.scm_wanted(), "the status has been answered");
+
+        // The view is not adjusted here: git is what knows the index now, and
+        // a prediction would drift from it the first time a hook ran.
+        s.git_operation_done(&deco_scm::Operation::Stage(PathBuf::from("work.rs")));
+        assert!(s.scm_wanted());
+        assert_eq!(s.status.as_deref(), Some("staged work.rs"));
+    }
+
+    #[test]
+    fn a_refused_change_still_asks_git_again() {
+        let mut s = with_tree();
+        s.fill_scm(Some(dirty_status()));
+        // A refusal usually means the index is not what the view thought, and
+        // the view being wrong is what caused it.
+        s.git_operation_failed(&deco_scm::Operation::StageAll, "index.lock exists");
+        assert!(s.scm_wanted());
+        assert!(s.status.as_deref().unwrap().contains("index.lock"));
     }
 
     #[test]

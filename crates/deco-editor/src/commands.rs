@@ -59,6 +59,13 @@ pub enum Outcome {
     Frontend(String),
     /// The document should be written to disk.
     Save,
+    /// A repository should be changed — staged, unstaged, committed.
+    ///
+    /// Carried out by whoever can run `git`, and reported back with
+    /// [`Session::git_operation_done`](crate::Session::git_operation_done) so
+    /// the view and the status bar catch up. See [`deco_scm::Operation`] for
+    /// what deliberately is not in it.
+    GitOperation(deco_scm::Operation),
     /// The user chose a remembered decision to take back.
     ///
     /// The identifier is whatever the frontend put on the choice when it built

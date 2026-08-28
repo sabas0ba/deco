@@ -32,6 +32,7 @@ use std::process::Command;
 
 use thiserror::Error;
 
+use crate::change::Operation;
 use crate::status::{self, Malformed, Status};
 
 /// Why there is no status to show.
@@ -208,6 +209,72 @@ impl Git {
             }
             Err(other) => Err(other),
         }
+    }
+
+    /// Carries out a change to the repository.
+    ///
+    /// Every path is repository-relative and goes after `--`, so a file called
+    /// `-f` or `HEAD` is a file rather than an option or a revision. The same
+    /// check [`Git::committed`] makes is made first, for the same reason: git
+    /// would resolve an absolute or `..`-bearing path somewhere else.
+    pub fn apply(&self, directory: &Path, operation: &Operation) -> Result<(), ScmError> {
+        let path = |path: &Path| -> Result<String, ScmError> {
+            let text = path
+                .to_str()
+                .ok_or_else(|| ScmError::NotInWorkingTree(path.display().to_string()))?;
+            if text.is_empty()
+                || Path::new(text).is_absolute()
+                || text.split('/').any(|part| part == "..")
+            {
+                return Err(ScmError::NotInWorkingTree(text.to_owned()));
+            }
+            Ok(text.to_owned())
+        };
+        match operation {
+            Operation::Stage(one) => {
+                self.run(directory, &["add", "--", &path(one)?])?;
+            }
+            // `git add -A` from the repository root rather than `.`, which
+            // would only reach what is below the working directory — and the
+            // view lists the whole repository.
+            Operation::StageAll => {
+                self.run(directory, &["add", "--all", "--"])?;
+            }
+            Operation::Unstage(one) => {
+                let one = path(one)?;
+                // `restore --staged` needs git 2.23. `reset` is older than
+                // anything still installed, and on a branch with no commit yet
+                // there is no `HEAD` to reset against — so that case takes the
+                // one command that works there.
+                let args: Vec<&str> = match self.has_commit(directory) {
+                    true => vec!["reset", "--quiet", "HEAD", "--", &one],
+                    false => vec!["rm", "--cached", "--quiet", "--", &one],
+                };
+                self.run(directory, &args)?;
+            }
+            // No `-a`: a plain commit records exactly the index, which is
+            // exactly what the view was showing. (`--only` would be the way to
+            // say that explicitly, but it means "these paths only" and refuses
+            // when given none.)
+            //
+            // This runs the repository's hooks, which is the point of shelling
+            // out rather than linking a library — a `pre-commit` that reformats
+            // or refuses is the user's, and deco is not going to be the editor
+            // that quietly skips it. Their stdin is closed and
+            // `GIT_TERMINAL_PROMPT=0` is set, so one that decides to ask a
+            // question fails rather than hanging with the editor holding its
+            // pipes.
+            Operation::Commit(message) => {
+                self.run(directory, &["commit", "--message", message])?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether `HEAD` names a commit — false on a branch with nothing on it.
+    fn has_commit(&self, directory: &Path) -> bool {
+        self.run(directory, &["rev-parse", "--verify", "--quiet", "HEAD"])
+            .is_ok_and(|out| !out.trim().is_empty())
     }
 
     /// Runs git in `directory` and hands back its stdout.
@@ -484,6 +551,82 @@ mod tests {
         // macOS, and git reports where the link goes.
         let found = found.expect("a repository").canonicalize().ok();
         assert_eq!(found, dir.canonicalize().ok());
+    }
+
+    #[test]
+    fn staging_and_committing_do_what_they_say() {
+        let Some(git) = git_or_skip() else { return };
+        let dir = scratch_repo(&git, "apply");
+        std::fs::write(dir.join("a.rs"), "one\n").expect("a file");
+        commit(&git, &dir);
+        std::fs::write(dir.join("a.rs"), "two\n").expect("a file");
+        std::fs::write(dir.join("new.rs"), "fresh\n").expect("a file");
+
+        // Stage one file. The other stays where it was.
+        git.apply(&dir, &Operation::Stage(PathBuf::from("a.rs")))
+            .expect("a stage");
+        let status = git.status(&dir).expect("a status");
+        assert_eq!(status.staged(), 1);
+        assert_eq!(status.untracked(), 1);
+
+        // Unstage it again, leaving the working tree alone.
+        git.apply(&dir, &Operation::Unstage(PathBuf::from("a.rs")))
+            .expect("an unstage");
+        let status = git.status(&dir).expect("a status");
+        assert_eq!(status.staged(), 0);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.rs")).expect("still there"),
+            "two\n",
+            "unstaging touches the index, never the file"
+        );
+
+        // Everything, then a commit.
+        git.apply(&dir, &Operation::StageAll).expect("a stage");
+        assert_eq!(git.status(&dir).expect("a status").staged(), 2);
+        git.apply(&dir, &Operation::Commit("a message".to_owned()))
+            .expect("a commit");
+
+        let status = git.status(&dir).expect("a status");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(status.is_clean(), "everything was recorded");
+    }
+
+    #[test]
+    fn unstaging_works_on_a_branch_with_no_commit_yet() {
+        let Some(git) = git_or_skip() else { return };
+        let dir = scratch_repo(&git, "unborn-unstage");
+        std::fs::write(dir.join("a.rs"), "one\n").expect("a file");
+        git.apply(&dir, &Operation::StageAll).expect("a stage");
+        assert_eq!(git.status(&dir).expect("a status").staged(), 1);
+
+        // `git reset HEAD` has no HEAD to reset against here, which is why
+        // this case takes a different command rather than reporting a failure
+        // the user can do nothing about.
+        let undone = git.apply(&dir, &Operation::Unstage(PathBuf::from("a.rs")));
+        let status = git.status(&dir).expect("a status");
+        let _ = std::fs::remove_dir_all(&dir);
+        undone.expect("an unstage");
+        assert_eq!(status.staged(), 0);
+        assert_eq!(status.untracked(), 1, "and the file itself is still there");
+    }
+
+    #[test]
+    fn a_change_to_a_path_that_could_escape_is_refused() {
+        let git = Git::default();
+        for bad in ["/etc/passwd", "../secrets.rs", "a/../../b.rs", ""] {
+            let path = PathBuf::from(bad);
+            assert!(
+                matches!(
+                    git.apply(Path::new("."), &Operation::Stage(path.clone())),
+                    Err(ScmError::NotInWorkingTree(_))
+                ),
+                "staging {bad:?} was passed to git rather than refused"
+            );
+            assert!(matches!(
+                git.apply(Path::new("."), &Operation::Unstage(path)),
+                Err(ScmError::NotInWorkingTree(_))
+            ));
+        }
     }
 
     #[test]

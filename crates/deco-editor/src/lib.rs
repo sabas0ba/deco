@@ -21,6 +21,7 @@ pub mod session;
 pub mod workspace;
 
 pub use commands::{Clipboard, Context, MemoryClipboard, Outcome};
+pub use deco_scm::Operation as GitOperation;
 pub use document::{Document, View};
 pub use explorer::{Explorer, Row as ExplorerRow};
 pub use files::{FileError, Operation as FileOperation};
