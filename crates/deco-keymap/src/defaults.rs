@@ -165,21 +165,28 @@ pub const DEFAULT_KEYBINDINGS_JSONC: &str = r#"[
     { "key": "escape",       "command": "workbench.action.focusActiveEditorGroup", "when": "sideBarFocus" },
     // Changing the files themselves. VS Code's identifiers, and its keys — `F2`
     // and `delete` mean something else in the text, which is why both are gated.
-    { "key": "f2",           "command": "renameFile",           "when": "sideBarFocus" },
+    { "key": "f2",           "command": "renameFile",           "when": "filesExplorerFocus" },
     // `cmd+backspace` on macOS, where the key labelled Delete reports as
     // Backspace and forward-delete is the awkward one. VS Code's explorer binds
     // the same pair.
-    { "key": "delete",       "mac": "cmd+backspace", "command": "deleteFile",  "when": "sideBarFocus" },
+    { "key": "delete",       "mac": "cmd+backspace", "command": "deleteFile",  "when": "filesExplorerFocus" },
     // `mac` overrides on both, or the general `cmd+n` rule above wins on macOS
     // and the platform-standard key opens an untitled editor instead of the
     // tree's prompt. A focus-specific rule only overrides a general one when it
     // is bound for the same platform.
-    { "key": "ctrl+n",       "mac": "cmd+n",       "command": "explorer.newFile",   "when": "sideBarFocus" },
-    { "key": "ctrl+shift+n", "mac": "cmd+shift+n", "command": "explorer.newFolder", "when": "sideBarFocus" },
+    { "key": "ctrl+n",       "mac": "cmd+n",       "command": "explorer.newFile",   "when": "filesExplorerFocus" },
+    { "key": "ctrl+shift+n", "mac": "cmd+shift+n", "command": "explorer.newFolder", "when": "filesExplorerFocus" },
+    // Every one of these is gated on `filesExplorerFocus` rather than
+    // `sideBarFocus`. The side bar has two tenants, and `sideBarFocus` is true
+    // for both — so on the wider key these would reach the *hidden* tree's
+    // selection while the source-control view is on screen. `ctrl+z` is the
+    // one that shows why it matters: it would take back a file operation
+    // nothing on screen mentions.
+    //
     // The tree's own undo. The general `ctrl+z` above is gated on
     // `textInputFocus`, which is false while a region has the keyboard — so
     // without this the key does not resolve at all in the tree.
-    { "key": "ctrl+z",       "mac": "cmd+z",       "command": "undo", "when": "sideBarFocus" },
+    { "key": "ctrl+z",       "mac": "cmd+z",       "command": "undo", "when": "filesExplorerFocus" },
     { "key": "ctrl+shift+e", "mac": "cmd+shift+e", "command": "workbench.files.action.focusFilesExplorer" },
     // The side bar's other tenant. Both of these open the container, switch to
     // the view and give it the keyboard, which is what VS Code's
@@ -188,7 +195,7 @@ pub const DEFAULT_KEYBINDINGS_JSONC: &str = r#"[
     // The repository's own keys, gated on the source-control view having the
     // keyboard: `enter` opens a file there and means something else entirely in
     // the text, and `ctrl+enter` is VS Code's own commit key.
-    { "key": "ctrl+enter",   "mac": "cmd+enter",   "command": "git.commit", "when": "sideBarFocus" },
+    { "key": "ctrl+enter",   "mac": "cmd+enter",   "command": "git.commit", "when": "deco.sourceControlFocus" },
 
     // ---- Quick open -----------------------------------------------------
     // Last, so these win whenever a prompt holds the keyboard: a later rule takes

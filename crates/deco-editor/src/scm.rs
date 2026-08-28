@@ -116,6 +116,9 @@ impl Row {
 pub struct SourceControl {
     rows: Vec<Row>,
     selected: usize,
+    /// The first row drawn, so a repository with more changes than fit can be
+    /// walked. The tree keeps one for the same reason.
+    scroll: usize,
 }
 
 impl SourceControl {
@@ -146,6 +149,9 @@ impl SourceControl {
             // index is kept rather than reset to the top, so the selection
             // lands next to where the user was working.
             .unwrap_or_else(|| self.selected.min(self.rows.len().saturating_sub(1)));
+        // A list that shortened under a scrolled view would otherwise be drawn
+        // from a line that no longer exists, and show nothing at all.
+        self.scroll = self.scroll.min(self.line_of(self.selected));
     }
 
     /// Every row, in the order they are shown.
@@ -166,6 +172,50 @@ impl SourceControl {
     /// Which row is selected, for a renderer that draws it differently.
     pub fn selected_index(&self) -> usize {
         self.selected
+    }
+
+    /// The first row a renderer should draw.
+    pub fn scroll(&self) -> usize {
+        self.scroll
+    }
+
+    /// Scrolls so the selection is within `height` rows of the top.
+    ///
+    /// Called by whoever knows how tall the side bar is, which is not this —
+    /// the same bargain the tree makes. Without it a repository with more
+    /// changes than fit would let the selection walk off the bottom, and the
+    /// next stage or unstage would act on a file nothing on screen shows.
+    ///
+    /// The headings are counted, because they take rows too: a list drawn as
+    /// four groups of three is nineteen rows, not twelve, and scrolling by the
+    /// file count alone would leave the last one just off screen.
+    pub fn scroll_into_view(&mut self, height: usize) {
+        if height == 0 {
+            return;
+        }
+        let line = self.line_of(self.selected);
+        if line < self.scroll {
+            self.scroll = line;
+        } else if line >= self.scroll + height {
+            self.scroll = line + 1 - height;
+        }
+    }
+
+    /// Which drawn line a row sits on, headings included.
+    fn line_of(&self, index: usize) -> usize {
+        let mut line = 0;
+        let mut group = None;
+        for (at, row) in self.rows.iter().enumerate() {
+            if group != Some(row.group) {
+                group = Some(row.group);
+                line += 1;
+            }
+            if at == index {
+                return line;
+            }
+            line += 1;
+        }
+        line
     }
 
     /// Moves down, stopping at the end rather than wrapping.

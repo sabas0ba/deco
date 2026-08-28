@@ -552,11 +552,15 @@ fn scm_rows(
     let focused = session.focus() == deco_editor::Focus::SideBar
         && session.side_bar_view() == deco_editor::SideBarView::SourceControl;
     let selected_at = view.selected_index();
+
+    // Every line the list would draw, headings included, and then the window
+    // the model has scrolled to. Built whole rather than drawn straight into
+    // `rows`, because the scroll is counted in *lines* — a heading takes one —
+    // and slicing at the end is the only way the two agree about where the
+    // selection is.
+    let mut lines: Vec<Row> = Vec::new();
     let mut group = None;
     for (index, row) in view.rows().iter().enumerate() {
-        if rows.len() >= rect.height {
-            break;
-        }
         if group != Some(row.group) {
             group = Some(row.group);
             let count = view
@@ -564,16 +568,14 @@ fn scm_rows(
                 .iter()
                 .filter(|other| other.group == row.group)
                 .count();
-            rows.push(region_line(
+            lines.push(region_line(
                 &format!("{} {count}", row.group.title()),
                 rect.width,
                 dim(fg, bg),
                 bg,
             ));
-            if rows.len() >= rect.height {
-                break;
-            }
         }
+
         // `M src/main.rs` — the letter, then the name, then the directory in
         // the dimmer colour when there is room. VS Code puts the letter on the
         // right; here it is on the left, because a column that moves with the
@@ -602,7 +604,7 @@ fn scm_rows(
         while columns(&text) < rect.width {
             text.push(' ');
         }
-        rows.push(Row {
+        lines.push(Row {
             spans: vec![Span {
                 text,
                 fg: row_fg,
@@ -610,6 +612,8 @@ fn scm_rows(
             }],
         });
     }
+
+    rows.extend(lines.into_iter().skip(view.scroll()).take(rect.height));
 }
 
 /// A quieter version of `fg` against `bg`, for headings and second columns.

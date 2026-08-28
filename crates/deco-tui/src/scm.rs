@@ -75,6 +75,36 @@ impl Scm {
         }
     }
 
+    /// Where the repository begins, asking git once if nobody has yet.
+    ///
+    /// Every path the view holds is repository-relative, so anything that acts
+    /// on one — opening it, staging it — needs this rather than the folder
+    /// deco was started in. Resolving it lazily *inside the gutter's fetch*
+    /// was the bug: with `git.decorations.enabled` off, or a workspace opened
+    /// with no file, nothing ever asked, and staging `sub/a.rs` from
+    /// `/repo/sub` would have gone looking for `/repo/sub/sub/a.rs`.
+    fn repository_root(&mut self, session: &mut Session) -> Option<PathBuf> {
+        if let Some(found) = self.repo_root.clone() {
+            return Some(found);
+        }
+        let root = self.root.clone()?;
+        match self.git.root(&root) {
+            Ok(found) => {
+                self.repo_root = Some(found.clone());
+                // The session needs it too, to turn a row's path back into
+                // something it can open.
+                session.set_repository_root(Some(found.clone()));
+                Some(found)
+            }
+            Err(error) => {
+                if permanent(&error) {
+                    self.unavailable = Some(error.to_string());
+                }
+                None
+            }
+        }
+    }
+
     /// Why there is no status, when that is settled. `None` while it might yet
     /// work.
     pub fn unavailable(&self) -> Option<&str> {
@@ -104,9 +134,6 @@ impl Scm {
         if self.unavailable.is_some() {
             return false;
         }
-        let Some(root) = self.root.clone() else {
-            return false;
-        };
         let Some(path) = session.committed_wanted() else {
             return false;
         };
@@ -114,23 +141,14 @@ impl Scm {
         // the folder deco was started in, which is only the repository root
         // when nobody opened a subdirectory — and when they did, the blob
         // fetched would be a different file's, silently.
-        if self.repo_root.is_none() {
-            match self.git.root(&root) {
-                Ok(found) => self.repo_root = Some(found),
-                Err(error) => {
-                    if permanent(&error) {
-                        self.unavailable = Some(error.to_string());
-                    }
-                    // Answered rather than left standing: a repository that
-                    // cannot say where it begins cannot say what a file used
-                    // to hold either, and the alternative is asking on every
-                    // poll for the rest of the session.
-                    session.fill_committed(path, None);
-                    return true;
-                }
-            }
-        }
-        let repo_root = self.repo_root.clone().unwrap_or_else(|| root.clone());
+        let Some(repo_root) = self.repository_root(session) else {
+            // Answered rather than left standing: a repository that cannot say
+            // where it begins cannot say what a file used to hold either, and
+            // the alternative is asking on every poll for the rest of the
+            // session.
+            session.fill_committed(path, None);
+            return true;
+        };
         // The cache is keyed by the path the editor holds; git answers about
         // paths relative to the repository. A file outside it — opened with
         // `ctrl+o` — has no answer here, and saying so is what stops it being
@@ -151,7 +169,11 @@ impl Scm {
     /// with nothing to say why. They are also fast — an index write, not a
     /// walk of the working tree.
     pub fn apply(&mut self, session: &mut Session, operation: &deco_scm::Operation) {
-        let Some(root) = self.repo_root.clone().or_else(|| self.root.clone()) else {
+        // Resolved rather than fallen back to the workspace folder. The paths
+        // in an operation are repository-relative, and running them from the
+        // wrong directory does not fail loudly — it names a file that is not
+        // there, or worse, one that is.
+        let Some(root) = self.repository_root(session) else {
             session.git_operation_failed(operation, "there is no repository here");
             return;
         };

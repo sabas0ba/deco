@@ -240,16 +240,25 @@ impl Git {
             Operation::StageAll => {
                 self.run(directory, &["add", "--all", "--"])?;
             }
-            Operation::Unstage(one) => {
-                let one = path(one)?;
+            Operation::Unstage {
+                path: one,
+                original,
+            } => {
+                // Both halves of a staged rename, or it comes apart: see
+                // `Operation::Unstage`.
+                let mut names = vec![path(one)?];
+                if let Some(original) = original {
+                    names.push(path(original)?);
+                }
                 // `restore --staged` needs git 2.23. `reset` is older than
                 // anything still installed, and on a branch with no commit yet
                 // there is no `HEAD` to reset against — so that case takes the
                 // one command that works there.
-                let args: Vec<&str> = match self.has_commit(directory) {
-                    true => vec!["reset", "--quiet", "HEAD", "--", &one],
-                    false => vec!["rm", "--cached", "--quiet", "--", &one],
+                let mut args: Vec<&str> = match self.has_commit(directory) {
+                    true => vec!["reset", "--quiet", "HEAD", "--"],
+                    false => vec!["rm", "--cached", "--quiet", "--"],
                 };
+                args.extend(names.iter().map(String::as_str));
                 self.run(directory, &args)?;
             }
             // No `-a`: a plain commit records exactly the index, which is
@@ -570,8 +579,14 @@ mod tests {
         assert_eq!(status.untracked(), 1);
 
         // Unstage it again, leaving the working tree alone.
-        git.apply(&dir, &Operation::Unstage(PathBuf::from("a.rs")))
-            .expect("an unstage");
+        git.apply(
+            &dir,
+            &Operation::Unstage {
+                path: PathBuf::from("a.rs"),
+                original: None,
+            },
+        )
+        .expect("an unstage");
         let status = git.status(&dir).expect("a status");
         assert_eq!(status.staged(), 0);
         assert_eq!(
@@ -592,6 +607,45 @@ mod tests {
     }
 
     #[test]
+    fn unstaging_a_rename_takes_both_halves_back() {
+        let Some(git) = git_or_skip() else { return };
+        let dir = scratch_repo(&git, "rename-unstage");
+        std::fs::create_dir_all(dir.join("old")).expect("a directory");
+        std::fs::create_dir_all(dir.join("new")).expect("a directory");
+        // Long enough that git's rename detection is in no doubt.
+        std::fs::write(dir.join("old/name.rs"), "a line long enough to match\n").expect("a file");
+        commit(&git, &dir);
+        let moved = std::process::Command::new(&git.program)
+            .args(["mv", "old/name.rs", "new/name.rs"])
+            .current_dir(&dir)
+            .status()
+            .expect("git mv");
+        assert!(moved.success());
+
+        // Only the new path would leave `old/name.rs` staged as a *deletion*
+        // and `new/name.rs` untracked — so a command reporting that it
+        // unstaged the rename would have left a commit that still deletes the
+        // original file.
+        git.apply(
+            &dir,
+            &Operation::Unstage {
+                path: PathBuf::from("new/name.rs"),
+                original: Some(PathBuf::from("old/name.rs")),
+            },
+        )
+        .expect("an unstage");
+
+        let status = git.status(&dir).expect("a status");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            status.staged(),
+            0,
+            "the index is back to what HEAD has: {:?}",
+            status.entries
+        );
+    }
+
+    #[test]
     fn unstaging_works_on_a_branch_with_no_commit_yet() {
         let Some(git) = git_or_skip() else { return };
         let dir = scratch_repo(&git, "unborn-unstage");
@@ -602,7 +656,13 @@ mod tests {
         // `git reset HEAD` has no HEAD to reset against here, which is why
         // this case takes a different command rather than reporting a failure
         // the user can do nothing about.
-        let undone = git.apply(&dir, &Operation::Unstage(PathBuf::from("a.rs")));
+        let undone = git.apply(
+            &dir,
+            &Operation::Unstage {
+                path: PathBuf::from("a.rs"),
+                original: None,
+            },
+        );
         let status = git.status(&dir).expect("a status");
         let _ = std::fs::remove_dir_all(&dir);
         undone.expect("an unstage");
@@ -623,7 +683,13 @@ mod tests {
                 "staging {bad:?} was passed to git rather than refused"
             );
             assert!(matches!(
-                git.apply(Path::new("."), &Operation::Unstage(path)),
+                git.apply(
+                    Path::new("."),
+                    &Operation::Unstage {
+                        path,
+                        original: None
+                    }
+                ),
                 Err(ScmError::NotInWorkingTree(_))
             ));
         }

@@ -405,6 +405,9 @@ pub struct Session {
     scm_wanted: bool,
     /// Which tenant the side bar is showing.
     side_bar_view: SideBarView,
+    /// Where the repository begins, once a frontend has said. See
+    /// [`Session::set_repository_root`].
+    repository_root: Option<PathBuf>,
     /// The source-control view, rebuilt whenever a status arrives.
     ///
     /// Kept rather than derived per render because it holds a *selection*, and
@@ -616,6 +619,7 @@ impl Session {
             next_group: 0,
             scm: None,
             side_bar_view: SideBarView::default(),
+            repository_root: None,
             source_control: crate::scm::SourceControl::default(),
             // Wanted from the start: the branch is worth showing before the
             // first save, not after it.
@@ -1196,6 +1200,11 @@ impl Session {
         // and why the source-control view answers the same `list.*` keys.
         let scm_focus = in_side_bar && self.side_bar_view == SideBarView::SourceControl;
         self.context.set("listFocus", explorer_focus || scm_focus);
+        // deco's own, because VS Code has no `when` key for "the source-control
+        // view has the keyboard" — its own bindings there are contributed by
+        // the view rather than gated on a context key. The `deco.` prefix is
+        // the rule for exactly this case: a name VS Code does not have.
+        self.context.set("deco.sourceControlFocus", scm_focus);
         // VS Code sets `scmProvider` to the active provider's id. deco has one
         // kind, so the presence of a repository is the whole of it: a `when`
         // clause asking for `scmProvider == 'git'` resolves when git answered.
@@ -3826,11 +3835,17 @@ impl Session {
                 let Some(row) = self.source_control.selection() else {
                     return Outcome::Handled;
                 };
-                let Some(root) = self.workspace_root().map(|root| root.join(&row.path)) else {
-                    // The view lists paths relative to the repository, and
-                    // without a root there is nothing to resolve them against.
+                // Against the *repository* root, which is what these paths
+                // are relative to. The workspace root is only the same thing
+                // when nobody opened a subdirectory, and joining to it there
+                // would ask for `/repo/sub/sub/a.rs`.
+                let Some(root) = self
+                    .repository_root
+                    .as_ref()
+                    .map(|root| root.join(&row.path))
+                else {
                     return Outcome::Message(
-                        "there is no workspace to open this file from".to_owned(),
+                        "deco does not know where this repository begins yet".to_owned(),
                     );
                 };
                 // The keyboard follows the file, as it does out of the tree.
@@ -3843,6 +3858,10 @@ impl Session {
             }
             _ => {}
         }
+        // The same care the tree gets, and reached separately because
+        // `explorer_key` hands over to this before it gets to its own call.
+        let height = self.side_bar_rows();
+        self.source_control.scroll_into_view(height);
         self.refresh_context();
         Outcome::Handled
     }
@@ -3886,7 +3905,12 @@ impl Session {
         if row.group != crate::scm::Group::Staged {
             return Outcome::Message(format!("{} is not staged", row.name()));
         }
-        Outcome::GitOperation(deco_scm::Operation::Unstage(row.path.clone()))
+        Outcome::GitOperation(deco_scm::Operation::Unstage {
+            path: row.path.clone(),
+            // A staged rename is two entries in the index, and unstaging one
+            // of them leaves a commit that still deletes the other.
+            original: row.original.clone(),
+        })
     }
 
     /// `git.commit`: ask for a message.
@@ -3945,9 +3969,19 @@ impl Session {
         self.refresh_context();
     }
 
-    /// Where the workspace is rooted, if anywhere.
-    fn workspace_root(&self) -> Option<std::path::PathBuf> {
-        self.explorer.as_ref().map(|tree| tree.root().to_path_buf())
+    /// Says where the repository begins.
+    ///
+    /// Not the same as the workspace root: opening a subdirectory of a
+    /// repository is ordinary, and every path the source-control view holds is
+    /// relative to the *repository*. Told rather than worked out, because
+    /// finding it means running `git rev-parse` and the core cannot.
+    pub fn set_repository_root(&mut self, root: Option<PathBuf>) {
+        self.repository_root = root;
+    }
+
+    /// Where the repository begins, if a frontend has said.
+    pub fn repository_root(&self) -> Option<&Path> {
+        self.repository_root.as_deref()
     }
 
     /// The workspace tree, if a root has been set.
@@ -4250,16 +4284,24 @@ impl Session {
         }
         // The side bar's height, so the tree can keep the selection on screen —
         // the model does not know how tall it is drawn.
-        let height = self
-            .regions()
-            .side_bar
-            .map(|rect| rect.height.saturating_sub(EXPLORER_CHROME_ROWS))
-            .unwrap_or(0);
+        let height = self.side_bar_rows();
         if let Some(explorer) = self.explorer.as_mut() {
             explorer.scroll_into_view(height);
         }
         self.refresh_context();
         Outcome::Handled
+    }
+
+    /// How many rows the side bar has for a list, once its chrome is off.
+    ///
+    /// The models do not know how tall they are drawn, so whoever does has to
+    /// tell them — and that is here rather than in a frontend, because the
+    /// division of the window is the session's.
+    fn side_bar_rows(&self) -> usize {
+        self.regions()
+            .side_bar
+            .map(|rect| rect.height.saturating_sub(EXPLORER_CHROME_ROWS))
+            .unwrap_or(0)
     }
 
     /// Moves the keyboard to a region, showing it first if it is hidden.
@@ -9063,6 +9105,63 @@ mod tests {
     }
 
     #[test]
+    fn the_trees_keys_do_not_reach_it_from_the_source_control_view() {
+        let mut s = with_tree();
+        s.fill_scm(Some(dirty_status()));
+        s.run("workbench.view.scm", None, 0);
+
+        // `sideBarFocus` is true for *both* tenants, so a binding gated on it
+        // alone would act on the tree hidden behind this view. `ctrl+z` is the
+        // one that shows why it matters: it would take back a file operation
+        // nothing on screen mentions.
+        for key in ["ctrl+z", "ctrl+n", "ctrl+shift+n", "f2", "delete"] {
+            let chord = Chord::parse(key).expect("a key");
+            let outcome = s.handle_chord(chord, 0);
+            assert!(
+                matches!(outcome, Outcome::NotFound | Outcome::Handled),
+                "{key} resolved to something in the source-control view: {outcome:?}"
+            );
+            assert!(
+                s.prompt.is_none(),
+                "{key} opened one of the tree's prompts from the wrong view"
+            );
+        }
+
+        // And they still work where they belong.
+        s.run("workbench.view.explorer", None, 0);
+        s.handle_chord(Chord::parse("ctrl+n").expect("a key"), 0);
+        assert_eq!(
+            s.prompt.as_ref().map(|p| p.kind()),
+            Some(PromptKind::NewFile)
+        );
+    }
+
+    #[test]
+    fn the_source_control_list_scrolls_with_its_selection() {
+        let mut s = with_tree();
+        let mut entries = String::from("# branch.oid 1c9d4e5\0# branch.head main\0");
+        for n in 0..30 {
+            entries.push_str(&format!("? file{n:02}.rs\0"));
+        }
+        s.fill_scm(Some(deco_scm::parse(&entries).expect("git's own format")));
+        s.resize(80, 14);
+        s.run("workbench.view.scm", None, 0);
+
+        assert_eq!(s.source_control().scroll(), 0);
+        for _ in 0..29 {
+            s.run("list.focusDown", None, 0);
+        }
+        // Without this the selection walks off the bottom and the next stage
+        // acts on a file nothing on screen shows.
+        assert!(
+            s.source_control().scroll() > 0,
+            "the list never scrolled: selection {} of {}",
+            s.source_control().selected_index(),
+            s.source_control().rows().len()
+        );
+    }
+
+    #[test]
     fn a_folder_that_is_not_a_repository_empties_the_view() {
         let mut s = with_tree();
         s.fill_scm(Some(dirty_status()));
@@ -9081,12 +9180,20 @@ mod tests {
         s.fill_scm(Some(dirty_status()));
         s.run("workbench.view.scm", None, 0);
 
-        // The view lists paths relative to the repository; opening one has to
-        // put the workspace root back on.
+        // Until a frontend has said where the repository begins, there is
+        // nothing to resolve a repository-relative path against — and guessing
+        // the workspace root would open the wrong file whenever the two
+        // differ.
+        assert!(matches!(s.run("list.select", None, 0), Outcome::Message(_)));
+
+        // Rooted a level above the workspace, which is the case that catches a
+        // join to the wrong root: `/repo/sub` + `sub/work.rs` would be
+        // `/repo/sub/sub/work.rs`.
+        s.set_repository_root(Some(PathBuf::from("/repo")));
         let Outcome::OpenFile { path, .. } = s.run("list.select", None, 0) else {
             panic!("expected the file to open");
         };
-        assert_eq!(path, PathBuf::from("/w/work.rs"));
+        assert_eq!(path, PathBuf::from("/repo/work.rs"));
         assert_eq!(
             s.focus(),
             Focus::Editor,

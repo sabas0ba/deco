@@ -503,7 +503,7 @@ impl Take {
                     *worktree = '.';
                 }
             }
-            deco_scm::Operation::Unstage(path) => {
+            deco_scm::Operation::Unstage { path, .. } => {
                 for (held, staged, worktree) in self.scm.iter_mut() {
                     if held.as_str() == path.to_string_lossy() {
                         *worktree = if *staged == 'A' { '?' } else { *staged };

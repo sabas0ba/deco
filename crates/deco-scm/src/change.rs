@@ -43,7 +43,18 @@ pub enum Operation {
     /// be a process each and a half-staged tree if one of them failed.
     StageAll,
     /// Take one file back out of the index, leaving the working tree alone.
-    Unstage(PathBuf),
+    Unstage {
+        /// What it is called in the index.
+        path: PathBuf,
+        /// The name it had before a staged rename, when it is one.
+        ///
+        /// Both halves have to go back together. Resetting only the new name
+        /// leaves the old one staged *as a deletion* and the new one
+        /// untracked — so a command that said it unstaged the rename would
+        /// have left a commit that still deletes the original file. Verified
+        /// against git 2.43 rather than reasoned about.
+        original: Option<PathBuf>,
+    },
     /// Record what is staged, with this message.
     Commit(String),
 }
@@ -54,7 +65,7 @@ impl Operation {
         match self {
             Self::Stage(path) => format!("staged {}", name_of(path)),
             Self::StageAll => "staged everything".to_owned(),
-            Self::Unstage(path) => format!("unstaged {}", name_of(path)),
+            Self::Unstage { path, .. } => format!("unstaged {}", name_of(path)),
             Self::Commit(_) => "committed".to_owned(),
         }
     }
