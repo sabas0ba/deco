@@ -293,11 +293,12 @@ impl Server {
                 reason: error.to_string(),
             })?;
         for directory in administrative {
-            let directory = directory
-                .canonicalize()
-                .map_err(|error| ServerError::SourceControl {
-                    reason: format!("{} cannot be resolved: {error}", directory.display()),
-                })?;
+            let directory =
+                directory
+                    .canonicalize()
+                    .map_err(|error| ServerError::SourceControl {
+                        reason: format!("{} cannot be resolved: {error}", directory.display()),
+                    })?;
             if !directory.starts_with(&self.root) {
                 return Err(ServerError::RepositoryMetadataOutsideWorkspace {
                     metadata: directory.display().to_string(),

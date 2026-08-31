@@ -177,10 +177,7 @@ impl Git {
     /// directory Git used to produce them. The paths are not canonicalised;
     /// confinement callers must do that before comparing them with a boundary
     /// so a symbolic link cannot disguise where one leads.
-    pub fn administrative_directories(
-        &self,
-        directory: &Path,
-    ) -> Result<[PathBuf; 2], ScmError> {
+    pub fn administrative_directories(&self, directory: &Path) -> Result<[PathBuf; 2], ScmError> {
         let read = |args: &[&str], name: &str| -> Result<PathBuf, ScmError> {
             let output = self.run_bytes(directory, args)?;
             let path = output.strip_suffix(b"\n").unwrap_or(&output);

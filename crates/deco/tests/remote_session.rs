@@ -298,14 +298,11 @@ fn source_control_refuses_external_metadata_for_a_linked_worktree() {
     let Some(primary) = repository("source-control-worktree-primary") else {
         return;
     };
-    let linked = primary
-        .parent()
-        .expect("a temporary parent")
-        .join(format!(
-            "deco-remote-session-source-control-linked-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
+    let linked = primary.parent().expect("a temporary parent").join(format!(
+        "deco-remote-session-source-control-linked-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
     let _ = std::fs::remove_dir_all(&linked);
     let added = ProcessCommand::new("git")
         .args(["worktree", "add", "--quiet", "--detach"])
