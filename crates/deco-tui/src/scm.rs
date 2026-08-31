@@ -789,6 +789,19 @@ mod tests {
         );
         assert_eq!(session.scm_status().map(Status::changed), Some(1));
 
+        let committed = match request_rx.try_recv() {
+            Ok(RemoteRequest::Committed(path)) => path,
+            _ => panic!("the open file's committed text should be next"),
+        };
+        assert_eq!(committed, PathBuf::from("/remote/project/src/main.rs"));
+        response_tx
+            .send(RemoteResponse::Committed {
+                path: committed,
+                result: Ok(Some("fn main() {}\n".to_owned())),
+            })
+            .unwrap();
+        assert!(scm.poll(&mut session));
+
         let operation = Operation::Stage(PathBuf::from("src/main.rs"));
         scm.apply(&mut session, &operation);
         assert!(
