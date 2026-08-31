@@ -537,7 +537,7 @@ fn permanent(error: &ScmError) -> bool {
 fn remote_permanent(error: &str) -> bool {
     error.contains("is not on this machine")
         || error.contains("is not inside a git repository")
-        || error.contains("begins outside the served workspace")
+        || error.contains("outside the served workspace")
 }
 
 #[cfg(test)]
@@ -737,6 +737,9 @@ mod tests {
         ));
         assert!(remote_permanent(
             "the repository at /repo begins outside the served workspace /repo/sub"
+        ));
+        assert!(remote_permanent(
+            "Git metadata at /repo/.git lies outside the served workspace /worktree"
         ));
         assert!(!remote_permanent("git exited with 128: index.lock exists"));
     }

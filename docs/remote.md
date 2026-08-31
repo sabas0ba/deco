@@ -481,6 +481,12 @@ The repository root is confined too. A workspace that is only a subdirectory
 of a repository does not make its parent newly reachable; `scm.*` is refused
 until the session serves the repository root itself.
 
+Git's per-worktree administrative directory and shared common directory must
+also be inside the workspace. A linked worktree whose `.git` file points back
+to metadata in another checkout is refused even though its visible repository
+root is inside the workspace; otherwise staging or committing there would
+change an index, refs, and object store the server was not given authority over.
+
 `settings.read` is the one answer about a file outside it, and it is shaped so
 the rule still holds: it takes **no path**. A client cannot name a file, only ask
 for "this machine's settings", and gets whatever is at the one path the server

@@ -146,6 +146,15 @@ pub enum ServerError {
         /// The server's confinement boundary.
         workspace: String,
     },
+    /// Git would keep index, refs, or objects outside the directory this
+    /// server is allowed to change.
+    #[error("Git metadata at {metadata} lies outside the served workspace {workspace}")]
+    RepositoryMetadataOutsideWorkspace {
+        /// The canonical administrative or common directory Git reported.
+        metadata: String,
+        /// The server's confinement boundary.
+        workspace: String,
+    },
     /// A source-control path is in the workspace but not in its repository.
     #[error("{path} is not inside the repository served by this session")]
     OutsideRepository {
@@ -276,6 +285,25 @@ impl Server {
                 repository: repository.display().to_string(),
                 workspace: self.root.display().to_string(),
             });
+        }
+        let administrative = self
+            .git
+            .administrative_directories(&repository)
+            .map_err(|error| ServerError::SourceControl {
+                reason: error.to_string(),
+            })?;
+        for directory in administrative {
+            let directory = directory
+                .canonicalize()
+                .map_err(|error| ServerError::SourceControl {
+                    reason: format!("{} cannot be resolved: {error}", directory.display()),
+                })?;
+            if !directory.starts_with(&self.root) {
+                return Err(ServerError::RepositoryMetadataOutsideWorkspace {
+                    metadata: directory.display().to_string(),
+                    workspace: self.root.display().to_string(),
+                });
+            }
         }
         Ok(repository)
     }

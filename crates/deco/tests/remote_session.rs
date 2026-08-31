@@ -292,3 +292,46 @@ fn source_control_does_not_expand_a_served_subdirectory_to_its_parent_repository
     client.shutdown();
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn source_control_refuses_external_metadata_for_a_linked_worktree() {
+    let Some(primary) = repository("source-control-worktree-primary") else {
+        return;
+    };
+    let linked = primary
+        .parent()
+        .expect("a temporary parent")
+        .join(format!(
+            "deco-remote-session-source-control-linked-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+    let _ = std::fs::remove_dir_all(&linked);
+    let added = ProcessCommand::new("git")
+        .args(["worktree", "add", "--quiet", "--detach"])
+        .arg(&linked)
+        .arg("HEAD")
+        .current_dir(&primary)
+        .status()
+        .expect("git worktree add should run");
+    assert!(added.success(), "git worktree add failed");
+
+    let mut client = connect(&linked);
+    client.handshake().expect("a handshake");
+    let error = client
+        .scm_status()
+        .expect_err("linked-worktree metadata is outside the workspace")
+        .to_string();
+    assert!(error.contains("Git metadata"), "{error}");
+    assert!(error.contains("outside the served workspace"), "{error}");
+
+    client.shutdown();
+    let removed = ProcessCommand::new("git")
+        .args(["worktree", "remove", "--force"])
+        .arg(&linked)
+        .current_dir(&primary)
+        .status()
+        .expect("git worktree remove should run");
+    assert!(removed.success(), "git worktree remove failed");
+    let _ = std::fs::remove_dir_all(&primary);
+}
