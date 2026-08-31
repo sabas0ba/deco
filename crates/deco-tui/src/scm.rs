@@ -163,11 +163,11 @@ impl Scm {
 
     /// Carries out a repository change the session asked for.
     ///
-    /// Blocking, and deliberately: `git add` and `git commit` are what the
-    /// user just pressed a key for, and an editor that carried on painting
-    /// while they happened would leave the view showing the state before them
-    /// with nothing to say why. They are also fast — an index write, not a
-    /// walk of the working tree.
+    /// Blocking. This prevents a second repository write while the view still
+    /// describes the state before the first one. A stage-all or a commit hook
+    /// can take longer than an index write; moving writes off the event loop
+    /// requires an in-flight state and shutdown/cancellation handling, not
+    /// only another detached thread.
     pub fn apply(&mut self, session: &mut Session, operation: &deco_scm::Operation) {
         // Resolved rather than fallen back to the workspace folder. The paths
         // in an operation are repository-relative, and running them from the

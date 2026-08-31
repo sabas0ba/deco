@@ -117,9 +117,10 @@ telling them there was nothing to commit is how a message gets lost.
 
 **The commit runs your hooks.** A `pre-commit` that reformats or refuses is
 yours, and inheriting it is the whole argument for shelling out rather than
-linking a library. Their stdin is closed and `GIT_TERMINAL_PROMPT` is `0`, so a
-hook that decides to ask a question fails rather than hanging with the editor
-holding its pipes.
+linking a library. Their stdin is closed and `GIT_TERMINAL_PROMPT` is `0`, so
+Git's own terminal prompt is disabled and a hook reading stdin gets EOF. A hook
+is still an arbitrary program: it can open `/dev/tty`, show a graphical prompt
+or run for a long time, and deco does not sandbox or bypass that behaviour.
 
 ### What it deliberately will not do
 

@@ -116,8 +116,8 @@ impl Row {
 pub struct SourceControl {
     rows: Vec<Row>,
     selected: usize,
-    /// The first row drawn, so a repository with more changes than fit can be
-    /// walked. The tree keeps one for the same reason.
+    /// The first drawn line, headings included, so a repository with more
+    /// changes than fit can be walked. The tree keeps one for the same reason.
     scroll: usize,
 }
 
@@ -132,10 +132,11 @@ impl SourceControl {
     /// Replaces the rows with a fresh status, keeping the selection where it
     /// can.
     ///
-    /// By path *and* group, not by index: a refresh reorders the list whenever
-    /// something is staged, and a selection that stayed on row 3 would land on
-    /// a different file than the one the user was looking at — which is how a
-    /// `git.stage` ends up staging the wrong thing.
+    /// By path and group first, then by path if the selected half disappeared.
+    /// A refresh reorders the list whenever something is staged, and a
+    /// selection that stayed on row 3 would land on a different file than the
+    /// one the user was looking at — which is how a following command ends up
+    /// acting on the wrong thing.
     pub fn refresh(&mut self, status: &Status) {
         let was = self.selection().map(|row| (row.path.clone(), row.group));
         self.rows = rows_of(status);
@@ -144,6 +145,12 @@ impl SourceControl {
                 self.rows
                     .iter()
                     .position(|row| row.path == path && row.group == group)
+                    // Staging the working-tree half of a file that already
+                    // has an index half removes the selected row but leaves
+                    // the same file under Staged Changes. Follow that
+                    // remaining half before falling back to a row number,
+                    // otherwise the next command can act on its neighbour.
+                    .or_else(|| self.rows.iter().position(|row| row.path == path))
             })
             // The file it was on is gone — staged, committed, reverted. The
             // index is kept rather than reset to the top, so the selection
@@ -174,7 +181,7 @@ impl SourceControl {
         self.selected
     }
 
-    /// The first row a renderer should draw.
+    /// The first line a renderer should draw, headings included.
     pub fn scroll(&self) -> usize {
         self.scroll
     }
@@ -416,6 +423,26 @@ mod tests {
         ]));
         let selected = view.selection().expect("still listed");
         assert_eq!(selected.path, PathBuf::from("work.rs"));
+        assert_eq!(selected.group, Group::Staged);
+    }
+
+    #[test]
+    fn staging_the_second_half_of_a_file_does_not_select_its_neighbour() {
+        let mut view = SourceControl::from_status(&status(&[BOTH, UNTRACKED]));
+        // Rows: both.rs (Staged), both.rs (Changes), new.rs (Untracked).
+        view.select_next();
+        assert_eq!(view.selection().unwrap().group, Group::Changes);
+
+        // Staging the working-tree half leaves only the already-existing
+        // staged row for both.rs. Keeping row index 1 would move the
+        // selection to new.rs, so the next command would act on a file the
+        // user did not select.
+        view.refresh(&status(&[
+            "1 M. N... 100644 100644 100644 aaaaaaa bbbbbbb both.rs",
+            UNTRACKED,
+        ]));
+        let selected = view.selection().expect("the file is still listed");
+        assert_eq!(selected.path, PathBuf::from("both.rs"));
         assert_eq!(selected.group, Group::Staged);
     }
 

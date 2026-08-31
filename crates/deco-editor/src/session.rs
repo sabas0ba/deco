@@ -3908,8 +3908,12 @@ impl Session {
         Outcome::GitOperation(deco_scm::Operation::Unstage {
             path: row.path.clone(),
             // A staged rename is two entries in the index, and unstaging one
-            // of them leaves a commit that still deletes the other.
-            original: row.original.clone(),
+            // of them leaves a commit that still deletes the other. A copy is
+            // different: its source remains an independent index entry, and
+            // resetting it here would unstage changes the user did not select.
+            original: (row.change == deco_scm::Change::Renamed)
+                .then(|| row.original.clone())
+                .flatten(),
         })
     }
 
@@ -9244,6 +9248,33 @@ mod tests {
         s.fill_scm(Some(dirty_status()));
         s.run("workbench.view.scm", None, 0);
         assert!(matches!(s.run("git.unstage", None, 0), Outcome::Message(_)));
+    }
+
+    #[test]
+    fn unstaging_a_copy_does_not_include_its_source() {
+        let mut s = with_tree();
+        s.fill_scm(Some(
+            deco_scm::parse(
+                "# branch.oid 1c9d4e5\0# branch.head main\0\
+                 2 C. N... 100644 100644 100644 aaaaaaa bbbbbbb C100 copy.rs\0\
+                 source.rs\0",
+            )
+            .expect("git's own format"),
+        ));
+        s.run("workbench.view.scm", None, 0);
+
+        let Outcome::GitOperation(deco_scm::Operation::Unstage {
+            path,
+            original,
+        }) = s.run("git.unstage", None, 0)
+        else {
+            panic!("expected an unstage");
+        };
+        assert_eq!(path, PathBuf::from("copy.rs"));
+        assert_eq!(
+            original, None,
+            "the copy source may have staged changes of its own"
+        );
     }
 
     #[test]

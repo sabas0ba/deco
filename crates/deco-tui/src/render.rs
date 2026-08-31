@@ -558,7 +558,12 @@ fn scm_rows(
     // `rows`, because the scroll is counted in *lines* — a heading takes one —
     // and slicing at the end is the only way the two agree about where the
     // selection is.
-    let mut lines: Vec<Row> = Vec::new();
+    // The group and whether a line is its heading are retained until the
+    // window is chosen. When a long group scrolls, its real heading can be
+    // above the window; that metadata lets it be repeated at the top rather
+    // than leaving rows whose stage/unstage meaning is no longer visible.
+    let mut lines: Vec<(deco_editor::ScmGroup, bool, Row)> = Vec::new();
+    let mut selected_line = 0;
     let mut group = None;
     for (index, row) in view.rows().iter().enumerate() {
         if group != Some(row.group) {
@@ -568,11 +573,15 @@ fn scm_rows(
                 .iter()
                 .filter(|other| other.group == row.group)
                 .count();
-            lines.push(region_line(
-                &format!("{} {count}", row.group.title()),
-                rect.width,
-                dim(fg, bg),
-                bg,
+            lines.push((
+                row.group,
+                true,
+                region_line(
+                    &format!("{} {count}", row.group.title()),
+                    rect.width,
+                    dim(fg, bg),
+                    bg,
+                ),
             ));
         }
 
@@ -591,6 +600,9 @@ fn scm_rows(
         };
 
         let chosen = index == selected_at;
+        if chosen {
+            selected_line = lines.len();
+        }
         let (row_fg, row_bg) = match (chosen, focused) {
             // The selection is drawn as the tree's is: inverted when the view
             // has the keyboard, and merely marked when it does not, so a
@@ -604,16 +616,65 @@ fn scm_rows(
         while columns(&text) < rect.width {
             text.push(' ');
         }
-        lines.push(Row {
-            spans: vec![Span {
-                text,
-                fg: row_fg,
-                bg: row_bg,
-            }],
-        });
+        lines.push((
+            row.group,
+            false,
+            Row {
+                spans: vec![Span {
+                    text,
+                    fg: row_fg,
+                    bg: row_bg,
+                }],
+            },
+        ));
     }
 
-    rows.extend(lines.into_iter().skip(view.scroll()).take(rect.height));
+    let mut start = view.scroll().min(lines.len().saturating_sub(1));
+    let mut sticky = None;
+    let available_below_sticky = rect.height.saturating_sub(1);
+    if available_below_sticky > 0 && lines.get(start).is_some_and(|(_, heading, _)| !*heading) {
+        // Repeating the heading costs a row. Shift the content window when
+        // necessary so the selected file remains visible at either edge.
+        if selected_line < start {
+            start = selected_line;
+        } else if selected_line >= start + available_below_sticky {
+            start = selected_line + 1 - available_below_sticky;
+        }
+        if let Some((group, heading, _)) = lines.get(start) {
+            if !*heading {
+                sticky = Some(*group);
+            }
+        }
+    }
+
+    if let Some(group) = sticky {
+        let count = view
+            .rows()
+            .iter()
+            .filter(|row| row.group == group)
+            .count();
+        rows.push(region_line(
+            &format!("{} {count}", group.title()),
+            rect.width,
+            dim(fg, bg),
+            bg,
+        ));
+        rows.extend(
+            lines
+                .into_iter()
+                .skip(start)
+                .take(available_below_sticky)
+                .map(|(_, _, row)| row),
+        );
+    } else {
+        rows.extend(
+            lines
+                .into_iter()
+                .skip(start)
+                .take(rect.height)
+                .map(|(_, _, row)| row),
+        );
+    }
 }
 
 /// A quieter version of `fg` against `bg`, for headings and second columns.
@@ -4398,6 +4459,27 @@ mod tests {
         assert!(joined.contains("Changes 1"), "{joined}");
         assert!(joined.contains("Untracked 1"), "{joined}");
         assert!(joined.contains("? new.rs"), "{joined}");
+    }
+
+    #[test]
+    fn a_scrolled_group_keeps_its_heading_and_selection_visible() {
+        let entries: Vec<String> = (0..30).map(|n| format!("? file{n:02}.rs")).collect();
+        let borrowed: Vec<&str> = entries.iter().map(String::as_str).collect();
+        let mut session = with_scm(&borrowed);
+        session.resize(80, 14);
+        for _ in 0..29 {
+            session.run("list.focusDown", None, 0);
+        }
+
+        let joined = side_bar_lines(&session).join("\n");
+        assert!(
+            joined.contains("Untracked 30"),
+            "a row without its heading does not say whether stage or unstage applies: {joined}"
+        );
+        assert!(
+            joined.contains("? file29.rs"),
+            "making room for the repeated heading must not hide the selection: {joined}"
+        );
     }
 
     #[test]

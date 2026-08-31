@@ -24,11 +24,11 @@
 //!
 //! # What this does not do
 //!
-//! Only reading, so far. Staging, committing and checking out are the third
-//! stage of the [git chapter](https://github.com/sabas0ba/deco/blob/main/docs/roadmap.md);
-//! a command that *writes* to a repository is a different promise from one
-//! that reads it, and it will arrive with the view that gives the user
-//! somewhere to see what they are about to do.
+//! Operation covers staging, unstaging and committing. It deliberately
+//! excludes discarding work, switching branches and anything that reaches the
+//! network; each has failure and credential behaviour beyond an index update.
+//! See the [git chapter](https://github.com/sabas0ba/deco/blob/main/docs/roadmap.md)
+//! for what remains.
 
 #![deny(missing_docs)]
 

@@ -499,8 +499,10 @@ impl Take {
             }
             deco_scm::Operation::StageAll => {
                 for (_, staged, worktree) in self.scm.iter_mut() {
-                    *staged = if *worktree == '?' { 'A' } else { *worktree };
-                    *worktree = '.';
+                    if *worktree != '.' {
+                        *staged = if *worktree == '?' { 'A' } else { *worktree };
+                        *worktree = '.';
+                    }
                 }
             }
             deco_scm::Operation::Unstage { path, .. } => {
@@ -511,10 +513,13 @@ impl Take {
                     }
                 }
             }
-            // Everything staged is now what `HEAD` has, so it stops being a
-            // difference at all.
+            // The staged half is now what HEAD has. A file modified again
+            // since it was staged remains as a working-tree change.
             deco_scm::Operation::Commit(_) => {
-                self.scm.retain(|(_, staged, _)| *staged == '.');
+                for (_, staged, _) in self.scm.iter_mut() {
+                    *staged = '.';
+                }
+                self.scm.retain(|(_, _, worktree)| *worktree != '.');
             }
         }
         self.refresh_scm();
