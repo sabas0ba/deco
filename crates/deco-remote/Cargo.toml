@@ -18,6 +18,7 @@ deco-core.workspace = true
 # the same rules the editor uses for a configuration directory, so the file a
 # person edits on the remote is the file a connected session is served.
 deco-config.workspace = true
+deco-scm.workspace = true
 # For `--remote-install-download`: the checksum of a downloaded release is
 # computed here rather than by whatever `sha256sum` is on the PATH. The transfer
 # and the decompression are chores that can be delegated; deciding whether the

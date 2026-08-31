@@ -224,6 +224,44 @@ fn connect(
     } else {
         None
     };
+
+    // Git status can walk for a long time and commit hooks are arbitrary
+    // programs. They get their own server connection, owned by a worker in the
+    // frontend, so neither can hold up file reads or the terminal event loop.
+    // Optional for compatibility: an older server still opens the workspace,
+    // but says at startup that source control needs an update.
+    let scm_methods = ["scm.status", "scm.committed", "scm.apply"];
+    let scm = if scm_methods.iter().all(|method| hello.serves(method)) {
+        match deco_remote::Client::start(&command) {
+            Ok(mut scm) => match scm.handshake() {
+                Ok(answer) if scm_methods.iter().all(|method| answer.serves(method)) => Some(scm),
+                Ok(_) => {
+                    problems.push(
+                        "remote session: source control is unavailable; update the remote deco"
+                            .to_owned(),
+                    );
+                    None
+                }
+                Err(error) => {
+                    problems.push(format!(
+                        "remote session: could not start source control: {error}"
+                    ));
+                    None
+                }
+            },
+            Err(error) => {
+                problems.push(format!(
+                    "remote session: could not start source control: {error}"
+                ));
+                None
+            }
+        }
+    } else {
+        problems.push(
+            "remote session: source control is unavailable; update the remote deco".to_owned(),
+        );
+        None
+    };
     // The workspace as the *far end* spells it, which is what every URI a
     // language server over there sees has to be built from — and the one thing
     // this machine cannot work out for itself.
@@ -233,7 +271,11 @@ fn connect(
         workspace: PathBuf::from(&hello.workspace),
     };
     Ok((
-        deco_tui::RemoteSession { client, location },
+        deco_tui::RemoteSession {
+            client,
+            scm,
+            location,
+        },
         server_path,
         remote_settings,
     ))

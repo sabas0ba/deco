@@ -37,14 +37,14 @@
 //!
 //! # What it does not do yet
 //!
-//! No port forwarding, no provisioning (the binary has to be there already), no
-//! language servers or extensions on the remote, and no watching for changes. The
-//! methods below are what opening, listing and saving a file need, plus the one
-//! that hands over this machine's settings, and nothing else is claimed.
+//! No extension hosts and no watching for changes. The methods below are what
+//! opening, listing and saving a file need, source control on the machine holding
+//! the repository, plus the one that hands over this machine's settings.
 
 use std::io::{BufRead, Write};
 use std::path::{Component, Path, PathBuf};
 
+use deco_scm::{Git, Operation, ScmError};
 use serde_json::json;
 
 use crate::frame::{self, Message};
@@ -131,6 +131,29 @@ pub enum ServerError {
         /// What it wanted.
         what: String,
     },
+    /// Git could not answer or carry out a source-control request.
+    #[error("source control is unavailable: {reason}")]
+    SourceControl {
+        /// What git said.
+        reason: String,
+    },
+    /// The repository containing the workspace begins outside the directory
+    /// this server is allowed to reach.
+    #[error(
+        "the repository at {repository} begins outside the served workspace {workspace}"
+    )]
+    RepositoryOutsideWorkspace {
+        /// Where git said the repository begins.
+        repository: String,
+        /// The server's confinement boundary.
+        workspace: String,
+    },
+    /// A source-control path is in the workspace but not in its repository.
+    #[error("{path} is not inside the repository served by this session")]
+    OutsideRepository {
+        /// What was asked for.
+        path: String,
+    },
 }
 
 /// A server bound to one directory.
@@ -146,6 +169,8 @@ pub struct Server {
     /// the connection — a path that could change under a running session would
     /// be one a client could be told two different things about.
     machine_settings: Option<PathBuf>,
+    /// Git on the machine holding the files.
+    git: Git,
 }
 
 impl Server {
@@ -158,6 +183,7 @@ impl Server {
         Ok(Self {
             root: root.as_ref().canonicalize()?,
             machine_settings: machine_settings_path(),
+            git: Git::default(),
         })
     }
 
@@ -232,6 +258,71 @@ impl Server {
         Ok(full)
     }
 
+    /// The repository the served workspace belongs to, without weakening the
+    /// server's one-directory boundary.
+    ///
+    /// Opening a subdirectory of a repository is useful locally, where the
+    /// process already has the user's ambient filesystem authority. A remote
+    /// server has a narrower contract: it must not reveal or change paths above
+    /// the workspace it was explicitly given. Such a repository is therefore
+    /// refused instead of silently expanding the session's reach.
+    fn repository_root(&self) -> Result<PathBuf, ServerError> {
+        let repository = self
+            .git
+            .root(&self.root)
+            .map_err(|error| ServerError::SourceControl {
+                reason: error.to_string(),
+            })?;
+        if !repository.starts_with(&self.root) {
+            return Err(ServerError::RepositoryOutsideWorkspace {
+                repository: repository.display().to_string(),
+                workspace: self.root.display().to_string(),
+            });
+        }
+        Ok(repository)
+    }
+
+    /// Resolves one client path and expresses it relative to `repository`.
+    fn repository_path(&self, repository: &Path, asked: &str) -> Result<PathBuf, ServerError> {
+        let resolved = self.resolve(asked)?;
+        resolved
+            .strip_prefix(repository)
+            .map(Path::to_path_buf)
+            .map_err(|_| ServerError::OutsideRepository {
+                path: asked.to_owned(),
+            })
+    }
+
+    /// Checks every path an operation names against the server boundary before
+    /// handing the operation to git.
+    fn confine_operation(
+        &self,
+        repository: &Path,
+        operation: &Operation,
+    ) -> Result<(), ServerError> {
+        let paths: Vec<&Path> = match operation {
+            Operation::Stage(path) => vec![path],
+            Operation::Unstage { path, original } => {
+                let mut paths = vec![path.as_path()];
+                if let Some(original) = original {
+                    paths.push(original);
+                }
+                paths
+            }
+            Operation::StageAll | Operation::Commit(_) => Vec::new(),
+        };
+        for relative in paths {
+            let candidate = repository.join(relative);
+            let text = candidate
+                .to_str()
+                .ok_or_else(|| ServerError::OutsideRepository {
+                    path: relative.display().to_string(),
+                })?;
+            self.resolve(text)?;
+        }
+        Ok(())
+    }
+
     /// Answers one request.
     ///
     /// Returns the reply to send. A notification produces `None`, and an
@@ -294,6 +385,9 @@ impl Server {
                     "fs.rename",
                     "fs.copy",
                     "settings.read",
+                    "scm.status",
+                    "scm.committed",
+                    "scm.apply",
                     "$/shutdown"
                 ],
             })),
@@ -511,6 +605,43 @@ impl Server {
                     whole_word: params["wholeWord"].as_bool().unwrap_or(false),
                 };
                 Ok(self.search(needle, options))
+            }
+            "scm.status" => {
+                let repository = self.repository_root()?;
+                let status = self
+                    .git
+                    .status(&repository)
+                    .map_err(|error| ServerError::SourceControl {
+                        reason: error.to_string(),
+                    })?;
+                Ok(json!({ "root": repository, "status": status }))
+            }
+            "scm.committed" => {
+                let asked = path("path")?;
+                let repository = self.repository_root()?;
+                let relative = self.repository_path(&repository, &asked)?;
+                let text = self
+                    .git
+                    .committed(&repository, &relative)
+                    .map_err(|error| ServerError::SourceControl {
+                        reason: error.to_string(),
+                    })?;
+                Ok(json!({ "text": text }))
+            }
+            "scm.apply" => {
+                let operation: Operation = serde_json::from_value(params["operation"].clone())
+                    .map_err(|_| ServerError::BadParams {
+                        method: method.to_owned(),
+                        what: "an `operation` object".to_owned(),
+                    })?;
+                let repository = self.repository_root()?;
+                self.confine_operation(&repository, &operation)?;
+                self.git
+                    .apply(&repository, &operation)
+                    .map_err(|error: ScmError| ServerError::SourceControl {
+                        reason: error.to_string(),
+                    })?;
+                Ok(json!({ "applied": true }))
             }
             "$/shutdown" => Ok(json!({ "stopping": true })),
             other => Err(ServerError::UnknownMethod {

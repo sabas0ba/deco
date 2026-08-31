@@ -9,4 +9,5 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+serde.workspace = true
 thiserror.workspace = true

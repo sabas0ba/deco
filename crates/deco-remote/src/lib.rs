@@ -37,7 +37,9 @@
 //! - [`client`] is the near end: it starts the transport's command and calls the
 //!   server's methods.
 //!
-//! What is not here yet: running language servers or extensions over there.
+//! Git status and writes also run through the server. Language servers use the
+//! same transport directly; what is not here yet is running extension hosts
+//! over there.
 
 pub mod authority;
 pub mod client;

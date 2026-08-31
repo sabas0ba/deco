@@ -36,6 +36,7 @@
 //! unreachable host from hanging forever.
 
 use std::io::{BufReader, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command as OsCommand, Stdio};
 
 use serde_json::{json, Value};
@@ -422,6 +423,50 @@ impl Client {
             truncated: said["truncated"].as_bool().unwrap_or(false),
             files_searched: said["filesSearched"].as_u64().unwrap_or(0) as usize,
         })
+    }
+
+    /// What git says about the repository on the far end.
+    ///
+    /// The root is returned with the status because every path in that status
+    /// is relative to the repository rather than to the served workspace.
+    pub fn scm_status(&mut self) -> Result<(PathBuf, deco_scm::Status), ClientError> {
+        let said = self.request("scm.status", json!({}))?;
+        let root = said["root"]
+            .as_str()
+            .map(PathBuf::from)
+            .ok_or(ClientError::Malformed {
+                method: "scm.status".to_owned(),
+                field: "root",
+            })?;
+        let status = serde_json::from_value(said["status"].clone()).map_err(|_| {
+            ClientError::Malformed {
+                method: "scm.status".to_owned(),
+                field: "status",
+            }
+        })?;
+        Ok((root, status))
+    }
+
+    /// What `HEAD` held for one file on the far end.
+    pub fn scm_committed(&mut self, path: &Path) -> Result<Option<String>, ClientError> {
+        let said = self.request(
+            "scm.committed",
+            json!({ "path": path.display().to_string() }),
+        )?;
+        match said.get("text") {
+            Some(Value::Null) => Ok(None),
+            Some(Value::String(text)) => Ok(Some(text.clone())),
+            _ => Err(ClientError::Malformed {
+                method: "scm.committed".to_owned(),
+                field: "text",
+            }),
+        }
+    }
+
+    /// Carries out one source-control operation on the far end.
+    pub fn scm_apply(&mut self, operation: &deco_scm::Operation) -> Result<(), ClientError> {
+        self.request("scm.apply", json!({ "operation": operation }))?;
+        Ok(())
     }
 
     /// Asks the server to stop, then waits for it briefly.
