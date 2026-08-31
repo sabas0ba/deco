@@ -68,7 +68,7 @@ struct Remote {
 }
 
 impl Remote {
-    fn new(client: deco_remote::Client) -> Result<Self, String> {
+    fn new(mut client: deco_remote::Client) -> Result<Self, String> {
         let missing: Vec<&str> = ["scm.status", "scm.committed", "scm.apply"]
             .into_iter()
             .filter(|method| !client.serves(method))
