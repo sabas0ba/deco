@@ -139,9 +139,7 @@ pub enum ServerError {
     },
     /// The repository containing the workspace begins outside the directory
     /// this server is allowed to reach.
-    #[error(
-        "the repository at {repository} begins outside the served workspace {workspace}"
-    )]
+    #[error("the repository at {repository} begins outside the served workspace {workspace}")]
     RepositoryOutsideWorkspace {
         /// Where git said the repository begins.
         repository: String,
@@ -608,12 +606,12 @@ impl Server {
             }
             "scm.status" => {
                 let repository = self.repository_root()?;
-                let status = self
-                    .git
-                    .status(&repository)
-                    .map_err(|error| ServerError::SourceControl {
-                        reason: error.to_string(),
-                    })?;
+                let status =
+                    self.git
+                        .status(&repository)
+                        .map_err(|error| ServerError::SourceControl {
+                            reason: error.to_string(),
+                        })?;
                 Ok(json!({ "root": repository, "status": status }))
             }
             "scm.committed" => {

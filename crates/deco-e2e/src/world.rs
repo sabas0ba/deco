@@ -351,7 +351,7 @@ impl Scenario {
             },
         };
         let mut client = deco_remote::Client::start(&command)
-        .unwrap_or_else(|error| panic!("the server should start: {error}"));
+            .unwrap_or_else(|error| panic!("the server should start: {error}"));
         let hello = client
             .handshake()
             .unwrap_or_else(|error| panic!("the server should answer: {error}"));

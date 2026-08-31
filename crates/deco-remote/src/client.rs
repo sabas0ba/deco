@@ -438,12 +438,11 @@ impl Client {
                 method: "scm.status".to_owned(),
                 field: "root",
             })?;
-        let status = serde_json::from_value(said["status"].clone()).map_err(|_| {
-            ClientError::Malformed {
+        let status =
+            serde_json::from_value(said["status"].clone()).map_err(|_| ClientError::Malformed {
                 method: "scm.status".to_owned(),
                 field: "status",
-            }
-        })?;
+            })?;
         Ok((root, status))
     }
 

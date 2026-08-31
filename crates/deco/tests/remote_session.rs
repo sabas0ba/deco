@@ -61,31 +61,25 @@ fn repository(name: &str) -> Option<PathBuf> {
         ["config", "user.name", "deco test"],
         ["config", "user.email", "deco@example.invalid"],
     ] {
-        assert!(
-            ProcessCommand::new("git")
-                .args(args)
-                .current_dir(&root)
-                .status()
-                .expect("git config should run")
-                .success()
-        );
+        assert!(ProcessCommand::new("git")
+            .args(args)
+            .current_dir(&root)
+            .status()
+            .expect("git config should run")
+            .success());
     }
-    assert!(
-        ProcessCommand::new("git")
-            .args(["add", "--all"])
-            .current_dir(&root)
-            .status()
-            .expect("git add should run")
-            .success()
-    );
-    assert!(
-        ProcessCommand::new("git")
-            .args(["commit", "--quiet", "--message", "initial"])
-            .current_dir(&root)
-            .status()
-            .expect("git commit should run")
-            .success()
-    );
+    assert!(ProcessCommand::new("git")
+        .args(["add", "--all"])
+        .current_dir(&root)
+        .status()
+        .expect("git add should run")
+        .success());
+    assert!(ProcessCommand::new("git")
+        .args(["commit", "--quiet", "--message", "initial"])
+        .current_dir(&root)
+        .status()
+        .expect("git commit should run")
+        .success());
     Some(root)
 }
 
@@ -244,8 +238,11 @@ fn source_control_reads_and_writes_the_repository_on_the_far_end() {
     let Some(root) = repository("source-control") else {
         return;
     };
-    std::fs::write(root.join("src/main.rs"), "fn main() { println!(\"remote\"); }\n")
-        .expect("a changed file");
+    std::fs::write(
+        root.join("src/main.rs"),
+        "fn main() { println!(\"remote\"); }\n",
+    )
+    .expect("a changed file");
 
     let mut client = connect(&root);
     let hello = client.handshake().expect("a handshake");

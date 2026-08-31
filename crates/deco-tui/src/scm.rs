@@ -433,8 +433,7 @@ impl Scm {
     /// only another detached thread.
     pub fn apply(&mut self, session: &mut Session, operation: &deco_scm::Operation) {
         if let Some(remote) = self.remote.as_mut() {
-            if remote.pending_operation.is_some()
-                || remote.inflight == Some(RemoteInFlight::Apply)
+            if remote.pending_operation.is_some() || remote.inflight == Some(RemoteInFlight::Apply)
             {
                 session.git_operation_failed(operation, "another repository operation is running");
             } else {
