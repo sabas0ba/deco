@@ -629,9 +629,12 @@ fn scm_rows(
         ));
     }
 
+    // The title and spacer are already in rows. Use only what remains, which
+    // is the same height the session gave scroll_into_view.
+    let list_height = rect.height.saturating_sub(rows.len());
     let mut start = view.scroll().min(lines.len().saturating_sub(1));
     let mut sticky = None;
-    let available_below_sticky = rect.height.saturating_sub(1);
+    let available_below_sticky = list_height.saturating_sub(1);
     if available_below_sticky > 0 && lines.get(start).is_some_and(|(_, heading, _)| !*heading) {
         // Repeating the heading costs a row. Shift the content window when
         // necessary so the selected file remains visible at either edge.
@@ -648,11 +651,7 @@ fn scm_rows(
     }
 
     if let Some(group) = sticky {
-        let count = view
-            .rows()
-            .iter()
-            .filter(|row| row.group == group)
-            .count();
+        let count = view.rows().iter().filter(|row| row.group == group).count();
         rows.push(region_line(
             &format!("{} {count}", group.title()),
             rect.width,
@@ -671,7 +670,7 @@ fn scm_rows(
             lines
                 .into_iter()
                 .skip(start)
-                .take(rect.height)
+                .take(list_height)
                 .map(|(_, _, row)| row),
         );
     }

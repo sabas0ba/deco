@@ -9263,10 +9263,8 @@ mod tests {
         ));
         s.run("workbench.view.scm", None, 0);
 
-        let Outcome::GitOperation(deco_scm::Operation::Unstage {
-            path,
-            original,
-        }) = s.run("git.unstage", None, 0)
+        let Outcome::GitOperation(deco_scm::Operation::Unstage { path, original }) =
+            s.run("git.unstage", None, 0)
         else {
             panic!("expected an unstage");
         };
