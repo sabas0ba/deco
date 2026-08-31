@@ -65,6 +65,21 @@ pub enum Focus {
     Panel,
 }
 
+/// Which tenant the side bar is showing.
+///
+/// VS Code calls these viewlets and switches between them with
+/// `workbench.view.*`: the container is one region, and what is in it is a
+/// choice. Two so far — search is the third the [chrome](crate::layout) names
+/// as waiting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SideBarView {
+    /// The [file tree](crate::explorer). What the side bar opens on.
+    #[default]
+    Explorer,
+    /// The [source-control view](crate::scm).
+    SourceControl,
+}
+
 /// Which way [`Session::goto_marker`] walks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Direction {
@@ -388,6 +403,17 @@ pub struct Session {
     /// not on a keystroke, because running git on every key would be a
     /// process per character.
     scm_wanted: bool,
+    /// Which tenant the side bar is showing.
+    side_bar_view: SideBarView,
+    /// Where the repository begins, once a frontend has said. See
+    /// [`Session::set_repository_root`].
+    repository_root: Option<PathBuf>,
+    /// The source-control view, rebuilt whenever a status arrives.
+    ///
+    /// Kept rather than derived per render because it holds a *selection*, and
+    /// a selection that was recomputed from the status every frame would forget
+    /// which file the user was standing on the moment anything changed.
+    source_control: crate::scm::SourceControl,
     /// What `HEAD` had for each open file, and the marks derived from it.
     ///
     /// Split in two because the halves change at wildly different rates. The
@@ -592,6 +618,9 @@ impl Session {
             screen: (80, 24),
             next_group: 0,
             scm: None,
+            side_bar_view: SideBarView::default(),
+            repository_root: None,
+            source_control: crate::scm::SourceControl::default(),
             // Wanted from the start: the branch is worth showing before the
             // first save, not after it.
             scm_wanted: true,
@@ -1163,9 +1192,29 @@ impl Session {
         // explorer having the keyboard, and `listFocus` for any list having it —
         // the explorer is the only list here, so today they agree, and a `when`
         // clause copied from VS Code that uses either one resolves.
-        let explorer_focus = self.focus == Focus::SideBar && self.explorer.is_some();
+        let in_side_bar = self.focus == Focus::SideBar;
+        let explorer_focus =
+            in_side_bar && self.explorer.is_some() && self.side_bar_view == SideBarView::Explorer;
         self.context.set("filesExplorerFocus", explorer_focus);
-        self.context.set("listFocus", explorer_focus);
+        // Every list, not just the tree — which is what VS Code means by it,
+        // and why the source-control view answers the same `list.*` keys.
+        let scm_focus = in_side_bar && self.side_bar_view == SideBarView::SourceControl;
+        self.context.set("listFocus", explorer_focus || scm_focus);
+        // deco's own, because VS Code has no `when` key for "the source-control
+        // view has the keyboard" — its own bindings there are contributed by
+        // the view rather than gated on a context key. The `deco.` prefix is
+        // the rule for exactly this case: a name VS Code does not have.
+        self.context.set("deco.sourceControlFocus", scm_focus);
+        // VS Code sets `scmProvider` to the active provider's id. deco has one
+        // kind, so the presence of a repository is the whole of it: a `when`
+        // clause asking for `scmProvider == 'git'` resolves when git answered.
+        self.context.set(
+            "scmProvider",
+            match self.scm.is_some() {
+                true => serde_json::json!("git"),
+                false => serde_json::json!(""),
+            },
+        );
         self.context
             .set("explorerViewletVisible", regions.side_bar.is_some());
         // Everything below describes the text, and while a region has the
@@ -1314,7 +1363,21 @@ impl Session {
             "workbench.action.togglePanel" => self.toggle_panel(),
             "workbench.action.closeSidebar" => self.show_side_bar(false),
             "workbench.action.closePanel" => self.show_panel(false),
-            "workbench.files.action.focusFilesExplorer" => self.focus_region(Focus::SideBar),
+            "workbench.files.action.focusFilesExplorer" | "workbench.view.explorer" => {
+                self.show_side_bar_view(SideBarView::Explorer)
+            }
+            "workbench.view.scm" => self.show_side_bar_view(SideBarView::SourceControl),
+            // The repository's own commands. Like the tree's `list.*`, these
+            // exist whatever has the keyboard and decide inside — an arm that
+            // stopped matching would report a working binding as unknown.
+            "git.stage" => self.stage_selected(),
+            "git.stageAll" => self.stage_all(),
+            "git.unstage" => self.unstage_selected(),
+            "git.commit" => self.ask_commit_message(),
+            "git.refresh" => {
+                self.scm_changed();
+                Outcome::Handled
+            }
             "revealInExplorer" => self.reveal_active_file(),
             // The tree's own keys. Routed before the focus guard below, because
             // unlike the editor's commands these are *for* whatever has the
@@ -1932,6 +1995,10 @@ impl Session {
             PromptKind::RenameFile => {
                 let name = prompt.text().to_owned();
                 self.rename_in_tree(&name)
+            }
+            PromptKind::CommitMessage => {
+                let message = prompt.text().trim().to_owned();
+                self.commit(message)
             }
             PromptKind::ConfirmDelete => {
                 // Only a typed `y` goes through. Enter on an empty box is what
@@ -3751,6 +3818,176 @@ impl Session {
         self.refresh_context();
     }
 
+    /// A `list.*` key, with the source-control view showing.
+    ///
+    /// Expanding and collapsing do nothing: the list is flat, and its headings
+    /// are drawn from the rows rather than being rows themselves. Handled
+    /// rather than refused, because the key is bound to `list.*` for every
+    /// list and refusing here would report a working binding as unknown.
+    fn source_control_key(&mut self, command: &str) -> Outcome {
+        match command {
+            "list.focusDown" => self.source_control.select_next(),
+            "list.focusUp" => self.source_control.select_previous(),
+            "list.focusFirst" => self.source_control.select_first(),
+            "list.focusLast" => self.source_control.select_last(),
+            "list.expand" | "list.collapse" => {}
+            "list.select" => {
+                let Some(row) = self.source_control.selection() else {
+                    return Outcome::Handled;
+                };
+                // Against the *repository* root, which is what these paths
+                // are relative to. The workspace root is only the same thing
+                // when nobody opened a subdirectory, and joining to it there
+                // would ask for `/repo/sub/sub/a.rs`.
+                let Some(root) = self
+                    .repository_root
+                    .as_ref()
+                    .map(|root| root.join(&row.path))
+                else {
+                    return Outcome::Message(
+                        "deco does not know where this repository begins yet".to_owned(),
+                    );
+                };
+                // The keyboard follows the file, as it does out of the tree.
+                self.focus = Focus::Editor;
+                self.refresh_context();
+                return Outcome::OpenFile {
+                    path: root,
+                    at: None,
+                };
+            }
+            _ => {}
+        }
+        // The same care the tree gets, and reached separately because
+        // `explorer_key` hands over to this before it gets to its own call.
+        let height = self.side_bar_rows();
+        self.source_control.scroll_into_view(height);
+        self.refresh_context();
+        Outcome::Handled
+    }
+
+    /// `git.stage`: add the selected file's working-tree state to the index.
+    ///
+    /// Refuses a row that is already staged rather than running `git add` on
+    /// it: the command would succeed and do nothing, and a status message
+    /// saying it staged something it did not is worse than one saying it could
+    /// not.
+    fn stage_selected(&mut self) -> Outcome {
+        let Some(row) = self.source_control.selection() else {
+            return Outcome::Message("nothing is selected in source control".to_owned());
+        };
+        if row.group == crate::scm::Group::Staged {
+            return Outcome::Message(format!("{} is already staged", row.name()));
+        }
+        Outcome::GitOperation(deco_scm::Operation::Stage(row.path.clone()))
+    }
+
+    /// `git.stageAll`: everything git reported.
+    fn stage_all(&mut self) -> Outcome {
+        // Nothing staged and nothing to stage are different answers, and the
+        // second is the one worth saying out loud.
+        let unstaged = self
+            .source_control
+            .rows()
+            .iter()
+            .any(|row| row.group != crate::scm::Group::Staged);
+        if !unstaged {
+            return Outcome::Message("there is nothing left to stage".to_owned());
+        }
+        Outcome::GitOperation(deco_scm::Operation::StageAll)
+    }
+
+    /// `git.unstage`: take the selected file back out of the index.
+    fn unstage_selected(&mut self) -> Outcome {
+        let Some(row) = self.source_control.selection() else {
+            return Outcome::Message("nothing is selected in source control".to_owned());
+        };
+        if row.group != crate::scm::Group::Staged {
+            return Outcome::Message(format!("{} is not staged", row.name()));
+        }
+        Outcome::GitOperation(deco_scm::Operation::Unstage {
+            path: row.path.clone(),
+            // A staged rename is two entries in the index, and unstaging one
+            // of them leaves a commit that still deletes the other. A copy is
+            // different: its source remains an independent index entry, and
+            // resetting it here would unstage changes the user did not select.
+            original: (row.change == deco_scm::Change::Renamed)
+                .then(|| row.original.clone())
+                .flatten(),
+        })
+    }
+
+    /// `git.commit`: ask for a message.
+    ///
+    /// Refused before the box opens when there is nothing staged, rather than
+    /// after the message has been typed. Asking someone to write a commit
+    /// message and then telling them there was nothing to commit is the kind
+    /// of thing that loses the message.
+    fn ask_commit_message(&mut self) -> Outcome {
+        if self.scm.is_none() {
+            return Outcome::Message("this is not a git repository".to_owned());
+        }
+        if !self
+            .source_control
+            .rows()
+            .iter()
+            .any(|row| row.group == crate::scm::Group::Staged)
+        {
+            return Outcome::Message("nothing is staged to commit".to_owned());
+        }
+        self.prompt = Some(Prompt::plain(PromptKind::CommitMessage));
+        self.refresh_context();
+        Outcome::Handled
+    }
+
+    /// The commit itself, once a message has been typed.
+    fn commit(&mut self, message: String) -> Outcome {
+        if message.is_empty() {
+            // Enter on an empty box is what happens when somebody dismisses a
+            // prompt they did not mean to open. Git would refuse this too, but
+            // saying so here costs no process.
+            return Outcome::Message("a commit needs a message".to_owned());
+        }
+        Outcome::GitOperation(deco_scm::Operation::Commit(message))
+    }
+
+    /// Reports that a repository change happened, so what is on screen catches
+    /// up.
+    ///
+    /// The status is asked for again rather than being adjusted here: git is
+    /// the thing that knows what the index looks like now, and a view that
+    /// predicted the answer would drift from it the first time a hook changed
+    /// something.
+    pub fn git_operation_done(&mut self, operation: &deco_scm::Operation) {
+        self.status = Some(operation.describe());
+        self.scm_changed();
+        self.refresh_context();
+    }
+
+    /// Reports that one could not be carried out.
+    pub fn git_operation_failed(&mut self, operation: &deco_scm::Operation, reason: &str) {
+        self.status = Some(format!("could not {}: {reason}", operation.describe()));
+        // Asked for again even so: a refusal usually means the index is not
+        // what the view thought, and the view being wrong is what caused it.
+        self.scm_changed();
+        self.refresh_context();
+    }
+
+    /// Says where the repository begins.
+    ///
+    /// Not the same as the workspace root: opening a subdirectory of a
+    /// repository is ordinary, and every path the source-control view holds is
+    /// relative to the *repository*. Told rather than worked out, because
+    /// finding it means running `git rev-parse` and the core cannot.
+    pub fn set_repository_root(&mut self, root: Option<PathBuf>) {
+        self.repository_root = root;
+    }
+
+    /// Where the repository begins, if a frontend has said.
+    pub fn repository_root(&self) -> Option<&Path> {
+        self.repository_root.as_deref()
+    }
+
     /// The workspace tree, if a root has been set.
     pub fn explorer(&self) -> Option<&crate::Explorer> {
         self.explorer.as_ref()
@@ -3821,7 +4058,38 @@ impl Session {
         if was != now {
             self.committed.clear();
         }
+        match &status {
+            Some(status) => self.source_control.refresh(status),
+            // No repository, or git is gone. An empty view rather than the
+            // last one it had: a list of files to stage in a folder that is no
+            // longer a working tree is worse than nothing.
+            None => self.source_control = crate::scm::SourceControl::default(),
+        }
         self.scm = status;
+        self.refresh_context();
+    }
+
+    /// Which tenant the side bar is showing.
+    pub fn side_bar_view(&self) -> SideBarView {
+        self.side_bar_view
+    }
+
+    /// The source-control view.
+    pub fn source_control(&self) -> &crate::scm::SourceControl {
+        &self.source_control
+    }
+
+    /// Shows the side bar with `view` in it, and gives it the keyboard.
+    ///
+    /// VS Code's `workbench.view.*` do all three: a viewlet command opens the
+    /// container if it is closed, switches to that view, and focuses it. One
+    /// key to reach a thing you want to act on, rather than three.
+    fn show_side_bar_view(&mut self, view: SideBarView) -> Outcome {
+        self.side_bar_view = view;
+        if !self.side_bar {
+            self.show_side_bar(true);
+        }
+        self.focus_region(Focus::SideBar)
     }
 
     /// A file whose committed text nobody has fetched yet.
@@ -3977,6 +4245,13 @@ impl Session {
         if self.focus != Focus::SideBar {
             return Outcome::Handled;
         }
+        // Whichever tenant is showing. The bindings are `list.*` in VS Code
+        // too — one set of keys for every list in the workbench, and which
+        // list they reach is a matter of what has the keyboard rather than of
+        // a separate binding per view.
+        if self.side_bar_view == SideBarView::SourceControl {
+            return self.source_control_key(command);
+        }
         let Some(explorer) = self.explorer.as_mut() else {
             return Outcome::Handled;
         };
@@ -4013,16 +4288,24 @@ impl Session {
         }
         // The side bar's height, so the tree can keep the selection on screen —
         // the model does not know how tall it is drawn.
-        let height = self
-            .regions()
-            .side_bar
-            .map(|rect| rect.height.saturating_sub(EXPLORER_CHROME_ROWS))
-            .unwrap_or(0);
+        let height = self.side_bar_rows();
         if let Some(explorer) = self.explorer.as_mut() {
             explorer.scroll_into_view(height);
         }
         self.refresh_context();
         Outcome::Handled
+    }
+
+    /// How many rows the side bar has for a list, once its chrome is off.
+    ///
+    /// The models do not know how tall they are drawn, so whoever does has to
+    /// tell them — and that is here rather than in a frontend, because the
+    /// division of the window is the session's.
+    fn side_bar_rows(&self) -> usize {
+        self.regions()
+            .side_bar
+            .map(|rect| rect.height.saturating_sub(EXPLORER_CHROME_ROWS))
+            .unwrap_or(0)
     }
 
     /// Moves the keyboard to a region, showing it first if it is hidden.
@@ -8747,6 +9030,320 @@ mod tests {
             "the moved file is asked about under its new name"
         );
         assert!(s.diff_marks(Path::new("/w/a.rs")).is_none());
+    }
+
+    /// A status with one modified and one untracked file.
+    fn dirty_status() -> deco_scm::Status {
+        deco_scm::parse(
+            "# branch.oid 1c9d4e5\0# branch.head main\0\
+             1 .M N... 100644 100644 100644 aaaaaaa bbbbbbb work.rs\0? new.rs\0",
+        )
+        .expect("git's own format")
+    }
+
+    #[test]
+    fn the_side_bar_opens_on_the_tree_and_switches_to_source_control() {
+        let mut s = with_tree();
+        assert_eq!(s.side_bar_view(), SideBarView::Explorer);
+
+        // One key: open the container, switch the view, take the keyboard.
+        assert!(matches!(
+            s.run("workbench.view.scm", None, 0),
+            Outcome::Handled
+        ));
+        assert_eq!(s.side_bar_view(), SideBarView::SourceControl);
+        assert_eq!(s.focus(), Focus::SideBar);
+        assert!(
+            s.regions().side_bar.is_some(),
+            "and the side bar is showing"
+        );
+
+        s.run("workbench.view.explorer", None, 0);
+        assert_eq!(s.side_bar_view(), SideBarView::Explorer);
+    }
+
+    #[test]
+    fn the_list_keys_reach_whichever_tenant_is_showing() {
+        let mut s = with_tree();
+        s.fill_scm(Some(dirty_status()));
+        s.run("workbench.view.scm", None, 0);
+
+        s.run("list.focusDown", None, 0);
+        assert_eq!(
+            s.source_control().selection().unwrap().path,
+            PathBuf::from("new.rs"),
+            "the same `list.*` keys, and what has the keyboard decides"
+        );
+
+        // Back to the tree, and the same key moves the tree instead.
+        s.run("workbench.view.explorer", None, 0);
+        s.run("list.focusFirst", None, 0);
+        s.run("list.focusDown", None, 0);
+        assert_eq!(
+            s.explorer().unwrap().selection().unwrap().name,
+            "Cargo.toml"
+        );
+        assert_eq!(
+            s.source_control().selection().unwrap().path,
+            PathBuf::from("new.rs"),
+            "and the view that does not have the keyboard is left alone"
+        );
+    }
+
+    #[test]
+    fn the_explorers_context_key_is_false_while_source_control_has_the_keyboard() {
+        let mut s = with_tree();
+        s.fill_scm(Some(dirty_status()));
+        s.run("workbench.view.scm", None, 0);
+
+        // `filesExplorerFocus` is what `explorer.newFile` and the tree's
+        // `ctrl+z` are gated on. Left true here, `ctrl+n` in the
+        // source-control view would create a file in the tree behind it.
+        assert_eq!(s.context.get("filesExplorerFocus"), Some(&json!(false)));
+        assert_eq!(
+            s.context.get("listFocus"),
+            Some(&json!(true)),
+            "but it is still a list, and `list.*` is bound on that"
+        );
+        assert_eq!(s.context.get("scmProvider"), Some(&json!("git")));
+    }
+
+    #[test]
+    fn the_trees_keys_do_not_reach_it_from_the_source_control_view() {
+        let mut s = with_tree();
+        s.fill_scm(Some(dirty_status()));
+        s.run("workbench.view.scm", None, 0);
+
+        // `sideBarFocus` is true for *both* tenants, so a binding gated on it
+        // alone would act on the tree hidden behind this view. `ctrl+z` is the
+        // one that shows why it matters: it would take back a file operation
+        // nothing on screen mentions.
+        for key in ["ctrl+z", "ctrl+n", "ctrl+shift+n", "f2", "delete"] {
+            let chord = Chord::parse(key).expect("a key");
+            let outcome = s.handle_chord(chord, 0);
+            assert!(
+                matches!(outcome, Outcome::NotFound | Outcome::Handled),
+                "{key} resolved to something in the source-control view: {outcome:?}"
+            );
+            assert!(
+                s.prompt.is_none(),
+                "{key} opened one of the tree's prompts from the wrong view"
+            );
+        }
+
+        // And they still work where they belong.
+        s.run("workbench.view.explorer", None, 0);
+        s.handle_chord(Chord::parse("ctrl+n").expect("a key"), 0);
+        assert_eq!(
+            s.prompt.as_ref().map(|p| p.kind()),
+            Some(PromptKind::NewFile)
+        );
+    }
+
+    #[test]
+    fn the_source_control_list_scrolls_with_its_selection() {
+        let mut s = with_tree();
+        let mut entries = String::from("# branch.oid 1c9d4e5\0# branch.head main\0");
+        for n in 0..30 {
+            entries.push_str(&format!("? file{n:02}.rs\0"));
+        }
+        s.fill_scm(Some(deco_scm::parse(&entries).expect("git's own format")));
+        s.resize(80, 14);
+        s.run("workbench.view.scm", None, 0);
+
+        assert_eq!(s.source_control().scroll(), 0);
+        for _ in 0..29 {
+            s.run("list.focusDown", None, 0);
+        }
+        // Without this the selection walks off the bottom and the next stage
+        // acts on a file nothing on screen shows.
+        assert!(
+            s.source_control().scroll() > 0,
+            "the list never scrolled: selection {} of {}",
+            s.source_control().selected_index(),
+            s.source_control().rows().len()
+        );
+    }
+
+    #[test]
+    fn a_folder_that_is_not_a_repository_empties_the_view() {
+        let mut s = with_tree();
+        s.fill_scm(Some(dirty_status()));
+        assert!(!s.source_control().is_empty());
+
+        // git went away, or the folder stopped being a working tree. A list of
+        // files to stage would be worse than nothing.
+        s.fill_scm(None);
+        assert!(s.source_control().is_empty());
+        assert_eq!(s.context.get("scmProvider"), Some(&json!("")));
+    }
+
+    #[test]
+    fn enter_in_the_source_control_view_opens_the_file() {
+        let mut s = with_tree();
+        s.fill_scm(Some(dirty_status()));
+        s.run("workbench.view.scm", None, 0);
+
+        // Until a frontend has said where the repository begins, there is
+        // nothing to resolve a repository-relative path against — and guessing
+        // the workspace root would open the wrong file whenever the two
+        // differ.
+        assert!(matches!(s.run("list.select", None, 0), Outcome::Message(_)));
+
+        // Rooted a level above the workspace, which is the case that catches a
+        // join to the wrong root: `/repo/sub` + `sub/work.rs` would be
+        // `/repo/sub/sub/work.rs`.
+        s.set_repository_root(Some(PathBuf::from("/repo")));
+        let Outcome::OpenFile { path, .. } = s.run("list.select", None, 0) else {
+            panic!("expected the file to open");
+        };
+        assert_eq!(path, PathBuf::from("/repo/work.rs"));
+        assert_eq!(
+            s.focus(),
+            Focus::Editor,
+            "and the keyboard follows it, as it does out of the tree"
+        );
+    }
+
+    #[test]
+    fn staging_names_the_selected_file_relative_to_the_repository() {
+        let mut s = with_tree();
+        s.fill_scm(Some(dirty_status()));
+        s.run("workbench.view.scm", None, 0);
+
+        let Outcome::GitOperation(op) = s.run("git.stage", None, 0) else {
+            panic!("expected a stage");
+        };
+        assert_eq!(
+            op,
+            deco_scm::Operation::Stage(PathBuf::from("work.rs")),
+            "git answers about repository-relative paths, and the view holds them"
+        );
+    }
+
+    #[test]
+    fn staging_something_already_staged_is_refused_rather_than_run() {
+        let mut s = with_tree();
+        s.fill_scm(Some(
+            deco_scm::parse(
+                "# branch.oid 1c9d4e5\0# branch.head main\0\
+                 1 M. N... 100644 100644 100644 aaaaaaa bbbbbbb work.rs\0",
+            )
+            .expect("git's own format"),
+        ));
+        s.run("workbench.view.scm", None, 0);
+
+        // `git add` would succeed and change nothing. A message saying it
+        // staged something it did not is worse than one saying it could not.
+        assert!(matches!(s.run("git.stage", None, 0), Outcome::Message(_)));
+        assert!(
+            matches!(s.run("git.stageAll", None, 0), Outcome::Message(_)),
+            "and there is nothing left to stage either"
+        );
+    }
+
+    #[test]
+    fn unstaging_something_that_is_not_staged_is_refused() {
+        let mut s = with_tree();
+        s.fill_scm(Some(dirty_status()));
+        s.run("workbench.view.scm", None, 0);
+        assert!(matches!(s.run("git.unstage", None, 0), Outcome::Message(_)));
+    }
+
+    #[test]
+    fn unstaging_a_copy_does_not_include_its_source() {
+        let mut s = with_tree();
+        s.fill_scm(Some(
+            deco_scm::parse(
+                "# branch.oid 1c9d4e5\0# branch.head main\0\
+                 2 C. N... 100644 100644 100644 aaaaaaa bbbbbbb C100 copy.rs\0\
+                 source.rs\0",
+            )
+            .expect("git's own format"),
+        ));
+        s.run("workbench.view.scm", None, 0);
+
+        let Outcome::GitOperation(deco_scm::Operation::Unstage { path, original }) =
+            s.run("git.unstage", None, 0)
+        else {
+            panic!("expected an unstage");
+        };
+        assert_eq!(path, PathBuf::from("copy.rs"));
+        assert_eq!(
+            original, None,
+            "the copy source may have staged changes of its own"
+        );
+    }
+
+    #[test]
+    fn committing_with_nothing_staged_never_asks_for_a_message() {
+        let mut s = with_tree();
+        s.fill_scm(Some(dirty_status()));
+        s.run("workbench.view.scm", None, 0);
+
+        // Refused before the box opens. Asking someone to write a commit
+        // message and *then* saying there was nothing to commit is how a
+        // message gets lost.
+        assert!(matches!(s.run("git.commit", None, 0), Outcome::Message(_)));
+        assert!(s.prompt.is_none());
+    }
+
+    #[test]
+    fn committing_asks_for_a_message_and_refuses_an_empty_one() {
+        let mut s = with_tree();
+        s.fill_scm(Some(
+            deco_scm::parse(
+                "# branch.oid 1c9d4e5\0# branch.head main\0\
+                 1 M. N... 100644 100644 100644 aaaaaaa bbbbbbb work.rs\0",
+            )
+            .expect("git's own format"),
+        ));
+        s.run("workbench.view.scm", None, 0);
+        s.run("git.commit", None, 0);
+        assert_eq!(
+            s.prompt.as_ref().map(|p| p.kind()),
+            Some(PromptKind::CommitMessage)
+        );
+
+        // Enter on an empty box is what happens when a prompt is dismissed
+        // rather than answered.
+        let enter = Chord::parse("enter").expect("a key");
+        assert!(matches!(s.handle_chord(enter, 0), Outcome::Message(_)));
+
+        s.run("git.commit", None, 0);
+        for c in "a real message".chars() {
+            s.handle_chord(Chord::char(c), 0);
+        }
+        let Outcome::GitOperation(op) = s.handle_chord(enter, 0) else {
+            panic!("expected a commit");
+        };
+        assert_eq!(op, deco_scm::Operation::Commit("a real message".to_owned()));
+    }
+
+    #[test]
+    fn a_repository_change_asks_git_again_rather_than_guessing() {
+        let mut s = with_tree();
+        // What the frontend does: mark the question taken, then answer it.
+        s.scm_started();
+        s.fill_scm(Some(dirty_status()));
+        assert!(!s.scm_wanted(), "the status has been answered");
+
+        // The view is not adjusted here: git is what knows the index now, and
+        // a prediction would drift from it the first time a hook ran.
+        s.git_operation_done(&deco_scm::Operation::Stage(PathBuf::from("work.rs")));
+        assert!(s.scm_wanted());
+        assert_eq!(s.status.as_deref(), Some("staged work.rs"));
+    }
+
+    #[test]
+    fn a_refused_change_still_asks_git_again() {
+        let mut s = with_tree();
+        s.fill_scm(Some(dirty_status()));
+        // A refusal usually means the index is not what the view thought, and
+        // the view being wrong is what caused it.
+        s.git_operation_failed(&deco_scm::Operation::StageAll, "index.lock exists");
+        assert!(s.scm_wanted());
+        assert!(s.status.as_deref().unwrap().contains("index.lock"));
     }
 
     #[test]

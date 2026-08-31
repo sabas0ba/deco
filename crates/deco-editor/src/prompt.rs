@@ -73,6 +73,12 @@ pub enum PromptKind {
     /// the keyboard — and worth two kinds rather than one, because accepting
     /// them does entirely different work.
     RenameFile,
+    /// `git.commit`: what to say about what is staged.
+    ///
+    /// The message *is* the confirmation. A commit is not destructive — it can
+    /// be undone with `git reset --soft` — so it does not need a second
+    /// question on top of the one it already asks.
+    CommitMessage,
     /// `delete` in the tree: whether to really remove it.
     ///
     /// A prompt rather than a bare key because there is no trash to take it out
@@ -102,6 +108,7 @@ impl PromptKind {
             Self::NewFile => "New file:",
             Self::NewFolder => "New folder:",
             Self::RenameFile => "Rename file to:",
+            Self::CommitMessage => "Commit message:",
             Self::ConfirmDelete => "Delete permanently? (y/n)",
         }
     }
@@ -141,6 +148,7 @@ impl PromptKind {
             (Self::NewFile, _)
             | (Self::NewFolder, _)
             | (Self::RenameFile, _)
+            | (Self::CommitMessage, _)
             | (Self::ConfirmDelete, _) => "",
         }
     }
@@ -165,6 +173,7 @@ impl PromptKind {
             Self::ReplaceQuery => "replace in files",
             Self::Rename => "rename symbol",
             Self::CodeActions => "the code-action list",
+            Self::CommitMessage => "the commit message box",
             Self::ExtensionConsent => "an extension's permission request",
             Self::ExtensionPermissions => "the list of permission decisions",
             Self::NewFile => "new file",

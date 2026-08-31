@@ -22,9 +22,10 @@
 //! - **No shell, ever.** Arguments go as a vector, the way `deco-lsp` spawns a
 //!   language server. A repository is something a user cloned, and a branch
 //!   called `$(rm -rf ~)` is a legal branch name.
-//! - **It cannot ask a question.** A child that decides to prompt for a
-//!   passphrase with the editor holding its pipes is a hang with no way out,
-//!   so the environment tells git that no terminal is available.
+//! - **Git itself cannot ask a question.** A child that decides to prompt for
+//!   a passphrase with the editor holding its pipes is a hang with no way out,
+//!   so stdin is closed and Git's terminal prompt is disabled. Commit hooks
+//!   are arbitrary programs and can still choose another prompt mechanism.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -32,6 +33,7 @@ use std::process::Command;
 
 use thiserror::Error;
 
+use crate::change::Operation;
 use crate::status::{self, Malformed, Status};
 
 /// Why there is no status to show.
@@ -122,7 +124,7 @@ impl Git {
         // slower to ask. Ignored files are still left out — nothing here
         // passes `--ignored` — so the usual `target/` and `node_modules/` are
         // not what is being walked.
-        let output = self.run(
+        let output = self.run_bytes(
             directory,
             &[
                 "status",
@@ -132,6 +134,11 @@ impl Git {
                 "--untracked-files=all",
             ],
         )?;
+        let output = String::from_utf8(output).map_err(|error| {
+            ScmError::Unusable(format!(
+                "git status returned a path or branch name that is not UTF-8: {error}"
+            ))
+        })?;
         Ok(status::parse(&output)?)
     }
 
@@ -143,11 +150,19 @@ impl Git {
     /// once and keeping the answer is what lets [`Git::committed`] and
     /// [`Status`] speak the same coordinates.
     pub fn root(&self, directory: &Path) -> Result<PathBuf, ScmError> {
-        let output = self.run(directory, &["rev-parse", "--show-toplevel"])?;
-        let root = output.trim_end_matches(['\n', '\r']);
+        let output = self.run_bytes(directory, &["rev-parse", "--show-toplevel"])?;
+        // Remove the command's one record terminator, not every trailing
+        // newline: a Unix directory name may itself end in one.
+        let root = output.strip_suffix(b"\n").unwrap_or(&output);
+        let root = root.strip_suffix(b"\r").unwrap_or(root);
         if root.is_empty() {
             return Err(ScmError::NotARepository(directory.to_path_buf()));
         }
+        let root = std::str::from_utf8(root).map_err(|error| {
+            ScmError::Unusable(format!(
+                "git reported a repository path that is not UTF-8: {error}"
+            ))
+        })?;
         Ok(PathBuf::from(root))
     }
 
@@ -210,8 +225,94 @@ impl Git {
         }
     }
 
-    /// Runs git in `directory` and hands back its stdout.
+    /// Carries out a change to the repository.
+    ///
+    /// Every path is repository-relative and goes after `--`, so a file called
+    /// `-f` or `HEAD` is a file rather than an option or a revision. The same
+    /// check [`Git::committed`] makes is made first, for the same reason: git
+    /// would resolve an absolute or `..`-bearing path somewhere else.
+    pub fn apply(&self, directory: &Path, operation: &Operation) -> Result<(), ScmError> {
+        let path = |path: &Path| -> Result<String, ScmError> {
+            let text = path
+                .to_str()
+                .ok_or_else(|| ScmError::NotInWorkingTree(path.display().to_string()))?;
+            if text.is_empty()
+                || Path::new(text).is_absolute()
+                || text.split('/').any(|part| part == "..")
+            {
+                return Err(ScmError::NotInWorkingTree(text.to_owned()));
+            }
+            Ok(text.to_owned())
+        };
+        match operation {
+            Operation::Stage(one) => {
+                self.run(directory, &["add", "--", &path(one)?])?;
+            }
+            // `git add -A` from the repository root rather than `.`, which
+            // would only reach what is below the working directory — and the
+            // view lists the whole repository.
+            Operation::StageAll => {
+                self.run(directory, &["add", "--all", "--"])?;
+            }
+            Operation::Unstage {
+                path: one,
+                original,
+            } => {
+                // Both halves of a staged rename, or it comes apart: see
+                // `Operation::Unstage`.
+                let mut names = vec![path(one)?];
+                if let Some(original) = original {
+                    names.push(path(original)?);
+                }
+                // `restore --staged` needs git 2.23. `reset` is older than
+                // anything still installed, and on a branch with no commit yet
+                // there is no `HEAD` to reset against — so that case takes the
+                // one command that works there.
+                let mut args: Vec<&str> = match self.has_commit(directory) {
+                    true => vec!["reset", "--quiet", "HEAD", "--"],
+                    false => vec!["rm", "--cached", "--quiet", "--"],
+                };
+                args.extend(names.iter().map(String::as_str));
+                self.run(directory, &args)?;
+            }
+            // No `-a`: a plain commit records exactly the index, which is
+            // exactly what the view was showing. (`--only` would be the way to
+            // say that explicitly, but it means "these paths only" and refuses
+            // when given none.)
+            //
+            // This runs the repository's hooks, which is the point of shelling
+            // out rather than linking a library — a `pre-commit` that reformats
+            // or refuses is the user's, and deco is not going to be the editor
+            // that quietly skips it. Their stdin is closed and
+            // `GIT_TERMINAL_PROMPT=0` is set, so one that decides to ask a
+            // question through stdin gets EOF. A hook is an arbitrary program
+            // and can still open a terminal or a graphical prompt; running it
+            // rather than bypassing it means inheriting that behaviour too.
+            Operation::Commit(message) => {
+                self.run(directory, &["commit", "--message", message])?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether `HEAD` names a commit — false on a branch with nothing on it.
+    fn has_commit(&self, directory: &Path) -> bool {
+        self.run(directory, &["rev-parse", "--verify", "--quiet", "HEAD"])
+            .is_ok_and(|out| !out.trim().is_empty())
+    }
+
+    /// Runs git in the directory and hands back its stdout as text.
+    ///
+    /// Used where the answer itself is text or ignored. Status paths are
+    /// different: a lossy conversion there could turn one non-UTF-8 filename
+    /// into another valid filename and make a write command act on the wrong
+    /// file, so status uses run_bytes and refuses that case.
     fn run(&self, directory: &Path, args: &[&str]) -> Result<String, ScmError> {
+        Ok(String::from_utf8_lossy(&self.run_bytes(directory, args)?).into_owned())
+    }
+
+    /// Runs git in the directory and hands back its stdout unchanged.
+    fn run_bytes(&self, directory: &Path, args: &[&str]) -> Result<Vec<u8>, ScmError> {
         let mut command = Command::new(&self.program);
         command
             .args(args)
@@ -254,11 +355,7 @@ impl Git {
             });
         }
 
-        // Lossy rather than an error: a repository can hold a path that is not
-        // UTF-8, and losing the name of one file is better than losing the
-        // branch and the count as well. The parser splits on NUL, which
-        // survives the conversion.
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        Ok(output.stdout)
     }
 }
 
@@ -362,6 +459,24 @@ mod tests {
             matches!(status.head, crate::status::Head::Unborn(_)),
             "nothing has been committed, and git says so: {:?}",
             status.head
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_non_utf8_status_path_is_refused_before_it_can_name_another_file() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let Some(git) = git_or_skip() else { return };
+        let dir = scratch_repo(&git, "non-utf8");
+        let invalid = std::ffi::OsString::from_vec(vec![b'f', 0xff]);
+        std::fs::write(dir.join(invalid), "one\n").expect("a file");
+
+        let status = git.status(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            matches!(status, Err(ScmError::Unusable(ref reason)) if reason.contains("not UTF-8")),
+            "a lossy path could collide with a real filename: {status:?}"
         );
     }
 
@@ -484,6 +599,186 @@ mod tests {
         // macOS, and git reports where the link goes.
         let found = found.expect("a repository").canonicalize().ok();
         assert_eq!(found, dir.canonicalize().ok());
+    }
+
+    #[test]
+    fn staging_and_committing_do_what_they_say() {
+        let Some(git) = git_or_skip() else { return };
+        let dir = scratch_repo(&git, "apply");
+        std::fs::write(dir.join("a.rs"), "one\n").expect("a file");
+        commit(&git, &dir);
+        std::fs::write(dir.join("a.rs"), "two\n").expect("a file");
+        std::fs::write(dir.join("new.rs"), "fresh\n").expect("a file");
+
+        // Stage one file. The other stays where it was.
+        git.apply(&dir, &Operation::Stage(PathBuf::from("a.rs")))
+            .expect("a stage");
+        let status = git.status(&dir).expect("a status");
+        assert_eq!(status.staged(), 1);
+        assert_eq!(status.untracked(), 1);
+
+        // Unstage it again, leaving the working tree alone.
+        git.apply(
+            &dir,
+            &Operation::Unstage {
+                path: PathBuf::from("a.rs"),
+                original: None,
+            },
+        )
+        .expect("an unstage");
+        let status = git.status(&dir).expect("a status");
+        assert_eq!(status.staged(), 0);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.rs")).expect("still there"),
+            "two\n",
+            "unstaging touches the index, never the file"
+        );
+
+        // Everything, then a commit.
+        git.apply(&dir, &Operation::StageAll).expect("a stage");
+        assert_eq!(git.status(&dir).expect("a status").staged(), 2);
+        git.apply(&dir, &Operation::Commit("a message".to_owned()))
+            .expect("a commit");
+
+        let status = git.status(&dir).expect("a status");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(status.is_clean(), "everything was recorded");
+    }
+
+    #[test]
+    fn unstaging_a_rename_takes_both_halves_back() {
+        let Some(git) = git_or_skip() else { return };
+        let dir = scratch_repo(&git, "rename-unstage");
+        std::fs::create_dir_all(dir.join("old")).expect("a directory");
+        std::fs::create_dir_all(dir.join("new")).expect("a directory");
+        // Long enough that git's rename detection is in no doubt.
+        std::fs::write(dir.join("old/name.rs"), "a line long enough to match\n").expect("a file");
+        commit(&git, &dir);
+        let moved = std::process::Command::new(&git.program)
+            .args(["mv", "old/name.rs", "new/name.rs"])
+            .current_dir(&dir)
+            .status()
+            .expect("git mv");
+        assert!(moved.success());
+
+        // Only the new path would leave `old/name.rs` staged as a *deletion*
+        // and `new/name.rs` untracked — so a command reporting that it
+        // unstaged the rename would have left a commit that still deletes the
+        // original file.
+        git.apply(
+            &dir,
+            &Operation::Unstage {
+                path: PathBuf::from("new/name.rs"),
+                original: Some(PathBuf::from("old/name.rs")),
+            },
+        )
+        .expect("an unstage");
+
+        let status = git.status(&dir).expect("a status");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            status.staged(),
+            0,
+            "the index is back to what HEAD has: {:?}",
+            status.entries
+        );
+    }
+
+    #[test]
+    fn unstaging_a_copy_leaves_its_independently_changed_source_staged() {
+        let Some(git) = git_or_skip() else { return };
+        let dir = scratch_repo(&git, "copy-unstage");
+        std::fs::write(dir.join("source.rs"), "original\n").expect("a file");
+        commit(&git, &dir);
+
+        // Both the source's edit and a copy of that edit are staged. With copy
+        // detection enabled git can report the latter with source.rs as its
+        // original path, but that path is not the other half of a rename.
+        std::fs::write(dir.join("source.rs"), "changed\n").expect("an edit");
+        std::fs::copy(dir.join("source.rs"), dir.join("copy.rs")).expect("a copy");
+        git.apply(&dir, &Operation::StageAll).expect("a stage");
+        assert_eq!(git.status(&dir).expect("a status").staged(), 2);
+
+        git.apply(
+            &dir,
+            &Operation::Unstage {
+                path: PathBuf::from("copy.rs"),
+                original: None,
+            },
+        )
+        .expect("an unstage");
+
+        let status = git.status(&dir).expect("a status");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            status.staged(),
+            1,
+            "only the selected copy leaves the index: {:?}",
+            status.entries
+        );
+        assert!(
+            status.entries.iter().any(|entry| {
+                entry.path == Path::new("source.rs")
+                    && matches!(
+                        &entry.state,
+                        crate::State::Tracked {
+                            staged: crate::Change::Modified,
+                            ..
+                        }
+                    )
+            }),
+            "the source's independent staged edit remains"
+        );
+    }
+
+    #[test]
+    fn unstaging_works_on_a_branch_with_no_commit_yet() {
+        let Some(git) = git_or_skip() else { return };
+        let dir = scratch_repo(&git, "unborn-unstage");
+        std::fs::write(dir.join("a.rs"), "one\n").expect("a file");
+        git.apply(&dir, &Operation::StageAll).expect("a stage");
+        assert_eq!(git.status(&dir).expect("a status").staged(), 1);
+
+        // `git reset HEAD` has no HEAD to reset against here, which is why
+        // this case takes a different command rather than reporting a failure
+        // the user can do nothing about.
+        let undone = git.apply(
+            &dir,
+            &Operation::Unstage {
+                path: PathBuf::from("a.rs"),
+                original: None,
+            },
+        );
+        let status = git.status(&dir).expect("a status");
+        let _ = std::fs::remove_dir_all(&dir);
+        undone.expect("an unstage");
+        assert_eq!(status.staged(), 0);
+        assert_eq!(status.untracked(), 1, "and the file itself is still there");
+    }
+
+    #[test]
+    fn a_change_to_a_path_that_could_escape_is_refused() {
+        let git = Git::default();
+        for bad in ["/etc/passwd", "../secrets.rs", "a/../../b.rs", ""] {
+            let path = PathBuf::from(bad);
+            assert!(
+                matches!(
+                    git.apply(Path::new("."), &Operation::Stage(path.clone())),
+                    Err(ScmError::NotInWorkingTree(_))
+                ),
+                "staging {bad:?} was passed to git rather than refused"
+            );
+            assert!(matches!(
+                git.apply(
+                    Path::new("."),
+                    &Operation::Unstage {
+                        path,
+                        original: None
+                    }
+                ),
+                Err(ScmError::NotInWorkingTree(_))
+            ));
+        }
     }
 
     #[test]

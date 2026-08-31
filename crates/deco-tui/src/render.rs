@@ -417,6 +417,9 @@ impl Region {
         match self {
             // Named for its tenant once it has one, as VS Code names the view
             // rather than the container it is in.
+            Self::SideBar if session.side_bar_view() == deco_editor::SideBarView::SourceControl => {
+                "SOURCE CONTROL"
+            }
             Self::SideBar if session.explorer().is_some() => "EXPLORER",
             Self::SideBar => "SIDE BAR",
             Self::Panel => "PANEL",
@@ -482,7 +485,17 @@ fn region_rows(session: &Session, rect: Rect, region: Region, palette: &Palette)
         rows.push(region_line("", rect.width, fg, bg));
     }
 
-    // The side bar has a tenant now; the panel does not.
+    // The side bar has two tenants now; the panel has none.
+    if region == Region::SideBar
+        && session.side_bar_view() == deco_editor::SideBarView::SourceControl
+    {
+        scm_rows(session, rect, &mut rows, palette, fg, bg);
+        while rows.len() < rect.height {
+            rows.push(region_line("", rect.width, fg, bg));
+        }
+        rows.truncate(rect.height);
+        return rows;
+    }
     if region == Region::SideBar {
         if let Some(explorer) = session.explorer() {
             tree_rows(session, explorer, rect, &mut rows, palette, fg, bg);
@@ -509,6 +522,168 @@ fn region_rows(session: &Session, rect: Rect, region: Region, palette: &Palette)
     }
     rows.truncate(rect.height);
     rows
+}
+
+/// The source-control view: a heading per group, then its files.
+///
+/// The headings are drawn from the rows rather than being rows themselves, so
+/// the selection can never land on one — which is what keeps `git.stage` from
+/// ever being asked to stage a word.
+fn scm_rows(
+    session: &Session,
+    rect: Rect,
+    rows: &mut Vec<Row>,
+    palette: &Palette,
+    fg: Rgba,
+    bg: Rgba,
+) {
+    let view = session.source_control();
+    if view.is_empty() {
+        // Told apart from "no repository" by the status bar beside it, which
+        // shows a branch in one case and nothing in the other.
+        let message = match session.scm_status() {
+            Some(_) => "no changes",
+            None => "not a git repository",
+        };
+        rows.push(region_line(message, rect.width, dim(fg, bg), bg));
+        return;
+    }
+
+    let focused = session.focus() == deco_editor::Focus::SideBar
+        && session.side_bar_view() == deco_editor::SideBarView::SourceControl;
+    let selected_at = view.selected_index();
+
+    // Every line the list would draw, headings included, and then the window
+    // the model has scrolled to. Built whole rather than drawn straight into
+    // `rows`, because the scroll is counted in *lines* — a heading takes one —
+    // and slicing at the end is the only way the two agree about where the
+    // selection is.
+    // The group and whether a line is its heading are retained until the
+    // window is chosen. When a long group scrolls, its real heading can be
+    // above the window; that metadata lets it be repeated at the top rather
+    // than leaving rows whose stage/unstage meaning is no longer visible.
+    let mut lines: Vec<(deco_editor::ScmGroup, bool, Row)> = Vec::new();
+    let mut selected_line = 0;
+    let mut group = None;
+    for (index, row) in view.rows().iter().enumerate() {
+        if group != Some(row.group) {
+            group = Some(row.group);
+            let count = view
+                .rows()
+                .iter()
+                .filter(|other| other.group == row.group)
+                .count();
+            lines.push((
+                row.group,
+                true,
+                region_line(
+                    &format!("{} {count}", row.group.title()),
+                    rect.width,
+                    dim(fg, bg),
+                    bg,
+                ),
+            ));
+        }
+
+        // `M src/main.rs` — the letter, then the name, then the directory in
+        // the dimmer colour when there is room. VS Code puts the letter on the
+        // right; here it is on the left, because a column that moves with the
+        // name length is not a column you can read down.
+        let name = row.name();
+        let directory = row.directory().unwrap_or_default();
+        let left = format!(" {} {name}", row.letter());
+        let room = rect.width.saturating_sub(columns(&left) + 1);
+        let tail = if directory.is_empty() || room < 3 {
+            String::new()
+        } else {
+            format!(" {}", truncate_to(&directory, room))
+        };
+
+        let chosen = index == selected_at;
+        if chosen {
+            selected_line = lines.len();
+        }
+        let (row_fg, row_bg) = match (chosen, focused) {
+            // The selection is drawn as the tree's is: inverted when the view
+            // has the keyboard, and merely marked when it does not, so a
+            // glance says where typing would go.
+            (true, true) => (bg, palette.status_fg),
+            (true, false) => (palette.status_fg, bg),
+            (false, _) => (fg, bg),
+        };
+        let mut text = format!("{left}{tail}");
+        text = truncate_to(&text, rect.width);
+        while columns(&text) < rect.width {
+            text.push(' ');
+        }
+        lines.push((
+            row.group,
+            false,
+            Row {
+                spans: vec![Span {
+                    text,
+                    fg: row_fg,
+                    bg: row_bg,
+                }],
+            },
+        ));
+    }
+
+    // The title and spacer are already in rows. Use only what remains, which
+    // is the same height the session gave scroll_into_view.
+    let list_height = rect.height.saturating_sub(rows.len());
+    let mut start = view.scroll().min(lines.len().saturating_sub(1));
+    let mut sticky = None;
+    let available_below_sticky = list_height.saturating_sub(1);
+    if available_below_sticky > 0 && lines.get(start).is_some_and(|(_, heading, _)| !*heading) {
+        // Repeating the heading costs a row. Shift the content window when
+        // necessary so the selected file remains visible at either edge.
+        if selected_line < start {
+            start = selected_line;
+        } else if selected_line >= start + available_below_sticky {
+            start = selected_line + 1 - available_below_sticky;
+        }
+        if let Some((group, heading, _)) = lines.get(start) {
+            if !*heading {
+                sticky = Some(*group);
+            }
+        }
+    }
+
+    if let Some(group) = sticky {
+        let count = view.rows().iter().filter(|row| row.group == group).count();
+        rows.push(region_line(
+            &format!("{} {count}", group.title()),
+            rect.width,
+            dim(fg, bg),
+            bg,
+        ));
+        rows.extend(
+            lines
+                .into_iter()
+                .skip(start)
+                .take(available_below_sticky)
+                .map(|(_, _, row)| row),
+        );
+    } else {
+        rows.extend(
+            lines
+                .into_iter()
+                .skip(start)
+                .take(list_height)
+                .map(|(_, _, row)| row),
+        );
+    }
+}
+
+/// A quieter version of `fg` against `bg`, for headings and second columns.
+fn dim(fg: Rgba, bg: Rgba) -> Rgba {
+    Rgba {
+        r: ((fg.r as u16 + bg.r as u16) / 2) as u8,
+        g: ((fg.g as u16 + bg.g as u16) / 2) as u8,
+        b: ((fg.b as u16 + bg.b as u16) / 2) as u8,
+        a: fg.a,
+    }
 }
 
 /// The file tree's rows, indented, with the selection highlighted.
@@ -4236,6 +4411,102 @@ mod tests {
             records.push_str(&format!("? file{n}.rs\0"));
         }
         deco_scm::parse(&records).expect("git's own format")
+    }
+
+    /// The side bar's rows, trimmed, for a session showing the SCM view.
+    fn side_bar_lines(session: &Session) -> Vec<String> {
+        render(session, 80, 14)
+            .rows
+            .iter()
+            .map(|row| row.plain().chars().take(28).collect::<String>())
+            .map(|line| line.trim_end().to_owned())
+            .filter(|line| !line.is_empty())
+            .collect()
+    }
+
+    /// A session with the source-control view showing `entries`.
+    fn with_scm(entries: &[&str]) -> Session {
+        let mut out = String::from("# branch.oid 1c9d4e5\0# branch.head main\0");
+        for entry in entries {
+            out.push_str(entry);
+            out.push('\0');
+        }
+        let mut session = session("fn a() {}\n");
+        session.set_workspace_root("/w");
+        session.fill_scm(Some(deco_scm::parse(&out).expect("git's own format")));
+        session.run("workbench.view.scm", None, 0);
+        session.resize(80, 13);
+        session
+    }
+
+    #[test]
+    fn the_source_control_view_groups_what_git_reported() {
+        let session = with_scm(&[
+            "1 M. N... 100644 100644 100644 aaaaaaa bbbbbbb src/staged.rs",
+            "1 .M N... 100644 100644 100644 aaaaaaa bbbbbbb work.rs",
+            "? new.rs",
+        ]);
+        let lines = side_bar_lines(&session);
+        let joined = lines.join("\n");
+        assert!(joined.contains("SOURCE CONTROL"), "{joined}");
+        assert!(joined.contains("Staged Changes 1"), "{joined}");
+        assert!(joined.contains("M staged.rs"), "{joined}");
+        assert!(
+            joined.contains("src"),
+            "the directory is shown beside the name: {joined}"
+        );
+        assert!(joined.contains("Changes 1"), "{joined}");
+        assert!(joined.contains("Untracked 1"), "{joined}");
+        assert!(joined.contains("? new.rs"), "{joined}");
+    }
+
+    #[test]
+    fn a_scrolled_group_keeps_its_heading_and_selection_visible() {
+        let entries: Vec<String> = (0..30).map(|n| format!("? file{n:02}.rs")).collect();
+        let borrowed: Vec<&str> = entries.iter().map(String::as_str).collect();
+        let mut session = with_scm(&borrowed);
+        session.resize(80, 14);
+        for _ in 0..29 {
+            session.run("list.focusDown", None, 0);
+        }
+
+        let joined = side_bar_lines(&session).join("\n");
+        assert!(
+            joined.contains("Untracked 30"),
+            "a row without its heading does not say whether stage or unstage applies: {joined}"
+        );
+        assert!(
+            joined.contains("? file29.rs"),
+            "making room for the repeated heading must not hide the selection: {joined}"
+        );
+    }
+
+    #[test]
+    fn a_clean_tree_says_so_rather_than_showing_an_empty_box() {
+        let session = with_scm(&[]);
+        let joined = side_bar_lines(&session).join("\n");
+        assert!(joined.contains("no changes"), "{joined}");
+    }
+
+    #[test]
+    fn a_folder_with_no_repository_says_that_instead() {
+        let mut session = session("fn a() {}\n");
+        session.set_workspace_root("/w");
+        session.run("workbench.view.scm", None, 0);
+        session.resize(80, 13);
+        // Told apart from a clean tree, which is a different thing to be
+        // looking at and a different thing to do next.
+        let joined = side_bar_lines(&session).join("\n");
+        assert!(joined.contains("not a git repository"), "{joined}");
+    }
+
+    #[test]
+    fn the_tree_is_still_there_when_the_side_bar_switches_back() {
+        let mut session = with_scm(&["? new.rs"]);
+        session.run("workbench.view.explorer", None, 0);
+        let joined = side_bar_lines(&session).join("\n");
+        assert!(joined.contains("EXPLORER"), "{joined}");
+        assert!(!joined.contains("new.rs"), "{joined}");
     }
 
     #[test]

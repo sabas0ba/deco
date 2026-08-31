@@ -79,7 +79,7 @@
 <rect x="12.0" y="221.0" width="646.0" height="19.0" fill="#181818"/>
 <text x="12.0" y="235.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs">  Copy Line Up                              editor.action.copyLinesUpAction </text>
 <rect x="12.0" y="240.0" width="646.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="254.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Command:                                                       70 commands </text>
+<text x="12.0" y="254.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> Command:                                                       76 commands </text>
 <rect x="12.0" y="259.0" width="646.0" height="19.0" fill="#181818"/>
 <text x="12.0" y="273.0" font-size="14px" fill="#cccccc" textLength="646.0" lengthAdjust="spacingAndGlyphs"> main.rs                                       rust  Spaces: 4  Ln 2, Col 5 </text>
 <rect x="97.0" y="240.0" width="8.5" height="19.0" fill="#d0d0d0" opacity="0.85"/>

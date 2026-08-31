@@ -32,7 +32,7 @@
 - title: Git
   path: git.md
   url: /git.html
-  blurb: The branch and what differs from it, by running the binary
+  blurb: The branch, the gutter marks, and staging and committing
 
 - title: Syntax highlighting
   path: highlighting.md

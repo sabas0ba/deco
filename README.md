@@ -103,6 +103,7 @@ running, and is published at
 | [Tabs](docs/tabs.md) | Several documents, one per tab; splitting; what a tab keeps |
 | [Chrome](docs/chrome.md) | The side bar and the panel: `ctrl+b`, `ctrl+j`, where the space comes from, and where the keyboard is |
 | [The file tree](docs/files.md) | Walking the workspace, opening files, and what it costs to open a big one |
+| [Git](docs/git.md) | The branch, marks beside the changed lines, and a view that stages and commits |
 | [Syntax highlighting](docs/highlighting.md) | Scopes, languages, choosing one, and why not tree-sitter |
 | [Find and replace](docs/find-and-replace.md) | `ctrl+f`, `ctrl+h`, `F3`, the multi-cursor find keys, and replacing across the workspace |
 | [Running commands](docs/commands.md) | The command palette, quick open, go to symbol, search in files, go to line |
@@ -176,7 +177,7 @@ thin painter.
 | Side bar and panel (`ctrl+b`, `ctrl+j`, `workbench.sideBar.location`) | Regions, focus and the context keys — see [Chrome](docs/chrome.md). The side bar holds the file tree; the panel is still empty and says what it is waiting for |
 | File tree / explorer (`ctrl+shift+e`, `list.*`, `revealInExplorer`) | Walk it, expand it, open files with it — read one directory at a time, `files.exclude` honoured, works on a remote workspace |
 | Changing files from the tree (`explorer.newFile`, `explorer.newFolder`, `renameFile`, `deleteFile`) | New file, new folder, rename and delete, with an undo of the tree's own; a rename retargets the open tab. Deleting is confirmed and cannot be undone — there is no trash, so `files.enableTrash` is not honoured. No drag, and none of it over a remote connection yet — see [The file tree](docs/files.md) |
-| Git — branch, changed count and gutter marks (`git.enabled`, `git.path`, `git.decorations.enabled`) | The branch, its distance from its upstream and how many files differ from `HEAD`, from `git status --porcelain=v2`; and `┃`/`│`/`▔` beside added, changed and removed lines, diffed against `git show HEAD:<path>` and following the buffer rather than the file on disk. No staging or committing, and nothing over a remote connection — see [Git](docs/git.md) |
+| Git — status bar, gutter marks and a source-control view (`workbench.view.scm`, `git.stage`, `git.commit`) | The branch, its distance from its upstream and how many files differ from `HEAD`; `┃`/`│`/`▔` beside added, changed and removed lines, following the buffer rather than the file on disk; and `ctrl+shift+g` for a view that stages, unstages and commits. No checkout, no discard, nothing that reaches the network, and nothing over a remote connection — see [Git](docs/git.md) |
 | Word wrap (`editor.wordWrap`, `editor.wrappingIndent`, `alt+z`) | Yes in the terminal |
 | Detected indentation (`editor.detectIndentation`) | Yes — the status bar says when a file overruled the setting |
 | Auto-closing brackets (`editor.autoClosingBrackets`) | Yes — no `autoSurround`, no `autoClosingDelete` |
@@ -296,13 +297,14 @@ not exist *at all* yet — an integrated terminal, tasks, a test runner,
 self-update, debugging — each have a plan in the
 [Roadmap](docs/roadmap.md):
 
-- **Git reads and does not write.** The branch, its distance from its upstream
-  and how many files differ from `HEAD` are in the status bar; changed, added
-  and removed lines are marked in the gutter, following the buffer rather than
-  the file on disk. There is no staging, committing or checkout, and none of it
-  works over a remote connection — a remote workspace's root is a path on the
-  far machine. The GPU frontend computes the marks but does not paint them yet.
-  See [Git](docs/git.md).
+- **Git stages and commits, and stops there.** The branch and the changed count
+  are in the status bar, changed lines are marked in the gutter, and
+  `ctrl+shift+g` opens a view that stages, unstages and commits. What it will
+  not do: **discard** anything, because `git clean` has no undo and no trash;
+  **checkout**, until it can say what switching would cost first; or **reach the
+  network**, which needs credentials. None of it works over a remote connection
+  — the repository is on the far machine. The GPU frontend computes the gutter
+  marks but does not paint them yet. See [Git](docs/git.md).
 - **The file tree has no watcher, no mouse and no remote.** `ctrl+b` shows it,
   `ctrl+shift+e` focuses it, and the arrows walk it; a directory is read when it
   is opened, so a large workspace costs what is on screen. Creating, renaming
