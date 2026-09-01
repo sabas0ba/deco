@@ -166,6 +166,46 @@ impl Git {
         Ok(PathBuf::from(root))
     }
 
+    /// The per-worktree and shared administrative directories used by Git.
+    ///
+    /// A linked worktree keeps both outside its working tree: `.git` is a file
+    /// pointing at the primary checkout's administrative area. Remote callers
+    /// need these paths in addition to [`Git::root`] when deciding whether a
+    /// repository stays inside an authority boundary.
+    ///
+    /// Relative answers are resolved against `directory`, which is the working
+    /// directory Git used to produce them. The paths are not canonicalised;
+    /// confinement callers must do that before comparing them with a boundary
+    /// so a symbolic link cannot disguise where one leads.
+    pub fn administrative_directories(&self, directory: &Path) -> Result<[PathBuf; 2], ScmError> {
+        let read = |args: &[&str], name: &str| -> Result<PathBuf, ScmError> {
+            let output = self.run_bytes(directory, args)?;
+            let path = output.strip_suffix(b"\n").unwrap_or(&output);
+            let path = path.strip_suffix(b"\r").unwrap_or(path);
+            if path.is_empty() {
+                return Err(ScmError::Unusable(format!(
+                    "git reported an empty {name} path"
+                )));
+            }
+            let path = std::str::from_utf8(path).map_err(|error| {
+                ScmError::Unusable(format!(
+                    "git reported a {name} path that is not UTF-8: {error}"
+                ))
+            })?;
+            let path = PathBuf::from(path);
+            Ok(if path.is_absolute() {
+                path
+            } else {
+                directory.join(path)
+            })
+        };
+
+        Ok([
+            read(&["rev-parse", "--absolute-git-dir"], "Git directory")?,
+            read(&["rev-parse", "--git-common-dir"], "common Git directory")?,
+        ])
+    }
+
     /// The committed text of a file, to compare a buffer against.
     ///
     /// `path` is relative to the **repository root** — the same coordinates

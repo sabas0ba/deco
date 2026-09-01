@@ -194,6 +194,11 @@ fn matched_paths(matches: impl Iterator<Item = PathBuf>) -> Vec<PathBuf> {
 pub struct RemoteSession {
     /// The connection files are read and written through.
     pub client: deco_remote::Client,
+    /// A separate connection owned by the source-control worker.
+    ///
+    /// Optional for compatibility with an older remote server that does not
+    /// advertise the SCM methods yet.
+    pub scm: Option<deco_remote::Client>,
     /// Where language servers run, which is the same machine.
     pub location: crate::lsp::Location,
 }
@@ -378,16 +383,18 @@ impl Driver {
 
         resize(session, width, height);
 
-        let location = match &remote {
-            Some(remote) => remote.location.clone(),
-            None => crate::lsp::Location::Here,
+        let (location, remote, remote_scm, is_remote) = match remote {
+            Some(RemoteSession {
+                client,
+                scm,
+                location,
+            }) => (location, Some(client), scm, true),
+            None => (crate::lsp::Location::Here, None, None, false),
         };
         let workspace_roots = match &location {
             crate::lsp::Location::Remote { workspace, .. } => Some(workspace.clone()),
             crate::lsp::Location::Here => workspace_root(started_with.as_deref()),
         };
-        let remote = remote.map(|remote| remote.client);
-        let remote_is_local = remote.is_none();
         let mut lsp =
             Lsp::with_location(session, workspace_root(started_with.as_deref()), location);
         // Started the same way in both cases. A remote session runs its servers on
@@ -440,16 +447,18 @@ impl Driver {
             height,
             dirty: true,
             edited_at: None,
-            scm: crate::scm::Scm::new(
-                &session.settings,
-                // Only for a workspace on this machine. In a remote session
-                // `tree_root` is a path on the far end, and running git here
-                // against it would either fail or — worse, if a directory of
-                // that name happens to exist locally — report a different
-                // repository's branch as though it were the one being edited.
-                // Git over a connection is its own piece of work.
-                tree_root.clone().filter(|_| remote_is_local),
-            ),
+            scm: match remote_scm {
+                Some(client) => crate::scm::Scm::remote(
+                    client,
+                    tree_root.clone().expect("a remote session has a workspace"),
+                ),
+                None => crate::scm::Scm::new(
+                    &session.settings,
+                    // An older remote does not advertise the SCM methods. Its
+                    // path must still never be handed to this machine's git.
+                    tree_root.clone().filter(|_| !is_remote),
+                ),
+            },
             tree_root,
         }
     }
@@ -542,6 +551,7 @@ impl Driver {
     /// Stops the language server. The loop is over.
     pub fn shutdown(&mut self) {
         self.lsp.detach();
+        self.scm.shutdown();
     }
 
     /// One keystroke, all the way through: what the core makes of it, and then
@@ -833,18 +843,7 @@ impl Driver {
             // The tree decided what should happen to a file; doing it needs a
             // filesystem, which is this side.
             Outcome::GitOperation(operation) => {
-                // Refused outright over a connection, for the same reason the
-                // tree's mutations are: the repository is on the far machine,
-                // and staging here would change a different one and report
-                // success about theirs.
-                if remote.is_some() {
-                    session.status = Some(
-                        "changing a repository over a remote connection is not built yet"
-                            .to_owned(),
-                    );
-                } else {
-                    scm.apply(session, &operation);
-                }
+                scm.apply(session, &operation);
                 *dirty = true;
             }
             Outcome::FileOperation(operation) => {

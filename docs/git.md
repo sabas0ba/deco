@@ -132,10 +132,6 @@ quietly. Not built, rather than built without a way back.
 credential prompt is a thing an editor has to be trusted with; reading and
 staging need neither.
 
-**Change a repository over a remote connection.** The repository is on the far
-machine, and staging here would change a different one and report success about
-theirs. Refused by name.
-
 ## When it runs
 
 This is the part worth being careful about, because the alternative is a process
@@ -151,6 +147,16 @@ It runs **on a thread**. On deco's own checkout `git status` is a few
 milliseconds; on a working tree with a million files it is not, and an editor
 that stopped painting while git thought would be worse than one whose branch
 name is a moment stale.
+
+In a **remote session**, status, committed text, stage, unstage and commit run
+through a second server connection on the machine holding the repository. That
+connection has one worker and one request in flight: a slow status or commit
+hook neither blocks the terminal loop nor races another repository write. The
+ordinary connection remains available for file reads and extension requests.
+
+The remote server does not expand its authority to find a repository. If the
+served workspace is only a subdirectory and the repository begins above it,
+source control is refused; restart with the repository root as `--workspace`.
 
 **One at a time, and nothing is lost.** The request is marked taken when a run
 *starts*, not when it answers. So a save made while git is still thinking sets
@@ -184,7 +190,7 @@ is showing nothing is a fact rather than an intention.
 | Setting | What deco does with it |
 | --- | --- |
 | `git.enabled` | VS Code's meaning and VS Code's default of `true`. Turning it off stops the process being spawned *and* takes the segment off the bar — a setting that only hid the result would still be paying for it |
-| `git.path` | Where `git` is, for a machine that keeps it somewhere unusual. Empty or unset means whatever `PATH` finds |
+| `git.path` | Where `git` is for a local session. Empty or unset means whatever `PATH` finds. A remote session uses `git` from the server's `PATH`; allowing an untrusted remote setting to choose a program requires the same consent model as a language server and is not implemented |
 | `git.decorations.enabled` | The gutter marks. Turning it off stops the committed text being fetched as well, not just the marks being drawn — the branch stays in the status bar |
 
 ## Why the binary and not a library
@@ -195,10 +201,12 @@ The same three reasons VS Code has:
   `credential.helper`, their hooks, their `core.fsmonitor`. A library
   reimplements a subset of that and then disagrees with the command line the
   user checks their work with.
-- **It costs no dependency.** `deco-scm`'s only one is `thiserror`. Anyone with
-  a repository to open already has the binary; nobody asked for libgit2's
-  subtree, and the [README](https://github.com/sabas0ba/deco#readme) counts
-  deco's crates in public.
+- **It costs no Git implementation dependency.** `deco-scm` uses `thiserror`
+  for its errors and `serde` to carry status and operations over deco's own
+  remote protocol. Anyone with a repository to open already has the binary;
+  nobody asked for libgit2's subtree, and the
+  [README](https://github.com/sabas0ba/deco#readme) counts deco's crates in
+  public.
 - **Absent is a state it can be in.** A missing binary is a feature that is not
   there, which is a thing deco can say plainly.
 
@@ -266,12 +274,6 @@ one.
 looking at; there is no side-by-side of a file you are not. The marks are
 computed for any open file, so the pieces are there, but a diff view is a
 second editor pane and that is a chapter of its own.
-
-**Nothing over a remote connection.** A remote workspace's root is a path on the
-far machine, so running git here against it would either fail or — worse, if a
-directory of that name happens to exist locally — report a different
-repository's branch as though it were the one being edited. deco leaves it
-alone and shows nothing.
 
 **No watcher.** A commit made in a terminal shows up on the next save, not the
 moment it happens. The [file tree](files.md#not-built-yet) has the same gap for

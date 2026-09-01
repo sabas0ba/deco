@@ -169,7 +169,7 @@ thin painter.
 | Command identifiers | Yes, for implemented commands |
 | Theme extensions from the marketplace | Yes — declarative, no host process; `ctrl+k ctrl+t` lists them |
 | Code extensions (`main`) | Commands run: the palette lists them, choosing one starts a sandboxed host. The surface an extension can reach is registering a command, the message and status-bar calls, the `workspace.fs` family, and `workspace.applyEdit` — everything else is refused by name, see [Extensions](docs/extensions.md#what-an-extension-can-reach-today) |
-| Remote SSH / containers / WSL | Open, edit and save a file on the far end with `--remote ssh-remote+host`, `--remote-install` puts deco there if it has none, `--forward 3000` reaches a port on it, language servers run over there, `ctrl+shift+f` searches the far end, an extension's file access goes through the connection, and the machine's own `machine-settings.json` layers in as `remote` scope. Extension hosts still run locally — see [Remote](docs/remote.md) |
+| Remote SSH / containers / WSL | Open, edit and save a file on the far end with `--remote ssh-remote+host`, `--remote-install` puts deco there if it has none, `--forward 3000` reaches a port on it, language servers and Git run over there, `ctrl+shift+f` searches the far end, an extension's file access goes through the connection, and the machine's own `machine-settings.json` layers in as `remote` scope. Extension hosts still run locally — see [Remote](docs/remote.md) |
 | Language servers (LSP) | Diagnostics, hover, go-to-definition, references, completion, symbols, semantic tokens, formatting, rename (`F2`, across files, one undo step), code actions (`ctrl+.`, with `codeAction/resolve`) |
 | Find and replace (`ctrl+f`, `ctrl+h`, `F3`, `ctrl+d`, `ctrl+shift+l`, `ctrl+shift+h`) | Literal search only — no regular expressions; replace across the workspace is one undoable edit |
 | Search in files (`ctrl+shift+f`) | Yes — bounded and synchronous, and it says so |
@@ -177,7 +177,7 @@ thin painter.
 | Side bar and panel (`ctrl+b`, `ctrl+j`, `workbench.sideBar.location`) | Regions, focus and the context keys — see [Chrome](docs/chrome.md). The side bar holds the file tree; the panel is still empty and says what it is waiting for |
 | File tree / explorer (`ctrl+shift+e`, `list.*`, `revealInExplorer`) | Walk it, expand it, open files with it — read one directory at a time, `files.exclude` honoured, works on a remote workspace |
 | Changing files from the tree (`explorer.newFile`, `explorer.newFolder`, `renameFile`, `deleteFile`) | New file, new folder, rename and delete, with an undo of the tree's own; a rename retargets the open tab. Deleting is confirmed and cannot be undone — there is no trash, so `files.enableTrash` is not honoured. No drag, and none of it over a remote connection yet — see [The file tree](docs/files.md) |
-| Git — status bar, gutter marks and a source-control view (`workbench.view.scm`, `git.stage`, `git.commit`) | The branch, its distance from its upstream and how many files differ from `HEAD`; `┃`/`│`/`▔` beside added, changed and removed lines, following the buffer rather than the file on disk; and `ctrl+shift+g` for a view that stages, unstages and commits. No checkout, no discard, nothing that reaches the network, and nothing over a remote connection — see [Git](docs/git.md) |
+| Git — status bar, gutter marks and a source-control view (`workbench.view.scm`, `git.stage`, `git.commit`) | The branch, its distance from its upstream and how many files differ from `HEAD`; `┃`/`│`/`▔` beside added, changed and removed lines, following the buffer rather than the file on disk; and `ctrl+shift+g` for a view that stages, unstages and commits. The same operations run on the far machine in a remote session. No checkout, no discard and nothing that reaches the network — see [Git](docs/git.md) |
 | Word wrap (`editor.wordWrap`, `editor.wrappingIndent`, `alt+z`) | Yes in the terminal |
 | Detected indentation (`editor.detectIndentation`) | Yes — the status bar says when a file overruled the setting |
 | Auto-closing brackets (`editor.autoClosingBrackets`) | Yes — no `autoSurround`, no `autoClosingDelete` |
@@ -302,9 +302,9 @@ self-update, debugging — each have a plan in the
   `ctrl+shift+g` opens a view that stages, unstages and commits. What it will
   not do: **discard** anything, because `git clean` has no undo and no trash;
   **checkout**, until it can say what switching would cost first; or **reach the
-  network**, which needs credentials. None of it works over a remote connection
-  — the repository is on the far machine. The GPU frontend computes the gutter
-  marks but does not paint them yet. See [Git](docs/git.md).
+  network**, which needs credentials. A remote session runs status, committed
+  text and writes on the machine holding the repository. The GPU frontend
+  computes the gutter marks but does not paint them yet. See [Git](docs/git.md).
 - **The file tree has no watcher, no mouse and no remote.** `ctrl+b` shows it,
   `ctrl+shift+e` focuses it, and the arrows walk it; a directory is read when it
   is opened, so a large workspace costs what is on screen. Creating, renaming
@@ -326,9 +326,10 @@ self-update, debugging — each have a plan in the
   over something that is not deco. `--forward 3000`
   reaches a port over there, using the remote's own deco as the tunnel so that it
   works over containers and WSL and not only SSH; both ends are loopback-only.
-  Language servers run on the remote, from the same `deco.lsp.servers`
-  definitions with the far end's paths on the wire, and project search runs on
-  the machine holding the files, and an extension's `readFile`/`writeFile` are
+  Language servers and Git run on the remote, from the same
+  `deco.lsp.servers` definitions and source-control commands used locally;
+  project search also runs on the machine holding the files, and an extension's
+  `readFile`/`writeFile` are
   answered through the connection rather than from this machine's disk. The
   remote's own `machine-settings.json` becomes the `remote` settings layer —
   untrusted, so a language server it names is confirmed before it runs.

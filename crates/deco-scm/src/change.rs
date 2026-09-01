@@ -12,6 +12,8 @@
 
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
+
 /// A change to a repository, for a frontend to carry out.
 ///
 /// The first thing in deco that *writes* to one. The same division of labour
@@ -32,7 +34,7 @@ use std::path::{Path, PathBuf};
 /// **Anything that reaches the network.** No push, no pull, no fetch. Those
 /// need credentials, and a credential prompt is a thing an editor has to be
 /// trusted with; reading and staging need neither.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Operation {
     /// Add one file's working-tree state to the index.
     Stage(PathBuf),

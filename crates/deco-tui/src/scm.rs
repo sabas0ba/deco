@@ -22,10 +22,109 @@
 //!   refusing, output that did not parse — is transient and is retried.
 
 use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 
 use deco_editor::Session;
-use deco_scm::{Git, ScmError, Status};
+use deco_scm::{Git, Operation, ScmError, Status};
+
+/// Work sent to the dedicated remote-SCM connection.
+enum RemoteRequest {
+    Status,
+    Committed(PathBuf),
+    Apply(Operation),
+    Stop,
+}
+
+/// One answer from that connection.
+enum RemoteResponse {
+    Status(Result<(PathBuf, Status), String>),
+    Committed {
+        path: PathBuf,
+        result: Result<Option<String>, String>,
+    },
+    Applied {
+        operation: Operation,
+        result: Result<(), String>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemoteInFlight {
+    Status,
+    Committed,
+    Apply,
+}
+
+/// A second connection whose worker owns every blocking remote git call.
+///
+/// File reads and extension requests keep using the session's primary
+/// connection. A status walk or a commit hook on this one can therefore take
+/// its time without stopping the editor from painting or serving either.
+struct Remote {
+    requests: Sender<RemoteRequest>,
+    responses: Receiver<RemoteResponse>,
+    inflight: Option<RemoteInFlight>,
+    pending_operation: Option<Operation>,
+}
+
+impl Remote {
+    fn new(mut client: deco_remote::Client) -> Result<Self, String> {
+        let missing: Vec<&str> = ["scm.status", "scm.committed", "scm.apply"]
+            .into_iter()
+            .filter(|method| !client.serves(method))
+            .collect();
+        if !missing.is_empty() {
+            return Err(format!(
+                "the remote server does not support {} — update it to this deco version",
+                missing.join(", ")
+            ));
+        }
+
+        let (request_tx, request_rx) = mpsc::channel();
+        let (response_tx, response_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            while let Ok(request) = request_rx.recv() {
+                let response = match request {
+                    RemoteRequest::Status => RemoteResponse::Status(
+                        client.scm_status().map_err(|error| error.to_string()),
+                    ),
+                    RemoteRequest::Committed(path) => RemoteResponse::Committed {
+                        result: client
+                            .scm_committed(&path)
+                            .map_err(|error| error.to_string()),
+                        path,
+                    },
+                    RemoteRequest::Apply(operation) => RemoteResponse::Applied {
+                        result: client
+                            .scm_apply(&operation)
+                            .map_err(|error| error.to_string()),
+                        operation,
+                    },
+                    RemoteRequest::Stop => {
+                        client.shutdown();
+                        break;
+                    }
+                };
+                if response_tx.send(response).is_err() {
+                    break;
+                }
+            }
+        });
+
+        Ok(Self {
+            requests: request_tx,
+            responses: response_rx,
+            inflight: None,
+            pending_operation: None,
+        })
+    }
+}
+
+impl Drop for Remote {
+    fn drop(&mut self) {
+        let _ = self.requests.send(RemoteRequest::Stop);
+    }
+}
 
 /// Runs `git status` for one workspace, off the event loop.
 pub struct Scm {
@@ -52,6 +151,11 @@ pub struct Scm {
     /// one. A reader exists so the reason is not lost, and so a test can
     /// assert deco knew why rather than merely showing nothing.
     unavailable: Option<String>,
+    /// Present when git lives behind the remote protocol rather than here.
+    remote: Option<Remote>,
+    /// The far end's workspace, used to keep repository paths in the same
+    /// absolute-or-relative coordinates as the session's document paths.
+    remote_workspace: Option<PathBuf>,
 }
 
 impl Scm {
@@ -72,6 +176,32 @@ impl Scm {
             repo_root: None,
             inflight: None,
             unavailable: None,
+            remote: None,
+            remote_workspace: None,
+        }
+    }
+
+    /// A runner whose git process and repository are on the far end.
+    pub fn remote(client: deco_remote::Client, workspace: PathBuf) -> Self {
+        match Remote::new(client) {
+            Ok(remote) => Self {
+                git: Git::default(),
+                root: None,
+                repo_root: None,
+                inflight: None,
+                unavailable: None,
+                remote: Some(remote),
+                remote_workspace: Some(workspace),
+            },
+            Err(error) => Self {
+                git: Git::default(),
+                root: None,
+                repo_root: None,
+                inflight: None,
+                unavailable: Some(error),
+                remote: None,
+                remote_workspace: Some(workspace),
+            },
         }
     }
 
@@ -117,9 +247,142 @@ impl Scm {
     /// Collecting first so that a save made while git was thinking starts its
     /// own run on this same poll rather than the next one.
     pub fn poll(&mut self, session: &mut Session) -> bool {
+        if self.remote.is_some() {
+            return self.poll_remote(session);
+        }
+        // Compatibility with a remote server that predates the SCM methods:
+        // there is deliberately no local root to run against, but the fresh
+        // session's question still has to be marked answered once.
+        if self.root.is_none() && self.unavailable.is_some() && session.scm_wanted() {
+            session.scm_started();
+            return false;
+        }
         let changed = self.collect(session);
         self.start(session);
         changed | self.fetch_committed(session)
+    }
+
+    /// Advances the one-at-a-time queue owned by the remote worker.
+    fn poll_remote(&mut self, session: &mut Session) -> bool {
+        let mut changed = false;
+        let response = {
+            let remote = self.remote.as_mut().expect("checked by the caller");
+            match remote.responses.try_recv() {
+                Ok(response) => {
+                    remote.inflight = None;
+                    Some(response)
+                }
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Disconnected) => {
+                    remote.inflight = None;
+                    self.unavailable = Some("the remote source-control connection stopped".into());
+                    session.fill_scm(None);
+                    changed = true;
+                    None
+                }
+            }
+        };
+
+        match response {
+            Some(RemoteResponse::Status(Ok((root, status)))) => {
+                // Remote documents keep the spelling used to open them. The
+                // common CLI form is relative (`src/main.rs`); handing its SCM
+                // row an absolute root would open the same file a second time
+                // under a different PathBuf. Preserve absolute coordinates only
+                // when the active document already uses them.
+                let root = match (&self.remote_workspace, &session.document.path) {
+                    (Some(workspace), Some(path)) if !path.is_absolute() => root
+                        .strip_prefix(workspace)
+                        .map(PathBuf::from)
+                        .unwrap_or(root),
+                    _ => root,
+                };
+                self.repo_root = Some(root.clone());
+                session.set_repository_root(Some(root));
+                session.fill_scm(Some(status));
+                changed = true;
+            }
+            Some(RemoteResponse::Status(Err(error))) => {
+                // A refusal is one answer, not a permanent absence: an index
+                // lock or an in-progress rebase may be gone by the next save.
+                session.fill_scm(None);
+                if error.contains("begins outside the served workspace") {
+                    session.status = Some(format!("remote source control refused: {error}"));
+                }
+                if remote_permanent(&error) {
+                    self.unavailable = Some(error);
+                }
+                changed = true;
+            }
+            Some(RemoteResponse::Committed { path, result }) => {
+                // The local path does the same on error: no committed text is
+                // safer than drawing a gutter against guessed contents.
+                session.fill_committed(path, result.unwrap_or(None));
+                changed = true;
+            }
+            Some(RemoteResponse::Applied { operation, result }) => {
+                match result {
+                    Ok(()) => session.git_operation_done(&operation),
+                    Err(error) => session.git_operation_failed(&operation, &error),
+                }
+                changed = true;
+            }
+            None => {}
+        }
+
+        if self.unavailable.is_some() {
+            return changed;
+        }
+
+        let remote = self.remote.as_mut().expect("checked by the caller");
+        if remote.inflight.is_some() {
+            return changed;
+        }
+
+        if let Some(operation) = remote.pending_operation.take() {
+            if remote
+                .requests
+                .send(RemoteRequest::Apply(operation.clone()))
+                .is_ok()
+            {
+                remote.inflight = Some(RemoteInFlight::Apply);
+            } else {
+                self.unavailable = Some("the remote source-control connection stopped".into());
+                session.git_operation_failed(&operation, "the remote connection stopped");
+                changed = true;
+            }
+            return changed;
+        }
+
+        if session.scm_wanted() {
+            // Taken before the request begins, preserving a save that happens
+            // while the remote is still walking the working tree.
+            session.scm_started();
+            if remote.requests.send(RemoteRequest::Status).is_ok() {
+                remote.inflight = Some(RemoteInFlight::Status);
+            } else {
+                self.unavailable = Some("the remote source-control connection stopped".into());
+                session.fill_scm(None);
+                changed = true;
+            }
+            return changed;
+        }
+
+        if let Some(path) = session.committed_wanted() {
+            if remote
+                .requests
+                .send(RemoteRequest::Committed(path.clone()))
+                .is_ok()
+            {
+                remote.inflight = Some(RemoteInFlight::Committed);
+            } else {
+                self.unavailable = Some("the remote source-control connection stopped".into());
+                session.fill_committed(path, None);
+                changed = true;
+            }
+        }
+
+        changed
     }
 
     /// Fetches the committed text of one file the session is missing.
@@ -169,6 +432,15 @@ impl Scm {
     /// requires an in-flight state and shutdown/cancellation handling, not
     /// only another detached thread.
     pub fn apply(&mut self, session: &mut Session, operation: &deco_scm::Operation) {
+        if let Some(remote) = self.remote.as_mut() {
+            if remote.pending_operation.is_some() || remote.inflight == Some(RemoteInFlight::Apply)
+            {
+                session.git_operation_failed(operation, "another repository operation is running");
+            } else {
+                remote.pending_operation = Some(operation.clone());
+            }
+            return;
+        }
         // Resolved rather than fallen back to the workspace folder. The paths
         // in an operation are repository-relative, and running them from the
         // wrong directory does not fail loudly — it names a file that is not
@@ -243,6 +515,11 @@ impl Scm {
         });
         self.inflight = Some(receiver);
     }
+
+    /// Stops the dedicated remote server connection, if there is one.
+    pub fn shutdown(&mut self) {
+        self.remote = None;
+    }
 }
 
 /// Whether this is a state rather than a failure.
@@ -253,6 +530,14 @@ impl Scm {
 /// once because the index was locked will work on the next try.
 fn permanent(error: &ScmError) -> bool {
     matches!(error, ScmError::NoBinary(_) | ScmError::NotARepository(_))
+}
+
+/// The remote protocol carries refusals as text, so the three states that
+/// cannot change during this server's lifetime are recognised at this edge.
+fn remote_permanent(error: &str) -> bool {
+    error.contains("is not on this machine")
+        || error.contains("is not inside a git repository")
+        || error.contains("outside the served workspace")
 }
 
 #[cfg(test)]
@@ -447,5 +732,99 @@ mod tests {
             "a locked index is a moment, not a machine"
         );
         assert!(!permanent(&ScmError::Unusable("interrupted".into())));
+        assert!(remote_permanent(
+            "source control is unavailable: `git` is not on this machine"
+        ));
+        assert!(remote_permanent(
+            "the repository at /repo begins outside the served workspace /repo/sub"
+        ));
+        assert!(remote_permanent(
+            "Git metadata at /repo/.git lies outside the served workspace /worktree"
+        ));
+        assert!(!remote_permanent("git exited with 128: index.lock exists"));
+    }
+
+    #[test]
+    fn a_remote_status_and_write_are_collected_without_blocking_the_caller() {
+        let mut session = session();
+        let (request_tx, request_rx) = mpsc::channel();
+        let (response_tx, response_rx) = mpsc::channel();
+        let mut scm = Scm {
+            git: Git::default(),
+            root: None,
+            inflight: None,
+            repo_root: None,
+            unavailable: None,
+            remote: Some(Remote {
+                requests: request_tx,
+                responses: response_rx,
+                inflight: None,
+                pending_operation: None,
+            }),
+            remote_workspace: Some(PathBuf::from("/remote/project")),
+        };
+
+        session.open(
+            PathBuf::from("/remote/project/src/main.rs"),
+            "fn main() {}\n",
+        );
+
+        scm.poll(&mut session);
+        assert!(matches!(request_rx.try_recv(), Ok(RemoteRequest::Status)));
+        assert!(!session.scm_wanted(), "the request is marked in flight");
+
+        let status = deco_scm::parse(
+            "# branch.oid 0123456789012345678901234567890123456789\0\
+             # branch.head main\0\
+             1 .M N... 100644 100644 100644 aaaaaaa bbbbbbb src/main.rs\0",
+        )
+        .expect("git's own format");
+        response_tx
+            .send(RemoteResponse::Status(Ok((
+                PathBuf::from("/remote/project"),
+                status,
+            ))))
+            .unwrap();
+        assert!(scm.poll(&mut session));
+        assert_eq!(
+            session.repository_root(),
+            Some(std::path::Path::new("/remote/project"))
+        );
+        assert_eq!(session.scm_status().map(Status::changed), Some(1));
+
+        let committed = match request_rx.try_recv() {
+            Ok(RemoteRequest::Committed(path)) => path,
+            _ => panic!("the open file's committed text should be next"),
+        };
+        assert_eq!(committed, PathBuf::from("/remote/project/src/main.rs"));
+        response_tx
+            .send(RemoteResponse::Committed {
+                path: committed,
+                result: Ok(Some("fn main() {}\n".to_owned())),
+            })
+            .unwrap();
+        assert!(scm.poll(&mut session));
+
+        let operation = Operation::Stage(PathBuf::from("src/main.rs"));
+        scm.apply(&mut session, &operation);
+        assert!(
+            request_rx.try_recv().is_err(),
+            "apply only queues; the next poll sends it"
+        );
+        scm.poll(&mut session);
+        assert!(matches!(
+            request_rx.try_recv(),
+            Ok(RemoteRequest::Apply(ref sent)) if sent == &operation
+        ));
+        response_tx
+            .send(RemoteResponse::Applied {
+                operation: operation.clone(),
+                result: Ok(()),
+            })
+            .unwrap();
+        assert!(scm.poll(&mut session));
+        assert_eq!(session.status.as_deref(), Some("staged main.rs"));
+        assert!(!session.scm_wanted(), "the fresh status starts immediately");
+        assert!(matches!(request_rx.try_recv(), Ok(RemoteRequest::Status)));
     }
 }

@@ -8,6 +8,7 @@
 //! needs a network or an SSH daemon.
 
 use std::path::{Path, PathBuf};
+use std::process::Command as ProcessCommand;
 
 use deco_remote::client::Client;
 use deco_remote::transport::Command;
@@ -38,6 +39,48 @@ fn connect(root: &Path) -> Client {
         ],
     })
     .expect("the server should start")
+}
+
+/// Turns a workspace into a repository, or skips when the test machine has no
+/// git. Every other failure is part of the test setup and remains a failure.
+fn repository(name: &str) -> Option<PathBuf> {
+    let root = workspace(name);
+    let init = ProcessCommand::new("git")
+        .args(["init", "--quiet"])
+        .current_dir(&root)
+        .status();
+    match init {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("skipped: no git on this machine");
+            return None;
+        }
+        Ok(status) => assert!(status.success(), "git init failed"),
+        Err(error) => panic!("git init could not run: {error}"),
+    }
+    for args in [
+        ["config", "user.name", "deco test"],
+        ["config", "user.email", "deco@example.invalid"],
+    ] {
+        assert!(ProcessCommand::new("git")
+            .args(args)
+            .current_dir(&root)
+            .status()
+            .expect("git config should run")
+            .success());
+    }
+    assert!(ProcessCommand::new("git")
+        .args(["add", "--all"])
+        .current_dir(&root)
+        .status()
+        .expect("git add should run")
+        .success());
+    assert!(ProcessCommand::new("git")
+        .args(["commit", "--quiet", "--message", "initial"])
+        .current_dir(&root)
+        .status()
+        .expect("git commit should run")
+        .success());
+    Some(root)
 }
 
 #[test]
@@ -188,4 +231,104 @@ fn a_search_crosses_the_connection_and_every_hit_can_be_opened() {
 
     client.shutdown();
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn source_control_reads_and_writes_the_repository_on_the_far_end() {
+    let Some(root) = repository("source-control") else {
+        return;
+    };
+    std::fs::write(
+        root.join("src/main.rs"),
+        "fn main() { println!(\"remote\"); }\n",
+    )
+    .expect("a changed file");
+
+    let mut client = connect(&root);
+    let hello = client.handshake().expect("a handshake");
+    for method in ["scm.status", "scm.committed", "scm.apply"] {
+        assert!(hello.serves(method), "the handshake omitted {method}");
+    }
+
+    let (repository, status) = client.scm_status().expect("a status");
+    assert_eq!(repository, root.canonicalize().expect("canonical"));
+    assert_eq!(status.changed(), 1);
+    assert_eq!(status.staged(), 0);
+    assert_eq!(
+        client
+            .scm_committed(Path::new("src/main.rs"))
+            .expect("committed text"),
+        Some("fn main() {}\n".to_owned())
+    );
+
+    let stage = deco_scm::Operation::Stage(PathBuf::from("src/main.rs"));
+    client.scm_apply(&stage).expect("stage on the far end");
+    assert_eq!(client.scm_status().expect("staged status").1.staged(), 1);
+
+    client
+        .scm_apply(&deco_scm::Operation::Commit("remote change".to_owned()))
+        .expect("commit on the far end");
+    assert!(client.scm_status().expect("clean status").1.is_clean());
+
+    client.shutdown();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn source_control_does_not_expand_a_served_subdirectory_to_its_parent_repository() {
+    let Some(root) = repository("source-control-confined") else {
+        return;
+    };
+    let mut client = connect(&root.join("src"));
+    client.handshake().expect("a handshake");
+
+    let error = client
+        .scm_status()
+        .expect_err("the repository begins outside the served workspace")
+        .to_string();
+    assert!(error.contains("begins outside"), "{error}");
+    assert!(error.contains("served workspace"), "{error}");
+
+    client.shutdown();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn source_control_refuses_external_metadata_for_a_linked_worktree() {
+    let Some(primary) = repository("source-control-worktree-primary") else {
+        return;
+    };
+    let linked = primary.parent().expect("a temporary parent").join(format!(
+        "deco-remote-session-source-control-linked-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&linked);
+    let added = ProcessCommand::new("git")
+        .args(["worktree", "add", "--quiet", "--detach"])
+        .arg(&linked)
+        .arg("HEAD")
+        .current_dir(&primary)
+        .status()
+        .expect("git worktree add should run");
+    assert!(added.success(), "git worktree add failed");
+
+    let mut client = connect(&linked);
+    client.handshake().expect("a handshake");
+    let error = client
+        .scm_status()
+        .expect_err("linked-worktree metadata is outside the workspace")
+        .to_string();
+    assert!(error.contains("Git metadata"), "{error}");
+    assert!(error.contains("outside the served workspace"), "{error}");
+
+    client.shutdown();
+    let removed = ProcessCommand::new("git")
+        .args(["worktree", "remove", "--force"])
+        .arg(&linked)
+        .current_dir(&primary)
+        .status()
+        .expect("git worktree remove should run");
+    assert!(removed.success(), "git worktree remove failed");
+    let _ = std::fs::remove_dir_all(&primary);
 }

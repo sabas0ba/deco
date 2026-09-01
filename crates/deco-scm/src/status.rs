@@ -7,6 +7,7 @@
 
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// Output that was not the format `--porcelain=v2` promises.
@@ -20,7 +21,7 @@ use thiserror::Error;
 pub struct Malformed(pub String);
 
 /// Where `HEAD` is.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Head {
     /// On a branch, with at least one commit on it.
     Branch(String),
@@ -51,7 +52,7 @@ impl Head {
 }
 
 /// The branch this one is set to track, and how far apart they are.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Upstream {
     /// Its name, as git prints it — `origin/main`.
     pub name: String,
@@ -65,7 +66,7 @@ pub struct Upstream {
 ///
 /// `git` reports two of these per tracked entry: what the index has staged
 /// relative to `HEAD`, and what the working tree has relative to the index.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Change {
     /// Nothing on this side. Git's `.`.
     None,
@@ -108,7 +109,7 @@ impl Change {
 }
 
 /// Why a file is in the list.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum State {
     /// Git is tracking it and something differs.
     ///
@@ -127,7 +128,7 @@ pub enum State {
 }
 
 /// One line of `git status`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileStatus {
     /// Where it is now, relative to the repository root.
     pub path: PathBuf,
@@ -138,7 +139,7 @@ pub struct FileStatus {
 }
 
 /// Everything one `git status` run reported.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Status {
     /// Where `HEAD` is.
     pub head: Head,

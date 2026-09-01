@@ -79,17 +79,11 @@ is left over.
 - **A diff view.** The gutter says which lines changed in the file on screen;
   a side-by-side of a file you are not looking at is a second editor pane, and
   that is a chapter of its own.
-- **Git over a remote connection.** The repository is on the far machine. The
-  status would have to run there, the way language servers and project search
-  already do — a protocol change rather than a local one.
-
 **Steps.**
 
-1. Git over the remote connection: status, committed text and the write
-   commands, all on the machine holding the files.
-2. A diff view, which the marks already compute the hunks for.
-3. Checkout, with what it would cost said first.
-4. Push, pull and fetch, once there is somewhere honest to put a credential
+1. A diff view, which the marks already compute the hunks for.
+2. Checkout, with what it would cost said first.
+3. Push, pull and fetch, once there is somewhere honest to put a credential
    prompt.
 
 ## The integrated terminal

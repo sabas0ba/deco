@@ -334,7 +334,7 @@ impl Scenario {
             Err(error) => panic!("`deco {}` did not parse: {error}", args.join(" ")),
         };
 
-        let mut client = deco_remote::Client::start(&deco_remote::transport::Command {
+        let command = deco_remote::transport::Command {
             program: server_binary.display().to_string(),
             args: {
                 let mut args = vec![
@@ -349,14 +349,20 @@ impl Scenario {
                 }
                 args
             },
-        })
-        .unwrap_or_else(|error| panic!("the server should start: {error}"));
+        };
+        let mut client = deco_remote::Client::start(&command)
+            .unwrap_or_else(|error| panic!("the server should start: {error}"));
         let hello = client
             .handshake()
             .unwrap_or_else(|error| panic!("the server should answer: {error}"));
+        let mut scm = deco_remote::Client::start(&command)
+            .unwrap_or_else(|error| panic!("the SCM server should start: {error}"));
+        scm.handshake()
+            .unwrap_or_else(|error| panic!("the SCM server should answer: {error}"));
 
         let remote = deco_tui::RemoteSession {
             client,
+            scm: Some(scm),
             location: deco_tui::lsp::Location::Remote {
                 authority: deco_remote::Authority::parse("attached-container+scenario")
                     .expect("an authority"),

@@ -2,7 +2,7 @@
 
 > **State of this: you can open a file on another machine, edit it and save it
 > back, put deco there if it has none, reach a port on it, and run language
-> servers over there, and search it.** What is missing is extensions on the
+> servers and Git over there, and search it.** What is missing is extensions on the
 > remote. This page is explicit about each.
 
 ## Using it
@@ -15,6 +15,10 @@ That starts `deco --server --stdio` on the far end over SSH, reads `src/main.rs`
 through the connection, and opens it. `ctrl+s` writes it back over the same
 connection. `ctrl+p` lists the **remote** workspace, because that is where the
 files are.
+
+Git status, committed text, stage, unstage and commit also run on the far end.
+They use a second connection and a worker of their own, so a working-tree walk
+or commit hook does not stop file reads or the editor's event loop.
 
 Paths are relative to the workspace the server was given. Without `--workspace`
 the server serves wherever the transport lands, which for SSH is the account's
@@ -458,19 +462,30 @@ That command is not written by hand — `deco_remote::server_command` builds it 
 asserts that what one half builds is what the other half parses.
 
 The server answers a handshake naming the protocol version and the workspace,
-the `fs.*` family, and `settings.read`. That is what opening, listing, searching
-and saving a file needs, plus the machine's own settings.
+the `fs.*` and `scm.*` families, and `settings.read`. That is what opening,
+listing, searching and saving a file needs, plus source control and the
+machine's own settings.
 
-It **acts on** none of it. No theme is loaded, no language server or extension is
-started, and nothing it hands over changes how it answers anything else: a server
-deciding how to answer `fs.read` by reading a `settings.json` on the remote would
-have an authority nobody asked it to have. Returning bytes for the client to
-judge is not that.
+It loads no theme or settings and starts no language server or extension. The
+explicit exception is `scm.*`: those methods run the remote's `git`, and
+`scm.apply` changes its index or creates a commit. Commit hooks run as they do
+locally; they are arbitrary programs with the remote account's authority. The
+client cannot choose another executable through the protocol.
 
 ### One directory, and no way out of it
 
 Every path is resolved and confined to the `--workspace` directory. Anything
 outside it is refused **by name**, in both directions — reading and writing.
+
+The repository root is confined too. A workspace that is only a subdirectory
+of a repository does not make its parent newly reachable; `scm.*` is refused
+until the session serves the repository root itself.
+
+Git's per-worktree administrative directory and shared common directory must
+also be inside the workspace. A linked worktree whose `.git` file points back
+to metadata in another checkout is refused even though its visible repository
+root is inside the workspace; otherwise staging or committing there would
+change an index, refs, and object store the server was not given authority over.
 
 `settings.read` is the one answer about a file outside it, and it is shaped so
 the rule still holds: it takes **no path**. A client cannot name a file, only ask
@@ -520,3 +535,6 @@ Named so that the remaining work is legible rather than open-ended:
 8. ~~Project-wide search, which needs the server to walk the workspace rather
    than this machine walking one it does not have.~~ **Done** — `fs.search`, with
    the far end matching.
+9. ~~Git status, committed text and writes on the machine holding the
+   repository.~~ **Done** — `scm.*` on a dedicated connection, confined to the
+   served workspace.

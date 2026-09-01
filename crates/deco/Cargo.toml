@@ -52,3 +52,7 @@ deco-ext.workspace = true
 # from the remote layer carries — the thing that decides whether connecting to a
 # machine is enough to run a program it names.
 deco-lsp.workspace = true
+# For source-control operations sent through the remote-session integration
+# test. The binary itself receives these from deco-editor and does not construct
+# one directly.
+deco-scm.workspace = true
