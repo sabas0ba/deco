@@ -97,6 +97,8 @@ twice: the staged row shows only what the next commit records, while the other
 row shows only what staging again would add. `ctrl+w` closes the diff and
 returns to the tab underneath; `ctrl+1` and `ctrl+2` move between its sides.
 
+![Opening a modified row, moving between the aligned diff panes, and closing the comparison](img/git-diff.svg)
+
 Added, removed and modified rows have distinct gutter marks, and alignment gaps
 keep the two sides on the same screen row. The comparison is fetched on a
 worker, so opening one does not stop the editor from painting. Merge-conflict
