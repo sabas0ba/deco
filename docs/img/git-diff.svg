@@ -109,29 +109,50 @@
 <rect x="12.0" y="50.0" width="8.5" height="19.0" fill="#181818"/>
 <rect x="20.5" y="50.0" width="246.5" height="19.0" fill="#181818"/>
 <text x="267.0" y="64.0" font-size="14px" fill="#6e7681" textLength="8.5" lengthAdjust="spacingAndGlyphs">│</text>
+<rect x="275.5" y="50.0" width="25.5" height="19.0" fill="#3a2524"/>
 <text x="275.5" y="64.0" font-size="14px" fill="#6e7681" textLength="25.5" lengthAdjust="spacingAndGlyphs">  2</text>
+<rect x="301.0" y="50.0" width="8.5" height="19.0" fill="#3a2524"/>
 <text x="301.0" y="64.0" font-size="14px" fill="#0078d4" textLength="8.5" lengthAdjust="spacingAndGlyphs">│</text>
+<rect x="309.5" y="50.0" width="34.0" height="19.0" fill="#3a2524"/>
+<rect x="343.5" y="50.0" width="25.5" height="19.0" fill="#3a2524"/>
 <text x="343.5" y="64.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
+<rect x="369.0" y="50.0" width="68.0" height="19.0" fill="#3a2524"/>
 <text x="369.0" y="64.0" font-size="14px" fill="#cccccc" textLength="68.0" lengthAdjust="spacingAndGlyphs"> mode = </text>
+<rect x="437.0" y="50.0" width="8.5" height="19.0" fill="#3a2524"/>
 <text x="437.0" y="64.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">1</text>
+<rect x="445.5" y="50.0" width="17.0" height="19.0" fill="#3a2524"/>
 <text x="445.5" y="64.0" font-size="14px" fill="#cccccc" textLength="17.0" lengthAdjust="spacingAndGlyphs">; </text>
 <text x="462.5" y="64.0" font-size="14px" fill="#6e7681" textLength="8.5" lengthAdjust="spacingAndGlyphs">│</text>
+<rect x="471.0" y="50.0" width="25.5" height="19.0" fill="#202f23"/>
 <text x="471.0" y="64.0" font-size="14px" fill="#6e7681" textLength="25.5" lengthAdjust="spacingAndGlyphs">  2</text>
+<rect x="496.5" y="50.0" width="8.5" height="19.0" fill="#202f23"/>
 <text x="496.5" y="64.0" font-size="14px" fill="#0078d4" textLength="8.5" lengthAdjust="spacingAndGlyphs">│</text>
+<rect x="505.0" y="50.0" width="34.0" height="19.0" fill="#202f23"/>
+<rect x="539.0" y="50.0" width="25.5" height="19.0" fill="#202f23"/>
 <text x="539.0" y="64.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
+<rect x="564.5" y="50.0" width="68.0" height="19.0" fill="#202f23"/>
 <text x="564.5" y="64.0" font-size="14px" fill="#cccccc" textLength="68.0" lengthAdjust="spacingAndGlyphs"> mode = </text>
+<rect x="632.5" y="50.0" width="8.5" height="19.0" fill="#202f23"/>
 <text x="632.5" y="64.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">2</text>
+<rect x="641.0" y="50.0" width="17.0" height="19.0" fill="#202f23"/>
 <text x="641.0" y="64.0" font-size="14px" fill="#cccccc" textLength="17.0" lengthAdjust="spacingAndGlyphs">; </text>
 <rect x="12.0" y="69.0" width="85.0" height="19.0" fill="#181818"/>
 <text x="12.0" y="83.0" font-size="14px" fill="#727272" textLength="85.0" lengthAdjust="spacingAndGlyphs"> Changes 1</text>
 <rect x="97.0" y="69.0" width="170.0" height="19.0" fill="#181818"/>
 <text x="267.0" y="83.0" font-size="14px" fill="#6e7681" textLength="8.5" lengthAdjust="spacingAndGlyphs">│</text>
 <text x="462.5" y="83.0" font-size="14px" fill="#6e7681" textLength="8.5" lengthAdjust="spacingAndGlyphs">│</text>
+<rect x="471.0" y="69.0" width="25.5" height="19.0" fill="#202f23"/>
 <text x="471.0" y="83.0" font-size="14px" fill="#6e7681" textLength="25.5" lengthAdjust="spacingAndGlyphs">  3</text>
+<rect x="496.5" y="69.0" width="8.5" height="19.0" fill="#202f23"/>
 <text x="496.5" y="83.0" font-size="14px" fill="#2ea043" textLength="8.5" lengthAdjust="spacingAndGlyphs">+</text>
+<rect x="505.0" y="69.0" width="34.0" height="19.0" fill="#202f23"/>
+<rect x="539.0" y="69.0" width="42.5" height="19.0" fill="#202f23"/>
 <text x="539.0" y="83.0" font-size="14px" fill="#dcdcaa" textLength="42.5" lengthAdjust="spacingAndGlyphs">retry</text>
+<rect x="581.5" y="69.0" width="8.5" height="19.0" fill="#202f23"/>
 <text x="581.5" y="83.0" font-size="14px" fill="#cccccc" textLength="8.5" lengthAdjust="spacingAndGlyphs">(</text>
+<rect x="590.0" y="69.0" width="8.5" height="19.0" fill="#202f23"/>
 <text x="590.0" y="83.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">3</text>
+<rect x="598.5" y="69.0" width="59.5" height="19.0" fill="#202f23"/>
 <text x="598.5" y="83.0" font-size="14px" fill="#cccccc" textLength="59.5" lengthAdjust="spacingAndGlyphs">);     </text>
 <rect x="12.0" y="88.0" width="255.0" height="19.0" fill="#181818"/>
 <text x="12.0" y="102.0" font-size="14px" fill="#cccccc" textLength="255.0" lengthAdjust="spacingAndGlyphs"> M main.rs src                </text>
@@ -153,9 +174,14 @@
 <rect x="20.5" y="126.0" width="246.5" height="19.0" fill="#181818"/>
 <text x="267.0" y="140.0" font-size="14px" fill="#6e7681" textLength="8.5" lengthAdjust="spacingAndGlyphs">│</text>
 <text x="462.5" y="140.0" font-size="14px" fill="#6e7681" textLength="8.5" lengthAdjust="spacingAndGlyphs">│</text>
+<rect x="471.0" y="126.0" width="25.5" height="19.0" fill="#202f23"/>
 <text x="471.0" y="140.0" font-size="14px" fill="#6e7681" textLength="25.5" lengthAdjust="spacingAndGlyphs">  6</text>
+<rect x="496.5" y="126.0" width="8.5" height="19.0" fill="#202f23"/>
 <text x="496.5" y="140.0" font-size="14px" fill="#2ea043" textLength="8.5" lengthAdjust="spacingAndGlyphs">+</text>
+<rect x="505.0" y="126.0" width="34.0" height="19.0" fill="#202f23"/>
+<rect x="539.0" y="126.0" width="25.5" height="19.0" fill="#202f23"/>
 <text x="539.0" y="140.0" font-size="14px" fill="#dcdcaa" textLength="25.5" lengthAdjust="spacingAndGlyphs">log</text>
+<rect x="564.5" y="126.0" width="93.5" height="19.0" fill="#202f23"/>
 <text x="564.5" y="140.0" font-size="14px" fill="#cccccc" textLength="93.5" lengthAdjust="spacingAndGlyphs">();        </text>
 <rect x="12.0" y="145.0" width="8.5" height="19.0" fill="#181818"/>
 <rect x="20.5" y="145.0" width="246.5" height="19.0" fill="#181818"/>
@@ -212,29 +238,50 @@
 <rect x="12.0" y="50.0" width="8.5" height="19.0" fill="#181818"/>
 <rect x="20.5" y="50.0" width="246.5" height="19.0" fill="#181818"/>
 <text x="267.0" y="64.0" font-size="14px" fill="#6e7681" textLength="8.5" lengthAdjust="spacingAndGlyphs">│</text>
+<rect x="275.5" y="50.0" width="25.5" height="19.0" fill="#3a2524"/>
 <text x="275.5" y="64.0" font-size="14px" fill="#6e7681" textLength="25.5" lengthAdjust="spacingAndGlyphs">  2</text>
+<rect x="301.0" y="50.0" width="8.5" height="19.0" fill="#3a2524"/>
 <text x="301.0" y="64.0" font-size="14px" fill="#0078d4" textLength="8.5" lengthAdjust="spacingAndGlyphs">│</text>
+<rect x="309.5" y="50.0" width="34.0" height="19.0" fill="#3a2524"/>
+<rect x="343.5" y="50.0" width="25.5" height="19.0" fill="#3a2524"/>
 <text x="343.5" y="64.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
+<rect x="369.0" y="50.0" width="68.0" height="19.0" fill="#3a2524"/>
 <text x="369.0" y="64.0" font-size="14px" fill="#cccccc" textLength="68.0" lengthAdjust="spacingAndGlyphs"> mode = </text>
+<rect x="437.0" y="50.0" width="8.5" height="19.0" fill="#3a2524"/>
 <text x="437.0" y="64.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">1</text>
+<rect x="445.5" y="50.0" width="17.0" height="19.0" fill="#3a2524"/>
 <text x="445.5" y="64.0" font-size="14px" fill="#cccccc" textLength="17.0" lengthAdjust="spacingAndGlyphs">; </text>
 <text x="462.5" y="64.0" font-size="14px" fill="#6e7681" textLength="8.5" lengthAdjust="spacingAndGlyphs">│</text>
+<rect x="471.0" y="50.0" width="25.5" height="19.0" fill="#202f23"/>
 <text x="471.0" y="64.0" font-size="14px" fill="#6e7681" textLength="25.5" lengthAdjust="spacingAndGlyphs">  2</text>
+<rect x="496.5" y="50.0" width="8.5" height="19.0" fill="#202f23"/>
 <text x="496.5" y="64.0" font-size="14px" fill="#0078d4" textLength="8.5" lengthAdjust="spacingAndGlyphs">│</text>
+<rect x="505.0" y="50.0" width="34.0" height="19.0" fill="#202f23"/>
+<rect x="539.0" y="50.0" width="25.5" height="19.0" fill="#202f23"/>
 <text x="539.0" y="64.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
+<rect x="564.5" y="50.0" width="68.0" height="19.0" fill="#202f23"/>
 <text x="564.5" y="64.0" font-size="14px" fill="#cccccc" textLength="68.0" lengthAdjust="spacingAndGlyphs"> mode = </text>
+<rect x="632.5" y="50.0" width="8.5" height="19.0" fill="#202f23"/>
 <text x="632.5" y="64.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">2</text>
+<rect x="641.0" y="50.0" width="17.0" height="19.0" fill="#202f23"/>
 <text x="641.0" y="64.0" font-size="14px" fill="#cccccc" textLength="17.0" lengthAdjust="spacingAndGlyphs">; </text>
 <rect x="12.0" y="69.0" width="85.0" height="19.0" fill="#181818"/>
 <text x="12.0" y="83.0" font-size="14px" fill="#727272" textLength="85.0" lengthAdjust="spacingAndGlyphs"> Changes 1</text>
 <rect x="97.0" y="69.0" width="170.0" height="19.0" fill="#181818"/>
 <text x="267.0" y="83.0" font-size="14px" fill="#6e7681" textLength="8.5" lengthAdjust="spacingAndGlyphs">│</text>
 <text x="462.5" y="83.0" font-size="14px" fill="#6e7681" textLength="8.5" lengthAdjust="spacingAndGlyphs">│</text>
+<rect x="471.0" y="69.0" width="25.5" height="19.0" fill="#202f23"/>
 <text x="471.0" y="83.0" font-size="14px" fill="#6e7681" textLength="25.5" lengthAdjust="spacingAndGlyphs">  3</text>
+<rect x="496.5" y="69.0" width="8.5" height="19.0" fill="#202f23"/>
 <text x="496.5" y="83.0" font-size="14px" fill="#2ea043" textLength="8.5" lengthAdjust="spacingAndGlyphs">+</text>
+<rect x="505.0" y="69.0" width="34.0" height="19.0" fill="#202f23"/>
+<rect x="539.0" y="69.0" width="42.5" height="19.0" fill="#202f23"/>
 <text x="539.0" y="83.0" font-size="14px" fill="#dcdcaa" textLength="42.5" lengthAdjust="spacingAndGlyphs">retry</text>
+<rect x="581.5" y="69.0" width="8.5" height="19.0" fill="#202f23"/>
 <text x="581.5" y="83.0" font-size="14px" fill="#cccccc" textLength="8.5" lengthAdjust="spacingAndGlyphs">(</text>
+<rect x="590.0" y="69.0" width="8.5" height="19.0" fill="#202f23"/>
 <text x="590.0" y="83.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">3</text>
+<rect x="598.5" y="69.0" width="59.5" height="19.0" fill="#202f23"/>
 <text x="598.5" y="83.0" font-size="14px" fill="#cccccc" textLength="59.5" lengthAdjust="spacingAndGlyphs">);     </text>
 <rect x="12.0" y="88.0" width="255.0" height="19.0" fill="#181818"/>
 <text x="12.0" y="102.0" font-size="14px" fill="#cccccc" textLength="255.0" lengthAdjust="spacingAndGlyphs"> M main.rs src                </text>
@@ -256,9 +303,14 @@
 <rect x="20.5" y="126.0" width="246.5" height="19.0" fill="#181818"/>
 <text x="267.0" y="140.0" font-size="14px" fill="#6e7681" textLength="8.5" lengthAdjust="spacingAndGlyphs">│</text>
 <text x="462.5" y="140.0" font-size="14px" fill="#6e7681" textLength="8.5" lengthAdjust="spacingAndGlyphs">│</text>
+<rect x="471.0" y="126.0" width="25.5" height="19.0" fill="#202f23"/>
 <text x="471.0" y="140.0" font-size="14px" fill="#6e7681" textLength="25.5" lengthAdjust="spacingAndGlyphs">  6</text>
+<rect x="496.5" y="126.0" width="8.5" height="19.0" fill="#202f23"/>
 <text x="496.5" y="140.0" font-size="14px" fill="#2ea043" textLength="8.5" lengthAdjust="spacingAndGlyphs">+</text>
+<rect x="505.0" y="126.0" width="34.0" height="19.0" fill="#202f23"/>
+<rect x="539.0" y="126.0" width="25.5" height="19.0" fill="#202f23"/>
 <text x="539.0" y="140.0" font-size="14px" fill="#dcdcaa" textLength="25.5" lengthAdjust="spacingAndGlyphs">log</text>
+<rect x="564.5" y="126.0" width="93.5" height="19.0" fill="#202f23"/>
 <text x="564.5" y="140.0" font-size="14px" fill="#cccccc" textLength="93.5" lengthAdjust="spacingAndGlyphs">();        </text>
 <rect x="12.0" y="145.0" width="8.5" height="19.0" fill="#181818"/>
 <rect x="20.5" y="145.0" width="246.5" height="19.0" fill="#181818"/>
@@ -315,29 +367,50 @@
 <rect x="12.0" y="50.0" width="8.5" height="19.0" fill="#181818"/>
 <rect x="20.5" y="50.0" width="246.5" height="19.0" fill="#181818"/>
 <text x="267.0" y="64.0" font-size="14px" fill="#6e7681" textLength="8.5" lengthAdjust="spacingAndGlyphs">│</text>
+<rect x="275.5" y="50.0" width="25.5" height="19.0" fill="#3a2524"/>
 <text x="275.5" y="64.0" font-size="14px" fill="#6e7681" textLength="25.5" lengthAdjust="spacingAndGlyphs">  2</text>
+<rect x="301.0" y="50.0" width="8.5" height="19.0" fill="#3a2524"/>
 <text x="301.0" y="64.0" font-size="14px" fill="#0078d4" textLength="8.5" lengthAdjust="spacingAndGlyphs">│</text>
+<rect x="309.5" y="50.0" width="34.0" height="19.0" fill="#3a2524"/>
+<rect x="343.5" y="50.0" width="25.5" height="19.0" fill="#3a2524"/>
 <text x="343.5" y="64.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
+<rect x="369.0" y="50.0" width="68.0" height="19.0" fill="#3a2524"/>
 <text x="369.0" y="64.0" font-size="14px" fill="#cccccc" textLength="68.0" lengthAdjust="spacingAndGlyphs"> mode = </text>
+<rect x="437.0" y="50.0" width="8.5" height="19.0" fill="#3a2524"/>
 <text x="437.0" y="64.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">1</text>
+<rect x="445.5" y="50.0" width="17.0" height="19.0" fill="#3a2524"/>
 <text x="445.5" y="64.0" font-size="14px" fill="#cccccc" textLength="17.0" lengthAdjust="spacingAndGlyphs">; </text>
 <text x="462.5" y="64.0" font-size="14px" fill="#6e7681" textLength="8.5" lengthAdjust="spacingAndGlyphs">│</text>
+<rect x="471.0" y="50.0" width="25.5" height="19.0" fill="#202f23"/>
 <text x="471.0" y="64.0" font-size="14px" fill="#6e7681" textLength="25.5" lengthAdjust="spacingAndGlyphs">  2</text>
+<rect x="496.5" y="50.0" width="8.5" height="19.0" fill="#202f23"/>
 <text x="496.5" y="64.0" font-size="14px" fill="#0078d4" textLength="8.5" lengthAdjust="spacingAndGlyphs">│</text>
+<rect x="505.0" y="50.0" width="34.0" height="19.0" fill="#202f23"/>
+<rect x="539.0" y="50.0" width="25.5" height="19.0" fill="#202f23"/>
 <text x="539.0" y="64.0" font-size="14px" fill="#c586c0" textLength="25.5" lengthAdjust="spacingAndGlyphs">let</text>
+<rect x="564.5" y="50.0" width="68.0" height="19.0" fill="#202f23"/>
 <text x="564.5" y="64.0" font-size="14px" fill="#cccccc" textLength="68.0" lengthAdjust="spacingAndGlyphs"> mode = </text>
+<rect x="632.5" y="50.0" width="8.5" height="19.0" fill="#202f23"/>
 <text x="632.5" y="64.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">2</text>
+<rect x="641.0" y="50.0" width="17.0" height="19.0" fill="#202f23"/>
 <text x="641.0" y="64.0" font-size="14px" fill="#cccccc" textLength="17.0" lengthAdjust="spacingAndGlyphs">; </text>
 <rect x="12.0" y="69.0" width="85.0" height="19.0" fill="#181818"/>
 <text x="12.0" y="83.0" font-size="14px" fill="#727272" textLength="85.0" lengthAdjust="spacingAndGlyphs"> Changes 1</text>
 <rect x="97.0" y="69.0" width="170.0" height="19.0" fill="#181818"/>
 <text x="267.0" y="83.0" font-size="14px" fill="#6e7681" textLength="8.5" lengthAdjust="spacingAndGlyphs">│</text>
 <text x="462.5" y="83.0" font-size="14px" fill="#6e7681" textLength="8.5" lengthAdjust="spacingAndGlyphs">│</text>
+<rect x="471.0" y="69.0" width="25.5" height="19.0" fill="#202f23"/>
 <text x="471.0" y="83.0" font-size="14px" fill="#6e7681" textLength="25.5" lengthAdjust="spacingAndGlyphs">  3</text>
+<rect x="496.5" y="69.0" width="8.5" height="19.0" fill="#202f23"/>
 <text x="496.5" y="83.0" font-size="14px" fill="#2ea043" textLength="8.5" lengthAdjust="spacingAndGlyphs">+</text>
+<rect x="505.0" y="69.0" width="34.0" height="19.0" fill="#202f23"/>
+<rect x="539.0" y="69.0" width="42.5" height="19.0" fill="#202f23"/>
 <text x="539.0" y="83.0" font-size="14px" fill="#dcdcaa" textLength="42.5" lengthAdjust="spacingAndGlyphs">retry</text>
+<rect x="581.5" y="69.0" width="8.5" height="19.0" fill="#202f23"/>
 <text x="581.5" y="83.0" font-size="14px" fill="#cccccc" textLength="8.5" lengthAdjust="spacingAndGlyphs">(</text>
+<rect x="590.0" y="69.0" width="8.5" height="19.0" fill="#202f23"/>
 <text x="590.0" y="83.0" font-size="14px" fill="#b5cea8" textLength="8.5" lengthAdjust="spacingAndGlyphs">3</text>
+<rect x="598.5" y="69.0" width="59.5" height="19.0" fill="#202f23"/>
 <text x="598.5" y="83.0" font-size="14px" fill="#cccccc" textLength="59.5" lengthAdjust="spacingAndGlyphs">);     </text>
 <rect x="12.0" y="88.0" width="255.0" height="19.0" fill="#181818"/>
 <text x="12.0" y="102.0" font-size="14px" fill="#cccccc" textLength="255.0" lengthAdjust="spacingAndGlyphs"> M main.rs src                </text>
@@ -359,9 +432,14 @@
 <rect x="20.5" y="126.0" width="246.5" height="19.0" fill="#181818"/>
 <text x="267.0" y="140.0" font-size="14px" fill="#6e7681" textLength="8.5" lengthAdjust="spacingAndGlyphs">│</text>
 <text x="462.5" y="140.0" font-size="14px" fill="#6e7681" textLength="8.5" lengthAdjust="spacingAndGlyphs">│</text>
+<rect x="471.0" y="126.0" width="25.5" height="19.0" fill="#202f23"/>
 <text x="471.0" y="140.0" font-size="14px" fill="#6e7681" textLength="25.5" lengthAdjust="spacingAndGlyphs">  6</text>
+<rect x="496.5" y="126.0" width="8.5" height="19.0" fill="#202f23"/>
 <text x="496.5" y="140.0" font-size="14px" fill="#2ea043" textLength="8.5" lengthAdjust="spacingAndGlyphs">+</text>
+<rect x="505.0" y="126.0" width="34.0" height="19.0" fill="#202f23"/>
+<rect x="539.0" y="126.0" width="25.5" height="19.0" fill="#202f23"/>
 <text x="539.0" y="140.0" font-size="14px" fill="#dcdcaa" textLength="25.5" lengthAdjust="spacingAndGlyphs">log</text>
+<rect x="564.5" y="126.0" width="93.5" height="19.0" fill="#202f23"/>
 <text x="564.5" y="140.0" font-size="14px" fill="#cccccc" textLength="93.5" lengthAdjust="spacingAndGlyphs">();        </text>
 <rect x="12.0" y="145.0" width="8.5" height="19.0" fill="#181818"/>
 <rect x="20.5" y="145.0" width="246.5" height="19.0" fill="#181818"/>

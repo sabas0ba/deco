@@ -72,6 +72,10 @@ const DEFAULTS: &[(&str, Rgba, Rgba)] = &[
     ("editorGutter.addedBackground", hex(0x2ea043), hex(0x2ea043)),
     ("editorGutter.modifiedBackground", hex(0x0078d4), hex(0x005fb8)),
     ("editorGutter.deletedBackground", hex(0xf85149), hex(0xf85149)),
+    // Subtle full-line tints for the two sides of a diff. Kept translucent so
+    // syntax colours remain the strongest signal on the row.
+    ("diffEditor.insertedLineBackground", hexa(0x2ea04320), hexa(0x2ea04320)),
+    ("diffEditor.removedLineBackground", hexa(0xf8514920), hexa(0xf8514920)),
     // Widgets
     ("editorWidget.background", hex(0x202020), hex(0xf8f8f8)),
     ("editorWidget.border", hex(0x454545), hex(0xc8c8c8)),
