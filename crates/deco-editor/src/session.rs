@@ -139,6 +139,50 @@ pub struct Pane<'a> {
     /// The renderer needs it for more than decoration: the caret, and the find
     /// bar's match highlighting, belong to the group being typed into.
     pub focused: bool,
+    /// Diff-specific labels and line decoration, for a source-control comparison.
+    pub comparison: Option<ComparisonPane<'a>>,
+}
+
+/// The source line represented by one aligned row of a comparison.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ComparisonLine {
+    /// One-based line number in the source, or `None` for an alignment gap.
+    pub number: Option<usize>,
+    /// What the row means on this side of the comparison.
+    pub kind: ComparisonLineKind,
+}
+
+/// How one side of a comparison should decorate an aligned row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComparisonLineKind {
+    Context,
+    Added,
+    Removed,
+    Modified,
+    Empty,
+}
+
+/// Additional presentation data for a pane in a source-control comparison.
+pub struct ComparisonPane<'a> {
+    /// `HEAD`, `Index`, or `Working Tree`.
+    pub label: &'a str,
+    /// One entry per document line.
+    pub lines: &'a [ComparisonLine],
+}
+
+#[derive(Debug)]
+struct ComparisonSide {
+    document: Document,
+    view: View,
+    label: &'static str,
+    lines: Vec<ComparisonLine>,
+}
+
+#[derive(Debug)]
+struct ComparisonView {
+    left: ComparisonSide,
+    right: ComparisonSide,
+    focused_right: bool,
 }
 
 /// What a tab bar needs to draw one tab.
@@ -199,6 +243,134 @@ fn normalise(path: &Path) -> PathBuf {
     out
 }
 
+/// Aligns two texts so corresponding changed runs occupy the same screen rows.
+fn comparison_rows(
+    original: &str,
+    modified: &str,
+) -> ((String, Vec<ComparisonLine>), (String, Vec<ComparisonLine>)) {
+    fn clean(line: &str) -> &str {
+        line.strip_suffix('\n')
+            .unwrap_or(line)
+            .strip_suffix('\r')
+            .unwrap_or_else(|| line.strip_suffix('\n').unwrap_or(line))
+    }
+    fn push_context(
+        original: &[&str],
+        modified: &[&str],
+        left_at: &mut usize,
+        right_at: &mut usize,
+        left_end: usize,
+        right_end: usize,
+        left_text: &mut Vec<String>,
+        right_text: &mut Vec<String>,
+        left_lines: &mut Vec<ComparisonLine>,
+        right_lines: &mut Vec<ComparisonLine>,
+    ) {
+        while *left_at < left_end && *right_at < right_end {
+            left_text.push(clean(original[*left_at]).to_owned());
+            right_text.push(clean(modified[*right_at]).to_owned());
+            left_lines.push(ComparisonLine {
+                number: Some(*left_at + 1),
+                kind: ComparisonLineKind::Context,
+            });
+            right_lines.push(ComparisonLine {
+                number: Some(*right_at + 1),
+                kind: ComparisonLineKind::Context,
+            });
+            *left_at += 1;
+            *right_at += 1;
+        }
+    }
+
+    let original_lines: Vec<&str> = original.split_inclusive('\n').collect();
+    let modified_lines: Vec<&str> = modified.split_inclusive('\n').collect();
+    let diff = deco_scm::diff(original, modified);
+    let mut left_text = Vec::new();
+    let mut right_text = Vec::new();
+    let mut left_lines = Vec::new();
+    let mut right_lines = Vec::new();
+    let (mut left_at, mut right_at) = (0usize, 0usize);
+
+    for hunk in &diff.hunks {
+        push_context(
+            &original_lines,
+            &modified_lines,
+            &mut left_at,
+            &mut right_at,
+            hunk.head.start,
+            hunk.working.start,
+            &mut left_text,
+            &mut right_text,
+            &mut left_lines,
+            &mut right_lines,
+        );
+        let rows = hunk.head.len().max(hunk.working.len());
+        for offset in 0..rows {
+            let left = hunk.head.start + offset;
+            let right = hunk.working.start + offset;
+            let has_left = left < hunk.head.end;
+            let has_right = right < hunk.working.end;
+            left_text.push(if has_left {
+                clean(original_lines[left]).to_owned()
+            } else {
+                String::new()
+            });
+            right_text.push(if has_right {
+                clean(modified_lines[right]).to_owned()
+            } else {
+                String::new()
+            });
+            left_lines.push(ComparisonLine {
+                number: has_left.then_some(left + 1),
+                kind: match (has_left, has_right) {
+                    (true, true) => ComparisonLineKind::Modified,
+                    (true, false) => ComparisonLineKind::Removed,
+                    (false, _) => ComparisonLineKind::Empty,
+                },
+            });
+            right_lines.push(ComparisonLine {
+                number: has_right.then_some(right + 1),
+                kind: match (has_left, has_right) {
+                    (true, true) => ComparisonLineKind::Modified,
+                    (false, true) => ComparisonLineKind::Added,
+                    (_, false) => ComparisonLineKind::Empty,
+                },
+            });
+        }
+        left_at = hunk.head.end;
+        right_at = hunk.working.end;
+    }
+    push_context(
+        &original_lines,
+        &modified_lines,
+        &mut left_at,
+        &mut right_at,
+        original_lines.len(),
+        modified_lines.len(),
+        &mut left_text,
+        &mut right_text,
+        &mut left_lines,
+        &mut right_lines,
+    );
+
+    if left_lines.is_empty() {
+        left_text.push(String::new());
+        right_text.push(String::new());
+        left_lines.push(ComparisonLine {
+            number: None,
+            kind: ComparisonLineKind::Empty,
+        });
+        right_lines.push(ComparisonLine {
+            number: None,
+            kind: ComparisonLineKind::Empty,
+        });
+    }
+    (
+        (left_text.join("\n"), left_lines),
+        (right_text.join("\n"), right_lines),
+    )
+}
+
 /// Exactly the bytes to write for `document`.
 ///
 /// Its *own* settings, not the session's: `files.insertFinalNewline` can differ
@@ -257,6 +429,8 @@ pub struct Session {
     /// Only meaningful while split. Kept so that the panes can be listed in the
     /// order they sit on screen while `view` stays the active one.
     split_focused: bool,
+    /// A read-only, side-by-side source-control comparison over the active tab.
+    comparison: Option<ComparisonView>,
     /// Paths that have been on screen, most recently first.
     ///
     /// What makes `ctrl+p` fast: the file you want is usually one you just had open,
@@ -590,6 +764,7 @@ impl Session {
             quit_refused: false,
             split_view: None,
             split_focused: false,
+            comparison: None,
             // Seeded from the same platform the keymap was built for, so a
             // `!isMac` binding cannot be chosen and then gated out.
             context: ContextKeys::for_platform(platform),
@@ -735,6 +910,42 @@ impl Session {
     /// One today. The shape is here so that a renderer is written against groups
     /// from the start rather than against the one the session happens to expose.
     pub fn panes(&self) -> Vec<Pane<'_>> {
+        if let Some(comparison) = &self.comparison {
+            return vec![
+                Pane {
+                    document: &comparison.left.document,
+                    view: &comparison.left.view,
+                    semantic: &[],
+                    diagnostics: &[],
+                    tabs: vec![TabLabel {
+                        title: comparison.left.label.to_owned(),
+                        dirty: false,
+                        active: !comparison.focused_right,
+                    }],
+                    focused: !comparison.focused_right,
+                    comparison: Some(ComparisonPane {
+                        label: comparison.left.label,
+                        lines: &comparison.left.lines,
+                    }),
+                },
+                Pane {
+                    document: &comparison.right.document,
+                    view: &comparison.right.view,
+                    semantic: &[],
+                    diagnostics: &[],
+                    tabs: vec![TabLabel {
+                        title: comparison.right.label.to_owned(),
+                        dirty: false,
+                        active: comparison.focused_right,
+                    }],
+                    focused: comparison.focused_right,
+                    comparison: Some(ComparisonPane {
+                        label: comparison.right.label,
+                        lines: &comparison.right.lines,
+                    }),
+                },
+            ];
+        }
         let mut panes = vec![self.pane(&self.view, true)];
         if let Some(other) = &self.split_view {
             let other = self.pane(other, false);
@@ -751,6 +962,9 @@ impl Session {
 
     /// How many editor groups there are.
     pub fn group_count(&self) -> usize {
+        if self.comparison.is_some() {
+            return 2;
+        }
         1 + usize::from(self.split_view.is_some())
     }
 
@@ -763,6 +977,7 @@ impl Session {
             diagnostics: &self.diagnostics,
             tabs: self.tab_labels(),
             focused,
+            comparison: None,
         }
     }
 
@@ -873,6 +1088,9 @@ impl Session {
     /// Scrolling it afterwards leaves the first group where it was, which is the
     /// whole point: two places in one file, at once.
     fn split(&mut self) -> Outcome {
+        if self.comparison.is_some() {
+            return Outcome::Message("close the diff before splitting the editor".to_owned());
+        }
         if self.split_view.is_some() {
             // A third group would need a third view and a narrower column each;
             // saying so beats a key that silently does nothing.
@@ -895,6 +1113,11 @@ impl Session {
                 1 => "there is only one editor group".to_owned(),
                 _ => format!("there are only {count} editor groups"),
             });
+        }
+        if let Some(comparison) = self.comparison.as_mut() {
+            comparison.focused_right = index == 1;
+            self.refresh_context();
+            return Outcome::Handled;
         }
         let wanted = index == 1;
         if wanted != self.split_focused {
@@ -1008,6 +1231,11 @@ impl Session {
     /// VS Code's rule, and the useful one: having split, the first thing you want
     /// that key to do is put the screen back.
     fn close_editor(&mut self) -> Outcome {
+        if self.comparison.take().is_some() {
+            self.relayout();
+            self.refresh_context();
+            return Outcome::Message("Closed the diff".to_owned());
+        }
         if self.split_view.is_some() {
             self.split_view = None;
             self.split_focused = false;
@@ -1160,7 +1388,17 @@ impl Session {
     /// frame the selection appears.
     pub fn refresh_context(&mut self) {
         self.note_active_document();
-        let selections = &self.view.selections;
+        let selections = self
+            .comparison
+            .as_ref()
+            .map(|comparison| {
+                if comparison.focused_right {
+                    &comparison.right.view.selections
+                } else {
+                    &comparison.left.view.selections
+                }
+            })
+            .unwrap_or(&self.view.selections);
         // VS Code's own distinction, and the find bar depends on it:
         // `editorTextFocus` is the text area, `textInputFocus` is any text input
         // including the find box, and `editorFocus` covers the editor as a whole.
@@ -1233,7 +1471,8 @@ impl Session {
         self.context
             .set("findInputFocussed", find_focus && !on_replace);
         self.context.set("replaceInputFocussed", on_replace);
-        self.context.set("editorReadonly", false);
+        self.context
+            .set("editorReadonly", self.comparison.is_some());
         self.context.set(
             "editorHasSelection",
             selections.iter().any(|s| !s.is_empty()),
@@ -1327,6 +1566,9 @@ impl Session {
 
     /// Runs a command by identifier.
     pub fn run(&mut self, command: &str, args: Option<&serde_json::Value>, now_ms: u64) -> Outcome {
+        if self.comparison.is_some() {
+            return self.run_in_comparison(command, args, now_ms);
+        }
         // Diagnostic navigation is handled here rather than in `commands`
         // because it needs the diagnostic list, which belongs to the session —
         // a command sees only the document, the view and the clipboard.
@@ -1601,6 +1843,53 @@ impl Session {
         if let Outcome::Message(message) = &outcome {
             self.status = Some(message.clone());
         }
+        self.refresh_context();
+        outcome
+    }
+
+    /// Runs only navigation and copying against the focused read-only diff side.
+    fn run_in_comparison(
+        &mut self,
+        command: &str,
+        args: Option<&serde_json::Value>,
+        now_ms: u64,
+    ) -> Outcome {
+        match command {
+            "workbench.action.closeActiveEditor" => return self.close_editor(),
+            "workbench.action.focusFirstEditorGroup" => return self.focus_group(0),
+            "workbench.action.focusSecondEditorGroup" => return self.focus_group(1),
+            "workbench.action.focusThirdEditorGroup" => return self.focus_group(2),
+            "workbench.action.splitEditor" | "workbench.action.splitEditorRight" => {
+                return self.split()
+            }
+            _ => {}
+        }
+        let safe = command.starts_with("cursor")
+            || command.starts_with("scroll")
+            || matches!(
+                command,
+                "editor.action.clipboardCopyAction"
+                    | "editor.action.selectAll"
+                    | "expandLineSelection"
+                    | "removeSecondaryCursors"
+                    | "cancelSelection"
+            );
+        if !safe {
+            return Outcome::Message("the diff view is read only".to_owned());
+        }
+
+        let mut comparison = self.comparison.take().expect("checked above");
+        let side = if comparison.focused_right {
+            &mut comparison.right
+        } else {
+            &mut comparison.left
+        };
+        std::mem::swap(&mut self.document, &mut side.document);
+        std::mem::swap(&mut self.view, &mut side.view);
+        let outcome = self.run(command, args, now_ms);
+        std::mem::swap(&mut self.view, &mut side.view);
+        std::mem::swap(&mut self.document, &mut side.document);
+        self.comparison = Some(comparison);
         self.refresh_context();
         outcome
     }
@@ -3835,26 +4124,28 @@ impl Session {
                 let Some(row) = self.source_control.selection() else {
                     return Outcome::Handled;
                 };
-                // Against the *repository* root, which is what these paths
-                // are relative to. The workspace root is only the same thing
-                // when nobody opened a subdirectory, and joining to it there
-                // would ask for `/repo/sub/sub/a.rs`.
-                let Some(root) = self
-                    .repository_root
-                    .as_ref()
-                    .map(|root| root.join(&row.path))
-                else {
+                if row.group == crate::scm::Group::Conflicts {
                     return Outcome::Message(
-                        "deco does not know where this repository begins yet".to_owned(),
+                        "resolve the merge conflict before opening its diff".to_owned(),
                     );
+                }
+                let kind = match row.group {
+                    crate::scm::Group::Staged => deco_scm::ComparisonKind::Staged,
+                    crate::scm::Group::Changes | crate::scm::Group::Untracked => {
+                        deco_scm::ComparisonKind::WorkingTree
+                    }
+                    crate::scm::Group::Conflicts => unreachable!("refused above"),
                 };
-                // The keyboard follows the file, as it does out of the tree.
+                let request = deco_scm::ComparisonRequest {
+                    path: row.path.clone(),
+                    original: (row.group == crate::scm::Group::Staged)
+                        .then(|| row.original.clone())
+                        .flatten(),
+                    kind,
+                };
                 self.focus = Focus::Editor;
                 self.refresh_context();
-                return Outcome::OpenFile {
-                    path: root,
-                    at: None,
-                };
+                return Outcome::GitComparison(request);
             }
             _ => {}
         }
@@ -3971,6 +4262,62 @@ impl Session {
         // what the view thought, and the view being wrong is what caused it.
         self.scm_changed();
         self.refresh_context();
+    }
+
+    /// Opens a read-only, side-by-side comparison over the current editor tab.
+    pub fn open_comparison(
+        &mut self,
+        request: deco_scm::ComparisonRequest,
+        comparison: deco_scm::Comparison,
+    ) {
+        let original = comparison.original.unwrap_or_default();
+        let modified = comparison.modified.unwrap_or_default();
+        let ((left_text, left_lines), (right_text, right_lines)) =
+            comparison_rows(&original, &modified);
+        let language = crate::document::language_for_path(&request.path);
+        let mut left_settings = EditorSettings::resolve(&self.settings, language);
+        let mut right_settings = left_settings.clone();
+        left_settings.word_wrap = deco_config::WordWrap::Off;
+        right_settings.word_wrap = deco_config::WordWrap::Off;
+        let (left_label, right_label) = match request.kind {
+            deco_scm::ComparisonKind::Staged => ("HEAD", "Index"),
+            deco_scm::ComparisonKind::WorkingTree => ("Index", "Working Tree"),
+        };
+        let view = View {
+            width: self.view.width,
+            height: self.view.height,
+            ..Default::default()
+        };
+        self.comparison = Some(ComparisonView {
+            left: ComparisonSide {
+                document: Document::from_file(request.path.clone(), &left_text, left_settings),
+                view: view.clone(),
+                label: left_label,
+                lines: left_lines,
+            },
+            right: ComparisonSide {
+                document: Document::from_file(request.path, &right_text, right_settings),
+                view,
+                label: right_label,
+                lines: right_lines,
+            },
+            focused_right: true,
+        });
+        self.focus = Focus::Editor;
+        self.status = Some(format!("{left_label} ↔ {right_label} — read only"));
+        self.relayout();
+        self.refresh_context();
+    }
+
+    /// Reports why a requested comparison could not be opened.
+    pub fn comparison_failed(&mut self, reason: &str) {
+        self.status = Some(format!("could not open diff: {reason}"));
+        self.refresh_context();
+    }
+
+    /// Whether a source-control comparison is covering the active tab.
+    pub fn comparison_active(&self) -> bool {
+        self.comparison.is_some()
     }
 
     /// Says where the repository begins.
@@ -4382,6 +4729,23 @@ impl Session {
         let (width, height) = (editor.width, editor.height);
 
         let columns = crate::layout::column_widths(width, self.group_count());
+        if let Some(comparison) = self.comparison.as_mut() {
+            for (index, side) in [&mut comparison.left, &mut comparison.right]
+                .into_iter()
+                .enumerate()
+            {
+                let pane_width = columns.get(index).copied().unwrap_or(width);
+                let gutter = crate::layout::gutter_width(&side.document);
+                side.view.width = pane_width;
+                side.view.height = height;
+                side.view.text_width = if self.frontend_wraps {
+                    pane_width.saturating_sub(gutter)
+                } else {
+                    0
+                };
+            }
+            return;
+        }
         let gutter = crate::layout::gutter_width(&self.document);
         // The active group is the second one on screen while the split has the
         // keyboard — the same order `panes` reports.
@@ -9179,30 +9543,58 @@ mod tests {
     }
 
     #[test]
-    fn enter_in_the_source_control_view_opens_the_file() {
+    fn enter_in_the_source_control_view_requests_the_selected_comparison() {
         let mut s = with_tree();
         s.fill_scm(Some(dirty_status()));
         s.run("workbench.view.scm", None, 0);
 
-        // Until a frontend has said where the repository begins, there is
-        // nothing to resolve a repository-relative path against — and guessing
-        // the workspace root would open the wrong file whenever the two
-        // differ.
-        assert!(matches!(s.run("list.select", None, 0), Outcome::Message(_)));
-
-        // Rooted a level above the workspace, which is the case that catches a
-        // join to the wrong root: `/repo/sub` + `sub/work.rs` would be
-        // `/repo/sub/sub/work.rs`.
-        s.set_repository_root(Some(PathBuf::from("/repo")));
-        let Outcome::OpenFile { path, .. } = s.run("list.select", None, 0) else {
-            panic!("expected the file to open");
+        let Outcome::GitComparison(request) = s.run("list.select", None, 0) else {
+            panic!("expected a comparison request");
         };
-        assert_eq!(path, PathBuf::from("/repo/work.rs"));
+        assert_eq!(request.path, PathBuf::from("work.rs"));
+        assert_eq!(request.kind, deco_scm::ComparisonKind::WorkingTree);
         assert_eq!(
             s.focus(),
             Focus::Editor,
-            "and the keyboard follows it, as it does out of the tree"
+            "and the keyboard follows the diff, as it does out of the tree"
         );
+    }
+
+    #[test]
+    fn a_comparison_is_aligned_read_only_and_closes_back_to_the_tab() {
+        let mut s = Session::with_defaults();
+        s.open(PathBuf::from("work.rs"), "the live tab\n");
+        s.open_comparison(
+            deco_scm::ComparisonRequest {
+                path: PathBuf::from("work.rs"),
+                original: None,
+                kind: deco_scm::ComparisonKind::WorkingTree,
+            },
+            deco_scm::Comparison {
+                original: Some("one\ntwo\nthree\n".to_owned()),
+                modified: Some("one\ninserted\ntwo changed\nthree\n".to_owned()),
+            },
+        );
+
+        let panes = s.panes();
+        assert_eq!(panes.len(), 2);
+        assert_eq!(panes[0].comparison.as_ref().unwrap().label, "Index");
+        assert_eq!(panes[1].comparison.as_ref().unwrap().label, "Working Tree");
+        assert_eq!(
+            panes[0].document.buffer.line_count(),
+            panes[1].document.buffer.line_count(),
+            "alignment gaps keep both sides on the same row"
+        );
+        assert_eq!(s.context.get("editorReadonly"), Some(&json!(true)));
+
+        assert!(matches!(
+            s.handle_chord(Chord::char('x'), 0),
+            Outcome::Message(_)
+        ));
+        assert_eq!(s.document.buffer.text(), "the live tab\n");
+        s.run("workbench.action.closeActiveEditor", None, 0);
+        assert!(!s.comparison_active());
+        assert_eq!(s.document.buffer.text(), "the live tab\n");
     }
 
     #[test]

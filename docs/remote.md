@@ -16,7 +16,8 @@ through the connection, and opens it. `ctrl+s` writes it back over the same
 connection. `ctrl+p` lists the **remote** workspace, because that is where the
 files are.
 
-Git status, committed text, stage, unstage and commit also run on the far end.
+Git status, committed text, diff comparisons, stage, unstage and commit also
+run on the far end.
 They use a second connection and a worker of their own, so a working-tree walk
 or commit hook does not stop file reads or the editor's event loop.
 
@@ -468,9 +469,11 @@ machine's own settings.
 
 It loads no theme or settings and starts no language server or extension. The
 explicit exception is `scm.*`: those methods run the remote's `git`, and
-`scm.apply` changes its index or creates a commit. Commit hooks run as they do
-locally; they are arbitrary programs with the remote account's authority. The
-client cannot choose another executable through the protocol.
+`scm.comparison` reads the HEAD/index/working-tree pair needed by the selected
+source-control row, and `scm.apply` changes the index or creates a commit.
+Commit hooks run as they do locally; they are arbitrary programs with the
+remote account's authority. The client cannot choose another executable
+through the protocol.
 
 ### One directory, and no way out of it
 

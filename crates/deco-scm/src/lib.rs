@@ -37,7 +37,7 @@ pub mod diff;
 pub mod git;
 pub mod status;
 
-pub use change::Operation;
+pub use change::{Comparison, ComparisonKind, ComparisonRequest, Operation};
 pub use diff::{diff, Diff, Hunk, Mark};
 pub use git::{Git, ScmError};
 pub use status::{parse, Change, FileStatus, Head, Malformed, State, Status, Upstream};

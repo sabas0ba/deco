@@ -462,6 +462,18 @@ impl Client {
         }
     }
 
+    /// Both repository states needed for one source-control diff on the far end.
+    pub fn scm_comparison(
+        &mut self,
+        request: &deco_scm::ComparisonRequest,
+    ) -> Result<deco_scm::Comparison, ClientError> {
+        let said = self.request("scm.comparison", json!({ "request": request }))?;
+        serde_json::from_value(said["comparison"].clone()).map_err(|_| ClientError::Malformed {
+            method: "scm.comparison".to_owned(),
+            field: "comparison",
+        })
+    }
+
     /// Carries out one source-control operation on the far end.
     pub fn scm_apply(&mut self, operation: &deco_scm::Operation) -> Result<(), ClientError> {
         self.request("scm.apply", json!({ "operation": operation }))?;

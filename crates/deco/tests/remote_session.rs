@@ -246,7 +246,12 @@ fn source_control_reads_and_writes_the_repository_on_the_far_end() {
 
     let mut client = connect(&root);
     let hello = client.handshake().expect("a handshake");
-    for method in ["scm.status", "scm.committed", "scm.apply"] {
+    for method in [
+        "scm.status",
+        "scm.committed",
+        "scm.comparison",
+        "scm.apply",
+    ] {
         assert!(hello.serves(method), "the handshake omitted {method}");
     }
 
@@ -260,10 +265,34 @@ fn source_control_reads_and_writes_the_repository_on_the_far_end() {
             .expect("committed text"),
         Some("fn main() {}\n".to_owned())
     );
+    let request = deco_scm::ComparisonRequest {
+        path: PathBuf::from("src/main.rs"),
+        original: None,
+        kind: deco_scm::ComparisonKind::WorkingTree,
+    };
+    let comparison = client
+        .scm_comparison(&request)
+        .expect("a working-tree comparison");
+    assert_eq!(comparison.original.as_deref(), Some("fn main() {}\n"));
+    assert_eq!(
+        comparison.modified.as_deref(),
+        Some("fn main() { println!(\"remote\"); }\n")
+    );
 
     let stage = deco_scm::Operation::Stage(PathBuf::from("src/main.rs"));
     client.scm_apply(&stage).expect("stage on the far end");
     assert_eq!(client.scm_status().expect("staged status").1.staged(), 1);
+    let comparison = client
+        .scm_comparison(&deco_scm::ComparisonRequest {
+            kind: deco_scm::ComparisonKind::Staged,
+            ..request
+        })
+        .expect("a staged comparison");
+    assert_eq!(comparison.original.as_deref(), Some("fn main() {}\n"));
+    assert_eq!(
+        comparison.modified.as_deref(),
+        Some("fn main() { println!(\"remote\"); }\n")
+    );
 
     client
         .scm_apply(&deco_scm::Operation::Commit("remote change".to_owned()))

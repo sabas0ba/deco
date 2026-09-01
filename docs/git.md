@@ -90,8 +90,18 @@ reorders the list; an index that stayed put would leave the selection on a
 different file than the one you were looking at, and the next command would act
 on it.
 
-`enter` opens the file the selection is on, and the keyboard goes with it — the
-same bargain the tree makes.
+`enter` opens a read-only, side-by-side diff and the keyboard goes with it.
+Staged rows compare **HEAD ↔ Index**; Changes and Untracked compare
+**Index ↔ Working Tree**. That boundary matters when the same file appears
+twice: the staged row shows only what the next commit records, while the other
+row shows only what staging again would add. `ctrl+w` closes the diff and
+returns to the tab underneath; `ctrl+1` and `ctrl+2` move between its sides.
+
+Added, removed and modified rows have distinct gutter marks, and alignment gaps
+keep the two sides on the same screen row. The comparison is fetched on a
+worker, so opening one does not stop the editor from painting. Merge-conflict
+rows are refused for now: presenting their unresolved stages as an ordinary
+two-way diff would hide the part that must be resolved.
 
 ### The commands
 
@@ -148,11 +158,12 @@ milliseconds; on a working tree with a million files it is not, and an editor
 that stopped painting while git thought would be worse than one whose branch
 name is a moment stale.
 
-In a **remote session**, status, committed text, stage, unstage and commit run
-through a second server connection on the machine holding the repository. That
-connection has one worker and one request in flight: a slow status or commit
-hook neither blocks the terminal loop nor races another repository write. The
-ordinary connection remains available for file reads and extension requests.
+In a **remote session**, status, committed text, diff comparisons, stage,
+unstage and commit run through a second server connection on the machine
+holding the repository. That connection has one worker and one request in
+flight: a slow status or commit hook neither blocks the terminal loop nor races
+another repository write. The ordinary connection remains available for file
+reads and extension requests.
 
 The remote server does not expand its authority to find a repository. If the
 served workspace is only a subdirectory and the repository begins above it,
@@ -269,11 +280,6 @@ Two environment variables go to the child, and each prevents a specific failure:
 work when it goes wrong, and doing it well needs to say what would be lost
 before it happens. That is its own piece of work rather than a line in this
 one.
-
-**No diff view.** The gutter says which lines changed in the file you are
-looking at; there is no side-by-side of a file you are not. The marks are
-computed for any open file, so the pieces are there, but a diff view is a
-second editor pane and that is a chapter of its own.
 
 **No watcher.** A commit made in a terminal shows up on the next save, not the
 moment it happens. The [file tree](files.md#not-built-yet) has the same gap for

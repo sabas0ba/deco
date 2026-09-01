@@ -208,7 +208,10 @@ fn fixed_chrome_height(session: &Session) -> usize {
 pub fn tab_bar_height(session: &Session) -> usize {
     // Any group showing more than one tab earns the row, and the row spans the
     // window — so one group with two tabs makes the bar appear for all of them.
-    usize::from(session.panes().iter().any(|pane| pane.tabs.len() > 1))
+    usize::from(
+        session.comparison_active()
+            || session.panes().iter().any(|pane| pane.tabs.len() > 1),
+    )
 }
 
 /// Rows the open prompt's list of choices takes.
@@ -853,6 +856,10 @@ fn pane_rows(
 
         let mut spans = Vec::new();
         if gutter > 0 {
+            let comparison_line = pane
+                .comparison
+                .as_ref()
+                .and_then(|comparison| comparison.lines.get(line));
             // Blank on a continuation row: repeating the number would read as a
             // second line that is not there, and VS Code leaves it blank too.
             let label = if visual.numbered() {
@@ -869,7 +876,9 @@ fn pane_rows(
                     {
                         String::new()
                     }
-                    _ => (line + 1).to_string(),
+                    _ => comparison_line
+                        .map(|line| line.number.map(|number| number.to_string()).unwrap_or_default())
+                        .unwrap_or_else(|| (line + 1).to_string()),
                 }
             } else {
                 String::new()
@@ -883,10 +892,11 @@ fn pane_rows(
             // puts its git marks, and it is already spare here. On a
             // continuation row it stays blank: a wrapped line is one line, and
             // repeating its mark would read as several.
-            let mark = visual
-                .numbered()
-                .then(|| git_mark(session, pane, line, palette))
-                .flatten();
+            let mark = visual.numbered().then(|| {
+                comparison_line
+                    .and_then(|line| comparison_mark(line.kind, palette))
+                    .or_else(|| git_mark(session, pane, line, palette))
+            }).flatten();
             match mark {
                 // Two spans, because the mark is a different colour from the
                 // number beside it.
@@ -1702,6 +1712,20 @@ fn git_mark(
         deco_scm::Mark::Added => ('┃', palette.added_fg),
         deco_scm::Mark::Modified => ('│', palette.modified_fg),
         deco_scm::Mark::Deleted => ('▔', palette.deleted_fg),
+    })
+}
+
+fn comparison_mark(
+    kind: deco_editor::ComparisonLineKind,
+    palette: &Palette,
+) -> Option<(char, Rgba)> {
+    Some(match kind {
+        deco_editor::ComparisonLineKind::Added => ('+', palette.added_fg),
+        deco_editor::ComparisonLineKind::Removed => ('-', palette.deleted_fg),
+        deco_editor::ComparisonLineKind::Modified => ('│', palette.modified_fg),
+        deco_editor::ComparisonLineKind::Context | deco_editor::ComparisonLineKind::Empty => {
+            return None
+        }
     })
 }
 
@@ -3495,6 +3519,10 @@ mod tests {
             diagnostics: pane.diagnostics,
             tabs: Vec::new(),
             focused: false,
+            comparison: pane.comparison.as_ref().map(|comparison| deco_editor::ComparisonPane {
+                label: comparison.label,
+                lines: comparison.lines,
+            }),
         }
     }
 

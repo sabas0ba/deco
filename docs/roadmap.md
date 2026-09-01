@@ -25,7 +25,7 @@ What VS Code has and deco does not, grouped by how it blocks:
 
 | Missing | Depends on |
 | --- | --- |
-| Git — checkout, discard, push/pull, a diff view ([the rest is built](git.md)) | nothing; each is its own decision about what it may lose or ask for |
+| Git — checkout, discard, push/pull ([the rest is built](git.md)) | nothing; each is its own decision about what it may lose or ask for |
 | Integrated terminal | a PTY dependency; its home is the [panel](chrome.md) |
 | Task runner (`tasks.json`, `ctrl+shift+b`) | the terminal, for somewhere to run |
 | Test runner | the task runner, and later the extension host |
@@ -76,14 +76,10 @@ is left over.
 - **Push, pull, fetch.** These need credentials, and a credential prompt is a
   thing an editor has to be trusted with. Worth doing deliberately rather than
   as an afterthought to a view that already works.
-- **A diff view.** The gutter says which lines changed in the file on screen;
-  a side-by-side of a file you are not looking at is a second editor pane, and
-  that is a chapter of its own.
 **Steps.**
 
-1. A diff view, which the marks already compute the hunks for.
-2. Checkout, with what it would cost said first.
-3. Push, pull and fetch, once there is somewhere honest to put a credential
+1. Checkout, with what it would cost said first.
+2. Push, pull and fetch, once there is somewhere honest to put a credential
    prompt.
 
 ## The integrated terminal

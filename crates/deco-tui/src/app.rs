@@ -846,6 +846,10 @@ impl Driver {
                 scm.apply(session, &operation);
                 *dirty = true;
             }
+            Outcome::GitComparison(request) => {
+                scm.compare(session, request);
+                *dirty = true;
+            }
             Outcome::FileOperation(operation) => {
                 let root = session
                     .explorer()

@@ -66,6 +66,8 @@ pub enum Outcome {
     /// the view and the status bar catch up. See [`deco_scm::Operation`] for
     /// what deliberately is not in it.
     GitOperation(deco_scm::Operation),
+    /// A repository comparison should be fetched and shown read-only.
+    GitComparison(deco_scm::ComparisonRequest),
     /// The user chose a remembered decision to take back.
     ///
     /// The identifier is whatever the frontend put on the choice when it built
