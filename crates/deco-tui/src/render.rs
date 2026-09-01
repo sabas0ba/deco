@@ -953,7 +953,7 @@ fn pane_rows(
             .map(|s| s.to_string())
             .unwrap_or_default();
         spans.extend(line_spans(
-            session, pane, &text, visual, text_width, tab_size, line_bg, palette,
+            session, pane, &text, visual, text_width, line_bg, palette,
         ));
         rows.push(Row { spans });
 
@@ -1306,11 +1306,11 @@ fn line_spans(
     text: &str,
     visual: &deco_editor::document::VisualRow,
     width: usize,
-    tab_size: usize,
     plain_bg: Rgba,
     palette: &Palette,
 ) -> Vec<Span> {
     let line = visual.line;
+    let tab_size = pane.document.settings.tab_size;
     // Expand tabs first: the terminal has no tab stops of its own once we are
     // positioning the cursor by column. `column` counts *terminal columns*, not
     // characters — a CJK character occupies two, so padding by character count
