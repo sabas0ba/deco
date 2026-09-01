@@ -100,10 +100,14 @@ returns to the tab underneath; `ctrl+1` and `ctrl+2` move between its sides.
 ![Opening a modified row, moving between the aligned diff panes, and closing the comparison](img/git-diff.svg)
 
 Added, removed and modified rows have distinct gutter marks, and alignment gaps
-keep the two sides on the same screen row. The comparison is fetched on a
-worker, so opening one does not stop the editor from painting. Merge-conflict
-rows are refused for now: presenting their unresolved stages as an ordinary
-two-way diff would hide the part that must be resolved.
+keep the two sides on the same screen row. Changed rows also carry a thin tint
+across their full width: removed content uses
+`diffEditor.removedLineBackground`, and inserted content uses
+`diffEditor.insertedLineBackground`. Translucent theme colours are composited
+over the editor background for terminals. The comparison is fetched on a worker,
+so opening one does not stop the editor from painting. Merge-conflict rows are
+refused for now: presenting their unresolved stages as an ordinary two-way diff
+would hide the part that must be resolved.
 
 ### The commands
 

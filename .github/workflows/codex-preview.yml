@@ -1,0 +1,35 @@
+name: Codex preview
+
+on:
+  push:
+    branches: [codex/pr124-diff-fill-preview-20260901]
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: stable
+          components: rustfmt
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Install GUI build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev libxkbcommon-dev
+      - run: cargo fmt --all
+      - run: cargo test -p deco-tui changed_comparison_rows_are_tinted_across_both_panes
+      - run: cargo test -p deco-tui an_alignment_gap_is_not_painted_as_an_added_line
+      - run: cargo xtask docs
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pr124-diff-fill
+          path: |
+            crates/deco-theme/src/defaults.rs
+            crates/deco-tui/src/render.rs
+            docs/git.md
+            docs/img/git-diff.svg

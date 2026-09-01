@@ -68,6 +68,8 @@ struct Palette {
     added_fg: Rgba,
     modified_fg: Rgba,
     deleted_fg: Rgba,
+    inserted_line_bg: Rgba,
+    removed_line_bg: Rgba,
 }
 
 impl Palette {
@@ -85,6 +87,16 @@ impl Palette {
             added_fg: theme.color("editorGutter.addedBackground").unwrap_or(fg),
             modified_fg: theme.color("editorGutter.modifiedBackground").unwrap_or(fg),
             deleted_fg: theme.color("editorGutter.deletedBackground").unwrap_or(fg),
+            // Diff row colours are usually translucent. Composite them once here,
+            // because a terminal cell can only carry an opaque background.
+            inserted_line_bg: theme
+                .color("diffEditor.insertedLineBackground")
+                .map(|c| c.over(bg))
+                .unwrap_or(bg),
+            removed_line_bg: theme
+                .color("diffEditor.removedLineBackground")
+                .map(|c| c.over(bg))
+                .unwrap_or(bg),
             gutter_active_fg: theme
                 .color("editorLineNumber.activeForeground")
                 .unwrap_or(fg),
@@ -257,7 +269,17 @@ fn render_text(session: &Session, width: usize, height: usize) -> Frame {
     let drawn: Vec<Frame> = panes
         .iter()
         .zip(&widths)
-        .map(|(pane, column)| pane_rows(session, pane, *column, editor.height, &palette))
+        .enumerate()
+        .map(|(index, (pane, column))| {
+            pane_rows(
+                session,
+                pane,
+                *column,
+                editor.height,
+                index == 0,
+                &palette,
+            )
+        })
         .collect();
 
     // The caret belongs to one group, and its column is offset by everything to
@@ -827,6 +849,7 @@ fn pane_rows(
     pane: &deco_editor::Pane<'_>,
     width: usize,
     height: usize,
+    comparison_original: bool,
     palette: &Palette,
 ) -> Frame {
     let gutter = gutter_width_of(pane.document);
@@ -852,13 +875,16 @@ fn pane_rows(
             continue;
         };
         let line = visual.line;
+        let comparison_line = pane
+            .comparison
+            .as_ref()
+            .and_then(|comparison| comparison.lines.get(line));
+        let line_bg = comparison_line
+            .and_then(|line| comparison_background(line.kind, comparison_original, palette))
+            .unwrap_or(palette.bg);
 
         let mut spans = Vec::new();
         if gutter > 0 {
-            let comparison_line = pane
-                .comparison
-                .as_ref()
-                .and_then(|comparison| comparison.lines.get(line));
             // Blank on a continuation row: repeating the number would read as a
             // second line that is not there, and VS Code leaves it blank too.
             let label = if visual.numbered() {
@@ -910,12 +936,12 @@ fn pane_rows(
                     spans.push(Span {
                         text: format!("{label:>width$}", width = gutter - 1),
                         fg: number_fg,
-                        bg: palette.bg,
+                        bg: line_bg,
                     });
                     spans.push(Span {
                         text: glyph.to_string(),
                         fg,
-                        bg: palette.bg,
+                        bg: line_bg,
                     });
                 }
                 // One, as it was before there were marks. Worth the branch:
@@ -924,7 +950,7 @@ fn pane_rows(
                 None => spans.push(Span {
                     text: format!("{label:>width$} ", width = gutter - 1),
                     fg: number_fg,
-                    bg: palette.bg,
+                    bg: line_bg,
                 }),
             }
         }
@@ -934,7 +960,7 @@ fn pane_rows(
             .map(|s| s.to_string())
             .unwrap_or_default();
         spans.extend(line_spans(
-            session, pane, &text, visual, text_width, tab_size, palette,
+            session, pane, &text, visual, text_width, tab_size, line_bg, palette,
         ));
         rows.push(Row { spans });
 
@@ -1288,6 +1314,7 @@ fn line_spans(
     visual: &deco_editor::document::VisualRow,
     width: usize,
     tab_size: usize,
+    plain_bg: Rgba,
     palette: &Palette,
 ) -> Vec<Span> {
     let line = visual.line;
@@ -1488,7 +1515,7 @@ fn line_spans(
             // A ruler only shows through a cell nothing else has claimed: a
             // selection or a find match is what the user is doing, and it wins.
             Cell::Plain if rulers.contains(&at) => palette.ruler_bg,
-            Cell::Plain => palette.bg,
+            Cell::Plain => plain_bg,
             Cell::Selected => palette.selection_bg,
             Cell::CurrentMatch => palette.find_match_bg,
             Cell::OtherMatch => palette.find_highlight_bg,
@@ -1733,6 +1760,26 @@ fn comparison_mark(
             return None
         }
     })
+}
+
+/// The subtle whole-line tint for a source-control comparison row.
+///
+/// A paired replacement is `Modified` on both sides, so its meaning depends on
+/// the pane: the original is what went away and the modified side is what came
+/// in. Alignment gaps remain the editor background, keeping absent lines visibly
+/// distinct from empty changed lines.
+fn comparison_background(
+    kind: deco_editor::ComparisonLineKind,
+    original: bool,
+    palette: &Palette,
+) -> Option<Rgba> {
+    match kind {
+        deco_editor::ComparisonLineKind::Added => Some(palette.inserted_line_bg),
+        deco_editor::ComparisonLineKind::Removed => Some(palette.removed_line_bg),
+        deco_editor::ComparisonLineKind::Modified if original => Some(palette.removed_line_bg),
+        deco_editor::ComparisonLineKind::Modified => Some(palette.inserted_line_bg),
+        deco_editor::ComparisonLineKind::Context | deco_editor::ComparisonLineKind::Empty => None,
+    }
 }
 
 /// The branch and how far the working tree has drifted from it.
@@ -3537,7 +3584,12 @@ mod tests {
 
     /// Every cell's background on the first row.
     fn backgrounds(frame: &Frame) -> Vec<Rgba> {
-        frame.rows[0]
+        row_backgrounds(frame, 0)
+    }
+
+    /// Every cell's background on one row.
+    fn row_backgrounds(frame: &Frame, row: usize) -> Vec<Rgba> {
+        frame.rows[row]
             .spans
             .iter()
             .flat_map(|span| span.text.chars().map(move |_| span.bg))
@@ -3968,14 +4020,14 @@ mod tests {
         let palette = Palette::from(&session);
         let focused = &session.panes()[0];
         assert!(
-            pane_rows(&session, focused, 40, 3, &palette)
+            pane_rows(&session, focused, 40, 3, false, &palette)
                 .cursor
                 .is_some(),
             "the focused group has one"
         );
 
         let unfocused = unfocused_copy(focused);
-        assert!(pane_rows(&session, &unfocused, 40, 3, &palette)
+        assert!(pane_rows(&session, &unfocused, 40, 3, false, &palette)
             .cursor
             .is_none());
     }
@@ -3990,7 +4042,7 @@ mod tests {
         let palette = Palette::from(&session);
         let focused = &session.panes()[0];
         let marked = |pane: &deco_editor::Pane<'_>| {
-            let frame = pane_rows(&session, pane, 40, 2, &palette);
+            let frame = pane_rows(&session, pane, 40, 2, false, &palette);
             backgrounds(&frame)
                 .into_iter()
                 .filter(|bg| *bg == palette.find_highlight_bg || *bg == palette.find_match_bg)
@@ -4587,6 +4639,52 @@ mod tests {
                 row.plain().chars().nth(gutter - 1).unwrap_or(' ')
             })
             .collect()
+    }
+
+    /// A side-by-side working-tree comparison with the given two revisions.
+    fn comparison(original: &str, modified: &str) -> Session {
+        let mut session = session("the live tab\n");
+        session.open_comparison(
+            deco_scm::ComparisonRequest {
+                path: PathBuf::from("/w/file.rs"),
+                original: None,
+                kind: deco_scm::ComparisonKind::WorkingTree,
+            },
+            deco_scm::Comparison {
+                original: Some(original.to_owned()),
+                modified: Some(modified.to_owned()),
+            },
+        );
+        session
+    }
+
+    #[test]
+    fn changed_comparison_rows_are_tinted_across_both_panes() {
+        let session = comparison("one\nold\nthree\n", "one\nnew\nthree\n");
+        let palette = Palette::from(&session);
+        let frame = render(&session, 60, 8);
+        let changed = row_backgrounds(&frame, 2);
+
+        assert_ne!(palette.removed_line_bg, palette.bg, "the tint is visible");
+        assert_ne!(palette.inserted_line_bg, palette.bg, "the tint is visible");
+        assert_eq!(changed[4], palette.removed_line_bg, "left-hand text");
+        assert_eq!(changed[20], palette.removed_line_bg, "left trailing cells");
+        assert_eq!(changed[35], palette.inserted_line_bg, "right-hand text");
+        assert_eq!(changed[50], palette.inserted_line_bg, "right trailing cells");
+
+        let context = row_backgrounds(&frame, 1);
+        assert_eq!(context[4], palette.bg);
+        assert_eq!(context[35], palette.bg);
+    }
+
+    #[test]
+    fn an_alignment_gap_is_not_painted_as_an_added_line() {
+        let session = comparison("one\nthree\n", "one\nadded\nthree\n");
+        let palette = Palette::from(&session);
+        let added = row_backgrounds(&render(&session, 60, 8), 2);
+
+        assert_eq!(added[4], palette.bg, "there is no line on the left");
+        assert_eq!(added[35], palette.inserted_line_bg, "the new line is on the right");
     }
 
     #[test]
