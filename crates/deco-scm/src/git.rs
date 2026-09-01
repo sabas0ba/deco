@@ -323,9 +323,7 @@ impl Git {
             return std::fs::read_link(&full)
                 .map(|target| Some(target.as_os_str().to_string_lossy().into_owned()))
                 .map_err(|error| {
-                    ScmError::Unusable(format!(
-                        "could not read working-tree link {path}: {error}"
-                    ))
+                    ScmError::Unusable(format!("could not read working-tree link {path}: {error}"))
                 });
         }
         match std::fs::read_to_string(full) {
