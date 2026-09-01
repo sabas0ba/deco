@@ -96,6 +96,14 @@ pub enum ServerError {
         /// Its size.
         size: u64,
     },
+    /// A source-control comparison would not fit safely in one response frame.
+    #[error("comparison for {path} is {size} bytes, over the {MAX_FILE_BYTES} byte limit")]
+    ComparisonTooLarge {
+        /// The repository-relative path being compared.
+        path: String,
+        /// The serialized comparison size.
+        size: u64,
+    },
     /// The file is not UTF-8.
     ///
     /// Refused rather than replaced with substitution characters: deco would then
@@ -363,7 +371,7 @@ impl Server {
                 .ok_or_else(|| ServerError::OutsideRepository {
                     path: relative.display().to_string(),
                 })?;
-            self.resolve(text)?;
+            self.named(text)?;
         }
         Ok(())
     }
@@ -688,6 +696,17 @@ impl Server {
                     .map_err(|error| ServerError::SourceControl {
                         reason: error.to_string(),
                     })?;
+                let size = serde_json::to_vec(&comparison)
+                    .map_err(|error| ServerError::SourceControl {
+                        reason: format!("comparison could not be serialized: {error}"),
+                    })?
+                    .len() as u64;
+                if size > MAX_FILE_BYTES {
+                    return Err(ServerError::ComparisonTooLarge {
+                        path: request.path.display().to_string(),
+                        size,
+                    });
+                }
                 Ok(json!({ "comparison": comparison }))
             }
             "scm.apply" => {

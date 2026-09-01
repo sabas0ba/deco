@@ -1866,16 +1866,26 @@ impl Session {
         }
 
         let mut comparison = self.comparison.take().expect("checked above");
-        let side = if comparison.focused_right {
-            &mut comparison.right
-        } else {
-            &mut comparison.left
+        let (outcome, scroll_top, scroll_row) = {
+            let side = if comparison.focused_right {
+                &mut comparison.right
+            } else {
+                &mut comparison.left
+            };
+            std::mem::swap(&mut self.document, &mut side.document);
+            std::mem::swap(&mut self.view, &mut side.view);
+            let outcome = self.run(command, args, now_ms);
+            std::mem::swap(&mut self.view, &mut side.view);
+            std::mem::swap(&mut self.document, &mut side.document);
+            (outcome, side.view.scroll_top, side.view.scroll_row)
         };
-        std::mem::swap(&mut self.document, &mut side.document);
-        std::mem::swap(&mut self.view, &mut side.view);
-        let outcome = self.run(command, args, now_ms);
-        std::mem::swap(&mut self.view, &mut side.view);
-        std::mem::swap(&mut self.document, &mut side.document);
+        let other = if comparison.focused_right {
+            &mut comparison.left
+        } else {
+            &mut comparison.right
+        };
+        other.view.scroll_top = scroll_top;
+        other.view.scroll_row = scroll_row;
         self.comparison = Some(comparison);
         self.refresh_context();
         outcome
@@ -9582,6 +9592,33 @@ mod tests {
         s.run("workbench.action.closeActiveEditor", None, 0);
         assert!(!s.comparison_active());
         assert_eq!(s.document.buffer.text(), "the live tab\n");
+    }
+
+    #[test]
+    fn comparison_navigation_keeps_both_vertical_viewports_together() {
+        let mut s = Session::with_defaults();
+        let original: String = (0..40).map(|line| format!("line {line}\n")).collect();
+        let modified: String = (0..40)
+            .map(|line| format!("line {line} changed\n"))
+            .collect();
+        s.open_comparison(
+            deco_scm::ComparisonRequest {
+                path: PathBuf::from("work.rs"),
+                original: None,
+                kind: deco_scm::ComparisonKind::WorkingTree,
+            },
+            deco_scm::Comparison {
+                original: Some(original),
+                modified: Some(modified),
+            },
+        );
+        s.resize(40, 5);
+        s.run("cursorBottom", None, 0);
+
+        let panes = s.panes();
+        assert!(panes[1].view.scroll_top > 0);
+        assert_eq!(panes[0].view.scroll_top, panes[1].view.scroll_top);
+        assert_eq!(panes[0].view.scroll_row, panes[1].view.scroll_row);
     }
 
     #[test]

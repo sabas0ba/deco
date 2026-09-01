@@ -72,7 +72,7 @@ pub enum FrameError {
     Malformed(#[from] serde_json::Error),
 }
 
-/// The largest frame that will be read.
+/// The largest frame that will be read or written.
 ///
 /// A remote is not automatically trusted with the local machine's memory: a
 /// hostile or broken peer sending `Content-Length: 999999999999` should get an
@@ -82,6 +82,12 @@ pub const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 /// Writes one message.
 pub fn write(out: &mut impl Write, message: &Message) -> Result<(), FrameError> {
     let body = serde_json::to_vec(message)?;
+    if body.len() > MAX_FRAME_BYTES {
+        return Err(FrameError::TooLarge {
+            size: body.len(),
+            limit: MAX_FRAME_BYTES,
+        });
+    }
     write!(out, "Content-Length: {}\r\n\r\n", body.len())?;
     out.write_all(&body)?;
     out.flush()?;

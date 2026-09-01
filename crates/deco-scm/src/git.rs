@@ -309,7 +309,26 @@ impl Git {
     /// What the working tree holds for `path`, if the file still exists.
     fn working(&self, directory: &Path, path: &Path) -> Result<Option<String>, ScmError> {
         let path = plain_path(path)?;
-        match std::fs::read_to_string(directory.join(&path)) {
+        let full = directory.join(&path);
+        let metadata = match std::fs::symlink_metadata(&full) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(ScmError::Unusable(format!(
+                    "could not inspect working-tree file {path}: {error}"
+                )))
+            }
+        };
+        if metadata.file_type().is_symlink() {
+            return std::fs::read_link(&full)
+                .map(|target| Some(target.as_os_str().to_string_lossy().into_owned()))
+                .map_err(|error| {
+                    ScmError::Unusable(format!(
+                        "could not read working-tree link {path}: {error}"
+                    ))
+                });
+        }
+        match std::fs::read_to_string(full) {
             Ok(text) => Ok(Some(text)),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(ScmError::Unusable(format!(
@@ -660,6 +679,34 @@ mod tests {
         assert_eq!(staged.modified.as_deref(), Some("staged\n"));
         assert_eq!(working.original.as_deref(), Some("staged\n"));
         assert_eq!(working.modified.as_deref(), Some("working\n"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_working_tree_symlink_is_compared_as_the_target_git_tracks() {
+        use std::os::unix::fs::symlink;
+
+        let Some(git) = git_or_skip() else { return };
+        let dir = scratch_repo(&git, "symlink-comparison");
+        symlink("target-one", dir.join("link")).expect("a link");
+        commit(&git, &dir);
+        std::fs::remove_file(dir.join("link")).expect("remove the old link");
+        symlink("target-two", dir.join("link")).expect("a changed link");
+
+        let comparison = git
+            .comparison(
+                &dir,
+                &ComparisonRequest {
+                    path: PathBuf::from("link"),
+                    original: None,
+                    kind: ComparisonKind::WorkingTree,
+                },
+            )
+            .expect("a symlink comparison");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(comparison.original.as_deref(), Some("target-one"));
+        assert_eq!(comparison.modified.as_deref(), Some("target-two"));
     }
 
     #[test]
