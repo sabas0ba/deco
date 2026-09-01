@@ -257,28 +257,24 @@ fn comparison_rows(
     fn push_context(
         original: &[&str],
         modified: &[&str],
-        left_at: &mut usize,
-        right_at: &mut usize,
-        left_end: usize,
-        right_end: usize,
-        left_text: &mut Vec<String>,
-        right_text: &mut Vec<String>,
-        left_lines: &mut Vec<ComparisonLine>,
-        right_lines: &mut Vec<ComparisonLine>,
+        at: &mut (usize, usize),
+        end: (usize, usize),
+        text: (&mut Vec<String>, &mut Vec<String>),
+        lines: (&mut Vec<ComparisonLine>, &mut Vec<ComparisonLine>),
     ) {
-        while *left_at < left_end && *right_at < right_end {
-            left_text.push(clean(original[*left_at]).to_owned());
-            right_text.push(clean(modified[*right_at]).to_owned());
-            left_lines.push(ComparisonLine {
-                number: Some(*left_at + 1),
+        while at.0 < end.0 && at.1 < end.1 {
+            text.0.push(clean(original[at.0]).to_owned());
+            text.1.push(clean(modified[at.1]).to_owned());
+            lines.0.push(ComparisonLine {
+                number: Some(at.0 + 1),
                 kind: ComparisonLineKind::Context,
             });
-            right_lines.push(ComparisonLine {
-                number: Some(*right_at + 1),
+            lines.1.push(ComparisonLine {
+                number: Some(at.1 + 1),
                 kind: ComparisonLineKind::Context,
             });
-            *left_at += 1;
-            *right_at += 1;
+            at.0 += 1;
+            at.1 += 1;
         }
     }
 
@@ -289,20 +285,16 @@ fn comparison_rows(
     let mut right_text = Vec::new();
     let mut left_lines = Vec::new();
     let mut right_lines = Vec::new();
-    let (mut left_at, mut right_at) = (0usize, 0usize);
+    let mut at = (0usize, 0usize);
 
     for hunk in &diff.hunks {
         push_context(
             &original_lines,
             &modified_lines,
-            &mut left_at,
-            &mut right_at,
-            hunk.head.start,
-            hunk.working.start,
-            &mut left_text,
-            &mut right_text,
-            &mut left_lines,
-            &mut right_lines,
+            &mut at,
+            (hunk.head.start, hunk.working.start),
+            (&mut left_text, &mut right_text),
+            (&mut left_lines, &mut right_lines),
         );
         let rows = hunk.head.len().max(hunk.working.len());
         for offset in 0..rows {
@@ -337,20 +329,15 @@ fn comparison_rows(
                 },
             });
         }
-        left_at = hunk.head.end;
-        right_at = hunk.working.end;
+        at = (hunk.head.end, hunk.working.end);
     }
     push_context(
         &original_lines,
         &modified_lines,
-        &mut left_at,
-        &mut right_at,
-        original_lines.len(),
-        modified_lines.len(),
-        &mut left_text,
-        &mut right_text,
-        &mut left_lines,
-        &mut right_lines,
+        &mut at,
+        (original_lines.len(), modified_lines.len()),
+        (&mut left_text, &mut right_text),
+        (&mut left_lines, &mut right_lines),
     );
 
     if left_lines.is_empty() {
