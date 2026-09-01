@@ -1329,8 +1329,7 @@ fn git_view() -> String {
 }
 
 fn git_diff() -> String {
-    const INDEX: &str =
-        "fn send() {\n    let mode = 1;\n\n    run(mode);\n}\n";
+    const INDEX: &str = "fn send() {\n    let mode = 1;\n\n    run(mode);\n}\n";
     const WORKING: &str =
         "fn send() {\n    let mode = 2;\n    retry(3);\n\n    run(mode);\n    log();\n}\n";
 
