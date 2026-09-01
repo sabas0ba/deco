@@ -209,8 +209,7 @@ pub fn tab_bar_height(session: &Session) -> usize {
     // Any group showing more than one tab earns the row, and the row spans the
     // window — so one group with two tabs makes the bar appear for all of them.
     usize::from(
-        session.comparison_active()
-            || session.panes().iter().any(|pane| pane.tabs.len() > 1),
+        session.comparison_active() || session.panes().iter().any(|pane| pane.tabs.len() > 1),
     )
 }
 
@@ -877,7 +876,11 @@ fn pane_rows(
                         String::new()
                     }
                     _ => comparison_line
-                        .map(|line| line.number.map(|number| number.to_string()).unwrap_or_default())
+                        .map(|line| {
+                            line.number
+                                .map(|number| number.to_string())
+                                .unwrap_or_default()
+                        })
                         .unwrap_or_else(|| (line + 1).to_string()),
                 }
             } else {
@@ -892,11 +895,14 @@ fn pane_rows(
             // puts its git marks, and it is already spare here. On a
             // continuation row it stays blank: a wrapped line is one line, and
             // repeating its mark would read as several.
-            let mark = visual.numbered().then(|| {
-                comparison_line
-                    .and_then(|line| comparison_mark(line.kind, palette))
-                    .or_else(|| git_mark(session, pane, line, palette))
-            }).flatten();
+            let mark = visual
+                .numbered()
+                .then(|| {
+                    comparison_line
+                        .and_then(|line| comparison_mark(line.kind, palette))
+                        .or_else(|| git_mark(session, pane, line, palette))
+                })
+                .flatten();
             match mark {
                 // Two spans, because the mark is a different colour from the
                 // number beside it.
@@ -3519,10 +3525,13 @@ mod tests {
             diagnostics: pane.diagnostics,
             tabs: Vec::new(),
             focused: false,
-            comparison: pane.comparison.as_ref().map(|comparison| deco_editor::ComparisonPane {
-                label: comparison.label,
-                lines: comparison.lines,
-            }),
+            comparison: pane
+                .comparison
+                .as_ref()
+                .map(|comparison| deco_editor::ComparisonPane {
+                    label: comparison.label,
+                    lines: comparison.lines,
+                }),
         }
     }
 

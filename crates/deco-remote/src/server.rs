@@ -675,12 +675,10 @@ impl Server {
                 Ok(json!({ "text": text }))
             }
             "scm.comparison" => {
-                let request: ComparisonRequest =
-                    serde_json::from_value(params["request"].clone()).map_err(|_| {
-                        ServerError::BadParams {
-                            method: method.to_owned(),
-                            what: "a `request` object".to_owned(),
-                        }
+                let request: ComparisonRequest = serde_json::from_value(params["request"].clone())
+                    .map_err(|_| ServerError::BadParams {
+                        method: method.to_owned(),
+                        what: "a `request` object".to_owned(),
                     })?;
                 let repository = self.repository_root()?;
                 self.confine_comparison(&repository, &request)?;

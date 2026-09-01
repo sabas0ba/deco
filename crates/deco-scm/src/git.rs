@@ -457,9 +457,7 @@ fn plain_path(path: &Path) -> Result<String, ScmError> {
     let text = path
         .to_str()
         .ok_or_else(|| ScmError::NotInWorkingTree(path.display().to_string()))?;
-    if text.is_empty()
-        || Path::new(text).is_absolute()
-        || text.split('/').any(|part| part == "..")
+    if text.is_empty() || Path::new(text).is_absolute() || text.split('/').any(|part| part == "..")
     {
         return Err(ScmError::NotInWorkingTree(text.to_owned()));
     }

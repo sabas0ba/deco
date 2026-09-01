@@ -246,12 +246,7 @@ fn source_control_reads_and_writes_the_repository_on_the_far_end() {
 
     let mut client = connect(&root);
     let hello = client.handshake().expect("a handshake");
-    for method in [
-        "scm.status",
-        "scm.committed",
-        "scm.comparison",
-        "scm.apply",
-    ] {
+    for method in ["scm.status", "scm.committed", "scm.comparison", "scm.apply"] {
         assert!(hello.serves(method), "the handshake omitted {method}");
     }
 
