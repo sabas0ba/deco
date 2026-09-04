@@ -167,6 +167,10 @@ fn demos() -> Vec<Demo> {
             build: git_view,
         },
         Demo {
+            name: "git-diff",
+            build: git_diff,
+        },
+        Demo {
             name: "tabs",
             build: tabs,
         },
@@ -1321,6 +1325,46 @@ fn git_view() -> String {
     take.type_text("first commit");
     take.press_and_hold(&["enter"], 6);
     take.capture("committed, and nothing differs any more", 6);
+    take.finish()
+}
+
+fn git_diff() -> String {
+    const INDEX: &str = "fn send() {\n    let mode = 1;\n\n    run(mode);\n}\n";
+    const WORKING: &str =
+        "fn send() {\n    let mode = 2;\n    retry(3);\n\n    run(mode);\n    log();\n}\n";
+
+    let mut take = Take::new("src/main.rs", WORKING);
+    take.workspace(&[
+        ("Cargo.toml", "[package]\nname = \"demo\"\n"),
+        ("src/main.rs", WORKING),
+    ]);
+    take.repository(&[("src/main.rs", '.', 'M')]);
+    take.press_and_hold(&["ctrl+shift+g"], 5);
+
+    // Enter produces the same request the frontend receives. The demonstration
+    // supplies the two versions in place of the frontend's git worker, then the
+    // editor aligns and renders them exactly as it does in an interactive run.
+    let outcome = take
+        .session
+        .handle_chord(Chord::parse("enter").expect("enter parses"), 10_000);
+    let deco_editor::Outcome::GitComparison(request) = outcome else {
+        panic!("enter on the modified row did not request a comparison");
+    };
+    take.session.open_comparison(
+        request,
+        deco_scm::Comparison {
+            original: Some(INDEX.to_owned()),
+            modified: Some(WORKING.to_owned()),
+        },
+    );
+    take.resize_for_chrome();
+    take.capture("enter — Index ↔ Working Tree, aligned and read only", 7);
+
+    // Focus can move between the two real editor views without changing either
+    // document, and close reveals the original tab underneath.
+    take.press_and_hold(&["ctrl+1"], 4)
+        .press_and_hold(&["ctrl+2"], 4)
+        .press_and_hold(&["ctrl+w"], 6);
     take.finish()
 }
 

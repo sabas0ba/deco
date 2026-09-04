@@ -44,7 +44,7 @@
 use std::io::{BufRead, Write};
 use std::path::{Component, Path, PathBuf};
 
-use deco_scm::{Git, Operation, ScmError};
+use deco_scm::{ComparisonRequest, Git, Operation, ScmError};
 use serde_json::json;
 
 use crate::frame::{self, Message};
@@ -94,6 +94,14 @@ pub enum ServerError {
         /// What was asked for.
         path: String,
         /// Its size.
+        size: u64,
+    },
+    /// A source-control comparison would not fit safely in one response frame.
+    #[error("comparison for {path} is {size} bytes, over the {MAX_FILE_BYTES} byte limit")]
+    ComparisonTooLarge {
+        /// The repository-relative path being compared.
+        path: String,
+        /// The serialized comparison size.
         size: u64,
     },
     /// The file is not UTF-8.
@@ -350,6 +358,24 @@ impl Server {
         Ok(())
     }
 
+    /// Checks every path a comparison names before Git or the filesystem sees it.
+    fn confine_comparison(
+        &self,
+        repository: &Path,
+        request: &ComparisonRequest,
+    ) -> Result<(), ServerError> {
+        for relative in std::iter::once(request.path.as_path()).chain(request.original.as_deref()) {
+            let candidate = repository.join(relative);
+            let text = candidate
+                .to_str()
+                .ok_or_else(|| ServerError::OutsideRepository {
+                    path: relative.display().to_string(),
+                })?;
+            self.named(text)?;
+        }
+        Ok(())
+    }
+
     /// Answers one request.
     ///
     /// Returns the reply to send. A notification produces `None`, and an
@@ -414,6 +440,7 @@ impl Server {
                     "settings.read",
                     "scm.status",
                     "scm.committed",
+                    "scm.comparison",
                     "scm.apply",
                     "$/shutdown"
                 ],
@@ -654,6 +681,33 @@ impl Server {
                         reason: error.to_string(),
                     })?;
                 Ok(json!({ "text": text }))
+            }
+            "scm.comparison" => {
+                let request: ComparisonRequest = serde_json::from_value(params["request"].clone())
+                    .map_err(|_| ServerError::BadParams {
+                        method: method.to_owned(),
+                        what: "a `request` object".to_owned(),
+                    })?;
+                let repository = self.repository_root()?;
+                self.confine_comparison(&repository, &request)?;
+                let comparison = self
+                    .git
+                    .comparison(&repository, &request)
+                    .map_err(|error| ServerError::SourceControl {
+                        reason: error.to_string(),
+                    })?;
+                let size = serde_json::to_vec(&comparison)
+                    .map_err(|error| ServerError::SourceControl {
+                        reason: format!("comparison could not be serialized: {error}"),
+                    })?
+                    .len() as u64;
+                if size > MAX_FILE_BYTES {
+                    return Err(ServerError::ComparisonTooLarge {
+                        path: request.path.display().to_string(),
+                        size,
+                    });
+                }
+                Ok(json!({ "comparison": comparison }))
             }
             "scm.apply" => {
                 let operation: Operation = serde_json::from_value(params["operation"].clone())

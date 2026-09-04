@@ -11,7 +11,7 @@ yet.
 | [Tabs](tabs.md) | Several documents, one per tab; splitting; what a tab keeps |
 | [Chrome](chrome.md) | The side bar and the panel: `ctrl+b`, `ctrl+j`, where the space comes from, and where the keyboard is |
 | [The file tree](files.md) | Walking the workspace, opening files, and what it costs to open a big one |
-| [Git](git.md) | The branch, marks beside the changed lines, and a view that stages and commits — by running the binary rather than linking a library |
+| [Git](git.md) | The branch, changed-line marks, side-by-side diffs, and a view that stages and commits — by running the binary rather than linking a library |
 | [Syntax highlighting](highlighting.md) | Scopes, languages, choosing one, and why not tree-sitter |
 | [Find and replace](find-and-replace.md) | `ctrl+f`, `ctrl+h`, `F3`, the multi-cursor find keys, and replacing across the workspace |
 | [Running commands](commands.md) | The command palette, quick open, go to symbol, search in files, go to line |

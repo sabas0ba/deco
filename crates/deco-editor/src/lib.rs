@@ -28,5 +28,7 @@ pub use files::{FileError, Operation as FileOperation};
 pub use find::Find;
 pub use prompt::{Prompt, PromptKind};
 pub use scm::{Group as ScmGroup, Row as ScmRow, SourceControl};
-pub use session::{Focus, Pane, Session, SideBarView};
+pub use session::{
+    ComparisonLine, ComparisonLineKind, ComparisonPane, Focus, Pane, Session, SideBarView,
+};
 pub use workspace::{Applied, Plan, WorkspaceError};

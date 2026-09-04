@@ -33,7 +33,7 @@ use std::process::Command;
 
 use thiserror::Error;
 
-use crate::change::Operation;
+use crate::change::{Comparison, ComparisonKind, ComparisonRequest, Operation};
 use crate::status::{self, Malformed, Status};
 
 /// Why there is no status to show.
@@ -265,6 +265,76 @@ impl Git {
         }
     }
 
+    /// Reads both repository states needed for one source-control diff.
+    ///
+    /// Staged rows compare `HEAD` with the index. Working-tree rows compare the
+    /// index with the file on disk. Keeping the distinction here prevents a
+    /// file that was staged and then edited again from showing the two changes
+    /// as one.
+    pub fn comparison(
+        &self,
+        directory: &Path,
+        request: &ComparisonRequest,
+    ) -> Result<Comparison, ScmError> {
+        match request.kind {
+            ComparisonKind::Staged => {
+                let original = request.original.as_deref().unwrap_or(&request.path);
+                Ok(Comparison {
+                    original: self.committed(directory, original)?,
+                    modified: self.indexed(directory, &request.path)?,
+                })
+            }
+            ComparisonKind::WorkingTree => Ok(Comparison {
+                original: self.indexed(directory, &request.path)?,
+                modified: self.working(directory, &request.path)?,
+            }),
+        }
+    }
+
+    /// What the index holds for `path`, if it has a stage-zero entry.
+    fn indexed(&self, directory: &Path, path: &Path) -> Result<Option<String>, ScmError> {
+        let path = plain_path(path)?;
+        match self.run(directory, &["show", &format!(":{path}")]) {
+            Ok(text) => Ok(Some(text)),
+            Err(ScmError::Refused { message, .. })
+                if message.contains("exists on disk, but not in the index")
+                    || message.contains("does not exist (neither on disk nor in the index)") =>
+            {
+                Ok(None)
+            }
+            Err(other) => Err(other),
+        }
+    }
+
+    /// What the working tree holds for `path`, if the file still exists.
+    fn working(&self, directory: &Path, path: &Path) -> Result<Option<String>, ScmError> {
+        let path = plain_path(path)?;
+        let full = directory.join(&path);
+        let metadata = match std::fs::symlink_metadata(&full) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(ScmError::Unusable(format!(
+                    "could not inspect working-tree file {path}: {error}"
+                )))
+            }
+        };
+        if metadata.file_type().is_symlink() {
+            return std::fs::read_link(&full)
+                .map(|target| Some(target.as_os_str().to_string_lossy().into_owned()))
+                .map_err(|error| {
+                    ScmError::Unusable(format!("could not read working-tree link {path}: {error}"))
+                });
+        }
+        match std::fs::read_to_string(full) {
+            Ok(text) => Ok(Some(text)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(ScmError::Unusable(format!(
+                "could not read working-tree file {path}: {error}"
+            ))),
+        }
+    }
+
     /// Carries out a change to the repository.
     ///
     /// Every path is repository-relative and goes after `--`, so a file called
@@ -397,6 +467,18 @@ impl Git {
 
         Ok(output.stdout)
     }
+}
+
+/// A repository-relative path safe to embed in Git's `revision:path` syntax.
+fn plain_path(path: &Path) -> Result<String, ScmError> {
+    let text = path
+        .to_str()
+        .ok_or_else(|| ScmError::NotInWorkingTree(path.display().to_string()))?;
+    if text.is_empty() || Path::new(text).is_absolute() || text.split('/').any(|part| part == "..")
+    {
+        return Err(ScmError::NotInWorkingTree(text.to_owned()));
+    }
+    Ok(text.to_owned())
 }
 
 #[cfg(test)]
@@ -556,6 +638,73 @@ mod tests {
             .expect("a committed file");
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(head.as_deref(), Some("one\ntwo\n"));
+    }
+
+    #[test]
+    fn staged_and_working_tree_comparisons_keep_the_index_boundary() {
+        let Some(git) = git_or_skip() else { return };
+        let dir = scratch_repo(&git, "comparisons");
+        std::fs::write(dir.join("a.rs"), "committed\n").expect("a file");
+        commit(&git, &dir);
+        std::fs::write(dir.join("a.rs"), "staged\n").expect("a staged edit");
+        git.apply(&dir, &Operation::Stage(PathBuf::from("a.rs")))
+            .expect("a stage");
+        std::fs::write(dir.join("a.rs"), "working\n").expect("a later edit");
+
+        let staged = git
+            .comparison(
+                &dir,
+                &ComparisonRequest {
+                    path: PathBuf::from("a.rs"),
+                    original: None,
+                    kind: ComparisonKind::Staged,
+                },
+            )
+            .expect("the staged comparison");
+        let working = git
+            .comparison(
+                &dir,
+                &ComparisonRequest {
+                    path: PathBuf::from("a.rs"),
+                    original: None,
+                    kind: ComparisonKind::WorkingTree,
+                },
+            )
+            .expect("the working-tree comparison");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(staged.original.as_deref(), Some("committed\n"));
+        assert_eq!(staged.modified.as_deref(), Some("staged\n"));
+        assert_eq!(working.original.as_deref(), Some("staged\n"));
+        assert_eq!(working.modified.as_deref(), Some("working\n"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_working_tree_symlink_is_compared_as_the_target_git_tracks() {
+        use std::os::unix::fs::symlink;
+
+        let Some(git) = git_or_skip() else { return };
+        let dir = scratch_repo(&git, "symlink-comparison");
+        symlink("target-one", dir.join("link")).expect("a link");
+        commit(&git, &dir);
+        std::fs::remove_file(dir.join("link")).expect("remove the old link");
+        symlink("target-two", dir.join("link")).expect("a changed link");
+
+        let comparison = git
+            .comparison(
+                &dir,
+                &ComparisonRequest {
+                    path: PathBuf::from("link"),
+                    original: None,
+                    kind: ComparisonKind::WorkingTree,
+                },
+            )
+            .expect("a symlink comparison");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(comparison.original.as_deref(), Some("target-one"));
+        assert_eq!(comparison.modified.as_deref(), Some("target-two"));
     }
 
     #[test]

@@ -25,12 +25,13 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 
 use deco_editor::Session;
-use deco_scm::{Git, Operation, ScmError, Status};
+use deco_scm::{Comparison, ComparisonRequest, Git, Operation, ScmError, Status};
 
 /// Work sent to the dedicated remote-SCM connection.
 enum RemoteRequest {
     Status,
     Committed(PathBuf),
+    Comparison(ComparisonRequest),
     Apply(Operation),
     Stop,
 }
@@ -42,6 +43,10 @@ enum RemoteResponse {
         path: PathBuf,
         result: Result<Option<String>, String>,
     },
+    Comparison {
+        request: ComparisonRequest,
+        result: Result<Comparison, String>,
+    },
     Applied {
         operation: Operation,
         result: Result<(), String>,
@@ -52,6 +57,7 @@ enum RemoteResponse {
 enum RemoteInFlight {
     Status,
     Committed,
+    Comparison,
     Apply,
 }
 
@@ -65,6 +71,8 @@ struct Remote {
     responses: Receiver<RemoteResponse>,
     inflight: Option<RemoteInFlight>,
     pending_operation: Option<Operation>,
+    pending_comparison: Option<ComparisonRequest>,
+    comparison_supported: bool,
 }
 
 impl Remote {
@@ -79,6 +87,7 @@ impl Remote {
                 missing.join(", ")
             ));
         }
+        let comparison_supported = client.serves("scm.comparison");
 
         let (request_tx, request_rx) = mpsc::channel();
         let (response_tx, response_rx) = mpsc::channel();
@@ -93,6 +102,12 @@ impl Remote {
                             .scm_committed(&path)
                             .map_err(|error| error.to_string()),
                         path,
+                    },
+                    RemoteRequest::Comparison(request) => RemoteResponse::Comparison {
+                        result: client
+                            .scm_comparison(&request)
+                            .map_err(|error| error.to_string()),
+                        request,
                     },
                     RemoteRequest::Apply(operation) => RemoteResponse::Applied {
                         result: client
@@ -116,6 +131,8 @@ impl Remote {
             responses: response_rx,
             inflight: None,
             pending_operation: None,
+            pending_comparison: None,
+            comparison_supported,
         })
     }
 }
@@ -134,6 +151,8 @@ pub struct Scm {
     root: Option<PathBuf>,
     /// The run that has not answered yet.
     inflight: Option<Receiver<Result<Status, ScmError>>>,
+    /// A local diff comparison that has not answered yet.
+    comparison: Option<Receiver<(ComparisonRequest, Result<Comparison, ScmError>)>>,
     /// Where the repository begins, once it has been asked.
     ///
     /// Not the same as [`Scm::root`], which is the folder deco was started in.
@@ -175,6 +194,7 @@ impl Scm {
             root,
             repo_root: None,
             inflight: None,
+            comparison: None,
             unavailable: None,
             remote: None,
             remote_workspace: None,
@@ -189,6 +209,7 @@ impl Scm {
                 root: None,
                 repo_root: None,
                 inflight: None,
+                comparison: None,
                 unavailable: None,
                 remote: Some(remote),
                 remote_workspace: Some(workspace),
@@ -198,6 +219,7 @@ impl Scm {
                 root: None,
                 repo_root: None,
                 inflight: None,
+                comparison: None,
                 unavailable: Some(error),
                 remote: None,
                 remote_workspace: Some(workspace),
@@ -259,7 +281,7 @@ impl Scm {
         }
         let changed = self.collect(session);
         self.start(session);
-        changed | self.fetch_committed(session)
+        changed | self.collect_comparison(session) | self.fetch_committed(session)
     }
 
     /// Advances the one-at-a-time queue owned by the remote worker.
@@ -320,6 +342,13 @@ impl Scm {
                 session.fill_committed(path, result.unwrap_or(None));
                 changed = true;
             }
+            Some(RemoteResponse::Comparison { request, result }) => {
+                match result {
+                    Ok(comparison) => session.open_comparison(request, comparison),
+                    Err(error) => session.comparison_failed(&error),
+                }
+                changed = true;
+            }
             Some(RemoteResponse::Applied { operation, result }) => {
                 match result {
                     Ok(()) => session.git_operation_done(&operation),
@@ -349,6 +378,21 @@ impl Scm {
             } else {
                 self.unavailable = Some("the remote source-control connection stopped".into());
                 session.git_operation_failed(&operation, "the remote connection stopped");
+                changed = true;
+            }
+            return changed;
+        }
+
+        if let Some(request) = remote.pending_comparison.take() {
+            if remote
+                .requests
+                .send(RemoteRequest::Comparison(request.clone()))
+                .is_ok()
+            {
+                remote.inflight = Some(RemoteInFlight::Comparison);
+            } else {
+                self.unavailable = Some("the remote source-control connection stopped".into());
+                session.comparison_failed("the remote connection stopped");
                 changed = true;
             }
             return changed;
@@ -452,6 +496,64 @@ impl Scm {
         match self.git.apply(&root, operation) {
             Ok(()) => session.git_operation_done(operation),
             Err(error) => session.git_operation_failed(operation, &error.to_string()),
+        }
+    }
+
+    /// Starts a source-control comparison without waiting on the event loop.
+    pub fn compare(&mut self, session: &mut Session, request: ComparisonRequest) {
+        if let Some(remote) = self.remote.as_mut() {
+            if !remote.comparison_supported {
+                session.comparison_failed(
+                    "the remote server does not support diff views — update it to this deco version",
+                );
+            } else if remote.pending_comparison.is_some()
+                || remote.inflight == Some(RemoteInFlight::Comparison)
+            {
+                session.comparison_failed("another diff is already being opened");
+            } else {
+                remote.pending_comparison = Some(request);
+            }
+            return;
+        }
+        if self.comparison.is_some() {
+            session.comparison_failed("another diff is already being opened");
+            return;
+        }
+        let Some(root) = self.repository_root(session) else {
+            session.comparison_failed("there is no repository here");
+            return;
+        };
+        let (sender, receiver) = mpsc::channel();
+        let git = self.git.clone();
+        std::thread::spawn(move || {
+            let result = git.comparison(&root, &request);
+            let _ = sender.send((request, result));
+        });
+        self.comparison = Some(receiver);
+    }
+
+    /// Collects a local source-control comparison, if it has finished.
+    fn collect_comparison(&mut self, session: &mut Session) -> bool {
+        let Some(receiver) = self.comparison.as_ref() else {
+            return false;
+        };
+        match receiver.try_recv() {
+            Ok((request, Ok(comparison))) => {
+                self.comparison = None;
+                session.open_comparison(request, comparison);
+                true
+            }
+            Ok((_, Err(error))) => {
+                self.comparison = None;
+                session.comparison_failed(&error.to_string());
+                true
+            }
+            Err(TryRecvError::Empty) => false,
+            Err(TryRecvError::Disconnected) => {
+                self.comparison = None;
+                session.comparison_failed("the source-control comparison stopped");
+                true
+            }
         }
     }
 
@@ -753,6 +855,7 @@ mod tests {
             git: Git::default(),
             root: None,
             inflight: None,
+            comparison: None,
             repo_root: None,
             unavailable: None,
             remote: Some(Remote {
@@ -760,6 +863,8 @@ mod tests {
                 responses: response_rx,
                 inflight: None,
                 pending_operation: None,
+                pending_comparison: None,
+                comparison_supported: true,
             }),
             remote_workspace: Some(PathBuf::from("/remote/project")),
         };

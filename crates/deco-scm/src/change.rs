@@ -14,6 +14,35 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+/// Which two repository states a diff view compares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ComparisonKind {
+    /// `HEAD` on the left and the index on the right.
+    Staged,
+    /// The index on the left and the working tree on the right.
+    WorkingTree,
+}
+
+/// One file to compare, in repository-relative coordinates.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComparisonRequest {
+    /// The path in the index and working tree.
+    pub path: PathBuf,
+    /// The path in `HEAD` for a staged rename.
+    pub original: Option<PathBuf>,
+    /// Which repository states form the two sides.
+    pub kind: ComparisonKind,
+}
+
+/// The two texts shown by a source-control diff view.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Comparison {
+    /// The older side: `HEAD` or the index.
+    pub original: Option<String>,
+    /// The newer side: the index or the working tree.
+    pub modified: Option<String>,
+}
+
 /// A change to a repository, for a frontend to carry out.
 ///
 /// The first thing in deco that *writes* to one. The same division of labour
