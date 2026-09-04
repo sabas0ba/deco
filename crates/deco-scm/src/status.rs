@@ -180,6 +180,17 @@ impl Status {
             .count()
     }
 
+    /// Tracked paths whose working-tree side differs from the index.
+    pub fn unstaged(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|entry| match &entry.state {
+                State::Tracked { worktree, .. } => !worktree.is_none(),
+                State::Untracked | State::Conflicted => false,
+            })
+            .count()
+    }
+
     /// How many git has never been told about.
     pub fn untracked(&self) -> usize {
         self.entries

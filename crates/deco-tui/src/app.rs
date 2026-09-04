@@ -523,7 +523,11 @@ impl Driver {
         hosts.poll(session, &mut files, now_ms);
         // After the others rather than beside them: a `git status` that landed
         // this turn should be on the same frame as whatever caused it.
-        self.dirty |= self.scm.poll(session);
+        *dirty |= self.scm.poll(session);
+        if session.take_checkout_completed() {
+            reload_after_checkout(session, lsp, remote.as_mut(), self.tree_root.as_deref());
+            *dirty = true;
+        }
     }
 
     /// A moment with no keystroke in it: the same poll, plus the auto-save clock.
@@ -846,6 +850,14 @@ impl Driver {
                 scm.apply(session, &operation);
                 *dirty = true;
             }
+            Outcome::GitBranches => {
+                scm.branches(session);
+                *dirty = true;
+            }
+            Outcome::GitCheckoutPreview(target) => {
+                scm.checkout_plan(session, target);
+                *dirty = true;
+            }
             Outcome::GitComparison(request) => {
                 scm.compare(session, request);
                 *dirty = true;
@@ -1017,6 +1029,12 @@ impl Driver {
             _ => {}
         }
 
+        // Local checkout completes in the command arm above. Remote checkout
+        // completes from `poll`, which runs the same reconciliation there.
+        if session.take_checkout_completed() {
+            reload_after_checkout(session, lsp, remote.as_mut(), tree_root.as_deref());
+        }
+
         // While the find bar has the keyboard, a keystroke narrows the
         // query and the document never sees it. A completion list left
         // open underneath would be narrowed by text that was never
@@ -1098,6 +1116,48 @@ impl Driver {
     /// The language-server client, for the same reason.
     pub fn lsp(&self) -> &Lsp {
         &self.lsp
+    }
+}
+
+/// Re-reads every open file after Git replaced the working tree.
+///
+/// A file absent on the target branch is detached rather than silently closed:
+/// its old text remains visible and dirty, so it cannot be lost. All buffers
+/// were required to be clean before checkout, making that conservative copy
+/// safe and unambiguous.
+fn reload_after_checkout(
+    session: &mut Session,
+    lsp: &mut Lsp,
+    mut remote: Option<&mut deco_remote::Client>,
+    tree_root: Option<&Path>,
+) {
+    let paths = session.open_paths();
+    let mut detached = 0usize;
+    for path in paths {
+        let read = match remote.as_deref_mut() {
+            Some(client) => client
+                .read(&path.display().to_string())
+                .map_err(|error| error.to_string()),
+            None => std::fs::read_to_string(&path).map_err(|error| error.to_string()),
+        };
+        match read {
+            Ok(text) => {
+                session.reload_open(&path, &text);
+            }
+            Err(_) => detached += session.detach_tabs_under(&path),
+        }
+    }
+    if let Some(root) = tree_root {
+        session.invalidate_subtree(root);
+    }
+    lsp.close_deleted(session);
+    lsp.attach(session);
+    lsp.changed(session);
+    if detached > 0 {
+        session.status = Some(format!(
+            "switched branches; kept {detached} missing tab{} as unsaved text",
+            if detached == 1 { "" } else { "s" }
+        ));
     }
 }
 

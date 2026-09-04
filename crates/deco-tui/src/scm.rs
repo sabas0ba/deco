@@ -25,13 +25,27 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 
 use deco_editor::Session;
-use deco_scm::{Comparison, ComparisonRequest, Git, Operation, ScmError, Status};
+use deco_scm::{
+    Branch, CheckoutPlan, Comparison, ComparisonRequest, Git, Operation, ScmError, Status,
+};
+
+enum CheckoutQuery {
+    Branches,
+    Plan(String),
+}
+
+enum CheckoutAnswer {
+    Branches(Result<Vec<Branch>, ScmError>),
+    Plan(Result<CheckoutPlan, ScmError>),
+}
 
 /// Work sent to the dedicated remote-SCM connection.
 enum RemoteRequest {
     Status,
     Committed(PathBuf),
     Comparison(ComparisonRequest),
+    Branches,
+    CheckoutPlan(String),
     Apply(Operation),
     Stop,
 }
@@ -47,6 +61,8 @@ enum RemoteResponse {
         request: ComparisonRequest,
         result: Result<Comparison, String>,
     },
+    Branches(Result<Vec<Branch>, String>),
+    CheckoutPlan(Result<CheckoutPlan, String>),
     Applied {
         operation: Operation,
         result: Result<(), String>,
@@ -58,6 +74,7 @@ enum RemoteInFlight {
     Status,
     Committed,
     Comparison,
+    CheckoutQuery,
     Apply,
 }
 
@@ -72,7 +89,9 @@ struct Remote {
     inflight: Option<RemoteInFlight>,
     pending_operation: Option<Operation>,
     pending_comparison: Option<ComparisonRequest>,
+    pending_checkout: Option<CheckoutQuery>,
     comparison_supported: bool,
+    checkout_supported: bool,
 }
 
 impl Remote {
@@ -88,6 +107,7 @@ impl Remote {
             ));
         }
         let comparison_supported = client.serves("scm.comparison");
+        let checkout_supported = client.serves("scm.branches") && client.serves("scm.checkoutPlan");
 
         let (request_tx, request_rx) = mpsc::channel();
         let (response_tx, response_rx) = mpsc::channel();
@@ -109,6 +129,14 @@ impl Remote {
                             .map_err(|error| error.to_string()),
                         request,
                     },
+                    RemoteRequest::Branches => RemoteResponse::Branches(
+                        client.scm_branches().map_err(|error| error.to_string()),
+                    ),
+                    RemoteRequest::CheckoutPlan(target) => RemoteResponse::CheckoutPlan(
+                        client
+                            .scm_checkout_plan(&target)
+                            .map_err(|error| error.to_string()),
+                    ),
                     RemoteRequest::Apply(operation) => RemoteResponse::Applied {
                         result: client
                             .scm_apply(&operation)
@@ -132,7 +160,9 @@ impl Remote {
             inflight: None,
             pending_operation: None,
             pending_comparison: None,
+            pending_checkout: None,
             comparison_supported,
+            checkout_supported,
         })
     }
 }
@@ -153,6 +183,8 @@ pub struct Scm {
     inflight: Option<Receiver<Result<Status, ScmError>>>,
     /// A local diff comparison that has not answered yet.
     comparison: Option<Receiver<(ComparisonRequest, Result<Comparison, ScmError>)>>,
+    /// A local branch listing or checkout preview that has not answered yet.
+    checkout: Option<Receiver<CheckoutAnswer>>,
     /// Where the repository begins, once it has been asked.
     ///
     /// Not the same as [`Scm::root`], which is the folder deco was started in.
@@ -195,6 +227,7 @@ impl Scm {
             repo_root: None,
             inflight: None,
             comparison: None,
+            checkout: None,
             unavailable: None,
             remote: None,
             remote_workspace: None,
@@ -210,6 +243,7 @@ impl Scm {
                 repo_root: None,
                 inflight: None,
                 comparison: None,
+                checkout: None,
                 unavailable: None,
                 remote: Some(remote),
                 remote_workspace: Some(workspace),
@@ -220,6 +254,7 @@ impl Scm {
                 repo_root: None,
                 inflight: None,
                 comparison: None,
+                checkout: None,
                 unavailable: Some(error),
                 remote: None,
                 remote_workspace: Some(workspace),
@@ -281,7 +316,10 @@ impl Scm {
         }
         let changed = self.collect(session);
         self.start(session);
-        changed | self.collect_comparison(session) | self.fetch_committed(session)
+        changed
+            | self.collect_comparison(session)
+            | self.collect_checkout(session)
+            | self.fetch_committed(session)
     }
 
     /// Advances the one-at-a-time queue owned by the remote worker.
@@ -349,6 +387,20 @@ impl Scm {
                 }
                 changed = true;
             }
+            Some(RemoteResponse::Branches(result)) => {
+                match result {
+                    Ok(branches) => session.offer_branches(branches),
+                    Err(error) => session.git_checkout_failed(&error),
+                }
+                changed = true;
+            }
+            Some(RemoteResponse::CheckoutPlan(result)) => {
+                match result {
+                    Ok(plan) => session.confirm_checkout(plan),
+                    Err(error) => session.git_checkout_failed(&error),
+                }
+                changed = true;
+            }
             Some(RemoteResponse::Applied { operation, result }) => {
                 match result {
                     Ok(()) => session.git_operation_done(&operation),
@@ -378,6 +430,21 @@ impl Scm {
             } else {
                 self.unavailable = Some("the remote source-control connection stopped".into());
                 session.git_operation_failed(&operation, "the remote connection stopped");
+                changed = true;
+            }
+            return changed;
+        }
+
+        if let Some(query) = remote.pending_checkout.take() {
+            let request = match query {
+                CheckoutQuery::Branches => RemoteRequest::Branches,
+                CheckoutQuery::Plan(target) => RemoteRequest::CheckoutPlan(target),
+            };
+            if remote.requests.send(request).is_ok() {
+                remote.inflight = Some(RemoteInFlight::CheckoutQuery);
+            } else {
+                self.unavailable = Some("the remote source-control connection stopped".into());
+                session.git_checkout_failed("the remote connection stopped");
                 changed = true;
             }
             return changed;
@@ -530,6 +597,82 @@ impl Scm {
             let _ = sender.send((request, result));
         });
         self.comparison = Some(receiver);
+    }
+
+    /// Fetches local branches for the checkout picker.
+    pub fn branches(&mut self, session: &mut Session) {
+        self.start_checkout_query(session, CheckoutQuery::Branches);
+    }
+
+    /// Fetches the cost of switching to `target` before asking for confirmation.
+    pub fn checkout_plan(&mut self, session: &mut Session, target: String) {
+        self.start_checkout_query(session, CheckoutQuery::Plan(target));
+    }
+
+    fn start_checkout_query(&mut self, session: &mut Session, query: CheckoutQuery) {
+        if let Some(remote) = self.remote.as_mut() {
+            if !remote.checkout_supported {
+                session.git_checkout_failed(
+                    "the remote server does not support branch switching — update it to this deco version",
+                );
+            } else if remote.pending_checkout.is_some()
+                || remote.inflight == Some(RemoteInFlight::CheckoutQuery)
+            {
+                session.git_checkout_failed("another branch request is already running");
+            } else {
+                remote.pending_checkout = Some(query);
+            }
+            return;
+        }
+        if self.checkout.is_some() {
+            session.git_checkout_failed("another branch request is already running");
+            return;
+        }
+        let Some(root) = self.repository_root(session) else {
+            session.git_checkout_failed("there is no repository here");
+            return;
+        };
+        let (sender, receiver) = mpsc::channel();
+        let git = self.git.clone();
+        std::thread::spawn(move || {
+            let answer = match query {
+                CheckoutQuery::Branches => CheckoutAnswer::Branches(git.branches(&root)),
+                CheckoutQuery::Plan(target) => {
+                    CheckoutAnswer::Plan(git.checkout_plan(&root, &target))
+                }
+            };
+            let _ = sender.send(answer);
+        });
+        self.checkout = Some(receiver);
+    }
+
+    fn collect_checkout(&mut self, session: &mut Session) -> bool {
+        let Some(receiver) = self.checkout.as_ref() else {
+            return false;
+        };
+        match receiver.try_recv() {
+            Ok(CheckoutAnswer::Branches(Ok(branches))) => {
+                self.checkout = None;
+                session.offer_branches(branches);
+                true
+            }
+            Ok(CheckoutAnswer::Plan(Ok(plan))) => {
+                self.checkout = None;
+                session.confirm_checkout(plan);
+                true
+            }
+            Ok(CheckoutAnswer::Branches(Err(error))) | Ok(CheckoutAnswer::Plan(Err(error))) => {
+                self.checkout = None;
+                session.git_checkout_failed(&error.to_string());
+                true
+            }
+            Err(TryRecvError::Empty) => false,
+            Err(TryRecvError::Disconnected) => {
+                self.checkout = None;
+                session.git_checkout_failed("the branch request stopped");
+                true
+            }
+        }
     }
 
     /// Collects a local source-control comparison, if it has finished.
@@ -856,6 +999,7 @@ mod tests {
             root: None,
             inflight: None,
             comparison: None,
+            checkout: None,
             repo_root: None,
             unavailable: None,
             remote: Some(Remote {
@@ -864,7 +1008,9 @@ mod tests {
                 inflight: None,
                 pending_operation: None,
                 pending_comparison: None,
+                pending_checkout: None,
                 comparison_supported: true,
+                checkout_supported: true,
             }),
             remote_workspace: Some(PathBuf::from("/remote/project")),
         };

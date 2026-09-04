@@ -6,6 +6,7 @@ deco reads git the way VS Code does: by running the `git` binary and parsing
 what it says. No library is linked. All three stages are built: **the branch and
 what differs from it, in the status bar**, **marks beside the lines that
 changed**, and **a source-control view** that stages, unstages and commits.
+Local branches can also be listed and switched with a preflight confirmation.
 
 ```
 main ±2 ↑2
@@ -123,6 +124,7 @@ animation above reaches them.
 | `git.stageAll` | add everything git reported |
 | `git.unstage` | take the selected file back out of the index |
 | `git.commit` | `ctrl+enter` — ask for a message, then record what is staged |
+| `git.checkout` | list local branches, preview the switch, then ask for confirmation |
 | `git.refresh` | ask git again |
 
 **Every refusal happens before a process starts.** Staging something already
@@ -137,6 +139,28 @@ linking a library. Their stdin is closed and `GIT_TERMINAL_PROMPT` is `0`, so
 Git's own terminal prompt is disabled and a hook reading stdin gets EOF. A hook
 is still an arbitrary program: it can open `/dev/tty`, show a graphical prompt
 or run for a long time, and deco does not sandbox or bypass that behaviour.
+
+### Switching branches
+
+![Choosing a local branch, reviewing the preflight and switching without discarding an untracked file](img/git-checkout.svg)
+
+`git.checkout` first lists existing **local** branches. Remote-tracking names
+are not mixed in: choosing one of those would also create a branch, a second
+decision hidden inside the first. After a branch is selected, deco asks Git how
+many committed paths differ and counts the staged, unstaged and untracked work
+that would have to come along.
+
+The confirmation selects **Cancel** by default and says plainly that no local
+work will be discarded. The actual command has no force flag; if a tracked or
+untracked file would be overwritten, Git refuses the switch and the current
+branch remains in place. Merge conflicts are refused before confirmation.
+
+Unsaved editor buffers are a separate boundary because Git cannot see them.
+Checkout is refused while any tab has unsaved text. After a successful switch,
+every clean open file is re-read and its old undo history is dropped so a later
+save or undo cannot put the previous branch's contents back. If a file is absent
+on the target branch, its old text is detached into an unsaved tab rather than
+silently closed.
 
 ### What it deliberately will not do
 
@@ -164,8 +188,8 @@ milliseconds; on a working tree with a million files it is not, and an editor
 that stopped painting while git thought would be worse than one whose branch
 name is a moment stale.
 
-In a **remote session**, status, committed text, diff comparisons, stage,
-unstage and commit run through a second server connection on the machine
+In a **remote session**, status, committed text, diff comparisons, branch
+preflight, checkout, stage, unstage and commit run through a second server connection on the machine
 holding the repository. That connection has one worker and one request in
 flight: a slow status or commit hook neither blocks the terminal loop nor races
 another repository write. The ordinary connection remains available for file
@@ -281,11 +305,6 @@ Two environment variables go to the child, and each prevents a specific failure:
   coming.
 
 ## Not built yet
-
-**No checkout, and no branch list.** Switching branches can lose uncommitted
-work when it goes wrong, and doing it well needs to say what would be lost
-before it happens. That is its own piece of work rather than a line in this
-one.
 
 **No watcher.** A commit made in a terminal shows up on the next save, not the
 moment it happens. The [file tree](files.md#not-built-yet) has the same gap for

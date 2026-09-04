@@ -24,9 +24,9 @@
 //!
 //! # What this does not do
 //!
-//! Operation covers staging, unstaging and committing. It deliberately
-//! excludes discarding work, switching branches and anything that reaches the
-//! network; each has failure and credential behaviour beyond an index update.
+//! Operation covers staging, unstaging, committing and switching existing local
+//! branches. It deliberately excludes discarding work and anything that reaches
+//! the network; each has failure and credential behaviour beyond an index update.
 //! See the [git chapter](https://github.com/sabas0ba/deco/blob/main/docs/roadmap.md)
 //! for what remains.
 
@@ -37,7 +37,7 @@ pub mod diff;
 pub mod git;
 pub mod status;
 
-pub use change::{Comparison, ComparisonKind, ComparisonRequest, Operation};
+pub use change::{Branch, CheckoutPlan, Comparison, ComparisonKind, ComparisonRequest, Operation};
 pub use diff::{diff, Diff, Hunk, Mark};
 pub use git::{Git, ScmError};
 pub use status::{parse, Change, FileStatus, Head, Malformed, State, Status, Upstream};

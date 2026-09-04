@@ -33,7 +33,9 @@ use std::process::Command;
 
 use thiserror::Error;
 
-use crate::change::{Comparison, ComparisonKind, ComparisonRequest, Operation};
+use crate::change::{
+    Branch, CheckoutPlan, Comparison, ComparisonKind, ComparisonRequest, Operation,
+};
 use crate::status::{self, Malformed, Status};
 
 /// Why there is no status to show.
@@ -291,6 +293,91 @@ impl Git {
         }
     }
 
+    /// Local branches, with the one `HEAD` names marked current.
+    ///
+    /// Remote-tracking names are deliberately absent. Selecting one would
+    /// create a local branch, which is a second decision hidden inside the
+    /// first; checkout only switches among branches that already exist.
+    pub fn branches(&self, directory: &Path) -> Result<Vec<Branch>, ScmError> {
+        let output = self.run_bytes(
+            directory,
+            &[
+                "for-each-ref",
+                "--format=%(HEAD)%09%(refname)",
+                "refs/heads",
+            ],
+        )?;
+        let output = std::str::from_utf8(&output).map_err(|error| {
+            ScmError::Unusable(format!(
+                "git returned a branch name that is not UTF-8: {error}"
+            ))
+        })?;
+        let mut branches = Vec::new();
+        for line in output.lines() {
+            let Some((head, reference)) = line.split_once('\t') else {
+                return Err(ScmError::Unusable(
+                    "git returned a malformed local branch".to_owned(),
+                ));
+            };
+            let Some(name) = reference.strip_prefix("refs/heads/") else {
+                return Err(ScmError::Unusable(format!(
+                    "git returned a non-local branch `{reference}`"
+                )));
+            };
+            branches.push(Branch {
+                name: name.to_owned(),
+                current: head == "*",
+            });
+        }
+        branches.sort_by(|left, right| {
+            right
+                .current
+                .cmp(&left.current)
+                .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+                .then_with(|| left.name.cmp(&right.name))
+        });
+        Ok(branches)
+    }
+
+    /// Describes a checkout without changing the repository.
+    ///
+    /// The counts come from the same status parser the source-control view
+    /// uses. No claim is made that local changes will be applied cleanly: the
+    /// eventual checkout has no force flag, so Git remains the authority and
+    /// refuses rather than overwriting them.
+    pub fn checkout_plan(&self, directory: &Path, target: &str) -> Result<CheckoutPlan, ScmError> {
+        self.require_local_branch(directory, target)?;
+        let status = self.status(directory)?;
+        if status.conflicted() > 0 {
+            return Err(ScmError::Refused {
+                code: None,
+                message: "resolve the working tree's conflicts before switching branches"
+                    .to_owned(),
+            });
+        }
+        let branch_changes = if self.has_commit(directory) {
+            let target_ref = format!("refs/heads/{target}");
+            let output = self.run_bytes(
+                directory,
+                &["diff", "--name-only", "-z", "HEAD", &target_ref, "--"],
+            )?;
+            output
+                .split(|byte| *byte == 0)
+                .filter(|name| !name.is_empty())
+                .count()
+        } else {
+            0
+        };
+        Ok(CheckoutPlan {
+            current: status.head.label(),
+            target: target.to_owned(),
+            branch_changes,
+            staged: status.staged(),
+            unstaged: status.unstaged(),
+            untracked: status.untracked(),
+        })
+    }
+
     /// What the index holds for `path`, if it has a stage-zero entry.
     fn indexed(&self, directory: &Path, path: &Path) -> Result<Option<String>, ScmError> {
         let path = plain_path(path)?;
@@ -401,8 +488,32 @@ impl Git {
             Operation::Commit(message) => {
                 self.run(directory, &["commit", "--message", message])?;
             }
+            Operation::Checkout(target) => {
+                // Checked again here rather than trusting a plan made earlier:
+                // another process may have deleted or replaced the branch while
+                // the confirmation was on screen. The name is then safe to pass
+                // as an argument, and no shell is involved.
+                self.require_local_branch(directory, target)?;
+                self.run(directory, &["checkout", "--quiet", target])?;
+            }
         }
         Ok(())
+    }
+
+    /// Refuses anything except the exact name of a branch that exists now.
+    fn require_local_branch(&self, directory: &Path, target: &str) -> Result<(), ScmError> {
+        if self
+            .branches(directory)?
+            .iter()
+            .any(|branch| branch.name == target)
+        {
+            Ok(())
+        } else {
+            Err(ScmError::Refused {
+                code: None,
+                message: format!("`{target}` is not a local branch"),
+            })
+        }
     }
 
     /// Whether `HEAD` names a commit — false on a branch with nothing on it.
@@ -832,6 +943,77 @@ mod tests {
         let status = git.status(&dir).expect("a status");
         let _ = std::fs::remove_dir_all(&dir);
         assert!(status.is_clean(), "everything was recorded");
+    }
+
+    #[test]
+    fn checkout_is_previewed_and_keeps_unrelated_local_work() {
+        let Some(git) = git_or_skip() else { return };
+        let dir = scratch_repo(&git, "checkout");
+        std::fs::write(dir.join("a.rs"), "main\n").expect("a file");
+        std::fs::write(dir.join("kept.rs"), "clean\n").expect("a file");
+        commit(&git, &dir);
+        let current = git
+            .branches(&dir)
+            .expect("branches")
+            .into_iter()
+            .find(|branch| branch.current)
+            .expect("a current branch")
+            .name;
+
+        let made = std::process::Command::new(&git.program)
+            .args(["branch", "feature/checkout"])
+            .current_dir(&dir)
+            .status()
+            .expect("git branch");
+        assert!(made.success());
+        git.apply(&dir, &Operation::Checkout("feature/checkout".to_owned()))
+            .expect("switch to the feature branch");
+        std::fs::write(dir.join("a.rs"), "feature\n").expect("an edit");
+        std::fs::write(dir.join("new.rs"), "new\n").expect("a file");
+        commit(&git, &dir);
+        git.apply(&dir, &Operation::Checkout(current.clone()))
+            .expect("switch back");
+
+        std::fs::write(dir.join("kept.rs"), "local\n").expect("an unstaged edit");
+        std::fs::write(dir.join("note.txt"), "untracked\n").expect("an untracked file");
+        let plan = git
+            .checkout_plan(&dir, "feature/checkout")
+            .expect("a preview");
+        assert_eq!(plan.current, current);
+        assert_eq!(plan.target, "feature/checkout");
+        assert_eq!(plan.branch_changes, 2);
+        assert_eq!((plan.staged, plan.unstaged, plan.untracked), (0, 1, 1));
+
+        git.apply(&dir, &Operation::Checkout("feature/checkout".to_owned()))
+            .expect("the unrelated local work is carried");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("kept.rs")).expect("the local edit"),
+            "local\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.rs")).expect("the branch version"),
+            "feature\n"
+        );
+        let branches = git.branches(&dir).expect("branches after switching");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(branches
+            .iter()
+            .any(|branch| { branch.current && branch.name == "feature/checkout" }));
+    }
+
+    #[test]
+    fn checkout_refuses_a_name_that_is_not_a_local_branch() {
+        let Some(git) = git_or_skip() else { return };
+        let dir = scratch_repo(&git, "checkout-invalid");
+        std::fs::write(dir.join("a.rs"), "one\n").expect("a file");
+        commit(&git, &dir);
+
+        let result = git.apply(&dir, &Operation::Checkout("--detach".to_owned()));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            matches!(result, Err(ScmError::Refused { ref message, .. }) if message.contains("not a local branch")),
+            "an option-shaped target was refused before checkout: {result:?}"
+        );
     }
 
     #[test]
