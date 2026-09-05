@@ -23,6 +23,7 @@ use crate::prompt::{Prompt, PromptKind};
 /// submit reads them, and a typo in either would silently mean "deny".
 const CONSENT_ALLOW: &str = "allow";
 const CONSENT_DENY: &str = "deny";
+const CHECKOUT_CANCEL: &str = "cancel";
 
 /// The length of `text` in UTF-16 code units, which is how positions count.
 fn utf16_len(text: &str) -> u32 {
@@ -496,6 +497,8 @@ pub struct Session {
     replacing_in_files: bool,
     /// The query a replace-in-files is waiting to be given a replacement for.
     replace_query: String,
+    /// Set by a successful checkout until the frontend re-reads open files.
+    checkout_completed: bool,
     /// Whether the side bar is showing.
     ///
     /// Whether it *fits* is a different question, answered by
@@ -789,6 +792,7 @@ impl Session {
             committed: std::collections::HashMap::new(),
             replacing_in_files: false,
             replace_query: String::new(),
+            checkout_completed: false,
         };
         session.report_unsupported();
         session.refresh_context();
@@ -1603,6 +1607,7 @@ impl Session {
             "git.stageAll" => self.stage_all(),
             "git.unstage" => self.unstage_selected(),
             "git.commit" => self.ask_commit_message(),
+            "git.checkout" => self.ask_checkout(),
             "git.refresh" => {
                 self.scm_changed();
                 Outcome::Handled
@@ -2286,6 +2291,19 @@ impl Session {
                 let message = prompt.text().trim().to_owned();
                 self.commit(message)
             }
+            PromptKind::Branches => match prompt.selected() {
+                Some(entry) => Outcome::GitCheckoutPreview(entry.id.clone()),
+                None => Outcome::Message(format!("no branch matches `{}`", prompt.text())),
+            },
+            PromptKind::ConfirmCheckout => match prompt.selected() {
+                Some(entry) if entry.id == CHECKOUT_CANCEL => {
+                    Outcome::Message("stayed on the current branch".to_owned())
+                }
+                Some(entry) => {
+                    Outcome::GitOperation(deco_scm::Operation::Checkout(entry.id.clone()))
+                }
+                None => Outcome::Message("branch switch cancelled".to_owned()),
+            },
             PromptKind::ConfirmDelete => {
                 // Only a typed `y` goes through. Enter on an empty box is what
                 // happens when somebody dismisses a prompt they did not read,
@@ -3287,6 +3305,59 @@ impl Session {
             .count()
     }
 
+    /// Every path held by an open tab, in tab order.
+    ///
+    /// Used after a branch switch: Git changed files outside the editor, and
+    /// every clean buffer must be brought to the same revision before it can be
+    /// edited or saved again.
+    pub fn open_paths(&self) -> Vec<PathBuf> {
+        self.documents()
+            .filter_map(|document| document.path.clone())
+            .collect()
+    }
+
+    /// Replaces the clean open buffer at `path` with its post-checkout text.
+    ///
+    /// The old undo history belongs to another branch and is dropped. Explicit
+    /// language and wrapping choices survive because they belong to the tab,
+    /// not to either revision of the file.
+    pub fn reload_open(&mut self, path: &Path, text: &str) -> bool {
+        let Some(index) = self.tab_of(path) else {
+            return false;
+        };
+        let settings = self.settings.clone();
+        let wanted = normalise(path);
+        for (document, view) in self.documents_and_views() {
+            if document.path.as_deref().map(normalise) != Some(wanted.clone()) {
+                continue;
+            }
+            let pinned = document.language_pinned;
+            let language = document.language_id.clone();
+            let wrap = document.wrap_override;
+            let resolved = EditorSettings::resolve(&settings, language.as_deref());
+            let mut replacement = Document::from_file(path.to_path_buf(), text, resolved);
+            if pinned {
+                replacement.language_id = language;
+                replacement.language_pinned = true;
+                replacement.syntax = deco_syntax::Syntax::new(replacement.language());
+            }
+            replacement.wrap_override = wrap;
+            replacement.apply_overrides();
+            let cursor = replacement
+                .buffer
+                .clamp_position(view.selections.primary().active);
+            view.selections = deco_core::SelectionSet::caret(cursor);
+            view.reveal_cursor(&replacement.buffer, &replacement.settings);
+            *document = replacement;
+            break;
+        }
+        self.clear_analysis_of_tab(index);
+        self.committed.clear();
+        self.relayout();
+        self.refresh_context();
+        true
+    }
+
     /// Every document, in tab order, the active one in its place among them.
     fn documents(&self) -> impl Iterator<Item = &Document> {
         self.left
@@ -4239,6 +4310,85 @@ impl Session {
         Outcome::GitOperation(deco_scm::Operation::Commit(message))
     }
 
+    /// `git.checkout`: ask the frontend for local branches.
+    ///
+    /// Git cannot see an editor buffer. Refusing before the picker opens is
+    /// what prevents a successful checkout followed by a save from writing the
+    /// old branch's buffer over the new branch.
+    fn ask_checkout(&mut self) -> Outcome {
+        if self.scm.is_none() {
+            return Outcome::Message("this is not a git repository".to_owned());
+        }
+        let unsaved = self.unsaved().len() + self.unsaved_untitled();
+        if unsaved > 0 {
+            return Outcome::Message(format!(
+                "save or close {unsaved} unsaved document{} before switching branches",
+                if unsaved == 1 { "" } else { "s" }
+            ));
+        }
+        Outcome::GitBranches
+    }
+
+    /// Opens the local-branch picker once the frontend has asked Git.
+    pub fn offer_branches(&mut self, branches: Vec<deco_scm::Branch>) {
+        let current = branches
+            .iter()
+            .find(|branch| branch.current)
+            .map(|branch| branch.name.clone());
+        let choices = branches
+            .into_iter()
+            .filter(|branch| !branch.current)
+            .map(|branch| {
+                crate::commands::PaletteEntry::new(&branch.name, &branch.name)
+                    .with_detail("local branch")
+            })
+            .collect::<Vec<_>>();
+        if choices.is_empty() {
+            self.status = Some("there is no other local branch to switch to".to_owned());
+            self.refresh_context();
+            return;
+        }
+        self.prompt = Some(Prompt::list(PromptKind::Branches, choices));
+        self.status = current.map(|name| format!("currently on {name}"));
+        self.refresh_context();
+    }
+
+    /// Shows the checkout cost and asks for an explicit second decision.
+    pub fn confirm_checkout(&mut self, plan: deco_scm::CheckoutPlan) {
+        let unsaved = self.unsaved().len() + self.unsaved_untitled();
+        if unsaved > 0 {
+            self.git_checkout_failed(&format!(
+                "save or close {unsaved} unsaved document{} first",
+                if unsaved == 1 { "" } else { "s" }
+            ));
+            return;
+        }
+        let detail = plan.summary();
+        self.prompt = Some(Prompt::list(
+            PromptKind::ConfirmCheckout,
+            vec![
+                crate::commands::PaletteEntry::new(CHECKOUT_CANCEL, "Cancel")
+                    .with_detail("keep the current branch"),
+                crate::commands::PaletteEntry::new(
+                    &plan.target,
+                    &format!("Switch to {}", plan.target),
+                )
+                .with_detail(&detail),
+            ],
+        ));
+        self.status = Some(format!(
+            "{} → {} — no local work will be discarded; Git will refuse an overwrite",
+            plan.current, plan.target
+        ));
+        self.refresh_context();
+    }
+
+    /// Reports why branches or a checkout preview could not be obtained.
+    pub fn git_checkout_failed(&mut self, reason: &str) {
+        self.status = Some(format!("could not switch branches: {reason}"));
+        self.refresh_context();
+    }
+
     /// Reports that a repository change happened, so what is on screen catches
     /// up.
     ///
@@ -4248,8 +4398,17 @@ impl Session {
     /// something.
     pub fn git_operation_done(&mut self, operation: &deco_scm::Operation) {
         self.status = Some(operation.describe());
+        if matches!(operation, deco_scm::Operation::Checkout(_)) {
+            self.checkout_completed = true;
+            self.comparison = None;
+        }
         self.scm_changed();
         self.refresh_context();
+    }
+
+    /// Whether a completed checkout requires open files to be re-read.
+    pub fn take_checkout_completed(&mut self) -> bool {
+        std::mem::take(&mut self.checkout_completed)
     }
 
     /// Reports that one could not be carried out.
@@ -9634,6 +9793,96 @@ mod tests {
             op,
             deco_scm::Operation::Stage(PathBuf::from("work.rs")),
             "git answers about repository-relative paths, and the view holds them"
+        );
+    }
+
+    #[test]
+    fn checkout_requires_clean_buffers_and_an_explicit_confirmation() {
+        let mut s = with_tree();
+        s.fill_scm(Some(dirty_status()));
+        s.open(PathBuf::from("/w/a.rs"), "main\n");
+        s.handle_chord(Chord::char('x'), 0);
+        assert!(
+            matches!(s.run("git.checkout", None, 0), Outcome::Message(ref message) if message.contains("unsaved document")),
+            "Git cannot protect text that only exists in the editor"
+        );
+
+        s.mark_saved();
+        assert!(matches!(
+            s.run("git.checkout", None, 0),
+            Outcome::GitBranches
+        ));
+        s.offer_branches(vec![
+            deco_scm::Branch {
+                name: "main".to_owned(),
+                current: true,
+            },
+            deco_scm::Branch {
+                name: "feature".to_owned(),
+                current: false,
+            },
+        ]);
+        assert_eq!(
+            s.prompt.as_ref().map(Prompt::kind),
+            Some(PromptKind::Branches)
+        );
+        assert!(matches!(
+            press(&mut s, "enter"),
+            Outcome::GitCheckoutPreview(ref target) if target == "feature"
+        ));
+
+        let plan = deco_scm::CheckoutPlan {
+            current: "main".to_owned(),
+            target: "feature".to_owned(),
+            branch_changes: 3,
+            staged: 1,
+            unstaged: 0,
+            untracked: 1,
+        };
+        s.confirm_checkout(plan.clone());
+        assert_eq!(
+            s.prompt
+                .as_ref()
+                .and_then(Prompt::selected)
+                .map(|row| row.id.as_str()),
+            Some(CHECKOUT_CANCEL),
+            "enter alone must be the safe answer"
+        );
+        assert!(matches!(press(&mut s, "enter"), Outcome::Message(_)));
+
+        s.confirm_checkout(plan);
+        s.prompt.as_mut().expect("confirmation").next();
+        assert!(matches!(
+            press(&mut s, "enter"),
+            Outcome::GitOperation(deco_scm::Operation::Checkout(ref target)) if target == "feature"
+        ));
+    }
+
+    #[test]
+    fn a_completed_checkout_reloads_clean_tabs_and_drops_old_history() {
+        let mut s = Session::with_defaults();
+        let path = PathBuf::from("/w/a.rs");
+        s.open(path.clone(), "main\n");
+        s.handle_chord(Chord::char('x'), 0);
+        s.mark_saved();
+        s.run("undo", None, 0);
+        assert_eq!(
+            s.document.buffer.text(),
+            "main\n",
+            "the old history existed"
+        );
+
+        s.git_operation_done(&deco_scm::Operation::Checkout("feature".to_owned()));
+        assert!(s.take_checkout_completed());
+        assert!(!s.take_checkout_completed(), "the signal is consumed once");
+        assert!(s.reload_open(&path, "feature\n"));
+        assert_eq!(s.document.buffer.text(), "feature\n");
+        assert!(!s.document.dirty);
+        s.run("undo", None, 0);
+        assert_eq!(
+            s.document.buffer.text(),
+            "feature\n",
+            "undo from the old branch cannot cross the checkout"
         );
     }
 

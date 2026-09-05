@@ -79,6 +79,10 @@ pub enum PromptKind {
     /// be undone with `git reset --soft` — so it does not need a second
     /// question on top of the one it already asks.
     CommitMessage,
+    /// `git.checkout`: an existing local branch to switch to.
+    Branches,
+    /// Whether to perform a checkout after its impact has been shown.
+    ConfirmCheckout,
     /// `delete` in the tree: whether to really remove it.
     ///
     /// A prompt rather than a bare key because there is no trash to take it out
@@ -109,6 +113,8 @@ impl PromptKind {
             Self::NewFolder => "New folder:",
             Self::RenameFile => "Rename file to:",
             Self::CommitMessage => "Commit message:",
+            Self::Branches => "Checkout to:",
+            Self::ConfirmCheckout => "Switch branch?",
             Self::ConfirmDelete => "Delete permanently? (y/n)",
         }
     }
@@ -140,6 +146,8 @@ impl PromptKind {
             (Self::Languages, _) => "languages",
             (Self::Themes, 1) => "theme",
             (Self::Themes, _) => "themes",
+            (Self::Branches, 1) => "branch",
+            (Self::Branches, _) => "branches",
             // Two, always, and counting them tells nobody anything.
             (Self::ExtensionConsent, _) => "",
             (Self::ExtensionPermissions, 1) => "decision",
@@ -149,6 +157,7 @@ impl PromptKind {
             | (Self::NewFolder, _)
             | (Self::RenameFile, _)
             | (Self::CommitMessage, _)
+            | (Self::ConfirmCheckout, _)
             | (Self::ConfirmDelete, _) => "",
         }
     }
@@ -174,6 +183,8 @@ impl PromptKind {
             Self::Rename => "rename symbol",
             Self::CodeActions => "the code-action list",
             Self::CommitMessage => "the commit message box",
+            Self::Branches => "the branch picker",
+            Self::ConfirmCheckout => "the branch-switch confirmation",
             Self::ExtensionConsent => "an extension's permission request",
             Self::ExtensionPermissions => "the list of permission decisions",
             Self::NewFile => "new file",
@@ -204,7 +215,12 @@ impl PromptKind {
         // to be available, and sorting by title would interleave them.
         matches!(
             self,
-            Self::Symbols | Self::Themes | Self::Files | Self::CodeActions
+            Self::Symbols
+                | Self::Themes
+                | Self::Files
+                | Self::CodeActions
+                | Self::Branches
+                | Self::ConfirmCheckout
         )
     }
 }

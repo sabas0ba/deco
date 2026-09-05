@@ -14,6 +14,55 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+/// One local branch offered by the checkout picker.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Branch {
+    /// The short local name, such as `main` or `feature/search`.
+    pub name: String,
+    /// Whether `HEAD` currently names this branch.
+    pub current: bool,
+}
+
+/// What switching branches would change, before it is allowed to happen.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckoutPlan {
+    /// The current branch or detached commit label.
+    pub current: String,
+    /// The local branch selected in the picker.
+    pub target: String,
+    /// Committed paths whose contents differ between the two branches.
+    pub branch_changes: usize,
+    /// Changes already in the index that Git will carry across or refuse.
+    pub staged: usize,
+    /// Tracked working-tree changes that Git will carry across or refuse.
+    pub unstaged: usize,
+    /// Untracked files that remain in the working tree.
+    pub untracked: usize,
+}
+
+impl CheckoutPlan {
+    /// A compact account of the cost, for the confirmation row.
+    pub fn summary(&self) -> String {
+        let local = self.staged + self.unstaged + self.untracked;
+        if local == 0 {
+            format!(
+                "{} path{} · clean worktree",
+                self.branch_changes,
+                if self.branch_changes == 1 { "" } else { "s" }
+            )
+        } else {
+            format!(
+                "{} path{} · staged {}/unstaged {}/untracked {}",
+                self.branch_changes,
+                if self.branch_changes == 1 { "" } else { "s" },
+                self.staged,
+                self.unstaged,
+                self.untracked,
+            )
+        }
+    }
+}
+
 /// Which two repository states a diff view compares.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ComparisonKind {
@@ -88,6 +137,12 @@ pub enum Operation {
     },
     /// Record what is staged, with this message.
     Commit(String),
+    /// Switch to an existing local branch without discarding local work.
+    ///
+    /// The target is checked against [`crate::Git::branches`] immediately
+    /// before it reaches Git. No force flag is used: when a switch would
+    /// overwrite a tracked or untracked change, Git refuses it.
+    Checkout(String),
 }
 
 impl Operation {
@@ -98,6 +153,7 @@ impl Operation {
             Self::StageAll => "staged everything".to_owned(),
             Self::Unstage { path, .. } => format!("unstaged {}", name_of(path)),
             Self::Commit(_) => "committed".to_owned(),
+            Self::Checkout(branch) => format!("switch to {branch}"),
         }
     }
 }

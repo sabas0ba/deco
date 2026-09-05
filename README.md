@@ -177,7 +177,7 @@ thin painter.
 | Side bar and panel (`ctrl+b`, `ctrl+j`, `workbench.sideBar.location`) | Regions, focus and the context keys — see [Chrome](docs/chrome.md). The side bar holds the file tree; the panel is still empty and says what it is waiting for |
 | File tree / explorer (`ctrl+shift+e`, `list.*`, `revealInExplorer`) | Walk it, expand it, open files with it — read one directory at a time, `files.exclude` honoured, works on a remote workspace |
 | Changing files from the tree (`explorer.newFile`, `explorer.newFolder`, `renameFile`, `deleteFile`) | New file, new folder, rename and delete, with an undo of the tree's own; a rename retargets the open tab. Deleting is confirmed and cannot be undone — there is no trash, so `files.enableTrash` is not honoured. No drag, and none of it over a remote connection yet — see [The file tree](docs/files.md) |
-| Git — status bar, gutter marks, diff view and source-control view (`workbench.view.scm`, `git.stage`, `git.commit`) | The branch, its distance from its upstream and how many files differ from `HEAD`; `┃`/`│`/`▔` beside added, changed and removed lines, following the buffer rather than the file on disk; and `ctrl+shift+g` for a view that opens side-by-side diffs, stages, unstages and commits. The same reads and operations run on the far machine in a remote session. No checkout, no discard and nothing that reaches the network — see [Git](docs/git.md) |
+| Git — status bar, gutter marks, diff view and source-control view (`workbench.view.scm`, `git.stage`, `git.commit`, `git.checkout`) | The branch, its distance from its upstream and how many files differ from `HEAD`; `┃`/`│`/`▔` beside added, changed and removed lines, following the buffer rather than the file on disk; and `ctrl+shift+g` for a view that opens side-by-side diffs, stages, unstages and commits. Local branches can be listed and switched after a preflight that accounts for local work; the same reads and operations run on the far machine in a remote session. No discard and nothing that reaches the network — see [Git](docs/git.md) |
 | Word wrap (`editor.wordWrap`, `editor.wrappingIndent`, `alt+z`) | Yes in the terminal |
 | Detected indentation (`editor.detectIndentation`) | Yes — the status bar says when a file overruled the setting |
 | Auto-closing brackets (`editor.autoClosingBrackets`) | Yes — no `autoSurround`, no `autoClosingDelete` |
@@ -297,15 +297,15 @@ not exist *at all* yet — an integrated terminal, tasks, a test runner,
 self-update, debugging — each have a plan in the
 [Roadmap](docs/roadmap.md):
 
-- **Git reviews, stages and commits, and stops there.** The branch and the
+- **Git reviews, stages, commits and switches local branches.** The branch and the
   changed count are in the status bar, changed lines are marked in the gutter,
   and `ctrl+shift+g` opens a view with side-by-side diffs that stages, unstages
-  and commits. What it will
-  not do: **discard** anything, because `git clean` has no undo and no trash;
-  **checkout**, until it can say what switching would cost first; or **reach the
-  network**, which needs credentials. A remote session runs status, committed
-  text and writes on the machine holding the repository. The GPU frontend
-  computes the gutter marks but does not paint them yet. See [Git](docs/git.md).
+  and commits; `git.checkout` lists branches and shows the cost before
+  switching. What it will not do: **discard** anything, because `git clean` has
+  no undo and no trash, or **reach the network**, which needs credentials. A
+  remote session runs status, committed text and writes on the machine holding
+  the repository. The GPU frontend computes the gutter marks but does not paint
+  them yet. See [Git](docs/git.md).
 - **The file tree has no watcher, no mouse and no remote.** `ctrl+b` shows it,
   `ctrl+shift+e` focuses it, and the arrows walk it; a directory is read when it
   is opened, so a large workspace costs what is on screen. Creating, renaming

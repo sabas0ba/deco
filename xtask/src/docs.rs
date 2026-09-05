@@ -171,6 +171,10 @@ fn demos() -> Vec<Demo> {
             build: git_diff,
         },
         Demo {
+            name: "git-checkout",
+            build: git_checkout,
+        },
+        Demo {
             name: "tabs",
             build: tabs,
         },
@@ -257,6 +261,10 @@ struct Take {
     shots: Vec<Shot>,
     /// The demonstration's own index and working tree. See `Take::repository`.
     scm: Vec<(String, char, char)>,
+    /// The local branches and checkout previews the fake Git frontend returns.
+    branches: Vec<deco_scm::Branch>,
+    checkout_plans: Vec<deco_scm::CheckoutPlan>,
+    branch: String,
     /// The workspace the file tree is shown over, if a demonstration set one.
     ///
     /// The frontend's job in the real editor, done here by the demonstration —
@@ -298,6 +306,9 @@ impl Take {
             session,
             shots: Vec::new(),
             scm: Vec::new(),
+            branches: Vec::new(),
+            checkout_plans: Vec::new(),
+            branch: "main".to_owned(),
             workspace: Vec::new(),
         }
     }
@@ -376,6 +387,18 @@ impl Take {
                 // rather than set.
                 self.session.git_operation_done(&operation);
                 self.apply_git(&operation);
+            }
+            if matches!(outcome, deco_editor::Outcome::GitBranches) {
+                self.session.offer_branches(self.branches.clone());
+            }
+            if let deco_editor::Outcome::GitCheckoutPreview(ref target) = outcome {
+                let plan = self
+                    .checkout_plans
+                    .iter()
+                    .find(|plan| plan.target == *target)
+                    .cloned()
+                    .unwrap_or_else(|| panic!("no checkout preview for {target}"));
+                self.session.confirm_checkout(plan);
             }
             if matches!(outcome, deco_editor::Outcome::Save) {
                 self.write_open_document();
@@ -462,11 +485,29 @@ impl Take {
         self
     }
 
+    /// Gives the checkout picker its local branches and preflight answers.
+    fn branches(
+        &mut self,
+        branches: &[deco_scm::Branch],
+        plans: &[deco_scm::CheckoutPlan],
+    ) -> &mut Self {
+        self.branch = branches
+            .iter()
+            .find(|branch| branch.current)
+            .map(|branch| branch.name.clone())
+            .unwrap_or_else(|| "main".to_owned());
+        self.branches = branches.to_vec();
+        self.checkout_plans = plans.to_vec();
+        self.refresh_scm();
+        self
+    }
+
     /// Hands the session what its own index would report.
     fn refresh_scm(&mut self) {
-        let mut out = String::from(
+        let mut out = format!(
             "# branch.oid 1c9d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d\0\
-             # branch.head main\0# branch.upstream origin/main\0# branch.ab +0 -0\0",
+             # branch.head {}\0# branch.upstream origin/{}\0# branch.ab +0 -0\0",
+            self.branch, self.branch
         );
         for (path, staged, worktree) in &self.scm {
             if *worktree == '?' {
@@ -524,6 +565,12 @@ impl Take {
                     *staged = '.';
                 }
                 self.scm.retain(|(_, _, worktree)| *worktree != '.');
+            }
+            deco_scm::Operation::Checkout(target) => {
+                self.branch = target.clone();
+                for branch in &mut self.branches {
+                    branch.current = branch.name == *target;
+                }
             }
         }
         self.refresh_scm();
@@ -1365,6 +1412,54 @@ fn git_diff() -> String {
     take.press_and_hold(&["ctrl+1"], 4)
         .press_and_hold(&["ctrl+2"], 4)
         .press_and_hold(&["ctrl+w"], 6);
+    take.finish()
+}
+
+fn git_checkout() -> String {
+    let mut take = Take::new("src/main.rs", SAMPLE);
+    take.workspace(&[
+        ("Cargo.toml", "[package]\nname = \"demo\"\n"),
+        ("src/main.rs", SAMPLE),
+        ("notes.md", "local notes\n"),
+    ]);
+    take.repository(&[("notes.md", '.', '?')]);
+    take.branches(
+        &[
+            deco_scm::Branch {
+                name: "main".to_owned(),
+                current: true,
+            },
+            deco_scm::Branch {
+                name: "feature/checkout".to_owned(),
+                current: false,
+            },
+            deco_scm::Branch {
+                name: "release".to_owned(),
+                current: false,
+            },
+        ],
+        &[deco_scm::CheckoutPlan {
+            current: "main".to_owned(),
+            target: "feature/checkout".to_owned(),
+            branch_changes: 4,
+            staged: 0,
+            unstaged: 0,
+            untracked: 1,
+        }],
+    );
+    take.capture("on `main`, with one untracked file", 5);
+
+    take.press(&["ctrl+shift+p"]);
+    take.type_text("checkout");
+    take.press_and_hold(&["enter"], 5);
+    take.type_text("feature");
+    take.press_and_hold(&["enter"], 6);
+
+    // Cancel is selected first. Moving down is the explicit second decision;
+    // only then does the frontend carry out the operation and refresh status.
+    take.press(&["down"]);
+    take.press_and_hold(&["enter"], 6);
+    take.capture("switched; the untracked file was not discarded", 6);
     take.finish()
 }
 

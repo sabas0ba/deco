@@ -25,7 +25,7 @@ What VS Code has and deco does not, grouped by how it blocks:
 
 | Missing | Depends on |
 | --- | --- |
-| Git — checkout, discard, push/pull ([the rest is built](git.md)) | nothing; each is its own decision about what it may lose or ask for |
+| Git — discard, push/pull ([the rest is built](git.md)) | nothing; each is its own decision about what it may lose or ask for |
 | Integrated terminal | a PTY dependency; its home is the [panel](chrome.md) |
 | Task runner (`tasks.json`, `ctrl+shift+b`) | the terminal, for somewhere to run |
 | Test runner | the task runner, and later the extension host |
@@ -59,17 +59,13 @@ written under them:
 
 ## Git
 
-**Built.** All three stages — the branch and what differs from it in the status
-bar, marks beside the changed lines, and a source-control view that stages,
-unstages and commits. It has [a page of its own](git.md); this chapter is what
-is left over.
+**Built.** The branch and what differs from it in the status bar, marks beside
+the changed lines, a source-control view that stages, unstages and commits, and
+a local-branch picker with checkout preflight. It has [a page of its own](git.md);
+this chapter is what is left over.
 
 **What VS Code has that deco still does not.**
 
-- **Checkout, and a branch list.** Switching branches can lose uncommitted work
-  when it goes wrong, and doing it well means saying what would be lost before
-  it happens rather than after. That is the piece of work, not the `git
-  checkout` call.
 - **Discard.** `git clean` and `git checkout --` throw away work with no undo
   and no trash. deco's tree refuses to delete quietly for the same reason, and
   this would need the same kind of answer.

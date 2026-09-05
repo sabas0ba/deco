@@ -474,6 +474,27 @@ impl Client {
         })
     }
 
+    /// Local branches available in the repository on the far end.
+    pub fn scm_branches(&mut self) -> Result<Vec<deco_scm::Branch>, ClientError> {
+        let said = self.request("scm.branches", json!({}))?;
+        serde_json::from_value(said["branches"].clone()).map_err(|_| ClientError::Malformed {
+            method: "scm.branches".to_owned(),
+            field: "branches",
+        })
+    }
+
+    /// The cost of switching to one local branch on the far end.
+    pub fn scm_checkout_plan(
+        &mut self,
+        target: &str,
+    ) -> Result<deco_scm::CheckoutPlan, ClientError> {
+        let said = self.request("scm.checkoutPlan", json!({ "target": target }))?;
+        serde_json::from_value(said["plan"].clone()).map_err(|_| ClientError::Malformed {
+            method: "scm.checkoutPlan".to_owned(),
+            field: "plan",
+        })
+    }
+
     /// Carries out one source-control operation on the far end.
     pub fn scm_apply(&mut self, operation: &deco_scm::Operation) -> Result<(), ClientError> {
         self.request("scm.apply", json!({ "operation": operation }))?;

@@ -344,7 +344,7 @@ impl Server {
                 }
                 paths
             }
-            Operation::StageAll | Operation::Commit(_) => Vec::new(),
+            Operation::StageAll | Operation::Commit(_) | Operation::Checkout(_) => Vec::new(),
         };
         for relative in paths {
             let candidate = repository.join(relative);
@@ -441,6 +441,8 @@ impl Server {
                     "scm.status",
                     "scm.committed",
                     "scm.comparison",
+                    "scm.branches",
+                    "scm.checkoutPlan",
                     "scm.apply",
                     "$/shutdown"
                 ],
@@ -708,6 +710,32 @@ impl Server {
                     });
                 }
                 Ok(json!({ "comparison": comparison }))
+            }
+            "scm.branches" => {
+                let repository = self.repository_root()?;
+                let branches =
+                    self.git
+                        .branches(&repository)
+                        .map_err(|error| ServerError::SourceControl {
+                            reason: error.to_string(),
+                        })?;
+                Ok(json!({ "branches": branches }))
+            }
+            "scm.checkoutPlan" => {
+                let target = params["target"]
+                    .as_str()
+                    .ok_or_else(|| ServerError::BadParams {
+                        method: method.to_owned(),
+                        what: "a `target` string".to_owned(),
+                    })?;
+                let repository = self.repository_root()?;
+                let plan = self
+                    .git
+                    .checkout_plan(&repository, target)
+                    .map_err(|error| ServerError::SourceControl {
+                        reason: error.to_string(),
+                    })?;
+                Ok(json!({ "plan": plan }))
             }
             "scm.apply" => {
                 let operation: Operation = serde_json::from_value(params["operation"].clone())

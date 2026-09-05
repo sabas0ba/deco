@@ -59,13 +59,17 @@ pub enum Outcome {
     Frontend(String),
     /// The document should be written to disk.
     Save,
-    /// A repository should be changed — staged, unstaged, committed.
+    /// A repository should be changed — staged, unstaged, committed or switched.
     ///
     /// Carried out by whoever can run `git`, and reported back with
     /// [`Session::git_operation_done`](crate::Session::git_operation_done) so
     /// the view and the status bar catch up. See [`deco_scm::Operation`] for
     /// what deliberately is not in it.
     GitOperation(deco_scm::Operation),
+    /// Local branches should be fetched and offered in a picker.
+    GitBranches,
+    /// The cost of switching to this local branch should be fetched.
+    GitCheckoutPreview(String),
     /// A repository comparison should be fetched and shown read-only.
     GitComparison(deco_scm::ComparisonRequest),
     /// The user chose a remembered decision to take back.
@@ -340,6 +344,7 @@ pub const PALETTE: &[(&str, &str)] = &[
     ("git.stageAll", "Git: Stage All Changes"),
     ("git.unstage", "Git: Unstage Changes"),
     ("git.commit", "Git: Commit"),
+    ("git.checkout", "Git: Checkout to..."),
     ("git.refresh", "Git: Refresh"),
     ("redo", "Redo"),
     ("editor.action.selectAll", "Select All"),
