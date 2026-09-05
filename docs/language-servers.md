@@ -70,10 +70,33 @@ when the list was asked for.
 The marker in the left column is the item's kind: `f` function, `v` value, `t`
 type, `m` module, `k` keyword, `s` snippet, `·` anything else.
 
-**Snippets are inserted without their placeholders.** deco advertises
-`snippetSupport: false` and several servers send them anyway, so `foo(${1:arg})`
-becomes `foo(arg)` and the status bar says so. Inserting the placeholder syntax
-literally would be worse; there are no tab stops to jump between yet.
+### Snippet tab stops
+
+Completions containing unique numeric fields (`$1`, `${1}`, `${1:arg}`) select
+the first field after insertion. Type to replace its default, press `tab` to
+advance in numeric order, or `shift+tab` to return. `$0` is the final cursor;
+without it, the snippet ends at the end of the inserted text. `escape` ends
+navigation and keeps the text. User keybindings may override the standard
+`jumpToNextSnippetPlaceholder`, `jumpToPrevSnippetPlaceholder` and `leaveSnippet`
+commands, using the `inSnippetMode` context key.
+
+![Editing and navigating completion fields](img/snippet-tabstops.svg)
+
+Ranges use UTF-16 positions and follow edits within the selected field, including
+multiline text and paste. Leaving that field, undo/redo, or an edit that cannot
+be tracked safely ends navigation. Insertion is one ordinary undo step; edits
+to fields use the editor's existing undo grouping. State belongs to its document
+and does not apply to another tab. Suggestion lists, find inputs and prompts
+retain their own key handling.
+
+This is a subset of [LSP snippet syntax](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#snippet_syntax).
+Repeated indices (linked editing), nested fields, choices, variables, transforms,
+non-LF line separators and coincident empty fields are not supported. They use
+the existing text-only fallback, with a status message; no partially parsed
+navigation state is installed. User snippet files and `insertSnippet` are not
+implemented. `snippetSupport: false` remains advertised until the full syntax
+can be honoured; this support applies to servers that already send snippets.
+Pasting a non-LF line separator also ends navigation while preserving the edit.
 
 ## References
 

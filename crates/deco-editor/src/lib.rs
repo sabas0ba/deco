@@ -18,6 +18,7 @@ pub mod layout;
 pub mod prompt;
 pub mod scm;
 pub mod session;
+mod snippet;
 pub mod workspace;
 
 pub use commands::{Clipboard, Context, MemoryClipboard, Outcome};

@@ -51,6 +51,7 @@ pub mod process;
 pub mod requests;
 pub mod server;
 pub mod settings;
+pub mod snippet;
 pub mod supervisor;
 pub mod sync;
 pub mod uri;

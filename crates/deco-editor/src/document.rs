@@ -181,6 +181,8 @@ pub fn bracket_pairs(language: Option<&str>) -> &'static [(char, char)] {
 /// An open document.
 #[derive(Debug)]
 pub struct Document {
+    /// Navigation state belongs to the document, so another tab cannot reuse it.
+    pub(crate) snippet: Option<crate::snippet::ActiveSnippet>,
     /// The text.
     pub buffer: Buffer,
     /// Undo/redo for this document.
@@ -271,6 +273,7 @@ impl Document {
         }
         Self {
             buffer,
+            snippet: None,
             history: History::default(),
             path: None,
             language_id: None,
@@ -303,6 +306,7 @@ impl Document {
         }
         let mut document = Self {
             buffer,
+            snippet: None,
             history: History::default(),
             path: Some(path),
             syntax: Syntax::new(language_id.as_deref()),
@@ -355,6 +359,13 @@ impl Document {
     /// from the text is invalidated without each caller having to remember to.
     /// Highlighting is the first such thing; there will be more.
     pub fn apply(&mut self, transaction: &Transaction) -> Transaction {
+        if self
+            .snippet
+            .as_mut()
+            .is_some_and(|snippet| !snippet.apply(transaction))
+        {
+            self.snippet = None;
+        }
         // From the earliest line the edit touched. Everything above it is still
         // true — a change on line 900 cannot alter what line 3 left open — which
         // is what keeps editing a large file from re-lexing all of it.
@@ -373,6 +384,7 @@ impl Document {
     /// For a change that did not come through [`Document::apply`] — undo and redo
     /// apply their own transactions inside the history.
     pub fn invalidate(&mut self) {
+        self.snippet = None;
         self.syntax.invalidate_from(0);
     }
 

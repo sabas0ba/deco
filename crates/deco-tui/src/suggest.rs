@@ -263,6 +263,7 @@ mod tests {
             sort: None,
             preselect: false,
             was_snippet: false,
+            snippet: None,
         }
     }
 
