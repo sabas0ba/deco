@@ -567,6 +567,7 @@ dependencies = [
  "deco-keymap",
  "deco-lsp",
  "deco-remote",
+ "deco-scm",
  "deco-theme",
  "deco-tui",
  "serde_json",
@@ -680,6 +681,7 @@ version = "0.1.0"
 dependencies = [
  "deco-config",
  "deco-core",
+ "deco-scm",
  "serde",
  "serde_json",
  "sha2",
@@ -690,6 +692,7 @@ dependencies = [
 name = "deco-scm"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "thiserror 2.0.20",
 ]
 
