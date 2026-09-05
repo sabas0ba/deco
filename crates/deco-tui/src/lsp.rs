@@ -487,11 +487,16 @@ impl Lsp {
         ));
 
         self.dismiss_suggest();
+        if let Some(snippet) = &item.snippet {
+            session.insert_snippet(range, snippet, now_ms);
+            self.sync_context(session);
+            return true;
+        }
         if item.was_snippet {
             // Said plainly rather than silently inserting the reduced text: the
             // user asked for a snippet and got a best effort.
             session.status = Some(format!(
-                "{}: inserted without placeholders (no snippet support yet)",
+                "{}: inserted without tab stops (unsupported snippet syntax)",
                 item.label
             ));
         }

@@ -333,13 +333,16 @@ pub struct CompletionItem {
     pub sort: Option<String>,
     /// Whether the server wants this selected when the list opens.
     pub preselect: bool,
-    /// Whether `insert` is snippet syntax the editor cannot expand.
+    /// Whether the server supplied snippet syntax, declared or detected.
     ///
     /// deco advertises `snippetSupport: false`, so a well-behaved server sends
     /// plain text — but several send snippets regardless. Inserting
     /// `foo(${1:arg})` literally is worse than inserting nothing, so the
-    /// placeholders are stripped and this records that it happened.
+    /// placeholders are stripped for the fallback. `snippet` separately carries
+    /// the text and tab stops when the supported numeric subset can be expanded.
     pub was_snippet: bool,
+    /// Parsed numeric tab stops, when the completion uses the supported subset.
+    pub snippet: Option<crate::snippet::Snippet>,
 }
 
 impl CompletionItem {
@@ -392,6 +395,11 @@ impl CompletionItem {
             .and_then(|v| v.as_i64())
             .is_some_and(|format| format == 2);
         let (insert, stripped) = strip_snippet(&raw_insert);
+        let snippet = if declared_snippet || stripped {
+            crate::snippet::Snippet::parse(&raw_insert)
+        } else {
+            None
+        };
 
         Some(Self {
             kind: CompletionKind::from_number(value.get("kind").and_then(|v| v.as_i64())),
@@ -418,6 +426,7 @@ impl CompletionItem {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false),
             was_snippet: declared_snippet || stripped,
+            snippet,
             label,
         })
     }

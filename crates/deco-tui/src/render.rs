@@ -2811,6 +2811,7 @@ mod tests {
                 sort: None,
                 preselect: false,
                 was_snippet: false,
+                snippet: None,
             })
             .collect();
         crate::suggest::Suggest::new(items, deco_core::Position::ZERO, false)

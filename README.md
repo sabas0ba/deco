@@ -353,10 +353,11 @@ self-update, debugging — each have a plan in the
   full-document syncs; the incremental path exists in `deco-lsp` but the editor
   does not yet track applied ranges, and only the document on screen is
   synchronised at all.
-- **Snippets are inserted without their placeholders.** deco advertises
-  `snippetSupport: false` and several servers send them anyway, so `foo(${1:arg})`
-  becomes `foo(arg)` and the status bar says so. There are no tab stops to jump
-  between yet.
+- **Numeric snippet tab stops work for completions.** Unique `$1`, `${1}` and
+  `${1:arg}` fields support Tab/Shift+Tab navigation and `$0` finishes. The
+  [supported subset and demonstration](docs/language-servers.md#snippet-tab-stops)
+  describe the limits. Full LSP `snippetSupport` remains false; unsupported
+  snippets use the existing text-only fallback and report that in the status bar.
 - **Go-to-definition across files opens a new tab** (or switches to the tab
   already holding the file), so unsaved work is never at risk. Several results
   are offered as a list rather than guessed between.

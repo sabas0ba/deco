@@ -119,6 +119,10 @@ fn demos() -> Vec<Demo> {
             build: completion,
         },
         Demo {
+            name: "snippet-tabstops",
+            build: snippet_tabstops,
+        },
+        Demo {
             name: "command-palette",
             build: command_palette,
         },
@@ -1016,6 +1020,28 @@ fn hover() -> String {
     };
     take.capture_overlay("ctrl+k ctrl+i", 6, Some(&hover), None);
     take.capture_overlay("escape", 3, None, None);
+    take.finish()
+}
+
+fn snippet_tabstops() -> String {
+    let mut take = Take::new("main.rs", "fn main() {\n    \n}\n");
+    take.at(1, 4);
+    let snippet = deco_lsp::snippet::Snippet::parse("connect(${1:host}, ${2:port});$0").unwrap();
+    take.session
+        .insert_snippet(Range::empty(Position::new(1, 4)), &snippet, 100);
+    take.capture("accept completion: first field", 4);
+    for c in "server".chars() {
+        take.type_char(c);
+    }
+    take.press(&["tab"]);
+    take.capture("Tab: next field", 4);
+    for c in "8080".chars() {
+        take.type_char(c);
+    }
+    take.press(&["shift+tab"]);
+    take.capture("Shift+Tab: previous field", 4);
+    take.press(&["tab", "tab"]);
+    take.capture("Tab: final cursor, snippet finished", 5);
     take.finish()
 }
 
@@ -2099,6 +2125,7 @@ fn item(label: &str, kind: CompletionKind, detail: &str) -> CompletionItem {
         sort: None,
         preselect: false,
         was_snippet: false,
+        snippet: None,
     }
 }
 

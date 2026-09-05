@@ -33,7 +33,7 @@ What VS Code has and deco does not, grouped by how it blocks:
 | AI features — inline completions, chat, agent mode, MCP (`chat.disableAIFeatures`) | the extension host, ghost text, and the panel; agents additionally on `WorkspaceEdit` and the terminal; the off switch depends on nothing and comes first |
 | Debugging (DAP) | the panel; by far the largest item here |
 | Regular-expression search | nothing — `deco-core::search` is deliberately literal so far |
-| Snippet tab stops | nothing |
+| Full snippet syntax and user snippet files ([numeric completion fields work](language-servers.md#snippet-tab-stops)) | linked/nested field tracking and variable/transform expansion |
 
 The dependencies are why the order below is the order. One foundation is left —
 **finishing the extension-host wiring**. The other two are built. The
@@ -403,7 +403,7 @@ here because the plans above lean on them.
   pattern (`alt+r` says so today). Decision to make: a regex crate dependency
   versus the subset a hand-written engine can honestly support. The find bar,
   multi-cursor find and search-in-files all inherit whichever lands.
-- **Snippet tab stops.** deco advertises `snippetSupport: false` and flattens
-  `foo(${1:arg})` to `foo(arg)`, saying so in the status bar. Tab stops are a
-  session concept (ordered regions, `tab` cycles, `escape` leaves) and unlock
-  both server completions and, later, user snippets.
+- **Full snippet support.** [Numeric completion fields are built](language-servers.md#snippet-tab-stops):
+  Tab/Shift+Tab navigate, Escape exits, and ranges follow edits. Repeated indices,
+  nested fields, choices, variables and transforms remain, followed by user snippet
+  files. Keep `snippetSupport: false` until the full LSP syntax is supported.
