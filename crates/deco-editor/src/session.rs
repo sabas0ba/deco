@@ -1378,6 +1378,16 @@ impl Session {
     /// that a binding gated on `editorHasSelection` becomes active in the same
     /// frame the selection appears.
     pub fn refresh_context(&mut self) {
+        if self
+            .document
+            .snippet
+            .as_ref()
+            .is_some_and(|snippet| !snippet.contains(&self.view.selections))
+        {
+            self.document.snippet = None;
+        }
+        self.context
+            .set("inSnippetMode", self.document.snippet.is_some());
         self.note_active_document();
         let selections = self
             .comparison
@@ -1564,6 +1574,12 @@ impl Session {
         // because it needs the diagnostic list, which belongs to the session —
         // a command sees only the document, the view and the clipboard.
         let outcome = match command {
+            "jumpToNextSnippetPlaceholder" => self.move_snippet(false),
+            "jumpToPrevSnippetPlaceholder" => self.move_snippet(true),
+            "leaveSnippet" => {
+                self.document.snippet = None;
+                Outcome::Handled
+            }
             "editor.action.marker.next" | "editor.action.marker.nextInFiles" => {
                 self.goto_marker(Direction::Next)
             }
@@ -2750,6 +2766,8 @@ impl Session {
     ) -> deco_core::position::Position {
         use deco_core::{Change, EditKind, Selection, SelectionSet, Transaction};
 
+        self.document.snippet = None;
+
         let before = self.view.selections.clone();
         // Clamped because the range may have been computed against text the user
         // has since changed — a completion answered while they kept typing.
@@ -2787,6 +2805,74 @@ impl Session {
             .reveal_cursor(&self.document.buffer, &self.document.settings);
         self.refresh_context();
         end
+    }
+
+    /// Inserts a parsed completion and selects the first numeric placeholder.
+    /// Uses the ordinary replacement transaction, including its undo boundary.
+    pub fn insert_snippet(
+        &mut self,
+        range: deco_core::Range,
+        snippet: &deco_lsp::snippet::Snippet,
+        now_ms: u64,
+    ) {
+        use deco_core::{Position, Range};
+        if self.comparison.is_some() || self.focus != Focus::Editor {
+            return;
+        }
+        let start = self.document.buffer.clamp_position(range.start);
+        self.replace_range(range, &snippet.text, now_ms);
+        let offset = |position: Position| {
+            Position::new(
+                start.line + position.line,
+                position.character
+                    + if position.line == 0 {
+                        start.character
+                    } else {
+                        0
+                    },
+            )
+        };
+        if snippet.stops.is_empty() {
+            return;
+        }
+        self.document.snippet = Some(crate::snippet::ActiveSnippet {
+            stops: snippet
+                .stops
+                .iter()
+                .map(|r| Range::new(offset(r.start), offset(r.end)))
+                .collect(),
+            current: 0,
+        });
+        self.select_snippet_stop();
+    }
+
+    fn move_snippet(&mut self, previous: bool) -> Outcome {
+        if self.focus != Focus::Editor {
+            return Outcome::Handled;
+        }
+        if let Some(snippet) = self.document.snippet.as_mut() {
+            if previous {
+                snippet.current = snippet.current.saturating_sub(1);
+            } else {
+                snippet.current = (snippet.current + 1).min(snippet.stops.len() - 1);
+            }
+            self.select_snippet_stop();
+        }
+        Outcome::Handled
+    }
+
+    fn select_snippet_stop(&mut self) {
+        use deco_core::{Selection, SelectionSet};
+        if let Some(snippet) = &self.document.snippet {
+            let range = snippet.stops[snippet.current];
+            self.view.selections = SelectionSet::single(Selection::new(range.start, range.end));
+            if snippet.current + 1 == snippet.stops.len() {
+                self.document.snippet = None;
+            }
+            self.view
+                .reveal_cursor(&self.document.buffer, &self.document.settings);
+        }
+        self.refresh_context();
     }
 
     /// Applies a batch of server-computed replacements as one undo step.
@@ -4972,6 +5058,118 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn snippet_navigation_tracks_edits_and_finishes_at_zero() {
+        use deco_core::{Position, Range};
+        let mut s = session();
+        let snippet = deco_lsp::snippet::Snippet::parse("call(${1:arg}, ${2:value})$0").unwrap();
+        s.insert_snippet(Range::empty(Position::ZERO), &snippet, 0);
+        assert_eq!(
+            s.view.selections.primary().range(),
+            Range::new(Position::new(0, 5), Position::new(0, 8))
+        );
+        s.run(
+            "type",
+            Some(&serde_json::json!({"text":"日本😀\n語"})),
+            1000,
+        );
+        press(&mut s, "tab");
+        assert_eq!(
+            s.view.selections.primary().range(),
+            Range::new(Position::new(1, 3), Position::new(1, 8))
+        );
+        press(&mut s, "shift+tab");
+        assert_eq!(
+            s.view.selections.primary().range(),
+            Range::new(Position::new(0, 5), Position::new(1, 1))
+        );
+        press(&mut s, "tab");
+        press(&mut s, "tab");
+        assert!(s.document.snippet.is_none());
+        assert_eq!(s.view.selections.primary().active, Position::new(1, 9));
+    }
+
+    #[test]
+    fn snippet_escape_and_undo_clear_navigation() {
+        use deco_core::{Position, Range};
+        let mut s = session();
+        let snippet = deco_lsp::snippet::Snippet::parse("${1:arg} end$0").unwrap();
+        s.insert_snippet(Range::empty(Position::ZERO), &snippet, 0);
+        press(&mut s, "escape");
+        assert!(s.document.snippet.is_none());
+        assert_eq!(s.document.buffer.text(), "arg end");
+        s.run("undo", None, 1000);
+        assert_eq!(s.document.buffer.text(), "");
+        assert!(s.document.snippet.is_none());
+        s.run("redo", None, 2000);
+        assert_eq!(s.document.buffer.text(), "arg end");
+        assert!(s.document.snippet.is_none());
+    }
+
+    #[test]
+    fn snippet_leaving_field_or_external_edit_cancels() {
+        use deco_core::{Position, Range, Selection, SelectionSet};
+        let mut s = session();
+        let snippet = deco_lsp::snippet::Snippet::parse("a ${1:arg} end$0").unwrap();
+        s.insert_snippet(Range::empty(Position::ZERO), &snippet, 0);
+        s.view.selections = SelectionSet::single(Selection::caret(Position::ZERO));
+        s.refresh_context();
+        assert!(s.document.snippet.is_none());
+        s.insert_snippet(Range::empty(Position::ZERO), &snippet, 0);
+        s.document
+            .apply(&deco_core::Transaction::single(deco_core::Change::insert(
+                Position::ZERO,
+                "x".into(),
+            )));
+        assert!(s.document.snippet.is_none());
+    }
+
+    #[test]
+    fn snippet_special_line_breaks_cancel_tracking_and_keep_text() {
+        use deco_core::{Position, Range};
+        for c in ['\r', '\u{0b}', '\u{0c}', '\u{85}', '\u{2028}', '\u{2029}'] {
+            let mut s = session();
+            let snippet = deco_lsp::snippet::Snippet::parse("${1:arg} end$0").unwrap();
+            s.insert_snippet(Range::empty(Position::ZERO), &snippet, 0);
+            let text = format!("a{c}b");
+            s.run("type", Some(&serde_json::json!({"text":text})), 1);
+            assert!(s.document.snippet.is_none());
+            assert!(s.document.buffer.text().contains('b'));
+        }
+    }
+
+    #[test]
+    fn snippet_undo_while_active_does_not_restore_stale_stops() {
+        use deco_core::{Position, Range};
+        let mut s = session();
+        let snippet = deco_lsp::snippet::Snippet::parse("${1:arg} end$0").unwrap();
+        s.insert_snippet(Range::empty(Position::ZERO), &snippet, 0);
+        s.run("type", Some(&serde_json::json!({"text":"value"})), 1000);
+        s.run("undo", None, 2000);
+        assert!(s.document.snippet.is_none());
+        assert_eq!(s.document.buffer.text(), "arg end");
+        s.run("redo", None, 3000);
+        assert!(s.document.snippet.is_none());
+        assert_eq!(s.document.buffer.text(), "value end");
+    }
+
+    #[test]
+    fn snippet_state_does_not_move_to_another_tab() {
+        use deco_core::{Position, Range};
+        let mut s = session();
+        s.open(std::path::PathBuf::from("first.rs"), "");
+        let snippet = deco_lsp::snippet::Snippet::parse("${1:arg} end$0").unwrap();
+        s.insert_snippet(Range::empty(Position::ZERO), &snippet, 0);
+        s.open(std::path::PathBuf::from("second.rs"), "");
+        assert!(s.document.snippet.is_none());
+        press(&mut s, "tab");
+        assert!(!s.document.buffer.text().is_empty());
+        assert_eq!(
+            s.document.path.as_deref(),
+            Some(std::path::Path::new("second.rs"))
+        );
+    }
+
     use super::*;
     use deco_core::Position;
 
