@@ -207,7 +207,7 @@ impl Status {
             .count()
     }
 
-    /// Nothing to commit and nothing lying around.
+    /// Whether the status contains no changed or untracked entries.
     pub fn is_clean(&self) -> bool {
         self.entries.is_empty()
     }
@@ -349,10 +349,8 @@ pub fn parse(output: &str) -> Result<Status, Malformed> {
         Head::Branch(head)
     };
 
-    // `branch.ab` is only written when there is an upstream, so a name without
-    // counts means git said nothing about the distance — zero is the honest
-    // reading, and it is what git itself reports for a branch level with its
-    // upstream.
+    // If Git supplies an upstream name without ahead/behind counts, use zero
+    // for both counts. This does not distinguish missing counts from equality.
     let upstream = upstream_name.map(|name| {
         let (ahead, behind) = ahead_behind.unwrap_or((0, 0));
         Upstream {

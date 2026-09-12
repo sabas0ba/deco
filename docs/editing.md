@@ -32,8 +32,7 @@ than at column zero.
 
 ### Block comments
 
-`ctrl+shift+a` wraps the selection in one comment rather than commenting each line,
-which is the difference worth having both for.
+`ctrl+shift+a` encloses the selection in block-comment delimiters. Line-comment commands instead add a comment token to each selected line.
 
 ![Wrapping two lines in a block comment, unwrapping, and opening an empty one](img/block-comment.svg)
 

@@ -126,10 +126,9 @@ impl PathMap {
     /// The path the editor knows `uri` by.
     ///
     /// A URI outside the root keeps its absolute form rather than being refused:
-    /// a server pointing into a dependency it has indexed is answering the
-    /// question honestly, and turning that into an error here would hide it.
-    /// What happens next is the file server's decision, which refuses to read
-    /// outside the workspace and says so.
+    /// language servers can return locations in indexed dependencies. The file
+    /// server separately enforces workspace boundaries and reports any refused
+    /// read.
     pub fn from_uri(&self, uri: &Uri) -> Result<PathBuf, UriError> {
         let path = uri.to_path(self.style)?;
         let Some(root) = &self.root else {
@@ -506,9 +505,8 @@ mod tests {
 
     #[test]
     fn a_remote_map_leaves_a_path_outside_the_workspace_absolute() {
-        // Go-to-definition into an indexed dependency lands here. The server is
-        // answering honestly, so the answer is kept as it is; refusing to read it
-        // is the file server's call to make, and it makes it by name.
+        // Preserve an indexed dependency's absolute path. Workspace access
+        // restrictions are enforced by the file server, not URI conversion.
         let map = PathMap::remote(PathBuf::from("/home/u/project"));
         let outside = Uri::from_string("file:///home/u/.cargo/registry/src/lib.rs");
         assert_eq!(

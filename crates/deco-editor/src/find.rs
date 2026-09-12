@@ -252,8 +252,8 @@ impl Find {
 
     /// Which match `range` is, counting from one, for the `3 of 7` readout.
     ///
-    /// `None` when the selection is not on a match — the user moved the cursor
-    /// away, and claiming they are still on the third result would be a lie.
+    /// Returns `None` when the selection does not match any result, so the UI
+    /// can show the total count without a current-result number.
     pub fn ordinal(&self, range: Range) -> Option<usize> {
         self.matches
             .iter()

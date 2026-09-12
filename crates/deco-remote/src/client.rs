@@ -1,8 +1,8 @@
-//! The near end: starting a server over a transport and talking to it.
+//! Remote client: starting a server through a transport and exchanging requests.
 //!
-//! [`transport`](crate::transport) builds the command, [`server`](crate::server)
-//! answers it, and this is what runs the one and calls the other. It is
-//! deliberately the smallest thing that can open and save a file:
+//! [`transport`](crate::transport) builds the server command. This module starts
+//! that command and sends requests to [`server`](crate::server), including file
+//! reads and writes:
 //!
 //! ```no_run
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -24,14 +24,11 @@
 //!
 //! # Why this blocks
 //!
-//! Every call here waits for its reply. The server never speaks first — there are
-//! no notifications in this protocol — so a request is always answered by the
-//! next frame, and a reader thread would buy nothing but a channel to wait on.
+//! Calls wait synchronously for a reply. The protocol has no server-initiated
+//! notifications, so the next frame is the response to the current request.
 //!
-//! What it costs is honest to state: a file opened over a slow link holds the
-//! editor for as long as the link takes. That is acceptable for opening and
-//! saving, which are the two things a person waits for anyway, and it is not
-//! acceptable for anything on a keystroke path — so nothing here is on one.
+//! Remote I/O blocks the caller until a response arrives. A slow connection
+//! therefore delays operations such as opening and saving files.
 //! `TransportOptions` sets an SSH connect timeout, which is what stops an
 //! unreachable host from hanging forever.
 

@@ -14,9 +14,8 @@
 //! — delete what was made, rename back — so they go on the explorer's undo
 //! stack. Deleting is not: undoing it needs the bytes, and deco has nowhere to
 //! keep them. There is no trash to move a file to either, so `files.enableTrash`
-//! is one of the settings deco does not honour. A delete therefore asks first
-//! and says plainly that it cannot be taken back, which is the honest version of
-//! a feature that would otherwise quietly lose someone's work.
+//! is one of the settings deco does not honour. Deletion requires confirmation
+//! with a warning that the operation cannot be undone.
 
 use std::path::{Path, PathBuf};
 

@@ -11,13 +11,13 @@
 $ deco --remote ssh-remote+myhost --workspace /home/u/project src/main.rs
 ```
 
-That starts `deco --server --stdio` on the far end over SSH, reads `src/main.rs`
+That starts `deco --server --stdio` on the remote environment over SSH, reads `src/main.rs`
 through the connection, and opens it. `ctrl+s` writes it back over the same
 connection. `ctrl+p` lists the **remote** workspace, because that is where the
 files are.
 
 Git status, committed text, diff comparisons, branch preflight, checkout,
-stage, unstage and commit also run on the far end.
+stage, unstage and commit also run on the remote environment.
 They use a second connection and a worker of their own, so a working-tree walk
 or commit hook does not stop file reads or the editor's event loop.
 
@@ -26,7 +26,7 @@ the server serves wherever the transport lands, which for SSH is the account's
 home directory.
 
 Every path in a remote session belongs to that one workspace, including the one
-you type into **Save As**: it is taken as the far end spells it and the copy is
+you type into **Save As**: it is taken as the remote environment spells it and the copy is
 written there, not onto this machine. `~` and this machine's working directory
 do not come into it, and a name that points outside what the server serves is
 refused by name rather than written somewhere else. The workspace is one place;
@@ -52,7 +52,7 @@ that did not happen.
 
 ## Getting deco onto the remote
 
-The far end needs a `deco` to run. If it has one on its PATH, nothing below is
+The remote environment needs a `deco` to run. If it has one on its PATH, nothing below is
 needed; if it is installed somewhere a login shell does not look, name it:
 
 ```console
@@ -235,15 +235,7 @@ answer from a different checkout, or from nothing, and the reply would look
 identical either way. So the server's rules apply to an extension too — a path
 outside the workspace is refused by name, exactly as it is for the editor.
 
-Two consequences worth stating:
-
-- **`process` does not follow the files.** An extension granted permission to run
-  `eslint` runs it *here*, where the project is not. Nothing else could be done
-  without a host on the remote, and a linter pointed at files that are not there
-  produces wrong answers rather than an error — so this is the one capability
-  where a remote session is honestly worse than a local one.
-- **Clipboard, secrets and `openExternal` stay local, and that is right**: they
-  belong where the person is, not where the files are.
+Extension hosts still run locally. Process execution, clipboard access, secrets and `openExternal` are not implemented by the host integration; permission declarations do not enable these operations. See [extension API limitations](extensions.md#what-is-still-not-connected).
 
 A host *on* the remote is the other design, and it is a different decision rather
 than more of this one: it needs Node over there, which deco does not provision,
@@ -273,7 +265,7 @@ only binary `--remote-install` sends is its own.
 
 Two things change on the way:
 
-- **Paths.** The editor holds paths relative to the workspace the far end
+- **Paths.** The editor holds paths relative to the workspace the remote environment
   serves; the server knows them as absolute paths over there. The prefix is
   added when a path becomes a URI and taken off when one comes back, at the
   single place where that conversion happens. A URI *outside* the workspace —
@@ -297,7 +289,7 @@ project from a disk this machine never touches.
 to be refused: a local walk in a remote session searches *this* machine and
 reports matches in files the editor is not showing.
 
-The matching happens on the far end, with the same function the find bar and the
+The matching happens on the remote environment, with the same function the find bar and the
 local project search use — `deco-remote` depends on `deco-core` for exactly that
 reason. Two definitions of what counts as a match would drift, and a term that
 matched in one place and not the other would be worse than no search at all.
@@ -375,7 +367,7 @@ default, and without one the setting is silently inert. deco used to pass
 
 ### Who can use a forward
 
-The honest version, threat by threat.
+Forwarded ports restrict network access but do not authenticate local clients.
 
 **From the network — no.** The listener binds `127.0.0.1`, so packets from
 another machine are not routed to it at all; there is no port open on this
@@ -395,9 +387,7 @@ database on a shared machine.
 
 What deco does about it: forwards are opt-in per port, they last only as long as
 the session, and they reach only the remote's loopback. What deco does **not**
-do is authenticate the connecting process — there is no portable way to identify
-the peer of a TCP connection, and pretending otherwise with a check that works on
-one platform would be worse than saying so.
+do is authenticate the connecting process. Applications exposed through a forwarded port must provide their own authentication if local clients should be restricted.
 
 The SSH control socket is a related and sharper case, because it *is* an
 authenticated connection to the remote: anyone who can reach the socket can ride
@@ -450,7 +440,7 @@ carrying both a program's output and a protocol's messages needs an unambiguous
 boundary between frames.
 
 The framing, the authority parsing and the command construction are implemented
-and tested, and so is the far end that answers them.
+and tested, and so is the remote environment that answers them.
 
 ## The server
 
@@ -531,14 +521,14 @@ Named so that the remaining work is legible rather than open-ended:
 5. ~~Port forwarding, which the transports do not model at all.~~ **Done**, by
    making deco the tunnel rather than reaching for `ssh -L` — see above.
 6. ~~Language servers on the remote.~~ **Done** — the same definitions, wrapped
-   in the transport, with the far end's paths on the wire.
+   in the transport, with the remote environment's paths on the wire.
 7. Extensions on the remote. A host started by a remote session still runs here,
    and moving it means deciding what a remote extension is allowed to reach —
    the same question the capability sandbox answers locally, asked again across
    a machine boundary.
 8. ~~Project-wide search, which needs the server to walk the workspace rather
    than this machine walking one it does not have.~~ **Done** — `fs.search`, with
-   the far end matching.
+   the remote environment matching.
 9. ~~Git status, committed text and writes on the machine holding the
    repository.~~ **Done** — `scm.*` on a dedicated connection, confined to the
    served workspace.

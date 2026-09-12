@@ -6,7 +6,7 @@
 //!
 //! # Position semantics
 //!
-//! deco speaks the same coordinate system as VS Code and the Language Server
+//! deco uses the same coordinate system as VS Code and the Language Server
 //! Protocol: a [`Position`] is a zero-based line plus a zero-based offset in
 //! **UTF-16 code units**. Internally the text is a rope indexed by `char`
 //! (Unicode scalar values), so conversions happen at the boundary — see

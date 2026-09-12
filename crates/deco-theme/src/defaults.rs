@@ -16,9 +16,8 @@ const fn hexa(v: u32) -> Rgba {
 /// `(key, dark, light)` defaults, taken from VS Code's Dark Modern and Light
 /// Modern.
 ///
-/// Only the keys deco's own frontends read are listed. Adding a key here is a
-/// commitment to honour it, so an unlisted key returning `None` is the honest
-/// signal that nothing draws it yet.
+/// Only keys used by deco's frontends are listed. Unlisted keys return `None`;
+/// no default colour is provided for them.
 #[rustfmt::skip]
 const DEFAULTS: &[(&str, Rgba, Rgba)] = &[
     ("foreground", hex(0xcccccc), hex(0x3b3b3b)),

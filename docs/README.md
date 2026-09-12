@@ -1,9 +1,7 @@
 # deco documentation
 
 A lightweight VS Code-compatible editor in Rust. This directory is the detailed
-reference; the [top-level README](https://github.com/sabas0ba/deco#readme) is
-the short version, and it is the honest place to look for what is **not** built
-yet.
+reference; the [top-level README](https://github.com/sabas0ba/deco#readme) provides an overview and lists missing features.
 
 | Page | What it covers |
 | --- | --- |
@@ -32,13 +30,7 @@ $ cargo xtask docs            # regenerate them
 $ cargo xtask docs --check    # fail if they no longer match the code
 ```
 
-`deco_tui::render` is a pure function of an editor session and a terminal size —
-the same property that lets the layout be asserted in CI with no terminal
-attached. A scenario in `xtask/src/docs.rs` presses real chords through a real
-`Session` and captures whatever the real renderer produced, so an animation
-cannot show a feature behaving in a way the code does not. `--check` runs in CI,
-so a behaviour change fails the build rather than quietly leaving the
-documentation describing an editor that no longer exists.
+`deco_tui::render` calculates a frame from an editor session and terminal size, allowing layout checks without an attached terminal. Scenarios in `xtask/src/docs.rs` send key chords through `Session` and capture the renderer's output. CI runs `--check` to detect differences between generated animations and the committed files.
 
 They are animated SVG rather than GIF. An SVG is text: it diffs, it reviews in a
 pull request, and it needs neither an encoder dependency nor an embedded bitmap

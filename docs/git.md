@@ -69,10 +69,7 @@ of its drawing they are already the same answer the terminal shows.
 
 ![Opening the source-control view, staging both files and committing them](img/git-view.svg)
 
-`ctrl+shift+g` opens the side bar's other tenant, switches to it and gives it
-the keyboard — one key to reach a thing you mean to act on, which is what VS
-Code's `workbench.view.*` do. `ctrl+shift+e` goes back to the
-[file tree](files.md).
+`ctrl+shift+g` opens and focuses the source-control view in the side bar. `ctrl+shift+e` switches focus to the [file tree](files.md).
 
 Rows are grouped by what you would *do* about them, in the order they have to
 be dealt with: **Merge Changes** first because a conflict blocks everything

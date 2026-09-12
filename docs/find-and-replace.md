@@ -1,8 +1,6 @@
 # Find and replace
 
-Search is **literal**, and within the open file. There is no regular-expression
-mode and no find-in-files; both are recognised and say so when pressed rather
-than reporting an unknown command.
+Search is **literal**; regular-expression mode is not implemented. The find bar searches the active document. For workspace search, use [Find in Files](commands.md#search-in-files); workspace replacement is described [below](#replacing-across-the-workspace).
 
 ## Finding
 
@@ -26,8 +24,7 @@ matching; a capital letter in `[aa ww]` means the option is on.
 Every match is highlighted with `editor.findMatchHighlightBackground` and the
 current one with `editor.findMatchBackground` — VS Code's own theme keys, and its
 own distinction between the match you are on and the rest. The readout on the
-right is `3 of 7`; if you move the cursor off a match it becomes `7 results`,
-because claiming you are still on the third would be a lie.
+right is `3 of 7`. If the selection no longer corresponds to a match, it shows only the total, such as `7 results`.
 
 `F3` works with the bar closed. With no query yet it searches for the selection,
 or for the word under the cursor, and reports where it landed in the status bar —
@@ -114,7 +111,7 @@ case-sensitivity set for one does not change the other. Both are literal so far;
 [regular expressions](roadmap.md#the-gaps-behind-the-features) are not built yet.
 
 In a [remote session](remote.md) the search, the reads and the edits all go
-through the connection, so a replacement reaches the files on the far end rather
+through the connection, so a replacement reaches the files on the remote environment rather
 than paths that happen to exist on this machine.
 
 ## The find input is a text input

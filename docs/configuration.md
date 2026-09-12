@@ -1,9 +1,6 @@
 # Configuration
 
-deco reads VS Code's own file formats, with VS Code's own key names. That is the
-whole point: an existing `settings.json` and `keybindings.json` should mean the
-same thing here, and it is a constraint on every new feature rather than a shim
-bolted on at the edges.
+deco reads VS Code's configuration formats and uses the same setting and command identifiers for supported features. Unsupported settings and frontend differences are listed below.
 
 ## Where files are read from
 
@@ -25,9 +22,7 @@ reading VS Code's, while keeping its own together.
 
 ## settings.json
 
-JSONC: comments and trailing commas are accepted, because VS Code's own default
-settings file contains both and refusing to parse it would make the compatibility
-claim hollow.
+Settings use JSONC: comments and trailing commas are accepted.
 
 Layers apply in VS Code's order, each overriding the one before:
 
@@ -104,9 +99,7 @@ back. [Extensions](extensions.md#the-container) has the reasoning.
 
 Four keys deco ships a **default** for are still read by nothing:
 `editor.tabCompletion`, `editor.largeFileOptimizations`, `files.encoding` and
-`workbench.editor.enablePreview`. Naming
-them here because shipping a default *is* a claim: an unknown key deco never
-mentioned is one thing, and one in deco's own default settings file is another.
+`workbench.editor.enablePreview`. Changing these values currently has no effect.
 
 `editor.fontFamily`, `editor.fontSize` and `editor.lineHeight` are the GPU
 frontend's alone — a terminal has no font size — and the GPU frontend does not wrap
@@ -277,16 +270,7 @@ thirty-nine of them for nothing.
 `workbench.colorTheme` in your settings, which the status bar says when the theme
 changes.
 
-**deco does not write settings files, and that is the decision rather than a gap.**
-It reads them and never writes them, so your `settings.json` is a file you own: what
-is in it is what you put there, comments and formatting included, and nothing
-appears in it because of a key you pressed.
-
-The cost is real and worth stating. VS Code writes `workbench.colorTheme` when you
-pick a theme and is not thought rude for it, so this is a divergence you may not
-want: a theme chosen with `ctrl+k ctrl+t` has to be written down by hand to
-survive. The status bar says which line to add, and that is the whole of the
-mechanism.
+**deco does not write settings files.** Selecting a theme leaves `settings.json`, including its comments and formatting, unchanged. To keep a theme selected with `ctrl+k ctrl+t` across sessions, add the `workbench.colorTheme` setting shown in the status bar.
 
 The same answer settles a question it is easy to reach from the other direction:
 there is no per-workspace "I trust this repository" for

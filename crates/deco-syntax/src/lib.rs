@@ -1,12 +1,11 @@
 //! Syntax highlighting: turning a line of text into TextMate scopes.
 //!
-//! `deco-theme` already resolves a style from a scope stack, and is tested
-//! doing so. What was missing was anything that produced scope stacks. This crate
-//! is that: a lexer per language, emitting the scope names a VS Code theme styles.
+//! Each language lexer emits TextMate scope names for tokens. `deco-theme`
+//! resolves the style for each resulting scope stack.
 //!
 //! # A lexer, not a parser
 //!
-//! This is deliberate, and it is a real limitation worth stating plainly.
+//! The lexer recognises tokens but does not resolve declarations or types.
 //!
 //! VS Code's own highlighting is a set of regular-expression grammars — a lexer
 //! too, not a parser. So for *colouring*, a lexer gets most of the way: keywords,

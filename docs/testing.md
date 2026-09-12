@@ -1,6 +1,6 @@
 # Testing
 
-deco is tested at two levels, and they are testing different things.
+deco uses unit tests for individual components and end-to-end scenarios for interactions between components.
 
 **Unit tests** sit next to the code, one per crate, and there are about 1,700 of
 them. They build the struct they are about, call the function they are about, and
@@ -41,7 +41,7 @@ fn a_workspace_settings_file_beats_the_users_own() {
 }
 ```
 
-Four things are deliberately real:
+Scenarios exercise four parts of the editor:
 
 - **The configuration directory.** `user_settings`, `vscode_settings`,
   `workspace_settings` and `user_keybindings` write JSON to a temporary home in
@@ -80,10 +80,7 @@ Four things are deliberately real:
 
   A scenario that *is* about a language server asks for one with
   `Scenario::language_server("rust", "full")`, which writes a `deco.lsp.servers`
-  definition pointing at `examples/language_server.rs` — a real program on a real
-  pipe, answering real LSP. `deco-lsp` has a fake server too and it is the
-  opposite instrument: that one acts out failure modes and cannot tell you
-  whether go-to-definition works.
+  definition pointing at `examples/language_server.rs`, a test server subprocess communicating over LSP pipes. The fake server in `deco-lsp` instead exercises protocol and process failure handling.
 
   Waiting on one needs real time, so `Editor::settle_until` sleeps and polls the
   editor's own idle path. `Editor::wait` does not — it advances only the clock
@@ -105,7 +102,7 @@ Four things are deliberately real:
 
 Remote sessions have scenarios of their own in
 [`crates/deco/tests/remote_editor.rs`](../crates/deco/tests/remote_editor.rs),
-where `CARGO_BIN_EXE_deco` names the binary to run as the far end.
+where `CARGO_BIN_EXE_deco` names the binary to run as the remote environment.
 `Scenario::remote_file` puts files on a directory this machine does not have, so
 that a file arriving over the connection is one the local disk could not have
 supplied.
@@ -145,7 +142,7 @@ one is a disagreement between two components rather than a fault in either:
 
 And one it found while the suite was being made to run on Windows:
 
-- **`files.eol` was wired to the wrong half of what it names.** VS Code treats it
+- **`files.eol` changed existing line endings but was ignored for new files.** VS Code treats it
   as the ending a *new* file gets, leaving existing files with the ending they
   already had. deco applied it in `Document::from_file`, so opening a CRLF file
   with `"files.eol": "\n"` converted it and the next save wrote every line back
@@ -177,7 +174,7 @@ sessions to their own protocol tests. Both gaps were where the next defects were
   every tab switch cannot make repeat.
 - **Save-as in a remote session renames the document to a local path**, which
   every later save then asks the server to write, outside the workspace it
-  serves. Fixed: the typed name is the far end's and the write goes through the
+  serves. Fixed: the typed name is the remote environment's and the write goes through the
   connection.
-- **Revert in a remote session reads this machine**, at the far end's relative
+- **Revert in a remote session reads this machine**, at the remote environment's relative
   path. Fixed: it reads through the connection too.

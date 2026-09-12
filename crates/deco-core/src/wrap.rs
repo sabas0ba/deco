@@ -1,7 +1,7 @@
 //! Where a line is broken when it is wider than the text area.
 //!
 //! One line of the document becomes one or more rows on screen. Everything that
-//! reads or writes a position still speaks in document lines and UTF-16 columns —
+//! reads or writes a position still uses document lines and UTF-16 columns —
 //! wrapping is a fact about the *display*, and letting it into the text model
 //! would mean every edit had to know how wide the window is.
 //!
