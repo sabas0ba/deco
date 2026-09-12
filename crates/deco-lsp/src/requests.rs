@@ -339,10 +339,13 @@ pub struct CompletionItem {
     /// plain text — but several send snippets regardless. Inserting
     /// `foo(${1:arg})` literally is worse than inserting nothing, so the
     /// placeholders are stripped for the fallback. `snippet` separately carries
-    /// the text and tab stops when the supported numeric subset can be expanded.
+    /// the text and tab stops when no insertion context is needed. Variables
+    /// in `snippet_source` are resolved when the completion is accepted.
     pub was_snippet: bool,
     /// Parsed numeric tab stops, when the completion uses the supported subset.
     pub snippet: Option<crate::snippet::Snippet>,
+    /// Original snippet text, resolved against the document when accepted.
+    pub snippet_source: Option<String>,
 }
 
 impl CompletionItem {
@@ -427,6 +430,7 @@ impl CompletionItem {
                 .unwrap_or(false),
             was_snippet: declared_snippet || stripped,
             snippet,
+            snippet_source: (declared_snippet || stripped).then_some(raw_insert),
             label,
         })
     }
@@ -470,9 +474,8 @@ impl CompletionItem {
 /// Removes snippet placeholders, returning the text and whether any were found.
 ///
 /// `${1:name}` becomes `name`, `${1}` and `$1` and `$0` vanish, `\$` becomes a
-/// literal `$`. Not an expansion — deco has no tab stops — but it produces text
-/// a person would have typed, which is the best available answer when a server
-/// ignores `snippetSupport: false`.
+/// literal `$`. This is the fallback for unsupported syntax; supported snippets
+/// are expanded separately when accepted.
 fn strip_snippet(text: &str) -> (String, bool) {
     if !text.contains('$') {
         return (text.to_owned(), false);

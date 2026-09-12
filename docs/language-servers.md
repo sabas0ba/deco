@@ -89,8 +89,21 @@ to fields use the editor's existing undo grouping. State belongs to its document
 and does not apply to another tab. Suggestion lists, find inputs and prompts
 retain their own key handling.
 
+Completion snippets also expand the following [VS Code snippet variables](https://code.visualstudio.com/docs/editing/userdefinedsnippets#_variables) using the active document when accepted:
+
+| Variable | Value |
+| --- | --- |
+| `TM_FILENAME` | File name, including its extension; empty for an untitled document |
+| `TM_FILENAME_BASE` | File name with its final extension removed |
+| `TM_LINE_INDEX`, `TM_LINE_NUMBER` | Cursor line, counting from zero or one respectively |
+| `TM_CURRENT_LINE` | Line contents, excluding its line ending |
+| `TM_CURRENT_WORD` | Word at the cursor, using deco's word-selection rules |
+| `TM_SELECTED_TEXT` | Primary selection's text, or empty if nothing is selected |
+
+Use `$TM_FILENAME`, `${TM_FILENAME}` or a literal default such as `${TM_FILENAME:untitled}`. Empty values use the default when supplied. For example, `$TM_FILENAME(${1:arg})$0` in `main.rs` inserts `main.rs(arg)` and selects `arg`. Variables may repeat and do not create editable fields. Resolved text is not parsed again, so a selection containing `$1` is inserted literally. No filesystem, environment or clipboard access is performed.
+
 This is a subset of [LSP snippet syntax](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#snippet_syntax).
-Repeated indices (linked editing), nested fields, choices, variables, transforms,
+Repeated indices (linked editing), nested fields or variable defaults, choices, other variables, transforms,
 non-LF line separators and coincident empty fields are not supported. They use
 the existing text-only fallback, with a status message; no partially parsed
 navigation state is installed. User snippet files and `insertSnippet` are not

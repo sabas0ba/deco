@@ -487,7 +487,11 @@ impl Lsp {
         ));
 
         self.dismiss_suggest();
-        if let Some(snippet) = &item.snippet {
+        let expanded = item
+            .snippet_source
+            .as_deref()
+            .and_then(|source| session.expand_snippet(source));
+        if let Some(snippet) = expanded.as_ref().or(item.snippet.as_ref()) {
             session.insert_snippet(range, snippet, now_ms);
             self.sync_context(session);
             return true;
@@ -1779,7 +1783,80 @@ impl std::fmt::Debug for Lsp {
 mod tests {
     use super::*;
     use deco_config::{Scope, Settings};
+    use deco_lsp::requests::CompletionItem;
     use serde_json::json;
+
+    #[test]
+    fn completion_variables_expand_on_accept_and_keep_navigation_and_undo() {
+        let mut s = session(Settings::with_defaults());
+        s.open(PathBuf::from("/w/before.rs"), "greet");
+        let item = CompletionItem::from_json(&json!({
+            "label": "greet",
+            "insertTextFormat": 2,
+            "textEdit": {
+                "range": {
+                    "start": {"line": 0, "character": 0},
+                    "end": {"line": 0, "character": 5}
+                },
+                "newText": "$TM_FILENAME(${1:arg})$0"
+            }
+        }))
+        .unwrap();
+        let mut lsp = Lsp::new(&mut s, None);
+        lsp.suggest = Some(Suggest::new(vec![item], Position::ZERO, false));
+        s.document.path = Some(PathBuf::from("/w/after.rs"));
+
+        assert!(lsp.accept(&mut s, 0));
+        assert_eq!(s.document.buffer.text(), "after.rs(arg)");
+        assert_eq!(s.context.get("inSnippetMode"), Some(&json!(true)));
+        s.run("type", Some(&json!({"text": "日本😀"})), 1000);
+        s.run("jumpToNextSnippetPlaceholder", None, 1001);
+        assert_eq!(s.document.buffer.text(), "after.rs(日本😀)");
+        assert_eq!(s.view.selections.primary().active, Position::new(0, 14));
+        assert_eq!(s.context.get("inSnippetMode"), Some(&json!(false)));
+        s.run("undo", None, 2000);
+        s.run("undo", None, 3000);
+        assert_eq!(s.document.buffer.text(), "greet");
+    }
+
+    #[test]
+    fn unsupported_variables_use_the_existing_fallback_without_navigation() {
+        let mut s = session(Settings::with_defaults());
+        s.open(PathBuf::from("/w/empty.txt"), "");
+        let item = CompletionItem::from_json(&json!({
+            "label": "unsupported",
+            "insertTextFormat": 2,
+            "insertText": "${1:arg} ${UNKNOWN:default}"
+        }))
+        .unwrap();
+        let fallback = item.insert.clone();
+        let mut lsp = Lsp::new(&mut s, None);
+        lsp.suggest = Some(Suggest::new(vec![item], Position::ZERO, false));
+        assert!(lsp.accept(&mut s, 0));
+        assert_eq!(s.document.buffer.text(), fallback);
+        assert_eq!(s.context.get("inSnippetMode"), Some(&json!(false)));
+        assert!(s
+            .status
+            .as_deref()
+            .unwrap()
+            .contains("unsupported snippet syntax"));
+    }
+
+    #[test]
+    fn a_plain_text_completion_does_not_expand_a_bare_variable() {
+        let mut s = session(Settings::with_defaults());
+        s.open(PathBuf::from("/w/empty.txt"), "");
+        let item = CompletionItem::from_json(&json!({
+            "label": "literal",
+            "insertTextFormat": 1,
+            "insertText": "$TM_FILENAME"
+        }))
+        .unwrap();
+        let mut lsp = Lsp::new(&mut s, None);
+        lsp.suggest = Some(Suggest::new(vec![item], Position::ZERO, false));
+        assert!(lsp.accept(&mut s, 0));
+        assert_eq!(s.document.buffer.text(), "$TM_FILENAME");
+    }
 
     /// A server definition to be rewritten.
     fn definition(env: Vec<(String, String)>) -> ServerConfig {

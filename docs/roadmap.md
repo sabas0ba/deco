@@ -347,5 +347,5 @@ here because the plans above lean on them.
   multi-cursor find and search-in-files all inherit whichever lands.
 - **Full snippet support.** [Numeric completion fields are built](language-servers.md#snippet-tab-stops):
   Tab/Shift+Tab navigate, Escape exits, and ranges follow edits. Repeated indices,
-  nested fields, choices, variables and transforms remain, followed by user snippet
-  files. Keep `snippetSupport: false` until the full LSP syntax is supported.
+  nested fields, choices, additional variables and transforms remain, followed by user snippet
+  files. File-name, cursor-line, current-word and selected-text variables are supported in completions. Keep `snippetSupport: false` until the full LSP syntax is supported.

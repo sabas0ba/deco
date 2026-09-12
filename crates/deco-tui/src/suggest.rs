@@ -264,6 +264,7 @@ mod tests {
             preselect: false,
             was_snippet: false,
             snippet: None,
+            snippet_source: None,
         }
     }
 

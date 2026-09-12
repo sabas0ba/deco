@@ -332,7 +332,7 @@ self-update, debugging — each have a plan in the
   full-document syncs; the incremental path exists in `deco-lsp` but the editor
   does not yet track applied ranges, and only the document on screen is
   synchronised at all.
-- **Numeric snippet tab stops work for completions.** Unique `$1`, `${1}` and
+- **Numeric snippet tab stops and document variables work for completions.** Unique `$1`, `${1}` and
   `${1:arg}` fields support Tab/Shift+Tab navigation and `$0` finishes. The
   [supported subset and demonstration](docs/language-servers.md#snippet-tab-stops)
   describe the limits. Full LSP `snippetSupport` remains false; unsupported
