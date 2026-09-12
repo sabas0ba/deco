@@ -2126,6 +2126,7 @@ fn item(label: &str, kind: CompletionKind, detail: &str) -> CompletionItem {
         preselect: false,
         was_snippet: false,
         snippet: None,
+        snippet_source: None,
     }
 }
 
