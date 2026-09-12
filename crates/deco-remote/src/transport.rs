@@ -118,8 +118,8 @@ impl TransportOptions {
 /// Returns an error rather than a fallback when the account has no private
 /// directory to offer, or when the one it has is open to anyone else.
 fn control_directory() -> Result<PathBuf, std::io::Error> {
-    // Windows' `ssh.exe` has no `ControlMaster` at all, so there is nothing to
-    // put anywhere and pretending otherwise would add a flag OpenSSH refuses.
+    // Windows' `ssh.exe` does not support `ControlMaster`; reject multiplexing
+    // before constructing a command with unsupported options.
     if cfg!(windows) {
         return Err(std::io::Error::other(
             "connection multiplexing is not available on this platform",

@@ -15,35 +15,18 @@ them, with VS Code's own command identifiers.
 | | `workbench.action.focusActiveEditorGroup` |
 | | `workbench.action.closeSidebar`, `workbench.action.closePanel` |
 
-**The side bar has one tenant: the [file tree](files.md).** The panel has none
-yet, and neither does the rest of the side bar — search and source control
-belong there, and the terminal, problems and output in the panel. A region with
-nothing in it draws its name and what it is waiting for, which is the same rule
-deco applies to a key it has not implemented: the chrome is real, what goes in it
-is named, and neither is pretended about. Each tenant gets its own page as it
-arrives rather than a section here — the tree has more to say about itself than
-fits beside the arithmetic of the split.
+The side bar displays the [file tree](files.md) or [source-control view](git.md). The panel has no implemented views yet. Empty regions display a label identifying the planned view. This page describes region layout and keyboard focus; feature pages describe the views within those regions.
 
 ## Where the space comes from
 
-The frontend hands the session a rectangle and the session divides it. That is
-the part worth doing carefully, because the answer feeds the renderer *and* the
-wrap: where a line breaks depends on how many columns are left for text, so a
-session that did not know its own layout could only wrap by asking a frontend —
-and then the two would be free to disagree, which shows up as a caret one column
-off the text it belongs to.
+The frontend supplies the available rectangle, and the session calculates the editor, side-bar and panel rectangles. Rendering and word wrapping use this same layout so text and cursor positions agree.
 
 The panel comes off the bottom before the side bar comes off the side, so the
 side bar runs the full height beside both. That is VS Code's arrangement, and
 the reason a terminal in the panel is as wide as the editor rather than as wide
 as the window.
 
-**A region gives way before it starves the editor.** It asks for a fixed size —
-30 columns, 10 rows — and takes less on a small window, down to a floor below
-which it is not shown at all. Two rules bound it: the editor keeps a minimum,
-and no region takes more than it leaves. Without the second, a panel on a
-twelve-row terminal takes every row above the editor's minimum and leaves a slot
-to read code through.
+The side bar requests 30 columns and the panel requests 10 rows. In smaller windows, each region shrinks or is omitted if its minimum size cannot fit. The layout preserves a minimum editor size and limits each region to at most half the available dimension.
 
 A region that does not fit is **not the same as one that is hidden**. The
 visibility you asked for is remembered, the window is simply too small to honour
@@ -66,18 +49,14 @@ The context keys are VS Code's:
 | `sideBarFocus`, `panelFocus` | it has the keyboard |
 | `editorTextFocus`, `editorFocus`, `textInputFocus` | the **text** has it — false while a region does |
 
-Visible and focused are deliberately separate. `ctrl+b` shows the side bar
-**without** taking the keyboard into it, exactly as VS Code's does: showing the
-tree should not cost you your place in the file. The animation above types into
-the document with both regions open, which is what that looks like.
+Visibility and keyboard focus are separate. `ctrl+b` shows the side bar while retaining editor focus. The animation above demonstrates typing into the document with both regions open.
 
 While a region has the keyboard, the editor's own commands do not reach the
 document — typing, motion, undo, the clipboard. They act on the text, and the
 text is not what has focus. That is enforced on the command rather than as a
 `when` clause on each binding, because the fallback that types an unbound
 printable key never goes through the keymap at all and a clause could not reach
-it. The caret disappears from the text while it lasts: two carets, or one where
-typing does not go, is a lie about where the next keystroke lands.
+it. The text caret is hidden while another region has keyboard focus.
 
 `workbench.action.focusActiveEditorGroup` is the way back, and hiding a region
 that has the keyboard gives it back on its own.
@@ -85,9 +64,7 @@ that has the keyboard gives it back on its own.
 ## Settings
 
 `workbench.sideBar.location` is read with VS Code's meaning — `"left"` (the
-default) or `"right"`. It is not a per-language setting: which side the chrome is
-on belongs to the window, and a side bar that jumped across the screen when you
-switched tabs would be answering a question nobody asked.
+default) or `"right"`. It applies to the window and ignores per-language overrides, so switching between documents does not move the side bar.
 
 There is no setting for the width. VS Code has none either — it remembers a
 width you dragged, and deco [writes no files](configuration.md) to remember one
@@ -104,12 +81,7 @@ not yet drawn.
 
 ## Not built yet
 
-The panel has no tenants. `` ctrl+` `` (`workbench.action.terminal.toggleTerminal`)
-still reports that it is not implemented: the panel it would open into exists
-now, and what is missing is a PTY to put in it. The
-[roadmap](roadmap.md) has the plan for each of them.
+The panel has no implemented views. `` ctrl+` `` (`workbench.action.terminal.toggleTerminal`) reports that the terminal is not implemented. Terminal support requires a PTY and terminal rendering. See the [roadmap](roadmap.md) for planned panel features.
 
 A region cannot be resized or dragged to the other side; the setting is the only
-way to move the side bar. Tenants that need to remember a width will need
-somewhere to remember it, which is the same question as everything else deco
-declines to write down.
+way to move the side bar. Persisting resized dimensions would also require storage for view state.

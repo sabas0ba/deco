@@ -6,14 +6,9 @@ extension API makes that visible, let alone preventable. Installing one is
 trusting its author — and every package in its `node_modules` — with everything you
 can reach.
 
-deco keeps the separate Node process, because extensions are JavaScript and there
-is no way around that. It removes the ambient authority.
+deco runs code extensions in a separate Node process, inside a container by default. Direct filesystem and network access are restricted; supported operations are requested through deco's capability broker.
 
-> **State of this:** a code extension's commands appear in the command palette, and
-> choosing one starts its host in a container and runs it. What an extension can
-> reach from there is still small — registering commands, saying something, logging
-> — and everything else is refused by name. Theme and grammar extensions, which have
-> no `main` and never start a host process, work fully.
+> **Supported features:** choosing an extension command from the palette starts its host and runs the command. Supported APIs include command registration, messages, logging, file operations and workspace edits, as listed [below](#what-an-extension-can-reach-today). Theme extensions do not require a host. TextMate grammar execution is not implemented; see [syntax highlighting](highlighting.md).
 
 ## Running one
 
@@ -29,10 +24,7 @@ first start in a container pulls the image, which can take a minute — the edit
 does not block while it happens, the status bar says what is going on, and the
 command you asked for runs when the host is ready rather than being forgotten.
 
-Nothing starts on its own. `onLanguage:` and `onStartupFinished` are understood by
-the catalogue and deliberately not acted on yet: while this is new, a process should
-start only when you asked for something, because that is the version where a mistake
-costs least. Opening a Rust file will not start three extensions.
+Extensions start only when a command is selected. The catalogue parses `onLanguage:` and `onStartupFinished`, but these events do not activate extensions yet.
 
 An extension is started once and reused. If its host dies, the status bar says so.
 
@@ -70,10 +62,7 @@ asserting no bare `require` of a non-builtin survives anywhere in `src/`.
 
 ## The container
 
-Layers 1 to 3 are all enforced by the Node process or by deco. Layer 1 is the
-only one an extension genuinely cannot argue with — and it is a feature of a
-`node` binary deco borrows from whatever machine it is installed on. The version,
-the build, and everything linked into it were outside deco's control.
+Layers 1 to 3 are enforced by Node or deco. In process mode, these checks depend on the locally installed Node runtime. Container mode also fixes the runtime image by digest and applies the isolation settings below.
 
 A container closes that gap:
 
@@ -81,9 +70,7 @@ A container closes that gap:
   actions. `docker.io/library/node:22-bookworm-slim@sha256:d649c27…` is a
   specific set of bytes, not a tag someone can move. deco **refuses an image
   reference that is not pinned**, including one you configure yourself.
-- **`--network=none`** severs the network in the kernel. Layer 2 deletes `fetch`
-  and refuses `net`, which produces a clear error — good manners, and manners are
-  not a boundary. A native module has none.
+- **`--network=none`** disables external container networking at the operating-system level. This supplements the bootstrap's JavaScript-level restrictions on `fetch` and `net`.
 - **`--read-only`**, one 16MB `noexec` `tmpfs`, and two read-only bind mounts:
   deco's own host code, and the single extension being run. `--cap-drop=ALL` and
   `--security-opt=no-new-privileges` leave nothing to escalate with. `--memory`
@@ -91,10 +78,7 @@ A container closes that gap:
 
 ### The workspace is not mounted
 
-This is the part that makes a container worth its cost here, so it is worth
-stating plainly: **your project is not visible inside the container.** Extensions
-read and write files through brokered requests that deco performs on their behalf,
-so the container needs no view of the workspace at all.
+**The workspace is not mounted inside the container.** Extensions read and write workspace files through brokered requests performed by deco, subject to capability and path-scope checks.
 
 Had the workspace been bind-mounted — as a dev container would — the container
 would add very little. The files an extension actually wants are in there, and a
@@ -111,9 +95,7 @@ which one they have.
 Neither does a workspace get to make that decision. `deco.extensions.sandbox`,
 `deco.extensions.containerRuntime` and `deco.extensions.containerImage` are read
 from deco's defaults and **your own** settings only. A `.vscode/settings.json`
-arrives with a cloned repository, and a repository that could turn off the sandbox
-that was about to contain its own extensions would make the sandbox decorative. An
-attempt is reported rather than silently dropped.
+arrives with a cloned repository and must not be able to disable isolation for its own extensions. Attempts to override these settings are reported.
 
 ### Turning it off
 
@@ -186,12 +168,11 @@ does:
 | `deny` | Refuse silently — right for shared machines and CI |
 | `allow` | The declaration becomes the only check |
 
-## The honest trade-off
+<a id="the-honest-trade-off"></a>
 
-An extension written for VS Code declares nothing, so under deco it starts with no
-capabilities and will break wherever it reaches for the filesystem or the network.
-deco does not guess a declaration on its behalf. The alternative to breaking it is
-granting it everything silently, which is the thing this design exists to avoid.
+## Compatibility limitations
+
+VS Code extensions do not normally declare deco capabilities. Without those declarations, protected operations are rejected. Extension authors must declare the capabilities they need and use the supported brokered APIs; declaring a capability does not implement an unsupported API or grant permission by itself.
 
 ## Starting one
 
@@ -252,12 +233,7 @@ roots, the `vscode` shim — agrees once the filesystem is not the machine's own
 **prints which of the two it decided**: a test that quietly does not run looks exactly
 like a test that passed.
 
-That test is also where the claim above got more honest. It was written asserting the
-container hands the extension nothing but deco's two variables, and it failed: an image
-sets variables in its own layers, so `PATH`, `HOME`, `HOSTNAME`, `NODE_VERSION` and
-`YARN_VERSION` are there too. None of them come from deco, which is the part that
-matters — but the assertion now names the exact set rather than the set that would have
-been tidier.
+The container test checks the expected environment variables, including those supplied by the image and runtime. `PATH`, `HOME`, `HOSTNAME`, `NODE_VERSION` and `YARN_VERSION` are supplied by the container environment; their presence does not imply that deco forwarded its own environment.
 
 ## Which extensions start, and when
 
@@ -386,9 +362,7 @@ land depends on whether that file is open:
 - **Not open**, and the file is the document: read, edited and written through the
   same connection as everything else.
 
-Overlapping edits are refused rather than guessed at, exactly as they are when a
-language server sends them: the specification forbids them, so a sender that
-emits them is broken, and picking one to honour would corrupt the file quietly.
+Overlapping edits are rejected without changing the document because their result is not well-defined. Language-server edits use the same validation.
 An empty list is a success — an extension that computed no changes has not
 failed.
 
@@ -419,5 +393,4 @@ starts describing files outside the scope that was granted.
 
 The extension host has no `node_modules` at all, and a test in
 `extension-host/test/dependencies.test.js` asserts it: `package.json` declares no
-dependencies, and nothing under `src/` requires a non-builtin. A sandbox whose own
-supply chain is unbounded is not a sandbox.
+dependencies, and nothing under `src/` requires a non-builtin. This limits the third-party code used to enforce the sandbox.

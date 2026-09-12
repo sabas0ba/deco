@@ -750,10 +750,9 @@ mod tests {
 
     #[test]
     fn a_program_that_does_not_exist_is_a_named_failure() {
-        // Built from the temporary directory rather than written down, because a
-        // literal `/nonexistent/...` is only absolute on Unix — on Windows it has no
-        // drive letter, so `spawn` would refuse it for the other reason and this test
-        // would pass for a lie.
+        // Derive an absolute path for the current platform. `/nonexistent/...`
+        // has no drive letter on Windows and would test path validation instead
+        // of the intended process-spawn failure.
         let spec = HostSpec {
             program: std::env::temp_dir().join("deco-node-that-is-not-there"),
             args: Vec::new(),

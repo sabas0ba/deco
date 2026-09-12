@@ -29,12 +29,11 @@
 
 use std::ops::Range;
 
-/// How hard the diff will look before saying the file is simply different.
+/// Maximum edit distance searched before returning an approximate diff.
 ///
-/// Two thousand edits is far more than a person makes between two commits and
-/// far less than a generated file being regenerated. The cost of being wrong in
-/// either direction is small: below it the marks are exact, above it they are
-/// one block and honest about it.
+/// If the search exceeds this limit, the unmatched middle is returned as one
+/// modified hunk and `Diff::truncated` is set. Common prefix and suffix lines
+/// remain excluded from that hunk.
 pub const MAX_EDITS: usize = 2_000;
 
 /// What the gutter should draw beside a line.

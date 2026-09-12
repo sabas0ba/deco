@@ -291,7 +291,7 @@ mod tests {
 
     #[test]
     fn an_empty_scope_is_refused() {
-        // `feat():` parses but says nothing; `feat:` is the honest spelling.
+        // Omit the parentheses when no scope is specified: `feat:`.
         assert_eq!(rules("feat(): add completion"), vec!["scope"]);
     }
 

@@ -220,10 +220,7 @@ and honours `files.exclude` and the conventional skips exactly as quick open doe
 When a limit stops it, the status bar says how many it found *and that there may
 be more*.
 
-That honesty is the point. A streaming search that fills a panel as it goes needs
-a thread and a results view that updates, and this needs neither to be useful —
-but a search that quietly stopped at 500 and let you believe that was all of them
-would be worse than no search.
+Search does not stream results or update a persistent results view. The limit message distinguishes a complete result set from a truncated search.
 
 ## Go to line
 
@@ -256,20 +253,14 @@ built from the same one-line input:
 
 Every command the default keymap binds either runs or **says why it does not**:
 
-- A feature deco means to build names itself — `Split Editor is not implemented
-  yet` — from a list of such commands in `deco-editor::commands::PENDING`.
+- A recognised but unimplemented command reports its title, for example `Toggle Terminal is not implemented yet`. These commands are listed in `deco-editor::commands::PENDING`.
 - An identifier that does not exist here says *that* instead: `there is no command
   \`editor.action.nonsens\``. A different fact, and usually a typo in somebody's
   `keybindings.json` rather than a missing feature.
 
-A test walks the whole default keymap and fails if any binding answers neither, so
-a dead key cannot be added by accident. Nothing on the pending list is offered in
-the palette: an entry there has to work when chosen, and one that only apologises
-is worse than a shorter list.
+A test checks that every default binding is handled or reports an error. Pending commands are excluded from the palette.
 
-What is on that list today: the side bar, panel, terminal and zen mode, zoom, open
-folder, the settings and keyboard-shortcut editors, rename and quick fix, and the
-remote menu.
+The pending list includes the terminal, zen mode, zoom, open folder, settings and keyboard-shortcut editors, and the remote menu.
 
 ## Not built yet
 

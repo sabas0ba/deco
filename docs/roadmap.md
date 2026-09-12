@@ -1,11 +1,6 @@
 # Roadmap
 
-> **State of this: nothing on this page is built.** Every page in these docs
-> describes something that works and proves it with an animation. This one is
-> the opposite: a comparison of deco against VS Code, and a chapter per missing
-> feature — what it would look like here, and the steps to build it. Each
-> chapter is a plan, not a promise; when one ships, its chapter moves out of
-> this page and into a real one with an animation of its own.
+> **Status:** this page describes planned features, their prerequisites and proposed implementation steps. Sections also identify completed prerequisites and link to their documentation. No delivery dates are specified.
 
 Most of the page is deco catching up with VS Code. The last part,
 [Beyond VS Code](#beyond-vs-code), is not: it is what is worth building
@@ -36,9 +31,8 @@ What VS Code has and deco does not, grouped by how it blocks:
 | Full snippet syntax and user snippet files ([numeric completion fields work](language-servers.md#snippet-tab-stops)) | linked/nested field tracking and variable/transform expansion |
 
 The dependencies are why the order below is the order. One foundation is left —
-**finishing the extension-host wiring**. The other two are built. The
-**[side bar and panel](chrome.md)** is the chrome the tree, git's view and the
-terminal are all tenants of; **`WorkspaceEdit`**
+**implementing the remaining extension-host APIs**. The other two are built. The
+**[side bar and panel](chrome.md)** provide regions for the file tree, source-control view and planned terminal; **`WorkspaceEdit`**
 ([below](#the-gaps-behind-the-features)) is what rename, code actions and
 replace across the workspace already land through, and what the tree's mutations
 and an agent's turn will.
@@ -53,9 +47,7 @@ written under them:
   `keybindings.json` keep meaning what it meant.
 - **A key that waits on a feature says so.** `` ctrl+` `` is bound and names the
   integrated terminal as what it is waiting on; a test over the default keymap
-  keeps every such key honest. Each chapter shipping turns one of those refusals
-  into behaviour — `ctrl+b` and `ctrl+j` were on this list until the chrome
-  landed.
+  checks that unimplemented commands report an error. Once the feature is implemented, the command performs the operation; for example, `ctrl+b` and `ctrl+j` now toggle the side bar and panel.
 
 ## Git
 
@@ -74,9 +66,8 @@ this chapter is what is left over.
   as an afterthought to a view that already works.
 **Steps.**
 
-1. Checkout, with what it would cost said first.
-2. Push, pull and fetch, once there is somewhere honest to put a credential
-   prompt.
+1. Discard changes, with confirmation that identifies affected files and explains whether recovery is possible.
+2. Push, pull and fetch, after credential prompting is implemented.
 
 ## The integrated terminal
 
@@ -85,8 +76,7 @@ and the `terminal.integrated.*` settings family.
 
 **What deco has.** The [panel](chrome.md) to put one in, and the binding —
 ``ctrl+` `` is already `workbench.action.terminal.toggleTerminal`, refusing by
-name. What is missing is the terminal itself. And one honest complication the
-plan has to answer: deco's TUI *is already inside* a terminal.
+name. The terminal implementation must handle nested terminal input and output because deco's TUI runs inside an existing terminal.
 
 **The plan.** A PTY per terminal, a VT parser feeding a screen model, and the
 panel region painting that model — through the same pure render path, so a
@@ -143,12 +133,12 @@ in the gutter.
 **What deco has.** Nothing. (deco's *own* test suite is documented in
 [Testing](testing.md); this chapter is about running *your* tests.)
 
-**The plan.** Two honest stages. First, tests are tasks: a `group.kind ==
+**The plan.** Two stages. First, tests are tasks: a `group.kind ==
 "test"` task bound to VS Code's test-task command, run in the terminal — no new
 UI, immediately useful. Second, a real testing view once the extension host can
 carry it, because in VS Code the things that *discover* tests are extensions,
 and deco's decision is to run those rather than to hardcode one runner per
-language. That makes the full feature a tenant of the extension-host chapter
+language. The full feature therefore depends on the extension-host work described
 below, and the mediated API it needs (`tests.*`) an entry in the capability
 table like `readFile` before it.
 
@@ -172,10 +162,7 @@ updater.
 versions, download the archive for this target, verify the checksum, replace
 the running binary atomically (write beside, rename over — with the Windows
 rename dance, which is exactly what `cargo xtask cross`'s Wine run exists to
-exercise). Explicitly invoked, never in the background: an editor that phones
-home unasked contradicts the way everything else here treats ambient authority,
-so `update.mode` is read but only `none` and `manual` are honoured, and the
-status bar may *say* a release exists only if a check was asked for. A
+exercise). Update checks would run only on explicit request. The proposed implementation would support `update.mode` values `none` and `manual`, and display release information only after a requested check. A
 package-manager install (where the binary is not the user's to replace) is
 detected and refused with the right command named instead.
 
@@ -195,24 +182,11 @@ it: inline completions as ghost text, a chat view, an agent mode that edits
 files — and, for the people who want none of that, `chat.disableAIFeatures`,
 the one setting that hides all of it.
 
-**What deco has.** Nothing — no AI code, no account, and nothing that phones
-home. Which is not only a gap: for one of the two camps this chapter has to
-serve, it is the feature, and the plan below is written so that building for
-the other camp never takes it away.
+**What deco has.** No AI integration is implemented. The proposed features would be optional and require an extension.
 
-**The plan.** Opinion genuinely splits here — some people want AI assistance in
-the editor, and some want it provably absent, not merely hidden. deco can
-serve both honestly because of two decisions already made: AI arrives as
-**extensions**, never as a built-in, and an extension has no ambient authority.
+**The plan.** Provide AI features through **extensions** using capability checks for supported file, process and network operations. The required extension APIs and policy controls described below still need implementation.
 
-- **The off switch is read first, and it means more here.**
-  `chat.disableAIFeatures: true` — VS Code's own key — is honoured as a hard
-  gate: no AI-declaring extension activates, no AI surface renders. And where
-  VS Code's switch hides features that are still installed, deco's sits on top
-  of the capability broker: an extension can only reach a model through a
-  declared `network` capability, so with the gate closed there is no path to a
-  model at all — *provably absent* rather than out of sight. With nothing AI
-  shipped by default, a fresh deco already behaves as if the switch were on.
+- **Disable declared AI integrations before activation.** The proposed `chat.disableAIFeatures: true` setting would block extensions that declare AI features and hide their UI. This requires a manifest declaration and activation checks; it would not identify undeclared AI use by arbitrary extension code.
 - **Using AI is an explicit grant, not a default.** An AI extension declares
   the host it talks to — `{"capability": "network", "host": "api.anthropic.com"}`
   — which is visible before anything runs and decided under
@@ -220,61 +194,30 @@ serve both honestly because of two decisions already made: AI arrives as
   is the same declaration with a loopback host (an Ollama on `localhost`), and
   the difference between "my code goes to a vendor" and "my code stays on this
   machine" is readable off the manifest instead of taken on faith.
-- **The surfaces are the ordinary ones.** Inline completions are ghost text —
-  a rendering concern worth building once, since parameter hints and inlay
-  hints want it too. Chat is a side-bar or panel tenant like the views before
-  it. Both are fed through the host's mediated API
-  (`InlineCompletionItemProvider`, the chat participant surface), so an AI
-  extension is not a special kind of extension — it is an extension with an
-  unusually interesting `network` declaration.
+- **Use the editor's rendering and extension APIs.** Inline completions would require ghost-text rendering; chat would use a side-bar or panel view. Both would receive data through brokered extension APIs such as `InlineCompletionItemProvider` and the chat participant API.
 
 **Steps.**
 
-1. Read `chat.disableAIFeatures` and enforce it in the broker — a gate an
-   extension cannot argue with, not a UI preference; refuse activation of
-   extensions whose manifest declares AI surfaces while it is set.
+1. Implement `chat.disableAIFeatures` and reject activation of extensions whose manifests declare AI features while it is enabled.
 2. Ghost-text rendering in both frontends, as its own feature.
 3. `InlineCompletionItemProvider` through the host shim, brokered like the
    rest.
-4. A chat view as a side-bar/panel tenant, last — it is the largest surface and
-   the least of the daily value.
+4. A chat view in the side bar or panel, after the activation and completion APIs.
 
 ### Agent integration
 
-Completions and chat are the small half of what "AI features" now means. The
-larger half is **agents**: a model that plans, edits several files, runs
-commands and iterates — VS Code's agent mode (`chat.agent.enabled`), its MCP
-support (Model Context Protocol servers offering tools to the model), and the
-external CLI agents people run beside their editor. This is where deco's
-architecture stops being a constraint on AI and starts being the point, so it
-is planned as its own stage rather than left implied by "chat".
+**Agent integration** would allow a model to edit multiple files and invoke tools. It requires separate support for edit review, process execution, permissions and MCP (Model Context Protocol), beyond completion and chat APIs. External CLI agents could also run in the planned integrated terminal.
 
-- **An agent is the capability model's hardest customer, and its best
-  argument.** In VS Code an agent's tool calls run with the user's full
-  privileges and safety is a per-call confirmation dialog. Under deco every
-  tool an agent reaches for is already a brokered capability: file access is
-  scoped and checked on resolved paths, running a program is a declared
-  capability decided by policy, and the network is a named host. Nothing new
-  has to be invented to make an agent safe — the broker does not care whether
-  a `writeFile` was asked for by a keystroke or by a model. What agents add
-  is *volume*, which the permission UX must absorb: session-scoped grants
-  ("this agent may edit `src/` until this chat ends") rather than a dialog
-  per call, and an audit trail of what was touched.
+- **Check tool calls through the capability broker.** File access would use resolved path scopes; process and network access would require their own declarations and policy decisions. Agent integration also needs session-scoped grants, revocation and an audit trail. These controls and the currently unsupported operations must be implemented before enabling agent tools.
 - **An agent's edits arrive as a `WorkspaceEdit`.** The multi-file, undoable
   edit that rename needs is exactly the unit an agent's changes should land
   as: applied atomically, reviewable as a diff before or after, and undone as
   **one step** — `ctrl+z` as the recovery from a bad agent turn. This is the
   strongest reason `WorkspaceEdit` is a foundation and not a feature.
-- **MCP fits the broker better than it fits VS Code.** An MCP server is a
-  local process speaking JSON-RPC over stdio — structurally what `deco-lsp`
-  already supervises. `mcp.json` names the servers; starting one is a
-  `process` capability, and each *tool* the server offers becomes a named,
-  individually grantable capability rather than a blanket "the model may use
-  tools". Deny-by-default then means a tool the user never approved is never
-  offered to the model at all.
+- **Add MCP server and tool permissions.** Initial support would target local JSON-RPC servers over stdio, with process supervision similar to `deco-lsp`. The proposed `mcp.json` integration would require permission to start each server and separate grants for its tools before offering them to the model.
 - **External CLI agents come through the terminal, not an API.** People
   already run Claude Code and its peers beside their editor. The integrated
-  terminal is the honest first integration: the agent runs there, and the
+  terminal would provide the initial integration: the agent runs there, and the
   editor's job is to notice what it changed — files reloading cleanly (watch
   for external modification, which unsaved-conflict handling needs anyway)
   and the git gutter showing the agent's diff. Deeper integration — the
@@ -305,7 +248,7 @@ answer is written down rather than implied. DAP is the right shape for deco
 sibling of `deco-lsp`, whose framing it literally shares), and `launch.json`
 already parses with the JSONC reader. But the *surface* is the cost:
 breakpoints in the gutter, a stopped-state overlay, variables and watch views,
-a debug console — each a tenant of chrome that must exist first. It is
+a debug console, each requiring its own editor view. It is
 deliberately last: everything above it is smaller, more asked-for, and most of
 it is chrome that debugging will then stand on.
 
@@ -316,7 +259,7 @@ it is chrome that debugging will then stand on.
 2. Breakpoints as a session concept, gutter-rendered, sent on attach.
 3. Launch/attach from `launch.json`; stop/continue/step with a stopped-line
    marker.
-4. Variables and console as panel tenants.
+4. Variables and console views in the panel.
 
 ## Beyond VS Code
 
@@ -377,8 +320,7 @@ inventing a name is right rather than a synonym for someone else's.
    re-root the language servers. One root still, but a mutable one.
 2. Several roots held at once, each with its own tabs and settings resolution;
    `deco.workspaces.switch` moves between them, and the status bar says which.
-3. A workspace list as a side-bar tenant, so switching is visible rather than
-   remembered.
+3. A workspace list in the side bar for selecting the active workspace.
 4. Servers per active workspace, with the warm-set setting and its cost written
    down.
 
@@ -401,7 +343,7 @@ here because the plans above lean on them.
 - **Regular-expression search.** `deco-core::search` is literal on purpose;
   regex needs its own escaping rules and its own error reporting for a bad
   pattern (`alt+r` says so today). Decision to make: a regex crate dependency
-  versus the subset a hand-written engine can honestly support. The find bar,
+  versus the subset supported by a custom engine. The find bar,
   multi-cursor find and search-in-files all inherit whichever lands.
 - **Full snippet support.** [Numeric completion fields are built](language-servers.md#snippet-tab-stops):
   Tab/Shift+Tab navigate, Escape exits, and ranges follow edits. Repeated indices,

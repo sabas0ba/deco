@@ -33,8 +33,7 @@ function main() {
     fail('DECO_EXTENSION_ID is not set');
   }
   if (process.env.DECO_HOST_PROTOCOL !== PROTOCOL_VERSION) {
-    // A mismatch means deco and this script came from different builds. Failing
-    // here is far better than half-speaking an older protocol.
+    // Reject incompatible protocol versions before accepting any requests.
     fail(
       `protocol mismatch: deco speaks ${process.env.DECO_HOST_PROTOCOL}, ` +
         `this host speaks ${PROTOCOL_VERSION}`,

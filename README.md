@@ -4,15 +4,9 @@
 
 A lightweight, VS Code-compatible text editor written in Rust. No Electron.
 
-deco reads your existing `settings.json`, `keybindings.json` and colour themes
-and means the same thing by them that VS Code does. It runs in a terminal or in
-a GPU-accelerated window, and it runs VS Code extensions in a Node process that
-has had its ambient authority taken away.
+deco reads VS Code's `settings.json`, `keybindings.json` and colour theme formats. Supported settings and commands use VS Code's identifiers. It runs in a terminal or a GPU-accelerated window. Code extensions run in a separate Node process, inside a container by default; supported file operations require permission checks through deco's capability broker.
 
-**Status: early.** The compatibility layers — the parts that decide whether VS
-Code compatibility is achievable at all — are implemented and tested. The editor
-is usable for editing files. Several headline features are not built yet;
-[what is not built](#what-is-not-built-yet) is explicit about which.
+**Status: early.** File editing and the compatibility layers described below are implemented and tested. See [what is not built](#what-is-not-built-yet) for missing features and frontend limitations.
 
 ```console
 $ deco src/main.rs                # terminal
@@ -52,14 +46,7 @@ $ install -Dm755 deco-x86_64-unknown-linux-gnu/deco ~/.local/bin/deco
 On macOS `shasum -a 256 -c SHA256SUMS` is the same check. On Windows, unzip the
 archive and compare with `Get-FileHash deco-x86_64-pc-windows-msvc.zip`.
 
-**Check the checksum.** An editor is a program you hand your source code to, and
-the archive travels over the same network as everything else. Verifying it costs
-one command.
-
-There is deliberately no `curl … | sh` installer. It would ask you to run a
-script you have not read, from a program whose whole argument is that it does
-not want that kind of trust — see
-[Extensions](#extensions-and-why-they-are-not-like-vs-codes).
+**Check the checksum before running the binary.** Compare the downloaded archive with the release's `SHA256SUMS`. Installation uses archive extraction; no shell-script installer is provided.
 
 **Keep the archive's `extension-host/` beside the binary.** Move the whole
 extracted directory rather than the binary alone, or code extensions have no host
@@ -110,7 +97,7 @@ running, and is published at
 | [Language servers](docs/language-servers.md) | Diagnostics, hover, definition, references, completion, symbols, semantic tokens, formatting, rename, code actions |
 | [Configuration](docs/configuration.md) | `settings.json`, `keybindings.json`, themes, and where they are read from |
 | [Extensions](docs/extensions.md) | The capability model, and why an extension gets less power here |
-| [Remote](docs/remote.md) | SSH, container and WSL authorities, and the server that answers on the far end |
+| [Remote](docs/remote.md) | SSH, container and WSL authorities, and the server that answers on the remote environment |
 | [Testing](docs/testing.md) | Unit tests, end-to-end scenarios, and what each one is for |
 | [Roadmap](docs/roadmap.md) | What VS Code has that deco does not, the plan for each, and what is worth building because deco is not Electron |
 
@@ -127,8 +114,7 @@ model. The terminal build pulls in 52 third-party crates in total, and the
 extension host pulls in no npm packages at all — see
 [Dependencies](#dependencies).
 
-What that buys, measured rather than asserted — a release build, one file, a
-120×40 window:
+The following measurements use a release build, one file and a 120×40 window:
 
 | | 1,000 lines | 200,000 lines (10 MiB) |
 | --- | --- | --- |
@@ -149,14 +135,9 @@ walk from line zero, which would cost two hundred times more and not ten.
 
 **VS Code's own identifiers everywhere.** Commands are
 `editor.action.commentLine`, not `deco.comment`. Settings are `editor.tabSize`.
-Context keys are `editorHasSelection`. That is what makes an existing
-configuration mean the same thing here, and it is a constraint on every new
-feature rather than a shim bolted on at the edges.
+Context keys are `editorHasSelection`. Implemented features use these identifiers so existing configuration entries can address the corresponding settings and commands.
 
-**Frontend-agnostic core.** Nothing below `deco-tui` / `deco-gui` knows what a
-terminal or a window is. Both frontends drive the same command set, and both
-split rendering into a pure function (testable in CI, no display needed) and a
-thin painter.
+**Frontend-agnostic core.** Crates below `deco-tui` and `deco-gui` do not depend on terminal or window APIs. Both frontends use the same command set and separate layout calculation, testable without a display, from drawing.
 
 ## Compatibility
 
@@ -169,7 +150,7 @@ thin painter.
 | Command identifiers | Yes, for implemented commands |
 | Theme extensions from the marketplace | Yes — declarative, no host process; `ctrl+k ctrl+t` lists them |
 | Code extensions (`main`) | Commands run: the palette lists them, choosing one starts a sandboxed host. The surface an extension can reach is registering a command, the message and status-bar calls, the `workspace.fs` family, and `workspace.applyEdit` — everything else is refused by name, see [Extensions](docs/extensions.md#what-an-extension-can-reach-today) |
-| Remote SSH / containers / WSL | Open, edit and save a file on the far end with `--remote ssh-remote+host`, `--remote-install` puts deco there if it has none, `--forward 3000` reaches a port on it, language servers and Git run over there, `ctrl+shift+f` searches the far end, an extension's file access goes through the connection, and the machine's own `machine-settings.json` layers in as `remote` scope. Extension hosts still run locally — see [Remote](docs/remote.md) |
+| Remote SSH / containers / WSL | Open, edit and save a file on the remote environment with `--remote ssh-remote+host`, `--remote-install` puts deco there if it has none, `--forward 3000` reaches a port on it, language servers and Git run over there, `ctrl+shift+f` searches the remote environment, an extension's file access goes through the connection, and the machine's own `machine-settings.json` layers in as `remote` scope. Extension hosts still run locally — see [Remote](docs/remote.md) |
 | Language servers (LSP) | Diagnostics, hover, go-to-definition, references, completion, symbols, semantic tokens, formatting, rename (`F2`, across files, one undo step), code actions (`ctrl+.`, with `codeAction/resolve`) |
 | Find and replace (`ctrl+f`, `ctrl+h`, `F3`, `ctrl+d`, `ctrl+shift+l`, `ctrl+shift+h`) | Literal search only — no regular expressions; replace across the workspace is one undoable edit |
 | Search in files (`ctrl+shift+f`) | Yes — bounded and synchronous, and it says so |
@@ -203,9 +184,7 @@ the extension API makes that visible, let alone preventable. Installing one is
 trusting its author and every package in its `node_modules` with everything you
 can reach.
 
-deco keeps the separate Node process — extensions are JavaScript, and there is
-no way around that — but removes its ambient authority. Four independent
-layers:
+deco runs extensions in a separate Node process and restricts their access to system resources through four layers:
 
 0. **A container**, from an image pinned by digest, with `--network=none`,
    `--read-only`, `--cap-drop=ALL` and **no mount of your workspace** —
@@ -251,7 +230,7 @@ An extension declares what it wants in a `deco` section that VS Code ignores:
 }
 ```
 
-**The honest trade-off:** an extension written for VS Code declares nothing, so
+**Compatibility limitation:** an extension written for VS Code declares nothing, so
 under deco it starts with no capabilities and will break wherever it reaches for
 the filesystem or the network. deco does not guess a declaration on its behalf —
 the alternative to breaking it is granting it everything silently.
@@ -320,7 +299,7 @@ self-update, debugging — each have a plan in the
   says so. See [Chrome](docs/chrome.md).
 - **Remote development runs everything except the extension host over there.**
   `deco --remote ssh-remote+myhost --workspace /home/u/project src/main.rs` starts
-  `deco --server --stdio` on the far end, fetches the file, and writes it back on
+  `deco --server --stdio` on the remote environment, fetches the file, and writes it back on
   `ctrl+s`; `ctrl+p` lists the remote workspace. The server refuses everything
   outside the directory it was given, symlinks included. `--remote-install` sends
   this machine's binary to a remote that has none — only when asked, and never
@@ -610,7 +589,7 @@ built-in entry's trust, and it does not push your own definition aside either.
 so a `command` containing `;` or `$(…)` is a program name with punctuation in it
 and nothing more.
 
-What is wired up today: diagnostics (tallied in the status bar, walked with
+Supported features: diagnostics (counted in the status bar, navigated with
 `F8` / `shift+F8`), hover (`ctrl+k ctrl+i`, dismissed with `escape`),
 go-to-definition (`F12`), references (`shift+f12`), go to symbol (`ctrl+shift+o`),
 completion — `ctrl+space` to ask, or automatically on a character the server
@@ -623,9 +602,7 @@ closes, and typing narrows it locally rather than asking the server again.
 Formatting sends your own `editor.tabSize`, `editor.insertSpaces`,
 `files.trimTrailingWhitespace` and `files.insertFinalNewline`, so a server
 formats to the project's conventions rather than to its own defaults. The whole
-batch of edits is one undo step, and a server that sends overlapping edits — which
-the protocol forbids — is refused rather than guessed at: a file you can still
-fix by hand is worth more than one quietly mangled.
+batch of edits is one undo step. Overlapping edits are rejected without changing the document because their result is not well-defined.
 
 The keys are gated on VS Code's own context keys — `editorHasDefinitionProvider`,
 `suggestWidgetVisible` and friends — set from what the server actually offers, so
@@ -656,9 +633,7 @@ archive against the `SHA256SUMS` that release publishes, and **that check is
 deco's own code**. The download itself and the unpacking are handed to `curl`
 and `tar`, which every platform this runs on already ships. That split is the
 whole reason the number above is 52 and not 93: an in-process HTTPS client costs
-about forty crates and a vendored TLS stack. Delegating a transfer is delegating
-a chore; delegating the checksum would be asking something else whether it had
-checked, which is not checking. See
+about forty crates and a vendored TLS stack. deco computes and compares the checksum before passing the archive to `tar`. See
 [`crates/deco-remote/src/fetch.rs`](crates/deco-remote/src/fetch.rs).
 There are no git dependencies and no vendored forks — every entry in
 `Cargo.lock` resolves to crates.io, and `cargo deny` fails the build if that

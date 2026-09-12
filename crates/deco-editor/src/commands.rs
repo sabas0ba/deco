@@ -323,9 +323,8 @@ pub const PENDING: &[(&str, &str)] = &[
         "workbench.action.openGlobalKeybindings",
         "Open Keyboard Shortcuts",
     ),
-    // `deco --server` exists now; what does not is the client half — nothing in
-    // the editor opens a file through a transport, so a menu would offer a list of
-    // places it cannot go.
+    // Remote connections are configured through CLI arguments. An interactive
+    // connection menu is not implemented.
     ("deco.remote.showMenu", "Remote Menu"),
 ];
 

@@ -21,12 +21,9 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-# What holds this floor up is `unicode-segmentation`, which asks for 1.85 from
-# 1.13.2 on. Staying below it would mean staying on Unicode 16 and keeping two
-# grapheme-cluster bugs 1.13 fixed — GB11 at a chunk boundary and GB12/GB13
-# once the regional indicator count is known — which in an editor are a cursor
-# landing inside a ZWJ emoji or a flag. Correct clusters are worth more here
-# than three releases of toolchain headroom.
+# unicode-segmentation 1.13.2 requires Rust 1.85. The 1.13 series fixes grapheme
+# boundary handling for ZWJ emoji and regional indicators, which affects cursor
+# movement. Keep the minimum Rust version compatible with these fixes.
 rust-version = "1.85"
 license = "Apache-2.0"
 repository = "https://github.com/sabas0ba/deco"
@@ -54,10 +51,8 @@ ropey = "1.6"
 unicode-segmentation = "1"
 unicode-width = "0.2"
 
-# Build tooling only, never linked into a shipped binary. The editor's own
-# command line is parsed by hand in crates/deco/src/cli.rs precisely so that
-# clap's subtree stays out of what users run; xtask is a different trade,
-# because it has subcommands and is only ever run by us.
+# clap is used only by xtask and is not linked into the editor binary.
+# crates/deco/src/cli.rs parses the editor's arguments without this dependency.
 clap = { version = "4", features = ["derive"] }
 crossterm = "0.29"
 log = "0.4"
@@ -70,7 +65,6 @@ codegen-units = 1
 panic = "abort"
 strip = "symbols"
 
-# Keep incremental debug builds snappy; the editor is unusable at opt-level 0
-# for rope-heavy work, so dependencies are always optimised.
+# Optimise dependencies in debug builds to reduce the cost of rope operations.
 [profile.dev.package."*"]
 opt-level = 2

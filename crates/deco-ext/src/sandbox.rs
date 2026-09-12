@@ -37,10 +37,9 @@
 //! they have.
 //!
 //! For the same reason the policy is read from **deco's defaults and the user's
-//! own settings only**. A `.vscode/settings.json` arrives with a cloned
-//! repository, and a repository that could turn off its own sandbox would make
-//! the sandbox decorative. [`overridden_by`] reports the layers that tried, so
-//! the attempt can be shown rather than swallowed.
+//! own settings only**. Workspace configuration must not be able to disable
+//! isolation for its extensions. [`overridden_by`] identifies configuration
+//! layers that attempted an override so the frontend can report them.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -404,8 +403,8 @@ impl Mounts {
 
     /// The container path for a host path inside one of the mounted roots.
     ///
-    /// `None` for anything outside them, which is the honest answer: the
-    /// container cannot see it.
+    /// Returns `None` for paths outside the mounted roots because those paths
+    /// are not accessible inside the container.
     pub fn inside(&self, path: &Path) -> Option<String> {
         for (root, target) in &self.entries {
             if !crate::capability::is_within(path, root) {

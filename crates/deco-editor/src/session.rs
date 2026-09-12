@@ -35,10 +35,8 @@ fn utf16_len(text: &str) -> u32 {
 pub enum EditError {
     /// Two of the edits covered the same text.
     ///
-    /// The protocol forbids this, so a server sending it is broken. Refused
-    /// rather than guessed at: picking which to honour would corrupt the file
-    /// silently, and a file the user can still fix by hand is worth more than
-    /// one that was quietly mangled.
+    /// Overlapping edits have no well-defined result. Reject the entire batch
+    /// without changing the document.
     #[error("the server sent overlapping edits, which have no well-defined result")]
     Overlapping,
 }
@@ -6262,9 +6260,7 @@ mod tests {
 
     #[test]
     fn overlapping_edits_are_refused_and_the_file_is_untouched() {
-        // The protocol forbids them, so a server sending them is broken. Picking
-        // one to honour would corrupt the file silently, and a file the user can
-        // still fix by hand is worth more than one quietly mangled.
+        // Reject the entire overlapping batch and preserve the original text.
         let mut s = session();
         s.open(PathBuf::from("/w/a.rs"), "aaaa bbbb\n");
         assert_eq!(
@@ -8353,8 +8349,7 @@ mod tests {
 
     #[test]
     fn changing_the_language_leaves_the_text_alone() {
-        // Nothing about a document's bytes depends on which language it is said
-        // to be, and an undo step here would be a lie.
+        // Changing the language must not alter text or create an undo entry.
         let mut s = searchable("x\n");
         s.open(PathBuf::from("/w/notes.txt"), "name = 1\n");
         s.set_language(Some("toml"));

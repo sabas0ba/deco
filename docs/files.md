@@ -168,8 +168,7 @@ replaced rather than refused. Closing it needs a no-replace rename, which the
 standard library does not offer on any platform — it means `renameat2` on Linux,
 `renamex_np` on macOS and `MoveFileEx` on Windows, three pieces of unsafe
 platform code with a runtime fallback each, in a codebase with one `unsafe` in
-it. That is worth doing as its own change rather than being smuggled in here, so
-for now the window is named rather than closed.
+it. A no-replace rename is not implemented, so this race remains possible.
 
 The symlink check has a cousin of the same window: something can replace a
 directory between the check and the call. Closing that needs `openat` with

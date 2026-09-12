@@ -1,8 +1,6 @@
 # Tabs
 
-deco holds one document per tab and shows a tab bar as soon as there are two.
-With a single document open, nothing changes — the bar earns its row only once
-there is a choice to show.
+deco holds one document per tab. The tab bar is shown when two or more documents are open.
 
 ![Opening a second file, switching, a refused close, and a successful one](img/tabs.svg)
 
@@ -18,15 +16,9 @@ in its own tab, with the first one focused.
 
 ## What a tab keeps
 
-Everything that should survive a round trip through the background: the text and
-its **undo history**, the cursor and scroll position, the syntax highlighting
-state, and the **diagnostics** a language server has published for it. Switch
-away, switch back, and press `ctrl+z` — the edit you made there is undone, not
-one from another file.
+Each tab retains its text, **undo history**, cursor and scroll position, syntax highlighting state and language-server **diagnostics** when another tab becomes active. `ctrl+z` applies to the active document's undo history.
 
-The find bar belongs to the tab, so switching away **parks** it rather than
-throwing it away: switch back and it is where you left it, matches and all. Two
-tabs can be searching for different things at once.
+Each tab retains its find bar and matches while inactive. Two tabs can retain different searches.
 
 The **search string is shared** even though the bar is not, which is what VS Code
 does — opening find in another file shows the same query, and `F3` in a tab you
@@ -114,17 +106,11 @@ behaviour is tested with no filesystem involved.
 
 ## Saving somewhere else
 
-`ctrl+shift+s` asks where, seeded with the path you are already in — "save this next
-to itself under another name" is what save-as is usually for, and typing a whole
-path from nothing is worse than editing one. `ctrl+x` clears the field when the
-answer is somewhere else entirely.
+`ctrl+shift+s` opens a Save As prompt containing the current path. Edit that path or use `ctrl+x` to clear the field before entering another destination.
 
 ![Saving notes.txt as Cargo.toml, which makes it TOML](img/save-as.svg)
 
-The new name **redetects the language**: `notes.txt` saved as `notes.toml` is a TOML
-file now, so the lexer wakes up and `[toml]` settings start applying. A language you
-chose by hand with `ctrl+k m` is kept instead — having said "this is TOML" and then
-saved it, being told it is now plain text would undo a decision nobody revisited.
+Saving under a new name reruns language detection. For example, saving `notes.txt` as `notes.toml` enables the TOML lexer and `[toml]` settings. A language selected manually with `ctrl+k m` remains selected.
 
 A relative path is taken against the workspace root and `~` expands, so `~/notes.md`
 and `docs/notes.md` both work. Resolving against the process's working directory
@@ -155,11 +141,7 @@ VS Code.
 revert to would double what a large one costs, and re-reading is also what
 "revert" means when the file has changed underneath you.
 
-The replacement goes through the undo history, so `ctrl+z` brings the edits back: a
-command whose whole purpose is to destroy work should not be the one command that
-cannot be taken back. If the file cannot be read, the edits stay — throwing them
-away because of a failure that had nothing to do with them would be the worse
-answer.
+Reverting creates an undo entry, so `ctrl+z` restores the previous buffer contents. If reading the file fails, the buffer remains unchanged.
 
 An **untitled** document reverts to empty, since there is nothing to re-read and
 empty is what it was. That is also the route out of a scratch buffer that could
@@ -170,9 +152,7 @@ otherwise be neither saved nor closed.
 `ctrl+q` refuses once and names what is unsaved — `2 tabs have unsaved changes:
 a.txt, b.rs` — and a second `ctrl+q` quits anyway.
 
-It has to be the **very next keystroke**. Anything in between is a user who went
-back to work, and acting on their earlier answer minutes later would be acting on
-one nobody remembers giving.
+The second `ctrl+q` must be the **next keystroke**. Any intervening key cancels the pending quit confirmation.
 
 The check is the session's, over every tab rather than the one on screen, so both
 frontends inherit it. Refusing to close one unsaved document with `ctrl+w` while

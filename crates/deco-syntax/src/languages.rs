@@ -5,11 +5,9 @@
 //! language ids — so a file deco calls `typescriptreact` finds the rules under
 //! that name rather than under a second naming scheme invented here.
 //!
-//! Languages that are not token-oriented are deliberately absent. Markdown, HTML
-//! and XML are structural: colouring them by keyword would be worse than leaving
-//! them plain, because the interesting parts are tags and nesting, and a lexer
-//! that pretended otherwise would highlight the wrong halves of the file. They
-//! fall through to no highlighting, which is honest.
+//! Markdown, HTML and XML have no lexer here. These keyword-based tables cannot
+//! represent their markup structure and embedded languages, so those documents
+//! use the theme's plain foreground.
 
 use crate::scopes;
 

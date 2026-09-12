@@ -7,10 +7,7 @@ themes are written against — so a theme you already use means the same thing h
 
 ## How it works
 
-`deco-theme` resolves a style from a **TextMate scope stack** and has done from
-the start; what was missing was anything producing scope stacks. `deco-syntax` is
-that: a lexer per language emitting the scope names themes style, and the renderer
-asks the theme for a colour per run.
+`deco-syntax` uses a lexer for each supported language to assign TextMate scope names to tokens. `deco-theme` resolves a style from each **TextMate scope stack**, and the renderer applies that style to the corresponding text.
 
 The scope stack is two deep — the language's `source.*` scope, then the token's —
 so a theme's parent selectors (`meta.function entity.name`) have something to
@@ -38,10 +35,7 @@ rather than one per kind per language.
 Rust, TypeScript, JavaScript (and the `react` variants), Python, Go, C, C++, Java,
 JSON, JSONC, TOML, YAML, shell, Ruby, Lua, SQL, CSS, Makefile and Dockerfile.
 
-Anything else renders in the theme's plain foreground. Markdown, HTML and XML are
-**deliberately** absent: they are structural rather than token-oriented, and
-colouring them by keyword would highlight the wrong halves of the file. Leaving
-them plain is the honest answer until there is something that understands them.
+Other languages render in the theme's plain foreground. Markdown, HTML and XML have no lexer: the current keyword-based language tables cannot represent their markup structure and embedded languages.
 
 Adding a language is a table in `crates/deco-syntax/src/languages.rs` and nothing
 else.
@@ -81,7 +75,7 @@ which is most of what a language identifier is for.
 
 ## It is a lexer, not a parser
 
-Worth stating plainly, because it bounds what you should expect.
+The lexer recognises tokens but does not resolve declarations or types.
 
 VS Code's own highlighting is a set of regular-expression grammars — also a lexer.
 So for colouring, a lexer gets most of the way there: keywords, strings, comments,

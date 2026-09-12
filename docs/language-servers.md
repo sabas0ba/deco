@@ -242,15 +242,7 @@ and one `ctrl+z` to take it back.
 The key is gated on `editorHasCodeActionsProvider`, so it does not resolve at
 all against a server that offers nothing here.
 
-**The diagnostics go with the request, exactly as the server sent them.** That
-is the part worth being careful about: a quick fix is computed from the
-diagnostic it fixes, and a diagnostic carries a `data` field that is opaque to a
-client by specification — several servers keep everything they need to build the
-fix in it. deco parses diagnostics for its own use (a range to underline, a
-severity to tally) and that parsing necessarily drops what it has no use for, so
-the request is built from the JSON as received rather than from the parsed
-struct. A reconstructed diagnostic is one the server does not recognise, and the
-fix it was carrying goes with it.
+**Code-action requests include the original diagnostic JSON.** Servers may use the opaque `data` field to construct a fix. deco's parsed diagnostic struct retains only fields needed for display, so reconstructing the request from that struct would lose information required by the server.
 
 Diagnostics **overlapping** the selection are sent, not only those inside it: a
 selection across half an error is still a question about that error, and a caret
@@ -278,12 +270,7 @@ That last row is why the edit is parsed when an action is chosen rather than
 when the menu is built: one entry deco cannot carry out should not empty a menu
 whose other entries are fine.
 
-**A bare `Command` is not run.** The older spelling of a code action is a
-`command` for the client to execute, which means `workspace/executeCommand`,
-whose effect comes back as a `workspace/applyEdit` *request* — the server
-driving the editor rather than answering it. That is a different direction of
-authority from everything else here and is not wired; deco names the command it
-would have run instead of appearing to work.
+**A bare `Command` is not run.** Such actions require `workspace/executeCommand` and may cause the server to send a `workspace/applyEdit` request. deco does not implement this command-execution path and reports the unsupported command by name.
 
 ## Rename
 

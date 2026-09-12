@@ -1047,8 +1047,8 @@ fn slashed(path: &Path) -> String {
 ///
 /// A frame that cannot be read at all ends the session: unlike the extension
 /// host's line protocol, there is no way to resynchronise a length-prefixed
-/// stream whose length was wrong, and pretending otherwise would mean reading the
-/// next file's contents as a header.
+/// stream with an invalid length. Continuing could interpret payload bytes as
+/// the next message header.
 pub fn serve(
     input: &mut impl BufRead,
     output: &mut impl Write,
