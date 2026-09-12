@@ -5093,11 +5093,12 @@ mod tests {
     fn snippet_variables_read_the_active_document_and_selection() {
         use deco_core::{Position, Selection, SelectionSet};
         let mut s = session();
-        s.open(PathBuf::from("/w/sample.test.rs"), "header\nlet value = 1;\n");
-        s.view.selections = SelectionSet::single(Selection::new(
-            Position::new(1, 4),
-            Position::new(1, 9),
-        ));
+        s.open(
+            PathBuf::from("/w/sample.test.rs"),
+            "header\nlet value = 1;\n",
+        );
+        s.view.selections =
+            SelectionSet::single(Selection::new(Position::new(1, 4), Position::new(1, 9)));
         let snippet = s
             .expand_snippet("$TM_FILENAME|$TM_FILENAME_BASE|$TM_LINE_INDEX|$TM_LINE_NUMBER|$TM_CURRENT_LINE|$TM_CURRENT_WORD|$TM_SELECTED_TEXT")
             .unwrap();

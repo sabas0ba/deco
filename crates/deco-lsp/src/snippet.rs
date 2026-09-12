@@ -222,15 +222,15 @@ mod tests {
 
     #[test]
     fn variables_are_literal_and_tab_stops_follow_their_utf16_length() {
-        let snippet = Snippet::parse_with_variables(
-            "$TM_SELECTED_TEXT ${1:arg} ${TM_FILENAME}$0",
-            |name| match name {
-                "TM_SELECTED_TEXT" => Some("😀\n$1".to_owned()),
-                "TM_FILENAME" => Some("日本.rs".to_owned()),
-                _ => None,
-            },
-        )
-        .unwrap();
+        let snippet =
+            Snippet::parse_with_variables("$TM_SELECTED_TEXT ${1:arg} ${TM_FILENAME}$0", |name| {
+                match name {
+                    "TM_SELECTED_TEXT" => Some("😀\n$1".to_owned()),
+                    "TM_FILENAME" => Some("日本.rs".to_owned()),
+                    _ => None,
+                }
+            })
+            .unwrap();
         assert_eq!(snippet.text, "😀\n$1 arg 日本.rs");
         assert_eq!(
             snippet.stops,
@@ -250,10 +250,9 @@ mod tests {
         .unwrap();
         assert_eq!(snippet.text, "untitled  $file}");
         assert_eq!(snippet.stops, vec![Range::empty(Position::new(0, 16))]);
-        let snippet = Snippet::parse_with_variables("${TM_FILENAME:unused}", |_| {
-            Some("main.rs".to_owned())
-        })
-        .unwrap();
+        let snippet =
+            Snippet::parse_with_variables("${TM_FILENAME:unused}", |_| Some("main.rs".to_owned()))
+                .unwrap();
         assert_eq!(snippet.text, "main.rs");
     }
 
