@@ -2812,6 +2812,7 @@ mod tests {
                 preselect: false,
                 was_snippet: false,
                 snippet: None,
+                snippet_source: None,
             })
             .collect();
         crate::suggest::Suggest::new(items, deco_core::Position::ZERO, false)

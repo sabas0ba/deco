@@ -2805,6 +2805,39 @@ impl Session {
         end
     }
 
+    /// Expands supported variables using the active document before insertion.
+    /// No filesystem, environment or clipboard access is performed.
+    pub fn expand_snippet(&self, source: &str) -> Option<deco_lsp::snippet::Snippet> {
+        let selection = self.view.selections.primary();
+        let cursor = self.document.buffer.clamp_position(selection.active);
+        deco_lsp::snippet::Snippet::parse_with_variables(source, |name| {
+            let path = self.document.path.as_deref();
+            Some(match name {
+                "TM_FILENAME" => path
+                    .and_then(std::path::Path::file_name)
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                "TM_FILENAME_BASE" => path
+                    .and_then(std::path::Path::file_stem)
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                "TM_LINE_INDEX" => cursor.line.to_string(),
+                "TM_LINE_NUMBER" => (u64::from(cursor.line) + 1).to_string(),
+                "TM_CURRENT_LINE" => self
+                    .document
+                    .buffer
+                    .line_content(cursor.line as usize)
+                    .map(|line| line.to_string())
+                    .unwrap_or_default(),
+                "TM_CURRENT_WORD" => deco_core::search::word_at(&self.document.buffer, cursor)
+                    .map(|range| self.document.buffer.text_in_range(range))
+                    .unwrap_or_default(),
+                "TM_SELECTED_TEXT" => self.document.buffer.text_in_range(selection.range()),
+                _ => return None,
+            })
+        })
+    }
+
     /// Inserts a parsed completion and selects the first numeric placeholder.
     /// Uses the ordinary replacement transaction, including its undo boundary.
     pub fn insert_snippet(
@@ -5056,6 +5089,38 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn snippet_variables_read_the_active_document_and_selection() {
+        use deco_core::{Position, Selection, SelectionSet};
+        let mut s = session();
+        s.open(
+            PathBuf::from("/w/sample.test.rs"),
+            "header\nlet value = 1;\n",
+        );
+        s.view.selections =
+            SelectionSet::single(Selection::new(Position::new(1, 4), Position::new(1, 9)));
+        let snippet = s
+            .expand_snippet("$TM_FILENAME|$TM_FILENAME_BASE|$TM_LINE_INDEX|$TM_LINE_NUMBER|$TM_CURRENT_LINE|$TM_CURRENT_WORD|$TM_SELECTED_TEXT")
+            .unwrap();
+        assert_eq!(
+            snippet.text,
+            "sample.test.rs|sample.test|1|2|let value = 1;|value|value"
+        );
+        assert_eq!(s.document.buffer.text(), "header\nlet value = 1;\n");
+        assert!(!s.document.dirty);
+    }
+
+    #[test]
+    fn snippet_variables_in_an_untitled_document_use_defaults() {
+        let s = session();
+        let snippet = s
+            .expand_snippet("${TM_FILENAME:untitled}|${TM_SELECTED_TEXT:empty}|$TM_LINE_NUMBER")
+            .unwrap();
+        assert_eq!(snippet.text, "untitled|empty|1");
+        assert!(s.expand_snippet("$CLIPBOARD").is_none());
+        assert!(s.expand_snippet("${UNKNOWN:default}").is_none());
+    }
+
     #[test]
     fn snippet_navigation_tracks_edits_and_finishes_at_zero() {
         use deco_core::{Position, Range};
