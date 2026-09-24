@@ -2,8 +2,7 @@
 
 ![Opening the side bar, walking into src/parse, and opening a file with enter](img/file-tree.svg)
 
-The workspace tree lives in the [side bar](chrome.md). `ctrl+b` shows it,
-`ctrl+shift+e` puts the keyboard in it, and the arrow keys walk it.
+The workspace tree is shown in the [side bar](chrome.md). `ctrl+b` shows it, `ctrl+shift+e` moves keyboard focus to it, and the arrow keys navigate it.
 
 | Key | Command |
 | --- | --- |
@@ -22,233 +21,96 @@ The workspace tree lives in the [side bar](chrome.md). `ctrl+b` shows it,
 | `ctrl+z` | `undo` — the tree's own, not the text's |
 | | `revealInExplorer` — opens the tree onto the file being edited |
 
-`→` and `←` each do two things, which is what VS Code's explorer does and what
-makes arrowing through a tree feel like one gesture: right opens the folder you
-are on, and if it is already open, moves into it. Left closes it, and on a file
-or a closed folder goes up to the parent instead.
+`→` and `←` each have two actions, as in VS Code's explorer. Right expands the selected folder, or moves into it if it is already expanded. Left collapses the folder, or moves to the parent when the selection is a file or a collapsed folder.
 
-**Enter takes the keyboard with it.** Opening a file moves focus into the
-editor, because opening something and leaving the caret in the tree would mean a
-second keystroke before you could type in what you just asked for. The animation
-types `// ` straight after `enter` to show where it lands. Enter on a *folder*
-opens it and stays put — there is nothing to move to.
+**Enter moves focus to the editor.** Opening a file moves keyboard focus into the editor, so you can type without another keystroke. The animation types `// ` immediately after `enter` to show this. Enter on a *folder* opens it and keeps focus in the tree.
 
 ## What it costs to open a big workspace
 
-One `read_dir`. A directory is read when it is first expanded and not before, so
-the tree costs what its **visible rows** cost rather than what the workspace
-contains — the same bounded-by-the-window rule the lexer, the wrap and the draw
-already follow. A folder with ten thousand files in it is one row until you open
-it.
+Opening the workspace costs one `read_dir`. A directory is read only when it is first expanded, so the cost depends on the tree's **visible rows**, not on the workspace size. The lexer, wrapping and drawing follow the same window-bounded rule. A folder with ten thousand files is one row until you expand it.
 
-That is also why the tree walks down a level at a time when it reveals
-something: `revealInExplorer` on `src/parse/lexer.rs` reads `src`, then
-`src/parse`, and lands the selection when the row finally exists. Nothing in
-between is read.
+For the same reason, the tree reads one level at a time when revealing a file. `revealInExplorer` on `src/parse/lexer.rs` reads `src`, then `src/parse`, and selects the row when it exists. No other directories are read.
 
-`files.exclude` hides the same things here as it hides from `ctrl+p`, and the
-same conventional skips apply — `.git`, `node_modules`, `target` and friends
-never appear. One setting with two meanings would be worse than either meaning.
+`files.exclude` hides the same entries here as in `ctrl+p`, and the same fixed skips apply, so `.git`, `node_modules`, `target` and similar directories never appear. The setting has one meaning in both places.
 
 ## Where the reading happens
 
-Not in the tree. `deco-editor`'s `Explorer` holds what it has been *told* a
-directory contains, and asks for what it lacks; the frontend answers with
-`std::fs`. There is no `read_dir` anywhere in the core, which is what keeps the
-whole editable surface — this tree included — testable with no filesystem
-attached.
+The tree does not read the filesystem. `deco-editor`'s `Explorer` stores the directory contents it has received and requests missing ones; the frontend provides them using `std::fs`. The core contains no `read_dir`, so the editing code, including this tree, can be tested without a filesystem.
 
-That is not tidiness for its own sake. It is also what makes the tree work on a
-**remote** workspace: the same request is answered over the connection instead,
-and the model does not know the difference. The first version derives a remote
-directory's contents from the whole-workspace listing the protocol already has —
-the same listing `ctrl+p` asks for on every press. A per-directory call on the
-wire would be cheaper and is a protocol change rather than a local one.
+The same design lets the tree work on a **remote** workspace: the request is answered over the connection instead, and the model is unchanged. The first version derives a remote directory's contents from the whole-workspace listing that the protocol already provides, which is the same listing `ctrl+p` requests on every press. A per-directory request would be cheaper, but requires a protocol change.
 
 ## Changing the files themselves
 
 ![Creating a file, typing into it, renaming it, and undoing that](img/file-mutations.svg)
 
-`ctrl+n` makes a file, `ctrl+shift+n` a folder, `F2` renames and `delete`
-deletes. The same keys mean other things in the text — `F2` renames the *symbol*
-under the cursor, `delete` deletes a character — and they are told apart by what
-has the keyboard, which is what `sideBarFocus` is for.
+`ctrl+n` creates a file, `ctrl+shift+n` creates a folder, `F2` renames and `delete` deletes. The same keys have other meanings in the text: `F2` renames the *symbol* under the cursor, and `delete` deletes a character. Keyboard focus, exposed as `sideBarFocus`, selects the meaning.
 
-**A new file is created where the selection is, and opened.** The directory is
-the selected row when that row is a folder, and its parent when it is a file, so
-"new file" means "next to this one" without a second question. It then opens and
-the keyboard goes with it, the same way `enter` does — the animation types into
-the new file immediately after making it.
+**A new file is created at the selection and opened.** It is created in the selected folder, or in the selected file's parent directory. The new file then opens and receives keyboard focus, as with `enter`. The animation types into the new file immediately after creating it.
 
-**What you just made is what is selected.** After a create or a rename the
-selection lands on the new name. It matters more than it sounds: the next key
-might be `F2` or `delete`, and having those act on whatever happened to be
-highlighted before is a destructive kind of surprising.
+**The new entry is selected.** After a create or rename, the selection moves to the new name, so a following `F2` or `delete` acts on that entry rather than on the previously selected one.
 
-**A rename moves the tabs with the file.** Renaming a file that is open
-retargets its tab — the buffer, its unsaved changes and its undo history all
-stay, because the file moved and the document did not. Renaming a *directory*
-retargets every tab inside it, since that is what the rename did on disk.
-Renaming `notes.txt` to `notes.md` starts highlighting it as Markdown too,
-whether or not that tab is the one on screen, and unless the language was chosen
-by hand — the same rule save-as follows.
+**A rename moves the tabs with the file.** Renaming an open file retargets its tab. The buffer, its unsaved changes and its undo history are kept. Renaming a *directory* retargets every tab inside it. Renaming `notes.txt` to `notes.md` also switches highlighting to Markdown, whether or not that tab is visible, unless the language was chosen manually. Save-as follows the same rule.
 
 ### The tree has its own undo
 
-`ctrl+z` in the tree takes back the last file operation. `ctrl+z` in the text
-takes back characters. They are separate stacks, told apart by focus — as they
-are in VS Code, and for the reason that an undo which sometimes moved files
-because that was the last thing you did would be unpredictable in both places.
-That holds even when the document has a [workspace edit](find-and-replace.md)
-waiting to be undone: in the tree, `ctrl+z` is the tree's.
+`ctrl+z` in the tree undoes the last file operation. `ctrl+z` in the text undoes text edits. The two undo stacks are separate and selected by focus, as in VS Code, so undo in the text never moves files. This also applies when the document has a [workspace edit](find-and-replace.md) to undo: in the tree, `ctrl+z` uses the tree's stack.
 
-**Undoing a rename checks the file is still the one that moved.** A path is not
-a file: another program can take the renamed file away and leave something else
-where it was, and an undo that trusted the path alone would move *that* back and
-then point your buffer at it. Size and modification time are recorded when the
-rename happens and checked when it is undone — evidence rather than proof, since
-a real identity is an inode on Unix and a file index on Windows and the standard
-library offers the second only behind an unstable feature. A mismatch refuses.
+**Undoing a rename checks that the file is still the one that was moved.** Another program can move the renamed file away and put a different file at that path. Undoing by path alone would then move that other file back and point your buffer at it. Size and modification time are recorded at the rename and checked at undo. This is a heuristic rather than proof of identity: a real identity is an inode on Unix and a file index on Windows, and the standard library provides the latter only behind an unstable feature. On a mismatch, the undo is refused.
 
-**Undoing a create only removes what the create made**, and only if it is still
-that thing. Empty is not an identity: another program can take away what was
-just created and leave a *different* empty file or folder at the same path. The
-same size-and-time evidence a rename's undo carries is recorded when the create
-succeeds, and a mismatch refuses. If you made a file and
-have since typed in it and saved, `ctrl+z` in the tree refuses rather than taking
-the file and its contents with it:
+**Undoing a create removes only the created entry**, and only if it is unchanged. An empty file or folder cannot be identified by being empty, because another program can replace it with a *different* empty entry at the same path. The same size and time check used for rename undo is recorded when the create succeeds, and a mismatch is refused. If you created a file and have since typed in it and saved, `ctrl+z` in the tree refuses rather than deleting the file and its contents:
 
 ```text
 could not deleted parse.rs: parse.rs has been written to since it was
 created — delete it yourself if that is what you meant
 ```
 
-The same for a folder that has gained anything. Undoing a create at that point is
-not undoing anything; it is deleting work, and it would do it without the
-confirmation an ordinary delete asks for.
+The same applies to a folder that has gained any entries. Undoing the create at that point would delete work without the confirmation that an ordinary delete requires.
 
-**Deleting cannot be undone**, so it asks first:
+**Deleting cannot be undone**, so it asks for confirmation:
 
 ```text
 delete lexer.rs? this cannot be undone
 ```
 
-Only a typed `y` goes through; enter on an empty box does not, because that is
-what happens when somebody dismisses a prompt they did not read. Undoing a
-delete would need the file's bytes and deco has nowhere to keep them, and there
-is no trash to move it to either — `files.enableTrash` is one of the settings
-deco does not honour. A delete also clears the stack rather than sitting on top
-of it, so `ctrl+z` afterwards cannot quietly undo the operation *before* it —
-and it clears it only once the delete has actually happened, so a delete the
-filesystem refuses costs you nothing.
+Only a typed `y` confirms the delete. Enter on an empty prompt does not, so dismissing the prompt without reading it deletes nothing. Undoing a delete would require storing the file's bytes, which deco does not do, and there is no trash support because deco does not honour `files.enableTrash`. A delete clears the tree's undo stack, so a later `ctrl+z` cannot undo the operation *before* the delete. The stack is cleared only after the delete succeeds, so a delete refused by the filesystem leaves the stack unchanged.
 
 ### What can still go wrong
 
-The tree checks what it can before anything touches the disk — that the name is
-a name and not a path, that the target is inside the workspace, that nothing is
-already called that. The rest can only be found out by trying, and between the
-check and the attempt is a window another program can use. So the frontend
-refuses to create over a file that appeared in the meantime, and refuses a
-rename onto a name that got taken, rather than truncating or replacing. When the
-disk says no, the operation comes back off the undo stack — `ctrl+z` must never
-offer to undo something that did not happen, and an undo that failed stays there
-to be tried again.
+Before touching the disk, the tree checks that the name is a name and not a path, that the target is inside the workspace, and that no entry with that name exists. Other conditions can only be detected by attempting the operation, and another program can change the filesystem between the check and the attempt. The frontend therefore refuses to create over a file that appeared in the meantime and refuses to rename onto a name that has been taken, rather than truncating or replacing. When the filesystem returns an error, the operation is removed from the undo stack so that `ctrl+z` never offers to undo an operation that did not happen. A failed undo stays on the stack so it can be retried.
 
-**Where a path leads is checked, not just how it is spelled.** The tree can only
-compare spellings — it has no filesystem — so a directory replaced by a symlink
-since it was listed would resolve elsewhere, and every call follows it: `New
-File` in a `src` that is now a link to somewhere else would write there. Before
-anything is created, renamed or removed, the directory it is in is resolved and
-has to still be inside the workspace.
+**The resolved location of a path is checked, not only its spelling.** The tree has no filesystem and can only compare path strings. A directory replaced by a symlink after it was listed resolves elsewhere, and filesystem calls follow the link, so `New File` in a `src` that is now a link would write to the link target. Before anything is created, renamed or removed, the frontend resolves the containing directory and requires it to be inside the workspace.
 
-Creating is safe against that window: `create_new` is one operation, and the
-filesystem is what refuses. **Renaming is not.** The check that the target is
-free and the rename itself are two calls, and a file appearing between them is
-replaced rather than refused. Closing it needs a no-replace rename, which the
-standard library does not offer on any platform — it means `renameat2` on Linux,
-`renamex_np` on macOS and `MoveFileEx` on Windows, three pieces of unsafe
-platform code with a runtime fallback each, in a codebase with one `unsafe` in
-it. A no-replace rename is not implemented, so this race remains possible.
+Creating is not affected by the race between check and operation, because `create_new` is a single operation and the filesystem refuses an existing target. **Renaming is affected.** The check that the target is free and the rename are two calls, and a file created between them is replaced rather than refused. Preventing this requires a no-replace rename, which the standard library does not offer on any platform. It would require `renameat2` on Linux, `renamex_np` on macOS and `MoveFileEx` on Windows: three pieces of unsafe platform code, each with a runtime fallback, in a codebase that currently has one `unsafe` block. A no-replace rename is not implemented, so this race remains possible.
 
-The symlink check has a cousin of the same window: something can replace a
-directory between the check and the call. Closing that needs `openat` with
-`O_NOFOLLOW` and a handle per path component, which the standard library also
-has on no platform. What the check does close is the case that actually happens
-— a link sitting in the workspace, left by a build or a package manager — rather
-than an attacker racing in the microseconds between two calls.
+The symlink check has a similar race: a directory can be replaced between the check and the call. Preventing that requires `openat` with `O_NOFOLLOW` and a handle per path component, which the standard library also does not provide on any platform. The check covers the common case of an existing link in the workspace, for example one created by a build or a package manager. It does not prevent an attacker who replaces a directory between the two calls.
 
-**A rename and a delete act on what the tree was showing**, not on what is on
-disk when the frontend gets there. A folder replaced by a file since it was read
-is refused rather than moved as though it were still a folder — which would
-retarget every tab below the old path onto a regular file.
+**Rename and delete act on the entry type the tree was showing**, not on what is on disk when the frontend performs the operation. A folder replaced by a file since it was read is refused rather than moved as a folder, which would retarget every tab below the old path to a regular file.
 
-A delete is the same: The confirmation names a file or a folder, and that is what
-is carried out — so a file replaced by a directory since the tree last read it is
-refused rather than recursively deleted, which is what asking the disk instead
-would have done. The tree has no watcher, so its picture really can be stale.
+Delete follows the same rule. The confirmation names a file or a folder, and only that type is deleted. A file replaced by a directory since the tree last read it is refused rather than deleted recursively. The tree has no filesystem watcher, so its view can be out of date.
 
-Deleting a file that is open lets that tab go rather than closing it: the buffer
-stays, its path is dropped, and the status line says so. The text is still
-yours — where it should live is a question only you can answer. Its diagnostics
-go with the file, and the language server is told the document is closed.
+Deleting an open file detaches its tab rather than closing it. The buffer is kept, its path is cleared, and the status line reports this, so you can save the text elsewhere. The file's diagnostics are removed, and the language server is told that the document is closed.
 
-That holds when a delete only *partly* works, too. Removing a directory can take
-some of it and then stop — on an entry that is locked, or one another program
-made underneath. The half that went is as gone as if it had all worked, so the
-tree re-reads the directory **and everything below it**, and each tab is checked
-against the disk one file at a time rather than the whole subtree being let go or
-none of it. The tree's undo history goes as well, for the same reason a
-completed delete clears it: something irreversible happened, and the entries
-below it describe a state that never existed.
+The same applies when a delete *partly* succeeds. Removing a directory can delete some entries and then stop on an entry that is locked or was created by another program. The deleted entries are gone, so the tree re-reads the directory **and everything below it**, and each tab is checked against the disk individually rather than detaching all or none of the tabs in the subtree. The tree's undo history is also cleared, as after a completed delete, because an irreversible change occurred and the older entries no longer match the filesystem.
 
-Only a *recursive* delete can half happen. Removing one file, or one empty
-directory, either worked or did not — so a refusal there costs no undo history.
-And a recursive failure only costs it if something **actually went**: the tree
-re-checks what it knew about, and what any tab is holding, against the disk. A
-permission error on the directory itself stops the delete before it opens
-anything, and the history survives that untouched.
+Only a *recursive* delete can partly succeed. Removing one file or one empty directory either succeeds or fails, so a refusal there keeps the undo history. A failed recursive delete clears the history only if something **was actually removed**: the tree checks the entries it knew about, and the files held by tabs, against the disk. A permission error on the directory itself stops the delete before any entry is removed, and the history is kept.
 
-The check is bounded by what has been read, which is what is on screen: the tree
-only knows the directories somebody expanded. A file removed out of a collapsed
-directory is invisible to it — better to say so than to walk a whole workspace to
-answer a question about one keystroke.
+The check covers only directories that have been read, which are the directories that were expanded. A file removed from a collapsed directory is not detected, because detecting it would require walking the whole workspace.
 
-What the tree remembered about a directory goes when the directory does. It
-would otherwise keep its rows and its open state under that name, so creating a
-directory called the same thing later would show the deleted one's contents,
-already expanded. A **rename** keeps them instead of dropping them — the contents
-did not change, only the name — so a renamed folder stays open with its rows
-intact, which is what a rename looks like from the outside.
+When a directory is deleted, the tree's stored state for it is also removed. Otherwise a new directory created later with the same name would show the deleted directory's contents, already expanded. A **rename** keeps this state because only the name changed, so a renamed folder stays expanded with its rows intact.
 
-A tab is let go only when the disk says its file is **definitely** gone. The
-permission problem that stopped a delete can also stop the check, and a file that
-merely cannot be looked at is not a file that has been removed.
+A tab is detached only when the disk reports that its file is **definitely** gone. The permission problem that stopped a delete can also stop the check, and a file that cannot be inspected has not necessarily been removed.
 
-A rename can take a file's language away — `main.rs` to `main.txt`. What the
-language server said goes with it, since nothing would ever replace it: no
-server runs for a file with no language, so the old squiggles and highlighting
-would otherwise sit there for good.
+A rename can remove a file's language, for example `main.rs` to `main.txt`. The language server's results for the file are then removed, because no server runs for a file without a language and the old diagnostics and highlighting would otherwise never be replaced.
 
-A rename that only changes capitalisation works on a case-insensitive
-filesystem, where `Foo.rs` and `foo.rs` are the same file: the check asks whether
-the target is *a different file*, not whether the name is taken. It asks about
-the directory entry rather than what it leads to, so a symlink pointing at
-nothing still counts as something in the way — it would otherwise be invisible
-from both sides, since the tree lists only real files and directories.
+A rename that only changes capitalisation works on a case-insensitive filesystem, where `Foo.rs` and `foo.rs` are the same file. The check tests whether the target is *a different file*, not whether the name exists. It inspects the directory entry rather than its target, so a dangling symlink still counts as an existing entry. Otherwise it would be visible in neither check, because the tree lists only regular files and directories.
 
-Accepting the rename prompt without editing it does nothing at all, compared
-before any tidying of the text: on a filesystem that allows a name like
-`" report "`, trimming first would make pressing enter a rename nobody asked
-for.
+Accepting the rename prompt without editing it does nothing. The comparison is made before the text is trimmed, so on a filesystem that allows a name such as `" report "`, pressing enter does not rename the file.
 
-Over a [remote connection](remote.md) these are refused by name: the protocol
-reads, writes and lists, and has no create, rename or delete yet. Refusing is
-the point — doing it locally would change a file on this machine and report
-success about the other one.
+Over a [remote connection](remote.md), these operations are refused with a message naming the operation. The protocol supports reading, writing and listing, but not create, rename or delete yet. Performing the operation locally would change a file on the local machine while reporting success for the remote one.
 
 ## Two kinds of empty
 
-A blank side bar could mean either of two things, so it says which:
+An empty side bar can have two causes, so it shows which one applies:
 
 ```text
 reading the workspace…
@@ -257,24 +119,10 @@ this workspace is empty
 
 ## Not built yet
 
-**The tree does not notice changes on disk.** A file created by another program
-appears when the directory is read again. There is no watcher; adding one is its
-own piece of work with its own failure modes on every platform, and it is worth
-doing as itself rather than smuggled in here.
+**The tree does not detect changes on disk.** A file created by another program appears when the directory is read again. There is no filesystem watcher. A watcher has platform-specific failure modes and should be implemented as a separate change.
 
-**No mouse, and no drag.** Keyboard only, in both frontends — the GPU frontend's
-mouse work has not been done, and a tree that could only be clicked in one of
-them would be worse than one that is arrowed in both. Moving a file to another
-folder therefore has no gesture: renaming takes a name, not a path, so it cannot
-be used to move one either.
+**No mouse, and no drag.** The tree is keyboard-only in both frontends, because mouse support has not been implemented in the GPU frontend. Moving a file to another folder is therefore not possible: rename accepts a name, not a path.
 
-**Creating, renaming and deleting are not `WorkspaceEdit`s.** They go through
-the same division of labour — the core decides, the frontend touches the disk —
-but not the same type: a `WorkspaceEdit` resolves edits *within* files, and a
-file that does not exist yet has no text to edit. What the two share is the
-thing that mattered, which is that a rename and its tab retarget happen
-together.
+**Creating, renaming and deleting are not `WorkspaceEdit`s.** They use the same division of responsibility, where the core decides and the frontend accesses the disk, but not the same type. A `WorkspaceEdit` describes edits *within* files, and a file that does not exist yet has no text to edit. Like a `WorkspaceEdit`, a rename updates the file and its tab together.
 
-There is one tree, on one root — the root deco was started in. Opening a second
-workspace and switching between them is
-[its own chapter](roadmap.md#several-workspaces-switched-between).
+There is one tree with one root: the root deco was started in. Opening a second workspace and switching between workspaces is covered in [the roadmap](roadmap.md#several-workspaces-switched-between).

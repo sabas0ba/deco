@@ -1,9 +1,6 @@
 # Remote development
 
-> **State of this: you can open a file on another machine, edit it and save it
-> back, put deco there if it has none, reach a port on it, and run language
-> servers and Git over there, and search it.** What is missing is extensions on the
-> remote. This page is explicit about each.
+> **Status: you can open, edit and save a file on another machine, install deco there if it is missing, forward a port from it, run language servers and Git there, and search it.** Extensions do not yet run on the remote. This page describes each of these.
 
 ## Using it
 
@@ -11,97 +8,56 @@
 $ deco --remote ssh-remote+myhost --workspace /home/u/project src/main.rs
 ```
 
-That starts `deco --server --stdio` on the remote environment over SSH, reads `src/main.rs`
-through the connection, and opens it. `ctrl+s` writes it back over the same
-connection. `ctrl+p` lists the **remote** workspace, because that is where the
-files are.
+This starts `deco --server --stdio` on the remote environment over SSH, reads `src/main.rs` through the connection, and opens it. `ctrl+s` writes it back over the same connection. `ctrl+p` lists files in the **remote** workspace.
 
 Git status, committed text, diff comparisons, branch preflight, checkout,
 stage, unstage and commit also run on the remote environment.
 They use a second connection and a worker of their own, so a working-tree walk
 or commit hook does not stop file reads or the editor's event loop.
 
-Paths are relative to the workspace the server was given. Without `--workspace`
-the server serves wherever the transport lands, which for SSH is the account's
-home directory.
+Paths are relative to the workspace the server was given. Without `--workspace`, the server uses the transport's initial working directory, which for SSH is the account's home directory.
 
-Every path in a remote session belongs to that one workspace, including the one
-you type into **Save As**: it is taken as the remote environment spells it and the copy is
-written there, not onto this machine. `~` and this machine's working directory
-do not come into it, and a name that points outside what the server serves is
-refused by name rather than written somewhere else. The workspace is one place;
-half of one would make every path ambiguous. **Revert** reads over the same
-connection, for the same reason.
+All paths in a remote session belong to the served workspace, including the path entered in **Save As**. That path is interpreted on the remote environment and the copy is written there, not on the local machine. `~` and the local working directory are not used. A path outside the served directory is rejected with an error naming it, rather than written elsewhere. Using a single workspace for every path keeps paths unambiguous. **Revert** also reads over the same connection.
 
 ### What is different in a remote session
 
-One thing is turned off rather than left to do the wrong thing, and it says so
-rather than failing silently:
+Extension hosts behave differently in a remote session:
 
-- **Extension hosts run here, and their file access goes over the connection.**
-  A host started by a remote session is still a local Node process in the same
-  container sandbox as always — but `vscode.workspace.fs.readFile` and its
-  neighbours are answered through the session's connection, so an extension reads
-  the files being edited rather than whatever is at that path on this machine.
-  See below.
+- **Extension hosts run locally, and their file access goes over the connection.** A host started by a remote session is a local Node process in the usual container sandbox. `vscode.workspace.fs.readFile` and related calls are answered through the session's connection, so an extension reads the files being edited rather than the files at the same path on the local machine. See below.
 
-Saving is the one place where a failure is *not* fatal: a connection can drop
-while the editor is perfectly able to keep your text and try again. A failed
-remote save says so and leaves the document dirty, rather than reporting a save
-that did not happen.
+A failed save is the one remote failure that is *not* fatal, because the connection can drop while the editor still holds the text and can retry. A failed remote save is reported and the document stays dirty.
 
 ## Getting deco onto the remote
 
-The remote environment needs a `deco` to run. If it has one on its PATH, nothing below is
-needed; if it is installed somewhere a login shell does not look, name it:
+The remote environment needs a `deco` binary. If one is on its PATH, no further setup is needed. If it is installed in a directory that a login shell does not search, specify its path:
 
 ```console
 $ deco --remote ssh-remote+myhost --remote-server-path ~/.deco/bin/deco src/main.rs
 ```
 
-And if it has none at all, deco can send this machine's own binary — **when you
-ask it to**:
+If the remote has no `deco`, deco can upload the local binary **when requested**:
 
 ```console
 $ deco --remote ssh-remote+myhost --remote-install src/main.rs
 ```
 
-It lands in `$HOME/.deco/bin/deco` on the remote, under the account's own home
-rather than anywhere on the system path: installing for one user needs no
-privileges and affects nobody else, which is the least surprising thing an editor
-can do to a machine. `--remote-server-path` chooses somewhere else.
+The binary is installed to `$HOME/.deco/bin/deco` on the remote, in the account's home directory rather than on the system path. A per-user install needs no privileges and does not affect other users. `--remote-server-path` selects a different location.
 
 ### What it will not do
 
-Pointing an editor at a machine is not the same as authorising it to install
-software there. That is the whole design of this part, and it is why the flag
-exists rather than the behaviour being automatic:
+Connecting to a machine does not authorise deco to install software on it. Installation therefore requires an explicit flag and is never automatic:
 
-- **Nothing happens unless asked.** A session that finds no `deco` fails and
-  mentions `--remote-install`. It does not helpfully fix it.
-- **A different platform needs a second, larger yes.** The remote is asked what
-  it is *before* anything is sent. `--remote-install` on its own reaches
-  nothing — it copies the file already running here — so a mismatch names both
-  sides rather than uploading a binary that cannot run there. Downloading one
-  that can is `--remote-install-download`, below.
-- **Anything that is not deco is left alone.** Existence and runnability are
-  asked separately, so a `--remote-server-path` typo landing on a `notes.txt` —
-  which exists but answers no `--version` — is a refusal, not an overwrite.
-- **A half-written binary never reaches the destination.** The upload goes to
-  `deco.incoming` beside it and is renamed once complete, so an interrupted
-  install leaves the old deco, or nothing.
-- **The result is checked.** The installed binary is asked for its version, so a
-  `noexec` mount or a missing libc is an error here rather than a handshake that
-  never answers.
+- **Nothing is installed unless requested.** If no `deco` is found, the session fails and the error mentions `--remote-install`.
+- **A different platform requires a separate flag.** deco queries the remote platform *before* sending anything. `--remote-install` only copies the binary that is running locally and does not use the network, so on a platform mismatch it reports both platforms instead of uploading a binary that cannot run. `--remote-install-download` downloads a matching build; see below.
+- **Files that are not deco are not overwritten.** deco checks separately whether the path exists and whether it runs. If `--remote-server-path` points by mistake at a file such as `notes.txt`, which exists but does not answer `--version`, the install is refused.
+- **A partial upload never replaces the destination.** The upload is written to `deco.incoming` in the same directory and renamed when complete, so an interrupted install leaves either the old deco or nothing.
+- **The result is verified.** deco asks the installed binary for its version, so a `noexec` mount or a missing libc is reported as an error instead of causing a handshake that never completes.
 
-A deco of the same version already at the destination is left where it is, so
-this is not an upload on every start.
+If the destination already has deco of the same version, it is not replaced, so the binary is not uploaded on every start.
 
 ### When the remote is another platform
 
-`--remote-install` sends *this* machine's binary, so both ends must match: Linux
-to Linux, and every WSL and container case. A macOS laptop provisioning a Linux
-server needs a binary this machine does not have.
+`--remote-install` sends the local binary, so both machines must use the same platform. This covers Linux to Linux and all WSL and container cases. A macOS machine provisioning a Linux server does not have a suitable binary locally.
 
 `--remote-install-download` fetches one:
 
@@ -109,54 +65,26 @@ server needs a binary this machine does not have.
 $ deco --remote ssh-remote+buildbox --remote-install-download src/main.rs
 ```
 
-It is a **separate flag on purpose**. Copying the file you are already running
-reaches nothing; fetching an executable over the network is a different thing to
-be allowed to do, and a flag that quietly grew that power would be the kind of
-convenience this project keeps refusing. `--remote-install` alone still refuses
-a mismatch exactly as it did.
+This is a **separate flag on purpose**. Copying the running binary does not use the network. Downloading an executable does, so it requires its own explicit permission. `--remote-install` alone still refuses a platform mismatch.
 
-What it fetches is the release for this deco's *own* version — the same archive
-and the same `SHA256SUMS` the [README's install
-section](../README.md#a-prebuilt-binary) tells a person to download by hand.
+It downloads the release for the local deco's *own* version: the same archive and `SHA256SUMS` that the [README's install section](../README.md#a-prebuilt-binary) tells users to download manually.
 
-- **The checksum is checked here, by deco.** The archive is hashed in deco's own
-  code and compared with the line `SHA256SUMS` carries for it. A mismatch is
-  discarded, naming both hashes, and nothing is written.
-- **An archive nothing vouches for is refused before it is downloaded.** The
-  checksums come first; if they list no line for the asset, the archive is never
-  asked for. There is no path where unverified bytes are used because they had
-  already arrived.
-- **Nothing from the archive touches the filesystem as a tree.** The one member
-  holding the binary is read out with `tar xzO`, so a path with `..` in it or a
-  symlink pointing somewhere it should not has nowhere to land.
-- **The transfer and the unpacking are `curl` and `tar`.** Both ship with every
-  platform this runs on, and both are missing-by-name failures rather than
-  silent ones. Only the check is deco's own — see
-  [Dependencies](../README.md#dependencies) for why that line is drawn there and
-  not somewhere cheaper.
+- **deco verifies the checksum locally.** deco hashes the archive in its own code and compares the result with the archive's entry in `SHA256SUMS`. On a mismatch the archive is discarded, the error names both hashes, and nothing is written.
+- **An archive without a checksum entry is not downloaded.** The checksums are downloaded first. If they have no entry for the asset, the archive is not requested, so unverified data is never used.
+- **The archive is not extracted to the filesystem.** Only the member containing the binary is read, with `tar xzO`, so entries containing `..` or symbolic links pointing elsewhere are never written.
+- **Download and extraction use `curl` and `tar`.** Both are available on every supported platform, and a missing tool is reported by name. Only the checksum verification is implemented in deco; see [Dependencies](../README.md#dependencies) for the reasoning behind this split.
 
-Once the binary is in hand it is uploaded by exactly the path above: staged
-beside the destination, made executable, renamed, and then asked for its version.
+The downloaded binary is then uploaded with the same steps as above: staged beside the destination, made executable, renamed, and asked for its version.
 
-**A platform with no published build is still refused by name.** The releases
-carry four POSIX targets — Linux and macOS, x86-64 and ARM64 — and anything else
-is told so rather than given the nearest thing.
+**A platform without a published build is refused with an error naming it.** Releases include four POSIX targets: Linux and macOS on x86-64 and ARM64. deco does not substitute the closest build for other platforms.
 
-`uname` cannot tell glibc from musl, so an Alpine remote is sent the `-gnu`
-build. That is not silently wrong: the installed binary is asked for its version
-and one that cannot run does not answer, so it surfaces as a refusal at the end
-rather than as a session that mysteriously never connects.
+`uname` cannot distinguish glibc from musl, so an Alpine remote receives the `-gnu` build. If that binary cannot run, the final version check fails and the install is refused, instead of producing a session that never connects.
 
-The remote is assumed to have a POSIX shell and `uname`, `mkdir`, `dd`, `chmod`
-and `mv` — the same assumption already made by running `deco --server` over
-`ssh`. The download adds nothing to that list: it all happens on this end.
+The remote must provide a POSIX shell and `uname`, `mkdir`, `dd`, `chmod` and `mv`. Running `deco --server` over `ssh` already requires these. The download adds no requirements on the remote because it runs locally.
 
 ## Settings that belong to the machine
 
-Some settings are facts about a *machine* rather than about a person: where the
-toolchain is on the build box, which interpreter that container has. VS Code
-calls these machine settings and keeps them on the remote; deco does the same,
-in `machine-settings.json` beside the remote's own `settings.json`:
+Some settings describe a *machine* rather than a user, for example the toolchain location on a build machine or the interpreter in a container. VS Code calls these machine settings and stores them on the remote. deco does the same, in `machine-settings.json` beside the remote's own `settings.json`:
 
 ```jsonc
 // ~/.config/deco/machine-settings.json, on the remote
@@ -167,244 +95,117 @@ in `machine-settings.json` beside the remote's own `settings.json`:
 }
 ```
 
-Connect, and it becomes the **`remote` layer**: above your own `settings.json`,
-below the project's, exactly where VS Code puts it. `deco --print-config` names
-the file it came from.
+After connecting, this file becomes the **`remote` layer**: above your own `settings.json` and below the project's, the same position VS Code uses. `deco --print-config` shows the file it was read from.
 
-**It is a separate file from that machine's `settings.json`, deliberately.**
-Serving the account's own editor configuration would mean connecting quietly
-adopted somebody else's theme, font and keybindings — and would turn an ordinary
-local setup into something a visitor's session has to treat as suspect. A
-machine-settings file is written on purpose, by someone who meant it to be seen
-by whoever connects.
+**This file is deliberately separate from the remote machine's `settings.json`.** Using the remote account's editor configuration would apply another person's theme, font and keybindings on connection. It would also turn an ordinary local configuration into a file that connecting sessions must treat as untrusted. A machine-settings file is created specifically to be read by clients that connect.
 
 ### It is not trusted, and that is the point
 
-`machine-settings.json` sits where anyone with an account on that machine can
-write it. Choosing to connect to a machine is a decision about the machine; it
-is not a signature on every file that happens to be on it. So this layer is
-treated like a cloned repository's `.vscode/settings.json`:
+`machine-settings.json` is stored where anyone with an account on that machine can write it. Connecting to a machine does not mean trusting every file on it. This layer is therefore treated like a cloned repository's `.vscode/settings.json`:
 
-- **A language server defined there is confirmed before it runs.** A definition
-  is a program to execute, and connecting must not be enough to execute one.
-  This is the same rule that already applies to a workspace's, for the same
-  reason — see [Language servers](language-servers.md).
-- **It cannot choose the extension sandbox.** `deco.extensions.sandbox` and its
-  neighbours are read from deco's defaults and your own file only, and an
-  attempt from here is reported rather than dropped in silence.
-- **`--clean` ignores it**, along with everything else. A flag meaning "start
-  with nothing" that still adopted another machine's settings would not be the
-  flag it says it is.
+- **A language server defined there requires confirmation before it runs.** A server definition is a program to execute, and connecting alone must not execute it. The same rule applies to workspace settings; see [Language servers](language-servers.md).
+- **It cannot select the extension sandbox.** `deco.extensions.sandbox` and related settings are read only from deco's defaults and your own settings file. Attempts to set them in this layer are reported.
+- **`--clean` ignores it**, like all other settings files. `--clean` starts with no configuration, so it does not load the remote machine's settings either.
 
-Everything else — tab size, rulers, word wrap, a colour theme — applies
-normally. Those change what you see, not what runs.
+All other settings, such as tab size, rulers, word wrap and colour theme, apply normally. They affect display, not which programs run.
 
 ### How it gets here
 
-The server has one method for it, `settings.read`, and that method **takes no
-path**. A client cannot ask for a file of its choosing; it asks for "this
-machine's settings" and receives whatever is at the one path the server works
-out for itself. So the [confinement rule](#one-directory-and-no-way-out-of-it)
-is untouched: there is still exactly one directory a client can steer a read
-into.
+The server provides this file through one method, `settings.read`, which **takes no path**. A client cannot request an arbitrary file. It requests this machine's settings and receives the contents of the single path that the server determines itself. The [confinement rule](#one-directory-and-no-way-out-of-it) therefore still holds: a client can direct reads into only one directory.
 
-The server does not read the file to *decide* anything either. It hands over
-bytes; this end parses them, places them in the layer, and applies the trust
-rules above. A server that obeyed a settings file would be taking an authority
-nobody gave it — reading one to pass along is not that.
+The server does not use the file for its own decisions. It sends the bytes, and the client parses them, adds them to the layer and applies the trust rules above. The server only passes the file along; it does not act on it.
 
-A server too old to have the method says so in its handshake, and this end does
-not ask. A machine with no `machine-settings.json` is the ordinary case and is
-not an error; a file that cannot be read *is* reported, because a layer that
-silently did not apply is how "why is my setting being ignored" starts.
+A server too old to support the method reports this in its handshake, and the client does not call it. A missing `machine-settings.json` is normal and not an error. A file that exists but cannot be read is reported, so that a layer that failed to apply does not go unnoticed.
 
-Whoever starts the server can point it elsewhere with `--machine-settings
-<path>`. That is a decision made where the server is launched — on the remote,
-by whoever runs it — and not one a client can make.
+The server can be pointed at a different file with `--machine-settings <path>`. This is chosen by whoever launches the server on the remote; a client cannot choose it.
 
 ## Extensions
 
-The host stays on this machine. What changes in a remote session is where its
-file requests are served from: reading, writing, `stat`, `readDirectory`, and
-creating, deleting, renaming and copying all go through the same connection the
-editor uses, so an extension sees — and changes — the workspace being edited.
+The extension host stays on the local machine. In a remote session, its file requests are served over the editor's connection: reading, writing, `stat`, `readDirectory`, and creating, deleting, renaming and copying. An extension therefore reads and changes the workspace being edited.
 
-Reading around the connection is the failure this is shaped to prevent. The path
-an extension asks for exists on the remote; a local read at the same path would
-answer from a different checkout, or from nothing, and the reply would look
-identical either way. So the server's rules apply to an extension too — a path
-outside the workspace is refused by name, exactly as it is for the editor.
+This prevents an extension from reading local files by mistake. The path an extension requests exists on the remote. A local read at the same path would return a different checkout, or nothing, and the result would look the same in either case. The server's rules therefore also apply to extensions: a path outside the workspace is rejected with an error naming it, as it is for the editor.
 
 Extension hosts still run locally. Process execution, clipboard access, secrets and `openExternal` are not implemented by the host integration; permission declarations do not enable these operations. See [extension API limitations](extensions.md#what-is-still-not-connected).
 
-A host *on* the remote is the other design, and it is a different decision rather
-than more of this one: it needs Node over there, which deco does not provision,
-and it moves the capability broker — the thing standing between a cloned
-repository's extension and your machine — onto a machine you may share. What is
-here does not have to be undone to get there; VS Code's remote support has both
-kinds, and its UI-side extensions reach workspace files exactly this way.
+Running the host *on* the remote is a different design, not an extension of this one. It needs Node on the remote, which deco does not install. It also moves the capability broker, which mediates between a cloned repository's extension and your machine, onto a machine that may be shared. The current design does not prevent adding it later. VS Code's remote support has both kinds, and its UI-side extensions access workspace files in the same way as here.
 
 ### Permissions
 
-`extensions.permissions.default` decides what happens to a capability the
-manifest declared and nobody has ruled on. `prompt` — the default — asks, and the
-extension waits for the answer. `allow` serves it without asking, which is the
-deliberate downgrade the setting describes: declaration becomes the only check.
-`deny` refuses without asking.
+`extensions.permissions.default` decides what happens to a capability that the manifest declares and that has no stored decision. `prompt`, the default, asks the user, and the extension waits for the answer. `allow` grants it without asking, so the declaration becomes the only check. `deny` refuses without asking.
 
 ## Language servers
 
-They run on the machine holding the files, which is the only place that could
-work: a server started here would be indexing a checkout that does not exist.
+Language servers run on the machine that holds the files. A server started locally would index a checkout that does not exist.
 
-Nothing needs configuring for this. The same `deco.lsp.servers` definitions are
-used, with each command wrapped in the transport — `rust-analyzer` in your
-settings becomes `ssh myhost rust-analyzer` — so the server has to be installed
-on the remote rather than here. deco does not provision language servers; the
-only binary `--remote-install` sends is its own.
+No configuration is needed. The same `deco.lsp.servers` definitions are used, with each command wrapped in the transport: `rust-analyzer` in your settings becomes `ssh myhost rust-analyzer`. The server must therefore be installed on the remote. deco does not install language servers; `--remote-install` only sends deco itself.
 
-Two things change on the way:
+Two things differ from a local session:
 
-- **Paths.** The editor holds paths relative to the workspace the remote environment
-  serves; the server knows them as absolute paths over there. The prefix is
-  added when a path becomes a URI and taken off when one comes back, at the
-  single place where that conversion happens. A URI *outside* the workspace —
-  go-to-definition into an indexed dependency — keeps its absolute form, and
-  what happens next is the file server's decision: it refuses to read outside
-  the workspace, by name.
-- **Environment.** A definition's `env` moves into the command as
-  `env NAME=VALUE …` rather than being set on the process deco spawns, because
-  that process is `ssh` on *this* machine. Left where it was it would have been
-  set in the wrong place and never reached the server — the kind of failure that
-  looks like the setting being ignored. A name deco cannot pass through an
-  argument vector is refused by name rather than mangled.
+- **Paths.** The editor holds paths relative to the workspace served by the remote environment, and the server uses absolute paths on the remote. The prefix is added when a path is converted to a URI and removed when a URI comes back, in a single conversion function. A URI *outside* the workspace, such as the target of go-to-definition into an indexed dependency, keeps its absolute form. The file server then rejects reads outside the workspace with an error naming the path.
+- **Environment.** A definition's `env` is added to the command as `env NAME=VALUE …` instead of being set on the spawned process, because that process is the local `ssh`. Variables set on it would not reach the server, and the setting would appear to be ignored. A name that cannot be passed in an argument vector is rejected with an error naming it.
 
-Servers are given longer to answer `initialize` in a remote session, and not by
-a little: the wait covers an SSH handshake and a language server reading a
-project from a disk this machine never touches.
+In a remote session, servers get a considerably longer timeout for `initialize`. The wait includes the SSH handshake and the server reading the project from the remote disk.
 
 ## Searching the workspace
 
-`ctrl+shift+f` searches the remote, because that is where the files are. It used
-to be refused: a local walk in a remote session searches *this* machine and
-reports matches in files the editor is not showing.
+`ctrl+shift+f` searches the remote workspace. It was previously refused, because a local walk in a remote session searches the local machine and reports matches in files the editor is not showing.
 
-The matching happens on the remote environment, with the same function the find bar and the
-local project search use — `deco-remote` depends on `deco-core` for exactly that
-reason. Two definitions of what counts as a match would drift, and a term that
-matched in one place and not the other would be worse than no search at all.
+Matching runs on the remote environment and uses the same function as the find bar and local project search; `deco-remote` depends on `deco-core` for this reason. Separate implementations could diverge, so that a term matched in one search and not in another.
 
-The limits are the server's, not the client's: five hundred matches and a
-megabyte per file, enforced over there because the client is whatever is on the
-other end of a connection the server did not authenticate. A search that stopped
-early says so.
+The limits are enforced by the server, not the client: five hundred matches and one megabyte per file. They are enforced on the server because the server does not authenticate the client at the other end of the connection. A search that stops early reports this.
 
-Two things are worth knowing:
+Two details:
 
-- **`files.exclude` is applied here, not there.** The server does not *act* on
-  settings — answering `fs.read` by consulting a file on the remote would be an
-  authority nobody gave it — so the only end that can apply your excludes is
-  this one. (It will hand over the machine's settings when asked; that is
-  [a different thing](#settings-that-belong-to-the-machine), and it still does
-  not obey them.) The server still skips `.git`, `node_modules` and `target` on
-  its own, which is where most of the cost of a walk is.
-- **The count shown is the count after filtering**, which can be fewer than the
-  server found.
+- **`files.exclude` is applied locally, not on the server.** The server does not act on settings; consulting a remote file to answer `fs.read` would give it authority it was not given. Only the client can therefore apply your excludes. (The server does send the machine's settings on request, as described in [a separate section](#settings-that-belong-to-the-machine), but it does not act on them.) The server still skips `.git`, `node_modules` and `target` itself, which accounts for most of the cost of a walk.
+- **The displayed count is taken after filtering**, so it can be lower than the number the server found.
 
 ## Reaching a port on the remote
 
-A dev server on the remote's `:3000` has no route from here. `--forward` gives it
-one:
+A dev server on the remote's `:3000` is not reachable from the local machine. `--forward` makes it reachable:
 
 ```console
 $ deco --remote ssh-remote+myhost --forward 3000 src/main.rs
 $ deco --remote ssh-remote+myhost --forward 8080:3000 src/main.rs
 ```
 
-The first makes the remote's `3000` answer on this machine's `3000`; the second
-puts it on `8080` instead, for when something local already holds the port. The
-forward lasts as long as the editor session and the port is released when it
-ends.
+The first command makes the remote's port `3000` available on local port `3000`. The second uses local port `8080`, for when a local process already uses the port. The forward lasts as long as the editor session, and the port is released when the session ends.
 
 ### deco is its own tunnel
 
-`ssh -L` exists and does this well, and nothing here uses it, because it is
-available on exactly one of the three transports — `docker exec` cannot forward
-a port at all, and a WSL distribution has no `-L` either.
+deco does not use `ssh -L`, because only one of the three transports supports it. `docker exec` cannot forward ports, and a WSL distribution has no equivalent of `-L`.
 
-So the remote's deco is the tunnel. Each connection runs:
+Instead, the remote's deco acts as the tunnel. Each connection runs:
 
 ```console
 $ ssh myhost deco --forward-to 127.0.0.1:3000 --stdio
 ```
 
-which connects to that port and pipes it to its own stdin and stdout. Every
-transport can already carry a program's stdio — that is how the file server
-works — so this works over all three, with no `socat`, no `nc`, and nothing on
-the remote that deco did not put there. It is the same binary
-`--remote-install` provisions, found the same way.
+This command connects to the port and relays its data over its own stdin and stdout. Every transport can carry a program's stdio, as the file server already requires, so forwarding works over all three transports without `socat`, `nc` or any other tool on the remote that deco did not install. It uses the same binary that `--remote-install` installs, located the same way.
 
-The cost is a process per connection, which over SSH would be an authentication
-round-trip each time — twenty of them for one page load. So deco multiplexes: the
-first connection sets up a control socket and the rest are local work.
+Each connection starts a process. Over SSH, each process would need an authentication round trip, which can be twenty round trips for one page load. deco therefore multiplexes SSH connections: the first connection creates a control socket, and later connections reuse it without authenticating again.
 
-That needs a `ControlPath`, and it is a path rather than a flag for a reason.
-`ControlMaster=auto` on its own does *nothing*: OpenSSH's `ControlPath` has no
-default, and without one the setting is silently inert. deco used to pass
-`ControlMaster` alone and claim multiplexing it did not have.
+Multiplexing requires a `ControlPath`. `ControlMaster=auto` alone has *no effect*, because OpenSSH's `ControlPath` has no default. An earlier version of deco passed only `ControlMaster` and did not actually multiplex.
 
 ### Loopback at both ends
 
-- **On the remote**, `--forward-to` accepts loopback addresses only.
-  `--forward-to 10.0.0.5:5432` is refused by name, because a deco that dials
-  anywhere its host can reach is a proxy into that network — the same authority
-  the file server refuses to have over paths. A *name* is resolved first and
-  every address it resolves to is checked, since `localhost` is only loopback by
-  convention and a remote's `/etc/hosts` can say otherwise.
-- **On this machine**, the listener binds `127.0.0.1` and never `0.0.0.0`.
-  Typing a port number is not a request to put someone else's database on your
-  network.
+- **On the remote**, `--forward-to` accepts only loopback addresses. `--forward-to 10.0.0.5:5432` is rejected with an error naming it. A deco that could connect to any address its host can reach would act as a proxy into that network, which is the same kind of authority the file server refuses for paths. A host *name* is resolved first and every resulting address is checked, because `localhost` is loopback only by convention and the remote's `/etc/hosts` can map it elsewhere.
+- **On the local machine**, the listener binds `127.0.0.1`, never `0.0.0.0`. Forwarding a port does not expose the remote service to your network.
 
 ### Who can use a forward
 
 Forwarded ports restrict network access but do not authenticate local clients.
 
-**From the network — no.** The listener binds `127.0.0.1`, so packets from
-another machine are not routed to it at all; there is no port open on this
-machine's network interfaces. And the forwarded traffic never crosses a network
-in the clear: over SSH it rides inside the SSH connection, and over `docker exec`
-or WSL it never leaves the machine. Network equipment on the path sees SSH
-ciphertext and nothing else. A test asserts the listener is loopback, because
-that one line is the whole of this paragraph and nothing else would catch it
-being changed to `0.0.0.0` for convenience.
+**From the network: no.** The listener binds `127.0.0.1`, so packets from other machines are not routed to it, and no port is opened on the local machine's network interfaces. Forwarded traffic is not sent over a network unencrypted: over SSH it is carried inside the SSH connection, and over `docker exec` or WSL it stays on the local machine. Network equipment on the path sees only SSH ciphertext. A test asserts that the listener binds to loopback, so that a change to `0.0.0.0` is detected.
 
-**Another user on the same machine — yes, and this is the real exposure.**
-Loopback is not per-user: any local account can connect to a forwarded port and
-reach the remote's service through it, for as long as the session runs. This is
-not particular to deco — `ssh -L` and every other port forwarder have exactly
-the same property — but it is true, and worth knowing before forwarding a
-database on a shared machine.
+**Another user on the same machine: yes.** This is the main exposure. Loopback is not per-user, so any local account can connect to a forwarded port and reach the remote service while the session runs. `ssh -L` and other port forwarders have the same property. Consider this before forwarding a database on a shared machine.
 
-What deco does about it: forwards are opt-in per port, they last only as long as
-the session, and they reach only the remote's loopback. What deco does **not**
-do is authenticate the connecting process. Applications exposed through a forwarded port must provide their own authentication if local clients should be restricted.
+deco limits the exposure as follows: forwards are opt-in per port, last only as long as the session, and reach only the remote's loopback. deco does **not** authenticate the connecting process. Applications exposed through a forwarded port must provide their own authentication if local clients should be restricted.
 
-The SSH control socket is a related and sharper case, because it *is* an
-authenticated connection to the remote: anyone who can reach the socket can ride
-it. It goes in `$XDG_RUNTIME_DIR/deco`, or `~/.ssh/deco` — never the shared
-temporary directory — created `0700`, refused if it is a symbolic link, and
-refused if deco cannot `chmod` it, which is also how it knows the directory is
-this account's own.
+The SSH control socket needs stricter protection, because it *is* an authenticated connection to the remote and anyone who can reach the socket can use it. It is created in `$XDG_RUNTIME_DIR/deco` or `~/.ssh/deco`, never in the shared temporary directory. The directory is created with mode `0700`, refused if it is a symbolic link, and refused if deco cannot `chmod` it. The `chmod` check also confirms that the directory belongs to the current account.
 
-**A program running as you — yes, and there is nothing to be done at this
-layer.** It can use the forward. It can also read your SSH keys, run `ssh`
-itself, or attach a debugger to the editor. Code running as you already has
-everything a forward would give it, so defending the forward against it would be
-security theatre.
+**A program running as you: yes, and this layer cannot prevent it.** Such a program can use the forward. It can also read your SSH keys, run `ssh` itself, or attach a debugger to the editor. It already has access to everything a forward provides, so protecting the forward against it would not improve security.
 
-One thing that is *not* on the list: nothing new listens on the remote. The
-tunnel processes are started per connection through the transport's stdio, so
-there is no daemon over there for anyone to find.
+Nothing new listens on the remote. Tunnel processes are started per connection through the transport's stdio, so there is no daemon on the remote.
 
 ## Authorities
 
@@ -420,24 +221,15 @@ parses the same spellings:
 | `dev-container+<id>` | A dev container built from the workspace |
 | `attached-container+<id>` | An already-running container |
 
-An unknown kind before the `+` is an error naming the kind, rather than a silent
-fall back to local — connecting to the wrong machine is worse than refusing to
-connect.
+An unknown kind before the `+` is an error naming the kind. deco does not fall back to a local session, because connecting to the wrong machine is worse than not connecting.
 
 ## Transports
 
-Each authority knows the command that would reach it: `ssh`, `wsl.exe`, or
-`docker exec`. The argument vector is built as a list and never as a shell string,
-so a hostname or container id containing shell metacharacters is an argument and
-not an instruction. This is the same rule the language-server launcher follows,
-for the same reason.
+Each authority maps to the command that reaches it: `ssh`, `wsl.exe`, or `docker exec`. The argument vector is built as a list, never as a shell string, so a hostname or container id containing shell metacharacters is passed as an argument and not interpreted. The language-server launcher follows the same rule.
 
 ## The wire protocol
 
-Both ends would speak a length-prefixed framing over the transport's stdio — the
-same shape as the Language Server Protocol's, and for the same reason: a stream
-carrying both a program's output and a protocol's messages needs an unambiguous
-boundary between frames.
+Both ends would use length-prefixed framing over the transport's stdio, the same format as the Language Server Protocol. A stream that carries both a program's output and protocol messages needs unambiguous boundaries between frames.
 
 The framing, the authority parsing and the command construction are implemented
 and tested, and so is the remote environment that answers them.
@@ -448,9 +240,7 @@ and tested, and so is the remote environment that answers them.
 $ ssh myhost deco --server --stdio --workspace /home/u/project
 ```
 
-That command is not written by hand — `deco_remote::server_command` builds it and
-`command_for` wraps it in the transport — but it is exactly what runs, and a test
-asserts that what one half builds is what the other half parses.
+This command is not written by hand: `deco_remote::server_command` builds it and `command_for` wraps it in the transport. It is the exact command that runs, and a test asserts that the command the client builds is the one the server parses.
 
 The server answers a handshake naming the protocol version and the workspace,
 the `fs.*` and `scm.*` families, and `settings.read`. That is what opening,
@@ -481,51 +271,30 @@ to metadata in another checkout is refused even though its visible repository
 root is inside the workspace; otherwise staging or committing there would
 change an index, refs, and object store the server was not given authority over.
 
-`settings.read` is the one answer about a file outside it, and it is shaped so
-the rule still holds: it takes **no path**. A client cannot name a file, only ask
-for "this machine's settings", and gets whatever is at the one path the server
-computes for itself. What a client can *steer* a read into is still exactly one
-directory.
+`settings.read` is the only method that returns a file outside the workspace, and it keeps the rule intact because it takes **no path**. A client cannot name a file; it can only request this machine's settings, and it receives the file at the one path the server computes itself. Reads that a client can direct are still limited to one directory.
 
-This is stricter than VS Code, whose remote server will open any path the account
-can reach. The reason to be stricter is what the client is: whatever is on the
-other end of a connection deco did not itself authenticate. A bug in the frontend,
-a hijacked session, or a `deco-remote://` link someone else wrote should not be
-able to ask for `~/.ssh/id_ed25519`.
+This is stricter than VS Code, whose remote server opens any path the account can reach. deco is stricter because the client is whatever is at the other end of a connection that deco did not authenticate itself. A frontend bug, a hijacked session, or a `deco-remote://` link written by someone else must not be able to request `~/.ssh/id_ed25519`.
 
-Confinement is checked on the **canonical** path, so a symlink inside the
-workspace pointing outside it is refused too — checking the path as written would
-make `project/link-to-etc/passwd` legal, which is the exact shape of the mistake
-this exists to prevent. A sibling directory whose name merely starts with the
-same text (`project-secrets` against `project`) is outside, because the comparison
-is on path components rather than on strings.
+Confinement is checked on the **canonical** path, so a symlink inside the workspace that points outside it is also rejected. Checking the path as written would allow `project/link-to-etc/passwd`. A sibling directory whose name starts with the same text (`project-secrets` against `project`) is outside, because paths are compared by component, not as strings.
 
-A file that is not valid UTF-8 is refused rather than repaired: deco would write
-the replacement characters back on save, turning "deco opened my binary" into
-"deco corrupted my binary".
+A file that is not valid UTF-8 is rejected rather than repaired. Repairing it would insert replacement characters that deco would write back on save, corrupting the file.
 
 ## What a working version needs
 
-Named so that the remaining work is legible rather than open-ended:
+The remaining work:
 
 1. ~~`deco --server`, a headless session that answers frames.~~ **Done.**
 2. ~~The client: opening a file through a transport, saving it back, and listing
    the remote workspace with `ctrl+p`.~~ **Done.**
 3. ~~Provisioning: getting the binary onto the remote, which means a decision
    about how much deco is willing to install on a machine you pointed it at.~~
-   **Done** for same-platform remotes, under the rules above. Fetching a build
-   for a *different* platform is still open, and is the same decision again in a
-   harder form: it needs somewhere deco is willing to download from.
+   **Done** for same-platform remotes, under the rules above. Fetching a build for a *different* platform is still open; it requires a download source that deco trusts.
 4. Settings scope wiring: the `Remote` layer already exists between `User` and
    `Workspace` in the settings stack, so a remote's settings have somewhere to go.
-5. ~~Port forwarding, which the transports do not model at all.~~ **Done**, by
-   making deco the tunnel rather than reaching for `ssh -L` — see above.
+5. ~~Port forwarding, which the transports do not model at all.~~ **Done**, with deco as the tunnel instead of `ssh -L`; see above.
 6. ~~Language servers on the remote.~~ **Done** — the same definitions, wrapped
    in the transport, with the remote environment's paths on the wire.
-7. Extensions on the remote. A host started by a remote session still runs here,
-   and moving it means deciding what a remote extension is allowed to reach —
-   the same question the capability sandbox answers locally, asked again across
-   a machine boundary.
+7. Extensions on the remote. A host started by a remote session still runs locally. Moving it requires deciding what a remote extension may access: the question the capability sandbox answers locally, applied across a machine boundary.
 8. ~~Project-wide search, which needs the server to walk the workspace rather
    than this machine walking one it does not have.~~ **Done** — `fs.search`, with
    the remote environment matching.

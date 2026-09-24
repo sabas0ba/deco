@@ -2,19 +2,13 @@
 
 ![The branch in the status bar, unmoved by typing and refreshed by a save and a new file](img/git-status.svg)
 
-deco reads git the way VS Code does: by running the `git` binary and parsing
-what it says. No library is linked. All three stages are built: **the branch and
-what differs from it, in the status bar**, **marks beside the lines that
-changed**, and **a source-control view** that stages, unstages and commits.
-Local branches can also be listed and switched with a preflight confirmation.
+deco reads git the same way VS Code does: it runs the `git` binary and parses its output. No library is linked. All three stages are built: **the branch and the changes relative to it, in the status bar**, **marks beside changed lines**, and **a source-control view** that stages, unstages and commits. Local branches can also be listed and switched after a preflight confirmation.
 
 ```
 main ±2 ↑2
 ```
 
-Each marker is omitted at zero, which is the same bargain the problem tallies
-make: a permanent `0 changed` is noise, and the absence of the marker is the
-signal.
+Each marker is omitted when its count is zero, as with the problem counts. A permanent `0 changed` would add noise; the absence of a marker means zero.
 
 | | |
 | --- | --- |
@@ -23,9 +17,7 @@ signal.
 | `↑2 ↓1` | two commits to push, one to pull; only when the branch tracks another |
 | `!1` | one file a merge left conflicted, which has to be dealt with first |
 
-**One per file, not one per side.** A file that is staged *and* modified since is
-one thing to think about, so it counts once — otherwise the bar would disagree
-with the list that the source-control view will show.
+**One per file, not one per side.** A file that is staged *and* modified since counts once. Otherwise the status bar would disagree with the list that the source-control view will show.
 
 ## Marks beside the changed lines
 
@@ -37,33 +29,15 @@ with the list that the source-control view will show.
 | `│` | it is there, and says something else |
 | `▔` | lines were removed just above this one |
 
-**Shape as well as colour.** VS Code separates added from modified by colour
-alone, which is a distinction anyone who cannot tell its green from its blue
-does not get. A heavy bar against a light one carries the same thing without
-it, and costs nothing. The colours are VS Code's own —
-`editorGutter.addedBackground`, `editorGutter.modifiedBackground`,
-`editorGutter.deletedBackground` — so a theme that sets them is honoured.
+**Shape as well as colour.** VS Code distinguishes added from modified lines only by colour, so users who cannot tell its green from its blue lose the distinction. A heavy bar and a light bar carry the same distinction without relying on colour. The colours are VS Code's: `editorGutter.addedBackground`, `editorGutter.modifiedBackground` and `editorGutter.deletedBackground`, so a theme that sets them is applied.
 
-A deletion has nothing left to draw beside, so its mark sits on the **top edge**
-of the line that took the removed lines' place. And a run of lines *replaced* is
-one modified hunk, not an addition sitting on a deletion — which is what git
-reports and what a person means by "I changed this".
+A deletion has no remaining line to mark, so its mark is drawn on the **top edge** of the line that now follows the removed lines. A run of *replaced* lines is one modified hunk, not an addition next to a deletion. This matches git's output and what the user changed.
 
-**The marks follow the buffer, not the file on disk.** Type into a line and the
-mark appears as you type; type it back to what git has and the mark goes. That
-is the point of diffing in process: a gutter that waited for a save would be
-describing the file rather than the screen.
+**The marks follow the buffer, not the file on disk.** Editing a line shows its mark immediately; restoring the line to the committed text removes the mark. This is why the diff runs in process: a gutter updated only on save would describe the file, not the screen.
 
-Which is also why the two halves are fetched and computed separately. The
-committed text costs a process and only changes when someone commits — so
-`git status`'s commit id is watched, and when it moves the cached text is thrown
-away, which is what makes a `git commit` in another terminal clear the gutter.
-The comparison itself is pure, so it is redone as the file is typed into. One
-`git` per commit; none per keystroke.
+The committed text and the comparison are therefore handled separately. Fetching the committed text requires a process, and the text changes only on commit. deco watches the commit id reported by `git status` and discards the cached text when it changes, so a `git commit` in another terminal clears the gutter. The comparison is pure, so it is recomputed as you type. This means one `git` process per commit and none per keystroke.
 
-The GPU frontend works the marks out but does not paint them yet — the same
-state its selection and current-line rectangles are in. When it grows the rest
-of its drawing they are already the same answer the terminal shows.
+The GPU frontend computes the marks but does not draw them yet, as with its selection and current-line rectangles. When the remaining drawing is implemented, it will show the same marks as the terminal frontend.
 
 ## The source-control view
 
@@ -71,22 +45,11 @@ of its drawing they are already the same answer the terminal shows.
 
 `ctrl+shift+g` opens and focuses the source-control view in the side bar. `ctrl+shift+e` switches focus to the [file tree](files.md).
 
-Rows are grouped by what you would *do* about them, in the order they have to
-be dealt with: **Merge Changes** first because a conflict blocks everything
-else, then **Staged Changes**, **Changes**, **Untracked**. The letter beside
-each name is git's own — `M`, `A`, `D`, `R`, `U` for a conflict, `?` for
-something git has never been told about.
+Rows are grouped by the action they need, in the order they must be handled: **Merge Changes** first because a conflict blocks other operations, then **Staged Changes**, **Changes** and **Untracked**. The letter beside each name is git's status code: `M`, `A`, `D`, `R`, `U` for a conflict, and `?` for an untracked file.
 
-**A file can appear twice.** Staged, and modified again since — two rows, under
-two headings, because unstaging the first and staging the second do opposite
-things to the same file. The status bar's `±` count deliberately does not do
-this: it answers "how many files need thinking about", and counting one twice
-there would make the bar disagree with itself.
+**A file can appear twice.** A file that is staged and modified again since appears as two rows under two headings, because unstaging the first and staging the second act on the same file in opposite directions. The status bar's `±` count deliberately counts the file once: it reports how many files need attention, and counting a file twice would contradict that meaning.
 
-**The selection follows the file, not the row number.** Staging something
-reorders the list; an index that stayed put would leave the selection on a
-different file than the one you were looking at, and the next command would act
-on it.
+**The selection follows the file, not the row number.** Staging reorders the list. If the selection kept its row index, it would move to a different file, and the next command would act on that file.
 
 `enter` opens a read-only, side-by-side diff and the keyboard goes with it.
 Staged rows compare **HEAD ↔ Index**; Changes and Untracked compare
@@ -109,10 +72,7 @@ would hide the part that must be resolved.
 
 ### The commands
 
-VS Code has no default key for most of these: its view is driven by the buttons
-on each row, and deco does not have buttons and will not invent keys VS Code has
-not. So they live in the command palette (`ctrl+shift+p`), which is how the
-animation above reaches them.
+VS Code has no default key for most of these commands; its view uses buttons on each row. deco has no buttons and does not add key bindings that VS Code does not have. The commands are therefore available in the command palette (`ctrl+shift+p`), as used in the animation above.
 
 | Command | What it does |
 | --- | --- |
@@ -124,15 +84,9 @@ animation above reaches them.
 | `git.checkout` | list local branches, preview the switch, then ask for confirmation |
 | `git.refresh` | ask git again |
 
-**Every refusal happens before a process starts.** Staging something already
-staged would succeed and change nothing, and a message claiming otherwise is
-worse than one saying it could not. Committing with nothing staged never opens
-the message box at all — asking someone to write a commit message and *then*
-telling them there was nothing to commit is how a message gets lost.
+**Every refusal happens before a process starts.** Staging a file that is already staged would succeed without changing anything, so deco reports that it could not stage the file instead of reporting a change. Committing with nothing staged does not open the message box, so you do not write a commit message only to learn that there was nothing to commit.
 
-**The commit runs your hooks.** A `pre-commit` that reformats or refuses is
-yours, and inheriting it is the whole argument for shelling out rather than
-linking a library. Their stdin is closed and `GIT_TERMINAL_PROMPT` is `0`, so
+**The commit runs your hooks.** A `pre-commit` hook that reformats or rejects a commit is part of your setup, and running it is the main reason to use the git binary instead of a library. Their stdin is closed and `GIT_TERMINAL_PROMPT` is `0`, so
 Git's own terminal prompt is disabled and a hook reading stdin gets EOF. A hook
 is still an arbitrary program: it can open `/dev/tty`, show a graphical prompt
 or run for a long time, and deco does not sandbox or bypass that behaviour.
@@ -141,9 +95,7 @@ or run for a long time, and deco does not sandbox or bypass that behaviour.
 
 ![Choosing a local branch, reviewing the preflight and switching without discarding an untracked file](img/git-checkout.svg)
 
-`git.checkout` first lists existing **local** branches. Remote-tracking names
-are not mixed in: choosing one of those would also create a branch, a second
-decision hidden inside the first. After a branch is selected, deco asks Git how
+`git.checkout` first lists existing **local** branches. Remote-tracking names are not included, because choosing one would also create a local branch, which is a separate decision. After a branch is selected, deco asks Git how
 many committed paths differ and counts the staged, unstaged and untracked work
 that would have to come along.
 
@@ -161,29 +113,17 @@ silently closed.
 
 ### What it deliberately will not do
 
-**Discard.** `git clean` and `git checkout --` throw away work with no undo and
-no trash, which is the same thing the [tree's delete](files.md) refuses to do
-quietly. Not built, rather than built without a way back.
+**Discard.** `git clean` and `git checkout --` discard work with no undo and no trash. For the same reason, the [tree's delete](files.md) does not delete without confirmation. Discard is not built, rather than built without a way to recover.
 
-**Reach the network.** No push, pull or fetch. Those need credentials, and a
-credential prompt is a thing an editor has to be trusted with; reading and
-staging need neither.
+**Reach the network.** No push, pull or fetch. These require credentials, and deco would have to be trusted to handle credential prompts. Reading and staging need neither.
 
 ## When it runs
 
-This is the part worth being careful about, because the alternative is a process
-per keystroke.
+Scheduling needs care, because a naive implementation would start a process per keystroke.
 
-`git status` runs when something has happened that it would report differently:
-a **save**, a file **created, renamed or deleted** from the tree, and once at
-startup. Typing does not run it, which is what the first animation shows — the
-file is edited and the bar does not move until `ctrl+s`. The *marks*, being
-pure, are a different matter: they keep up with every keystroke.
+`git status` runs when its output may have changed: after a **save**, after a file is **created, renamed or deleted** in the tree, and once at startup. Typing does not run it, as the first animation shows: the file is edited and the status bar does not change until `ctrl+s`. The *marks* are pure computations and update on every keystroke.
 
-It runs **on a thread**. On deco's own checkout `git status` is a few
-milliseconds; on a working tree with a million files it is not, and an editor
-that stopped painting while git thought would be worse than one whose branch
-name is a moment stale.
+It runs **on a separate thread**. On deco's own checkout `git status` takes a few milliseconds; on a working tree with a million files it takes much longer. A briefly outdated branch name is preferable to an editor that stops drawing while git runs.
 
 In a **remote session**, status, committed text, diff comparisons, branch
 preflight, checkout, stage, unstage and commit run through a second server connection on the machine
@@ -196,32 +136,19 @@ The remote server does not expand its authority to find a repository. If the
 served workspace is only a subdirectory and the repository begins above it,
 source control is refused; restart with the repository root as `--workspace`.
 
-**One at a time, and nothing is lost.** The request is marked taken when a run
-*starts*, not when it answers. So a save made while git is still thinking sets
-the flag again, the earlier answer lands without clearing it, and a fresh run
-follows. Clearing on the answer instead would swallow that save silently, and
-the bar would sit there being wrong until the next one.
+**One run at a time, without losing requests.** The pending-request flag is cleared when a run *starts*, not when it returns. A save made while git is still running sets the flag again, the earlier result does not clear it, and another run follows. Clearing the flag when the result arrived would lose that save, and the status bar would stay wrong until the next one.
 
 ## When there is nothing to show
 
-Three situations look identical on screen, and all three show nothing at all —
-no branch, and no gap where one would be:
+Three situations look identical on screen. All three show nothing: no branch, and no empty space where it would be:
 
-- **No git on this machine.** The feature is *absent* rather than broken.
-- **The folder is not a repository.** Which is normal, and not worth a line of
-  its own on everyone's status bar.
-- **Nobody has asked yet**, in the moment before the first run answers.
+- **No git on this machine.** The feature is *absent*, not broken.
+- **The folder is not a repository.** This is normal and does not need a status bar entry.
+- **No result yet**, before the first run completes.
 
-The first two are remembered for the session and never asked about again: they
-will still be true after the next save, and spawning a process to re-learn a
-known fact is a cost with no benefit. Anything else — git refusing because a
-rebase is in progress, an index lock held by a command in a terminal — is
-transient, so the next save tries again.
+The first two are remembered for the session and not checked again, because they will still be true after the next save and spawning a process to re-check them has no benefit. Other failures, such as git refusing because a rebase is in progress or an index lock held by a command in a terminal, are transient, so the next save retries.
 
-The reason is kept even though there is nowhere to put it. When the
-[panel](chrome.md) grows an output view, that is where it will go; until then it
-is readable from the frontend and asserted by a test, so deco knowing *why* it
-is showing nothing is a fact rather than an intention.
+The reason is stored even though there is nowhere to display it yet. When the [panel](chrome.md) has an output view, the reason will be shown there. Until then, the frontend can read it and a test asserts it.
 
 ## Settings
 
@@ -235,74 +162,31 @@ is showing nothing is a fact rather than an intention.
 
 The same three reasons VS Code has:
 
-- **It inherits the user's git.** Their `includeIf` config, their
-  `credential.helper`, their hooks, their `core.fsmonitor`. A library
-  reimplements a subset of that and then disagrees with the command line the
-  user checks their work with.
-- **It costs no Git implementation dependency.** `deco-scm` uses `thiserror`
-  for its errors and `serde` to carry status and operations over deco's own
-  remote protocol. Anyone with a repository to open already has the binary;
-  nobody asked for libgit2's subtree, and the
-  [README](https://github.com/sabas0ba/deco#readme) counts deco's crates in
-  public.
-- **Absent is a state it can be in.** A missing binary is a feature that is not
-  there, which is a thing deco can say plainly.
+- **It uses the user's git configuration.** This includes their `includeIf` config, `credential.helper`, hooks and `core.fsmonitor`. A library implements only a subset of this and can then disagree with the command line the user checks their work with.
+- **It needs no Git implementation dependency.** `deco-scm` uses `thiserror` for its errors and `serde` to carry status and operations over deco's own remote protocol. Anyone opening a repository already has the binary, libgit2 would add its own dependency subtree, and the [README](https://github.com/sabas0ba/deco#readme) publishes deco's crate count.
+- **A missing binary is a supported state.** If git is not installed, the feature is unavailable, and deco can report that directly.
 
 ## How it is read
 
-`git status --porcelain=v2 --branch -z --untracked-files=all` for the bar, and
-`git show HEAD:<path>` for the committed text behind the marks. Both run as an
-argument vector with no shell anywhere near them — a branch called
-`$(rm -rf ~)` is a legal branch name.
+`git status --porcelain=v2 --branch -z --untracked-files=all` for the bar, and `git show HEAD:<path>` for the committed text behind the marks. Both run as an argument vector without a shell, which matters because `$(rm -rf ~)` is a legal branch name.
 
-**Every path is relative to the repository**, which is what git reports in and
-answers about. Not to the folder deco was started in: opening a subdirectory of
-a repository is an ordinary thing to do, and the two coordinate systems
-disagree the moment somebody does. `git rev-parse --show-toplevel` is asked once
-so they cannot drift. (`HEAD:./a` would be the other thing — resolved against
-the working directory — and a gutter drawn from the wrong blob looks exactly
-like one drawn from the right blob.)
+**Every path is relative to the repository root**, which is how git reports and accepts paths. Paths are not relative to the folder deco was started in: opening a subdirectory of a repository is common, and the two coordinate systems differ in that case. `git rev-parse --show-toplevel` is run once so that they stay consistent. (`HEAD:./a` would instead resolve against the working directory, and a gutter computed from the wrong blob looks the same as a correct one.)
 
-`git show` is deliberately run **without** `--textconv`: a repository can
-configure a filter that runs an arbitrary program to render a file, and a
-gutter is not worth executing someone's `.gitattributes` for.
+`git show` is deliberately run **without** `--textconv`. A repository can configure a filter that runs an arbitrary program to render a file, and the gutter does not justify running programs configured in `.gitattributes`.
 
-`--untracked-files=all` rather than git's default of `normal`, which collapses a
-new directory into one `? newdir/` record. The count above is one per *file*, and
-under the default a folder someone has just added with a dozen files in it would
-read as `±1` — an undercount, on one of the commonest things a person does. It
-costs a walk into untracked directories; ignored files are still left out, so the
-usual `target/` and `node_modules/` are not what is being walked.
+`--untracked-files=all` is used instead of git's default `normal`, which reports a new directory as one `? newdir/` record. The count above is per *file*, so with the default a newly added folder containing a dozen files would count as `±1`, which undercounts a common operation. This requires walking untracked directories, but ignored files are still skipped, so directories such as `target/` and `node_modules/` are not walked.
 
-`-z` is not a performance choice. Without it, git C-quotes any path containing a
-space, a quote or a non-ASCII byte, and separates a rename's two paths with a tab
-that a path may legally contain — so a parser would have to undo git's quoting
-exactly, and would get it wrong for precisely the files most likely to expose the
-mistake. With `-z` every field ends at a NUL and there is no quoting at all.
+`-z` is used for correctness, not performance. Without it, git C-quotes any path containing a space, a quote or a non-ASCII byte, and separates a rename's two paths with a tab, which a path may also contain. A parser would have to reverse git's quoting exactly, and any mistake would affect exactly the unusual paths that expose it. With `-z`, every field ends with a NUL and there is no quoting.
 
-The diff is Myers' — the algorithm `git diff` itself uses. Its common prefix and
-suffix come off before the search starts, so an edit in a thousand-line file
-costs what the edit is worth rather than what the file is; and the search gives
-up after two thousand edits, because a file replaced wholesale has no gutter
-worth drawing. Past that the middle becomes one modified block and says so,
-rather than the marks quietly being approximate.
+The diff uses Myers' algorithm, as `git diff` does. The common prefix and suffix are removed before the search starts, so the cost of an edit in a thousand-line file depends on the size of the edit rather than the size of the file. The search stops after two thousand edits, because a file that has been replaced entirely has no useful gutter. Beyond that limit, the middle section becomes one modified block and this is reported, instead of showing approximate marks.
 
-The status parser is pure: hand it the bytes, get back a status, with no
-process, no filesystem and no clock involved. A detached head, an unborn branch, a rename, a
-merge conflict and a path with spaces in it are each a test with a string
-literal in it rather than a repository CI has to build.
+The status parser is pure: it takes bytes and returns a status, without a process, filesystem or clock. A detached head, an unborn branch, a rename, a merge conflict and a path with spaces are each tested with a string literal instead of a repository built in CI.
 
-Two environment variables go to the child, and each prevents a specific failure:
+Two environment variables are set for the child process, each preventing a specific failure:
 
-- `GIT_OPTIONAL_LOCKS=0` — showing a status must never take the index lock. A
-  status bar refreshing on save should not be the reason a `git commit` in
-  another terminal fails.
-- `GIT_TERMINAL_PROMPT=0` — nothing here can answer a question, so anything that
-  would ask one has to fail instead of waiting forever for an answer that is not
-  coming.
+- `GIT_OPTIONAL_LOCKS=0`: reading status must never take the index lock, so a status refresh on save cannot make a `git commit` in another terminal fail.
+- `GIT_TERMINAL_PROMPT=0`: deco cannot answer prompts, so an operation that would prompt fails instead of waiting indefinitely.
 
 ## Not built yet
 
-**No watcher.** A commit made in a terminal shows up on the next save, not the
-moment it happens. The [file tree](files.md#not-built-yet) has the same gap for
-the same reason, and one watcher will close both.
+**No watcher.** A commit made in a terminal appears on the next save, not immediately. The [file tree](files.md#not-built-yet) has the same limitation for the same reason, and one watcher will address both.

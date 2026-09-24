@@ -7,10 +7,7 @@ VS Code extension exists.
 
 ## Diagnostics
 
-Diagnostics arrive by `textDocument/publishDiagnostics` and replace the previous
-set for that document, which is what the protocol means: a server publishes the
-complete list each time, and an empty list is how it says the problems are fixed.
-The status bar tallies errors and warnings; `F8` and `shift+F8` walk them.
+Diagnostics arrive by `textDocument/publishDiagnostics` and replace the previous set for that document. The protocol requires a server to publish the complete list each time, and an empty list means the problems are fixed. The status bar counts errors and warnings; `F8` and `shift+F8` move between them.
 
 ![The status bar tally, and F8 walking the problems](img/diagnostics.svg)
 
@@ -19,29 +16,17 @@ The status bar tallies errors and warnings; `F8` and `shift+F8` walk them.
 | `F8` | `editor.action.marker.next` |
 | `shift+F8` | `editor.action.marker.prev` |
 
-`F8` visits problems in **file order**, not publication order — servers emit in
-whatever order analysis finished, and "next" has to mean next in the file or the
-cursor jumps around unpredictably. It wraps, and it reports what it landed on.
-Positions are clamped, because a diagnostic can outlive the text it describes: you
-may have deleted the offending lines before the server caught up.
+`F8` visits problems in **file order**, not publication order. Servers publish in the order analysis finishes, and following that order would move the cursor unpredictably. Navigation wraps around and reports the problem it moved to. Positions are clamped, because a diagnostic can refer to text that has changed since, for example lines deleted before the server published an update.
 
-Information and hints are folded into neither tally. They are not problems you
-have to act on, and a status bar has room for the two that are.
+Information and hint diagnostics are not included in either count. They do not require action, and the status bar only has room for errors and warnings.
 
 ## Hover
 
 ![A hover box for the symbol under the caret](img/hover.svg)
 
-`ctrl+k ctrl+i` asks for hover text and draws it below the caret, or above when
-there is no room — a box hanging off the bottom of the terminal is worse than one
-covering the line above. The status bar is never covered: it is where the editor
-reports everything else, including why a hover might be wrong. `escape` dismisses
-it, and so does moving the cursor, since a hover describing where the cursor *was*
-is worse than none.
+`ctrl+k ctrl+i` requests hover text and draws it below the caret, or above the caret if there is not enough room below. The hover never covers the status bar, which the editor uses for all other messages, including why a hover might be wrong. `escape` dismisses it, and so does moving the cursor, because the hover describes the previous cursor position.
 
-The protocol's `contents` field has four different shapes across protocol
-versions and servers — a string, a `MarkedString`, an array of either, or a
-`MarkupContent` — and deco reads all four, flattening to plain lines.
+The protocol's `contents` field has four shapes across protocol versions and servers: a string, a `MarkedString`, an array of either, or a `MarkupContent`. deco reads all four and flattens them to plain lines.
 
 ## Completion
 
@@ -54,18 +39,9 @@ versions and servers — a string, a `MarkedString`, an array of either, or a
 | `tab` / `enter` | `acceptSelectedSuggestion` |
 | `escape` | `hideSuggestWidget` |
 
-The list opens on `ctrl+space` and also on a trigger character the server asked
-for — `.` or `::`. Typing narrows it in place and the same keystroke goes into the
-document, so the list and the file always agree about what has been typed; a
-backspace widens it again. Ranking prefers a prefix match, then a
-case-insensitive prefix, then a subsequence, and the selection is the best match
-for what has been typed, re-chosen as the list narrows and widens — which is what
-`editor.suggestSelection: "first"`, VS Code's default, does. deco does not read
-that setting, so the other values are not available.
+The list opens on `ctrl+space` and on a trigger character requested by the server, such as `.` or `::`. Typing narrows the list and also inserts the character into the document, so the list always matches the typed text; backspace widens it again. Ranking prefers a prefix match, then a case-insensitive prefix match, then a subsequence match. The selected item is the best match for the typed text and is re-chosen as the list narrows or widens. This matches VS Code's default, `editor.suggestSelection: "first"`. deco does not read that setting, so the other values are not available.
 
-A server's `preselect` still decides the row the list *opens* on: a server that
-knows the likely answer puts it there, and it is answering the query as it stood
-when the list was asked for.
+A server's `preselect` still determines the row selected when the list *opens*. It applies to the query as it was when the list was requested.
 
 The marker in the left column is the item's kind: `f` function, `v` value, `t`
 type, `m` module, `k` keyword, `s` snippet, `·` anything else.
@@ -113,33 +89,19 @@ Pasting a non-LF line separator also ends navigation while preserving the edit.
 
 ## References
 
-`shift+f12` lists everything that refers to the symbol under the cursor, and
-`enter` opens that file at that line. It is the same list a project-wide search
-produces — the question is the same one, *which of these places do you want to be*
-— so it filters as you type in the same way.
+`shift+f12` lists all references to the symbol under the cursor, and `enter` opens the selected file at that line. It uses the same list as project-wide search, so it filters as you type in the same way.
 
 | Key | Command |
 | --- | --- |
 | `shift+f12` | `editor.action.goToReferences` |
 
-Each row is `path:line: the line's text`, with the path shortened against the
-workspace root; a location outside the workspace keeps its whole path, because
-there the directory is the informative part. The declaration is included, because
-"find all references" that omits the definition is a surprising answer and VS Code
-includes it too.
+Each row is `path:line: the line's text`, with the path shortened relative to the workspace root. A location outside the workspace keeps its full path, because the directory is then the useful part. The declaration is included, as in VS Code.
 
-The line's text comes from the **open document** when the location is in it, and
-from disk otherwise — the two differ exactly when there are unsaved changes, and
-the list has to describe what you are looking at. Locations in a scheme deco
-cannot open (`jdt:`, `untitled:`) are left out rather than listed as rows that do
-nothing.
+The line's text is taken from the **open document** when the location is in it, and from disk otherwise. The two differ when there are unsaved changes, and the list shows the text as it appears in the editor. Locations in schemes deco cannot open (`jdt:`, `untitled:`) are omitted instead of being listed as rows that do nothing.
 
 ## Go to symbol
 
-`ctrl+shift+o` asks for the names a document declares and offers them as the same
-list references and project search use — `enter` goes to one. The picker itself is
-documented with the other prompts, under
-[Go to symbol](commands.md#go-to-symbol); what belongs here is the protocol.
+`ctrl+shift+o` requests the symbols a document declares and shows them in the same list used by references and project search; `enter` goes to the selected one. The picker is documented with the other prompts under [Go to symbol](commands.md#go-to-symbol). This section describes the protocol.
 
 | Key | Command |
 | --- | --- |
@@ -158,45 +120,23 @@ depends on the server:
    "location": { "uri": "file:///…", "range": {…} } }]
 ```
 
-Both are read, and both flatten to one list in document order — a parent before
-its children — because that is the order a reader of the file expects. A nested
-symbol keeps its whole path, so a method three levels down reads as
-`outer.middle.leaf`.
+Both are read and flattened into one list in document order, with a parent before its children, which is the order of the file. A nested symbol shows its full path, so a method three levels down is shown as `outer.middle.leaf`.
 
-A symbol is positioned on `selectionRange`, which is the identifier, and not on
-`range`, which covers the whole definition and would land the cursor on a doc
-comment. `SymbolInformation`'s `location.uri` is deliberately **ignored**: the
-request named one document, so a server answering about another is out of spec, and
-trusting it would let a symbol list navigate somewhere unrelated.
+A symbol is positioned on `selectionRange`, which covers the identifier, not on `range`, which covers the whole definition and would place the cursor on a doc comment. `SymbolInformation`'s `location.uri` is deliberately **ignored**. The request named one document, so a result for another document is outside the specification, and following it could navigate somewhere unrelated.
 
-A symbol with no name or no position is dropped — there would be nothing to pick
-or nowhere to go — but an unrecognised `SymbolKind` is not: that is a newer
-specification than this client, and the name is the useful part.
+A symbol with no name or no position is dropped, because it cannot be shown or navigated to. A symbol with an unrecognised `SymbolKind` is kept, because the kind comes from a newer specification version than this client supports and the name is still useful.
 
-Accepting a symbol goes through the same open-a-file-at-a-position path a search
-result does. For the document already on screen that is a tab switch onto itself,
-so unsaved changes survive; and because each row carries the path that was asked
-about, an answer that arrives after you switched tabs still navigates the right
-file.
+Accepting a symbol uses the same open-at-position path as a search result. For the document already on screen, this switches to its own tab, so unsaved changes are kept. Each row stores the path of the requested document, so a response that arrives after you switched tabs still navigates in the correct file.
 
 ## Semantic tokens
 
-A server's semantic tokens say what a name *is* — a type told from a variable by
-its declaration, a shadowed binding, a macro apart from a function — which is
-precisely what [the lexer](highlighting.md) cannot know. deco asks for the whole
-document's tokens when the file opens and again after each edit, and colours what
-comes back from the theme's `semanticTokenColors`.
+A server's semantic tokens classify names by meaning: for example, a type distinguished from a variable by its declaration, a shadowed binding, or a macro distinguished from a function. [The lexer](highlighting.md) cannot determine this. deco requests tokens for the whole document when the file opens and after each edit, and colours them with the theme's `semanticTokenColors`.
 
 ![The same file coloured by the lexer, then by the server, then with the setting off](img/semantic-tokens.svg)
 
-In those frames `LIMIT` is teal to the lexer, which can only see that it is
-capitalised, and blue to the server, which knows it is a read-only binding.
+In these frames, `LIMIT` is teal when coloured by the lexer, which only sees that it is capitalised, and blue when coloured by the server, which identifies it as a read-only binding.
 
-The lexer is not replaced. A token type the theme has no rule for falls back to
-the lexer's colour, and so does every character no token covers — punctuation,
-whitespace, comments most servers do not classify. The result is a document that
-is fully coloured whether or not a server is running, and more precisely coloured
-when one is.
+Semantic tokens do not replace the lexer. A token type with no theme rule uses the lexer's colour, as does every character that no token covers, such as punctuation, whitespace and the comments most servers do not classify. The document is therefore fully coloured without a server, and more precisely coloured with one.
 
 | Setting | Effect |
 | --- | --- |
@@ -204,71 +144,37 @@ when one is.
 | `editor.semanticHighlighting.enabled: false` | Never draw them |
 | absent, or `"configuredByTheme"` | The theme's own `semanticHighlighting` flag decides |
 
-Deferring to the theme is VS Code's default and the right one: a theme written
-without semantic rules looks *worse* with them applied, because the few types it
-does resolve overrule a lexer that was colouring everything consistently.
+Deferring to the theme is VS Code's default. A theme written without semantic rules looks *worse* with semantic highlighting applied, because the few token types it defines override a lexer that was colouring everything consistently.
 
-The wire format is a flat list of integers, five per token, each token's position
-stated relative to the one before it — and `deltaStart` is relative to the
-previous token's column only when the two share a line, otherwise it is an
-absolute column. Tokens naming a type outside the legend the server announced at
-initialisation are dropped, but still advance the position, since a following
-token's coordinates are relative to the one deco could not name.
+The wire format is a flat list of integers, five per token. Each token's position is relative to the previous token: `deltaStart` is relative to the previous token's column when both are on the same line, and is an absolute column otherwise. Tokens whose type is outside the legend the server announced at initialisation are dropped, but they still advance the position, because the next token's coordinates are relative to them.
 
-A classification describes the text it was computed from, so an edit discards it
-rather than keeping it: a token list applied to shifted text colours the wrong
-words, which is worse than the lexer alone for the moment the answer takes.
-Keypresses that only move the cursor send nothing and keep the tokens, and a
-request is not made while one is already outstanding.
+Tokens describe the text they were computed from, so an edit discards them. Applied to shifted text, they would colour the wrong words, which is worse than lexer-only colouring while the next response is pending. Keypresses that only move the cursor send no request and keep the tokens, and no request is sent while another is outstanding.
 
-The feature needs `full` document support and a non-empty legend. A server
-offering only ranges or delta updates is treated as not offering the feature at
-all, rather than half-colouring the file.
+The feature requires `full` document support and a non-empty legend. A server that offers only range or delta requests is treated as not supporting the feature, instead of colouring only part of the file.
 
 ## Formatting
 
-`ctrl+shift+i` formats the document and `ctrl+k ctrl+f` the selection. Both keys
-are gated on `editorHasDocumentFormattingProvider`, so they do not resolve at all
-when the server cannot format — the key reports nothing rather than reporting a
-failure.
+`ctrl+shift+i` formats the document and `ctrl+k ctrl+f` formats the selection. Both keys require `editorHasDocumentFormattingProvider`, so they do not resolve when the server cannot format, and no failure is reported.
 
-The options sent are yours: `editor.tabSize`, `editor.insertSpaces`,
-`files.trimTrailingWhitespace` and `files.insertFinalNewline`, resolved through the
-same settings layering as everything else, including any `[language]` override.
+The request uses your settings: `editor.tabSize`, `editor.insertSpaces`, `files.trimTrailingWhitespace` and `files.insertFinalNewline`, resolved through the same settings layers as other settings, including any `[language]` override.
 
-A batch of edits is applied as one transaction, back to front against the
-pre-edit document, so it is one undo step and no edit lands in a position that a
-previous edit moved. Overlapping edits are refused rather than guessed at: the
-specification forbids them, so a server sending them is broken, and picking which
-to honour would corrupt the file silently.
+A batch of edits is applied as one transaction, from the end of the document towards the start, against the document as it was before the edits. The batch is one undo step, and no edit is applied at a position shifted by an earlier edit. Overlapping edits are rejected. The specification forbids them, and choosing which ones to apply could corrupt the file without notice.
 
 ## Code actions
 
 ![ctrl+. listing what the server offers and applying the one chosen](img/code-actions.svg)
 
-`ctrl+.` asks what the server can do about the selection — or about the caret,
-when there is none, which is why a quick fix works without selecting the error
-first. The answers arrive as a list, and choosing one applies its edit through
-the same [`WorkspaceEdit`](#rename) path a rename uses: all of it or none of it,
-and one `ctrl+z` to take it back.
+`ctrl+.` requests the available actions for the selection, or for the caret if nothing is selected, so a quick fix works without first selecting the error. The actions are shown as a list. The chosen action's edit is applied through the same [`WorkspaceEdit`](#rename) path as a rename: completely or not at all, and undone with one `ctrl+z`.
 
-The key is gated on `editorHasCodeActionsProvider`, so it does not resolve at
-all against a server that offers nothing here.
+The key requires `editorHasCodeActionsProvider`, so it does not resolve when the server offers no code actions.
 
 **Code-action requests include the original diagnostic JSON.** Servers may use the opaque `data` field to construct a fix. deco's parsed diagnostic struct retains only fields needed for display, so reconstructing the request from that struct would lose information required by the server.
 
-Diagnostics **overlapping** the selection are sent, not only those inside it: a
-selection across half an error is still a question about that error, and a caret
-touching one counts.
+Diagnostics that **overlap** the selection are sent, not only those contained in it. A selection covering part of an error still refers to that error, and a caret touching a diagnostic also counts.
 
-**An action without an edit is resolved before it is applied.** Servers that
-compute expensive refactorings send the titles first and the edit only for the
-one chosen — `codeAction/resolve` is that second round trip, and the action goes
-back exactly as it arrived, `data` included, since that is what the server
-recognises it by. Against a server with no `resolveProvider`, an action that
-arrives without an edit is one deco can only decline, and it says so by name.
+**An action without an edit is resolved before it is applied.** Servers that compute expensive refactorings send the titles first and compute the edit only for the chosen action. `codeAction/resolve` requests that edit. The action is sent back unchanged, including `data`, because the server uses it to identify the action. If the server has no `resolveProvider`, an action without an edit cannot be applied, and deco declines it with a message naming it.
 
-The list says what it cannot do rather than hiding it:
+The list shows actions that deco cannot perform instead of hiding them:
 
 | What arrived | What happens |
 | --- | --- |
@@ -279,9 +185,7 @@ The list says what it cannot do rather than hiding it:
 | A bare `Command` | Declined, naming the command — see below |
 | An edit that creates, renames or deletes a file | Declined for **that action only**, naming the operation |
 
-That last row is why the edit is parsed when an action is chosen rather than
-when the menu is built: one entry deco cannot carry out should not empty a menu
-whose other entries are fine.
+Because of the last row, the edit is parsed when an action is chosen, not when the menu is built. One unsupported entry does not remove the other, valid entries from the menu.
 
 **A bare `Command` is not run.** Such actions require `workspace/executeCommand` and may cause the server to send a `workspace/applyEdit` request. deco does not implement this command-execution path and reports the unsupported command by name.
 
@@ -289,57 +193,25 @@ whose other entries are fine.
 
 ![F2 renaming a symbol across two files, one of them not open, undone with ctrl+z](img/rename.svg)
 
-`F2` renames the symbol under the caret everywhere the server says it appears.
-The key is gated on `editorHasRenameProvider`, so with a server that cannot
-rename it does not resolve at all. The prompt opens with the current name
-selected — typing replaces it, `end` keeps it to add a suffix — and accepting it
-unchanged is refused rather than sent, because an edit per occurrence that
-changes nothing would mark every file mentioning the symbol dirty for no reason.
+`F2` renames the symbol under the caret in every location the server reports. The key requires `editorHasRenameProvider`, so it does not resolve with a server that cannot rename. The prompt opens with the current name selected: typing replaces it, and `end` keeps it so you can add a suffix. Accepting the unchanged name is refused without sending a request, because an edit per occurrence that changes nothing would mark every file that mentions the symbol dirty.
 
-A rename is the first thing in deco to arrive as a **`WorkspaceEdit`**: one
-change spread across however many documents. What makes it different from every
-other edit is that partly done is worse than not done at all — half a rename
-leaves a project that does not build. So the whole thing is checked before any
-of it is applied:
+Rename was the first feature in deco to use a **`WorkspaceEdit`**: one change across any number of documents. A partially applied rename leaves a project that does not build, which is worse than no rename. The whole edit is therefore validated before any part of it is applied:
 
-- **Every URI must resolve to a file.** A server's synthetic scheme, or an
-  `untitled:` document, refuses the edit rather than being skipped past.
-- **Every version the server stated must still be current.** Positions only mean
-  something against the text they were computed for, so an answer that arrives
-  after a keystroke has moved the lines is refused and says so. A server using
-  the older `changes` spelling states no versions at all; there is nothing to
-  check, and that edit is applied on trust.
-- **Every document's edits must be applicable**, which is where overlapping
-  ranges are caught — in the same batched, back-to-front transaction that
-  formatting uses.
+- **Every URI must resolve to a file.** A server-specific scheme or an `untitled:` document causes the edit to be rejected; it is not skipped.
+- **Every version stated by the server must still be current.** Positions are valid only for the text they were computed from, so a response that arrives after a keystroke has moved lines is rejected with a message. A server using the older `changes` form states no versions, so there is nothing to check and the edit is applied without a version check.
+- **Every document's edits must be applicable.** Overlapping ranges are detected at this step, using the same batched, back-to-front transaction as formatting.
 
 Only then is anything written, and from that point nothing can fail.
 
-**Files that are not open are opened, not written.** Most of a rename lands in
-files nobody is looking at. VS Code writes those to disk; deco opens them as tabs
-holding unsaved changes, and the status line says how many. Two reasons: nothing
-in deco's core performs I/O — which is what makes the whole editable surface
-testable without a terminal or a filesystem — and an editor that rewrites files
-you have never seen, without being asked to save, is doing the one thing the rest
-of deco is careful not to. `ctrl+k s` writes them; `ctrl+z` takes them back.
+**Files that are not open are opened, not written.** A rename usually changes mostly files that are not open. VS Code writes those to disk; deco opens them as tabs with unsaved changes, and the status line reports how many. There are two reasons. deco's core performs no I/O, which allows all editing behaviour to be tested without a terminal or a filesystem. deco also does not rewrite files you have not seen unless you save them. `ctrl+k s` saves them; `ctrl+z` reverts the changes.
 
-**One `ctrl+z` undoes all of it**, from any of the files involved, because every
-document records its share under one shared step. Type something in one of them
-first and that keystroke undoes on its own: the shared step is still underneath,
-and comes out when the edits on top of it have.
+**One `ctrl+z` undoes the whole rename** from any of the affected files, because every document records its part under one shared undo step. If you type in one of those files first, that input is undone separately. The shared step remains below it and is undone after the later edits.
 
-A server that wants a file **created, renamed or deleted** as part of the change —
-rust-analyzer does this when you rename a module — is refused, naming the
-operation. Those arrive mixed in with text edits that only make sense together
-with them, so applying the half deco can do would leave the project worse than
-not renaming at all.
+A server that requests a file to be **created, renamed or deleted** as part of the change is refused with a message naming the operation. rust-analyzer does this when you rename a module. These operations arrive together with text edits that depend on them, so applying only the text edits would leave the project in a worse state than not renaming.
 
 ## Configuring a server
 
-`deco.lsp.servers` is keyed by a server identifier, and each definition says
-which languages it serves. It is deco's own namespace rather than one of VS
-Code's, because in VS Code a server arrives inside an extension and there is no
-equivalent setting.
+`deco.lsp.servers` is keyed by server identifier, and each definition lists the languages it serves. It uses deco's own namespace because VS Code has no equivalent setting; in VS Code, a server is provided by an extension.
 
 ```jsonc
 {
@@ -360,67 +232,31 @@ equivalent setting.
 }
 ```
 
-A definition you supply wins over the built-in one for the same language, even
-though the two have different identifiers — otherwise configuring a server would
-silently lose to the default.
+A definition you supply takes precedence over the built-in definition for the same language, even when the identifiers differ. Otherwise the default would override a configured server without notice.
 
 The command and its arguments are passed as a list and never as a shell string,
 so nothing in them is interpreted by a shell.
 
-**A server defined by workspace settings is refused by name.** A cloned
-repository can otherwise run a program of its choosing the moment you open a file
-in it. The editor says which server it declined and why, and falls back to the
-next candidate for that language — so a repository cannot disable the feature by
-defining a server you then decline.
+**A server defined by workspace settings is refused, with a message naming it.** Otherwise a cloned repository could run a program of its choosing as soon as you open a file in it. The editor reports which server it refused and why, and falls back to the next candidate for that language, so a repository cannot disable the feature by defining a server that you then refuse.
 
-**The same goes for one a remote defines.** A remote session's `machine-settings.json`
-is written where anyone with an account on that machine can write it, and
-choosing to connect somewhere is a decision about the machine, not a signature on
-every file on it. So a definition arriving that way is confirmed like a
-workspace's — which is a nuisance exactly once, and is the difference between
-connecting to a build box and running whatever it nominates. See
-[Settings that belong to the machine](remote.md#settings-that-belong-to-the-machine).
+**The same applies to a server defined by a remote.** A remote session's `machine-settings.json` is stored where anyone with an account on that machine can write it, and connecting to a machine does not mean trusting every file on it. A definition from that file therefore requires confirmation, like a workspace definition. This prevents a remote machine from choosing programs that run when you connect. See [Settings that belong to the machine](remote.md#settings-that-belong-to-the-machine).
 
-The refusal is recorded in the problem list, which `deco --print-config` prints
-and `F8` walks, whether or not another server started for that language. It also
-reaches the status bar when nothing started, because with no server running there
-is nothing else the row could be saying.
+The refusal is recorded in the problem list, which `deco --print-config` prints and `F8` navigates, whether or not another server started for that language. It is also shown in the status bar when no server started, because the status bar has nothing else to report for language servers in that case.
 
-There is **no "I trust this repository" to say once.** VS Code has Workspace Trust;
-deco would have to remember the answer somewhere, and it
-[does not write configuration files](configuration.md#colour-themes) by design. So
-the way to run a repository's own server is to copy the definition into your user
-settings, having read it — which is the step Workspace Trust makes it easy to skip.
+There is **no option to trust a repository once.** VS Code has Workspace Trust, but deco would need to store that decision, and it [does not write configuration files](configuration.md#colour-themes) by design. To run a repository's own server, review the definition and copy it into your user settings. Workspace Trust makes that review easy to skip.
 
 ## Not built yet
 
-`workspace/executeCommand` is not sent, which is what leaves a code action that
-is only a [bare `Command`](#code-actions) declined. Running one means being
-willing to answer the `workspace/applyEdit` request it sends back — a server
-asking the editor to change files rather than answering a question the editor
-asked — and that is a decision about authority rather than a missing function
-call. deco answers such a request with `applied: false` today.
+`workspace/executeCommand` is not sent, so a code action that is only a [bare `Command`](#code-actions) is declined. Supporting it requires handling the `workspace/applyEdit` request the server may send back, in which the server asks the editor to change files instead of answering an editor request. This is a decision about what a server may change, not only a missing function call. deco currently answers such requests with `applied: false`.
 
-`textDocument/codeLens`, `textDocument/inlayHint` and
-`textDocument/documentHighlight` are not requested at all. Each wants a place to
-draw that the editor does not have yet — a line above the code, a run of
-non-text inside it, a second kind of selection highlight.
+`textDocument/codeLens`, `textDocument/inlayHint` and `textDocument/documentHighlight` are not requested. Each needs a display element the editor does not have yet: a line above the code, non-text content within a line, and a second kind of selection highlight.
 
-`textDocument/prepareRename` is not sent. It is the request that asks a server
-whether a position can be renamed *before* the user is asked for a new name; deco
-asks for the name first and reports the server's refusal if there is one, which
-costs a prompt in the case where the answer was no.
+`textDocument/prepareRename` is not sent. This request asks a server whether a position can be renamed *before* the user is prompted for a new name. deco prompts first and reports the server's refusal if there is one, so the user sees an unnecessary prompt when the position cannot be renamed.
 
 Only the document on screen is synchronised with the server. A rename that opens
 other files leaves those tabs unsaved and unknown to the server, so its answers
 about them are based on what is still on disk until you save.
 
-Changes are sent as full-document syncs; the incremental path exists in
-`deco-lsp` but the editor does not yet track applied ranges. Semantic tokens are
-whole-document for the same reason: `textDocument/semanticTokens/full/delta` needs
-the previous result held and patched, and a full request after each edit is
-correct without it.
+Changes are sent as full-document syncs. The incremental path exists in `deco-lsp`, but the editor does not yet track applied ranges. Semantic tokens are requested for the whole document for the same reason: `textDocument/semanticTokens/full/delta` requires keeping and patching the previous result, while a full request after each edit is correct without it.
 
-Go-to-definition across files opens a new tab, or switches to the tab already
-holding the file — see [Tabs](tabs.md). When a server returns several results
-they are offered as the same list references uses, rather than guessed between.
+Go-to-definition across files opens a new tab, or switches to the tab that already holds the file; see [Tabs](tabs.md). When a server returns several results, they are shown in the same list as references instead of deco choosing one.

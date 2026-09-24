@@ -1,7 +1,6 @@
 # Syntax highlighting
 
-Colours come from the theme, through the same scope-matching code that VS Code
-themes are written against — so a theme you already use means the same thing here.
+Colours come from the theme, through the same scope-matching rules that VS Code themes are written for, so a theme you already use has the same meaning in deco.
 
 ![The same theme colouring Rust, TypeScript, Python, TOML and JSON](img/highlighting.svg)
 
@@ -9,9 +8,7 @@ themes are written against — so a theme you already use means the same thing h
 
 `deco-syntax` uses a lexer for each supported language to assign TextMate scope names to tokens. `deco-theme` resolves a style from each **TextMate scope stack**, and the renderer applies that style to the corresponding text.
 
-The scope stack is two deep — the language's `source.*` scope, then the token's —
-so a theme's parent selectors (`meta.function entity.name`) have something to
-match against.
+The scope stack has two levels: the language's `source.*` scope, then the token's scope. A theme's parent selectors (`meta.function entity.name`) therefore have a parent scope to match.
 
 | Scope emitted | What it is |
 | --- | --- |
@@ -23,12 +20,7 @@ match against.
 | `string.quoted.double`, `string.quoted.single` | String literals |
 | `comment.line.double-slash`, `comment.block` | Comments |
 
-Scopes are specific but **not language-suffixed**: `keyword.control`, not
-`keyword.control.rust`. A theme pattern matches a scope when it is a whole-segment
-prefix of it, so both `keyword` and `keyword.control` style the above — which is
-what themes actually contain. A rule written for `keyword.control.rust`
-specifically would not match; that is the price of one static string per token kind
-rather than one per kind per language.
+Scopes are specific but **not language-suffixed**: `keyword.control`, not `keyword.control.rust`. A theme pattern matches a scope when it is a whole-segment prefix of it, so both `keyword` and `keyword.control` apply to the scopes above, and these are the patterns themes typically contain. A rule written specifically for `keyword.control.rust` does not match. This is the trade-off for using one static string per token kind instead of one per kind per language.
 
 ## Languages
 
@@ -37,89 +29,54 @@ JSON, JSONC, TOML, YAML, shell, Ruby, Lua, SQL, CSS, Makefile and Dockerfile.
 
 Other languages render in the theme's plain foreground. Markdown, HTML and XML have no lexer: the current keyword-based language tables cannot represent their markup structure and embedded languages.
 
-Adding a language is a table in `crates/deco-syntax/src/languages.rs` and nothing
-else.
+Adding a language requires only a table in `crates/deco-syntax/src/languages.rs`.
 
 ## Choosing the language yourself
 
-The language is worked out from the file name — its extension, or the whole name
-for `Makefile`, `Dockerfile` and `Cargo.toml`. When that is wrong or when there is
-nothing to go on, `ctrl+k m` picks one.
+The language is determined from the file name: its extension, or the whole name for `Makefile`, `Dockerfile` and `Cargo.toml`. When that is wrong or the name gives no indication, `ctrl+k m` selects a language.
 
 ![Telling a .txt file that it is TOML](img/language-mode.svg)
 
-The right-hand column is the **identifier**, not a second name for the language: it
-is what `[toml]` in a `settings.json` refers to, what a language server is matched
-on, and what selects the lexer. The title is for finding the row; the identifier is
-the thing that acts.
+The right-hand column shows the **identifier**, not a second name for the language. The identifier is what `[toml]` in a `settings.json` refers to, what language servers are matched on, and what selects the lexer. The title is for finding the row; the identifier determines the behaviour.
 
-Choosing one rebuilds everything downstream of it: the lexer, the settings — so a
-`[toml]` block's `editor.tabSize` starts applying — and the `editorLangId` context
-key, so a `when` clause means what it says. The terminal frontend also re-attaches
-its language server, because a different language is a different server.
+Choosing a language updates everything that depends on it: the lexer, the settings (so a `[toml]` block's `editor.tabSize` starts to apply), and the `editorLangId` context key, so `when` clauses evaluate against the new language. The terminal frontend also re-attaches its language server, because a different language uses a different server.
 
-**Auto Detect** is the first row and the way back. Its own right-hand column says
-what detection would decide, so choosing it is not a guess.
+**Auto Detect** is the first row and restores automatic detection. Its right-hand column shows the language that detection would choose.
 
-The text is never touched. Nothing about a document's bytes depends on which
-language it is said to be, only on how it is read — so this is not an edit, and it
-is not undoable.
+The text is never changed. A document's bytes do not depend on its language, only how they are interpreted, so changing the language is not an edit and is not undoable.
 
 | Key | Command |
 | --- | --- |
 | `ctrl+k m` | `workbench.action.editor.changeLanguageMode` |
 
-The picker offers every identifier deco knows, including the ones with no lexer
-(`markdown`, `html`, `xml`, `plaintext`) — they still select settings and a server,
-which is most of what a language identifier is for.
+The picker lists every identifier deco knows, including those without a lexer (`markdown`, `html`, `xml`, `plaintext`). They still select settings and a language server, which are the main uses of a language identifier.
 
 ## It is a lexer, not a parser
 
 The lexer recognises tokens but does not resolve declarations or types.
 
-VS Code's own highlighting is a set of regular-expression grammars — also a lexer.
-So for colouring, a lexer gets most of the way there: keywords, strings, comments,
-numbers and calls are all lexical properties. Multi-line constructs work too;
-block comments and triple-quoted strings carry state from one line to the next,
-and Rust's nested `/* /* */ */` nests correctly.
+VS Code's own highlighting uses a set of regular-expression grammars, which is also a lexer. For colouring, a lexer covers most needs: keywords, strings, comments, numbers and calls are all lexical properties. Multi-line constructs also work: block comments and triple-quoted strings carry state from one line to the next, and Rust's nested `/* /* */ */` comments nest correctly.
 
 What a lexer cannot do:
 
-- **Tell a type from a variable by how it was declared.** `Foo` is coloured as a
-  type because it is capitalised, in languages where that convention holds. In
-  Python, where `MAX_SIZE` is a constant rather than a type, deco does not guess.
+- **Tell a type from a variable by how it was declared.** `Foo` is coloured as a type because it is capitalised, in languages where that convention applies. In Python, where `MAX_SIZE` is a constant rather than a type, deco does not apply this heuristic.
 - **Highlight a language inside another** — SQL in a string, CSS in HTML.
 - **Distinguish a shadowed name, a macro from a function, a field from a method.**
 
-The other half of that is a language server's **semantic tokens**, which carry
-exactly the information a lexer lacks. Where a server provides them they are
-drawn, and the lexer keeps colouring everything else — see
-[Semantic tokens](language-servers.md#semantic-tokens).
+A language server's **semantic tokens** provide the information a lexer lacks. When a server provides them, they are drawn, and the lexer continues to colour everything else; see [Semantic tokens](language-servers.md#semantic-tokens).
 
 ## Why not tree-sitter
 
-It was the obvious candidate and was rejected on the build cost. A tree-sitter
-grammar is a generated C parser, compiled on every target — a new dependency per
-language and a C toolchain in the build, for output a lexer already produces.
-deco's dependency count is a stated goal, and the terminal build's 44 crates are
-part of why it starts as fast as it does.
+Tree-sitter was the obvious candidate and was rejected because of its build cost. A tree-sitter grammar is a generated C parser compiled for every target. It adds a dependency per language and requires a C toolchain in the build, for output that a lexer already produces. A low dependency count is a stated goal of deco, and the terminal build's 44 crates contribute to its fast startup.
 
-If the lexer's limits start to matter more than that cost, a real parser is the
-answer and this crate is the thing to replace.
+If the lexer's limitations become more important than that cost, the solution is a real parser that replaces this crate.
 
 ## Performance
 
-The lexer state entering each line is cached; the spans themselves are recomputed
-for the lines on screen, which is cheap and cannot go stale. An edit invalidates
-from the edited line onwards — everything above it is still true, since a change on
-line 900 cannot alter what line 3 left open.
+The lexer state at the start of each line is cached. The spans are recomputed for the visible lines, which is cheap and cannot become stale. An edit invalidates the cache from the edited line onwards; earlier lines are unaffected, because a change on line 900 cannot change the state at the end of line 3.
 
-Jumping to the end of a large file lexes it once. That is unavoidable while
-multi-line constructs exist: nothing can know what line 9000 is inside without
-having read what came before it.
+Jumping to the end of a large file lexes the whole file once. This is unavoidable with multi-line constructs, because the state at line 9000 depends on all preceding lines.
 
 ## Not in the GPU frontend yet
 
-`deco-gui` draws one run per line in a single colour. Per-span colouring there
-means splitting each line into runs in its layout pass, which is not done. The
-terminal frontend has it.
+`deco-gui` draws each line as one run in a single colour. Per-span colouring requires splitting each line into runs in the layout pass, which is not implemented. The terminal frontend supports it.

@@ -1,15 +1,10 @@
 # Editing
 
-Commands are addressed by VS Code's identifiers — `editor.action.commentLine`,
-not `deco.comment` — so rebinding one in your own `keybindings.json` reaches the
-same command deco runs by default.
+Commands use VS Code's identifiers, for example `editor.action.commentLine` rather than `deco.comment`. A binding in your `keybindings.json` therefore refers to the same command that deco runs by default.
 
 ## Lines and comments
 
-`alt+up` / `alt+down` move the line or the selected block; `ctrl+/` toggles the
-line comment using the open language's token; `ctrl+shift+alt+down` copies the
-line downwards. Undo groups by time and by kind, so one `ctrl+z` takes back the
-comment rather than one character of it.
+`alt+up` / `alt+down` move the line or the selected block. `ctrl+/` toggles the line comment using the open language's token. `ctrl+shift+alt+down` copies the line downwards. Undo groups edits by time and kind, so one `ctrl+z` removes the whole comment rather than one character of it.
 
 ![Moving a line, commenting it, undoing, and copying a line](img/editing.svg)
 
@@ -24,11 +19,7 @@ comment rather than one character of it.
 | `ctrl+shift+a` | `editor.action.blockComment` |
 | `ctrl+]` / `ctrl+[` | `editor.action.indentLines` / `…outdentLines` |
 
-Commenting is idempotent in both directions: `ctrl+k ctrl+c` on an
-already-commented line leaves it alone rather than commenting it twice, and a
-partly-commented selection becomes fully commented rather than inverting line by
-line. Blank lines are skipped, and the token goes after the indentation rather
-than at column zero.
+Commenting is idempotent in both directions. `ctrl+k ctrl+c` leaves an already-commented line unchanged rather than commenting it twice, and a partly commented selection becomes fully commented rather than being toggled line by line. Blank lines are skipped, and the token is inserted after the indentation rather than at column zero.
 
 ### Block comments
 
@@ -36,15 +27,9 @@ than at column zero.
 
 ![Wrapping two lines in a block comment, unwrapping, and opening an empty one](img/block-comment.svg)
 
-It is **its own inverse**: pressing it again removes what it just added. That needs
-the wrap to leave the inner text selected, and it recognises a commented selection in
-either shape — the delimiters inside the selection, which is what you get by
-selecting a commented region, or immediately outside it, which is what a wrap leaves
-behind. Recognising only one would make the second press comment the comment.
+**Pressing it again removes the delimiters it added.** After wrapping, the inner text stays selected. The command recognises a commented selection in two forms: with the delimiters inside the selection, as when you select a commented region, or immediately outside it, as after a wrap. Without both forms, the second press would add another comment.
 
-With nothing selected it opens an empty comment and puts the caret between the
-spaces, because the point of pressing it there is to write the comment next. Every
-cursor is wrapped, in one undo step.
+With nothing selected, it inserts an empty comment and places the caret between the spaces. All cursors are wrapped in one undo step.
 
 | Language | Delimiters |
 | --- | --- |
@@ -53,25 +38,15 @@ cursor is wrapped, in one undo step.
 | Lua | `--[[` `]]` |
 | Python | `"""` `"""` |
 
-HTML, XML and Markdown are here even though [the lexer](highlighting.md) does not
-colour them: wrapping a selection needs the delimiters, not a grammar.
+HTML, XML and Markdown are listed even though [the lexer](highlighting.md) does not colour them, because wrapping a selection needs only the delimiters, not a grammar.
 
-Two deliberate absences. **Shell, YAML, TOML, Makefile, Dockerfile and JSON** have no
-block comment, and neither does VS Code claim one for them — the key reports the
-language has none. **Ruby** is left out although VS Code offers `=begin` / `=end`:
-those must each sit alone at the start of a line, so wrapping a selection in the
-middle of one produces text Ruby will not parse, and a command that corrupts the file
-is worse than a command that declines.
+Some languages are intentionally not listed. **Shell, YAML, TOML, Makefile, Dockerfile and JSON** have no block comment, and VS Code defines none for them; the key reports that the language has none. **Ruby** is excluded although VS Code offers `=begin` / `=end`. Each of these must be alone at the start of a line, so wrapping a selection in the middle of a line would produce text that Ruby cannot parse.
 
-**Python's `"""` is a string, not a comment.** It is what VS Code inserts and what a
-Python programmer means by commenting a block out, and it does stop the code running
-— but as an expression statement, so it is only sound where a statement is allowed.
-Matching VS Code beats inventing a third answer.
+**Python's `"""` is a string, not a comment.** VS Code inserts it, and it prevents the enclosed code from running. It is an expression statement, however, so it is valid only where a statement is allowed. deco follows VS Code here.
 
 ## A new line starts where the old one started
 
-`editor.autoIndent` carries the indentation across a newline, and opens a block when
-the caret is between a pair of brackets.
+`editor.autoIndent` copies the indentation to the new line, and opens a block when the caret is between a pair of brackets.
 
 ![Typing a brace, pressing enter, and typing inside the block](img/auto-indent.svg)
 
@@ -81,106 +56,58 @@ the caret is between a pair of brackets.
 | `keep` | The previous line's indentation |
 | `brackets` (default) | And one level deeper after an opening bracket |
 
-`advanced` and `full` resolve to `brackets`. Both mean this plus the
-`indentationRules` a language configuration contributes, and deco has none to read —
-so it says which of the five it is doing rather than accepting a value whose name
-promises more.
+`advanced` and `full` resolve to `brackets`. In VS Code, both also apply the `indentationRules` from a language configuration. deco has no such rules to read, so it reports which of the five modes it uses.
 
-**`{|}` and `enter` opens a block**: the closer moves to its own line at the outer
-indent and the caret is left on an indented line between them, which is the shape
-everybody types next. It pairs with
-[auto-closing brackets](#auto-closing-brackets) — typing `{` produces `{}`, and
-`enter` opens it.
+**`{|}` and `enter` opens a block**: the closing bracket moves to its own line at the outer indent, and the caret is placed on an indented line between them. This works with [auto-closing brackets](#auto-closing-brackets): typing `{` produces `{}`, and `enter` opens it.
 
-Pressing enter *inside* a line's indentation carries only what the caret had reached,
-not the whole indent: two spaces into an eight-space indent gives a new line indented
-two. And each cursor gets its own indent, since each is on its own line.
+Pressing enter *inside* a line's indentation copies only the indentation before the caret. For example, pressing enter two spaces into an eight-space indent gives a new line indented by two. Each cursor gets the indent of its own line.
 
-`ctrl+enter` (`editor.action.insertLineAfter`) has always copied the indentation,
-because it is a command that knows it is making a line. `enter` is bound to `type`
-with a newline in it — a plain insertion — so it went to column zero, and the same
-editor indented on one key and not the other.
+`ctrl+enter` (`editor.action.insertLineAfter`) has always copied the indentation. `enter` is bound to `type` with a newline, which is a plain insertion, so it previously started the new line at column zero.
 
 ### An indent you press past is taken back
 
-`editor.trimAutoWhitespace` (default true) removes an auto-inserted indent from a line
-you abandon, so one press of enter too many does not leave four spaces behind for a
-diff to find.
+`editor.trimAutoWhitespace` (default true) removes an auto-inserted indent from a line you leave empty, so an extra enter does not leave trailing whitespace in the file.
 
 ![Pressing enter twice, and the abandoned line coming back empty](img/trim-auto-whitespace.svg)
 
-Only an indent **deco inserted** is trimmable. Whitespace you typed is yours, and an
-indent stops being trimmable the moment you type anything else on that line — at which
-point it is that line's indentation rather than a leftover.
+Only an indent **inserted by deco** can be trimmed. Whitespace you typed is not trimmed, and an inserted indent is no longer trimmed once you type anything else on that line.
 
-Two things make it safe:
+Two checks keep this safe:
 
-- The line is checked **against the buffer** before anything is deleted. Only a line
-  that still holds exactly the whitespace that was put there and nothing else is
-  trimmed, so the record of what was inserted is a record rather than an authority: a
-  stale entry does nothing instead of costing you text.
-- The trim goes into **the same transaction** as the edit that abandoned the line, so
-  one `ctrl+z` takes back one action. Its own undo step would mean pressing `ctrl+z`
-  twice for one press of enter.
+- The line is checked **against the buffer** before anything is deleted. A line is trimmed only if it still contains exactly the inserted whitespace and nothing else, so a stale record does not delete text.
+- The trim is part of **the same transaction** as the edit that left the line, so one `ctrl+z` undoes one action.
 
-It happens on the next **edit**, not on the next cursor movement. VS Code trims when
-the caret leaves the line; deco waits until something is typed, which is when there is
-a transaction to fold the trim into. Between the two the whitespace is invisible, and
-the file on disk is the same either way — unless you save in between, which VS Code
-would also do.
+The trim happens on the next **edit**, not on the next cursor movement. VS Code trims when the caret leaves the line; deco waits until the next edit so the trim can be added to that edit's transaction. The whitespace is not visible in between, and the saved file is the same in both cases unless you save before the next edit.
 
 ## A file cannot talk to your terminal
 
-deco draws into a terminal, and a terminal *interprets* what it is written. A document
-containing `\x1b[31m` would recolour everything after it; `\x07` rings the bell; and
-`\x1b]52;c;…\x07` is OSC 52, which **writes the clipboard** on every terminal that
-supports it — iTerm2, kitty, foot, recent xterm, Windows Terminal, tmux with
-`set-clipboard on`.
+A terminal *interprets* the bytes written to it. A document containing `\x1b[31m` would recolour everything after it, `\x07` rings the bell, and `\x1b]52;c;…\x07` is OSC 52, which **writes the clipboard** on terminals that support it: iTerm2, kitty, foot, recent xterm, Windows Terminal, and tmux with `set-clipboard on`.
 
-So no control character is ever written as itself. Each is replaced by its Unicode
-Control Pictures glyph — `␛` for escape, `␇` for bell, `␡` for delete — one column
-each, so the substitution moves nothing that was laid out around it.
+deco therefore never writes a control character as itself. Each is replaced by its Unicode Control Pictures glyph, such as `␛` for escape, `␇` for bell and `␡` for delete. Each glyph is one column wide, so the substitution does not change the layout.
 
 | `editor.renderControlCharacters` | What is drawn |
 | --- | --- |
 | `true` (default) | The picture, in `editorWhitespace.foreground` |
 | `false` | A blank of the same width |
 
-The setting chooses between the glyph and a blank. It cannot choose to send the byte:
-that is not a rendering option, it is a way of handing your terminal to whoever wrote
-the file.
+The setting chooses between the glyph and a blank. It cannot send the raw byte, because that would let the file's content control the terminal.
 
-The substitution happens at every write, deliberately, and not only where the
-document's own text is drawn. Text reaches the terminal from places that are not the
-open document:
+The substitution is applied at every terminal write, not only where the document text is drawn, because text from other sources also reaches the terminal:
 
 - a **file name** appears in the tab bar and the status bar;
-- a **search result** carries a line of somebody else's file into a prompt row;
-- a **configuration problem** quotes what a settings file said — a theme name, a broken
-  keybinding — and the binary prints those *before the alternate screen opens*, straight
-  to the shell's own terminal. A cloned repository's `.vscode/settings.json` is somebody
-  else's text, which is the same threat deco already refuses a workspace-defined
-  [language server](language-servers.md#configuring-a-server) for;
-- `deco --print-config` prints the resolved theme, language and font family, which all
-  come out of a settings file.
+- a **search result** shows a line from another file in a prompt row;
+- a **configuration problem** quotes a settings file value, such as a theme name or a broken keybinding. The binary prints these *before the alternate screen opens*, directly to the shell's terminal. A cloned repository's `.vscode/settings.json` is untrusted text, the same concern that applies to a workspace-defined [language server](language-servers.md#configuring-a-server);
+- `deco --print-config` prints the resolved theme, language and font family, which all come from a settings file.
 
-So the renderer substitutes for the document, where the setting applies, and the
-painter and the command line substitute unconditionally. The last line of defence
-belongs at the write, where whatever is added next cannot forget it.
+The renderer substitutes characters in the document according to the setting. The painter and the command-line output substitute them unconditionally. Applying the substitution at the write also covers output sources added later.
 
 ### What this does not cover
 
-**Bidirectional overrides.** `U+202E` and its relatives reorder the characters around
-them, so a line can display as something other than what it says — the Trojan Source
-class of attack, which matters most in code that will be compiled. Those characters are
-printable rather than control, so nothing here touches them, and VS Code handles them
-under a different setting (`editor.unicodeHighlight.*`) that deco does not read. Named
-here rather than left implied.
+**Bidirectional overrides.** `U+202E` and related characters reorder the surrounding characters, so a line can display differently from its actual content. This is the Trojan Source class of attack, which matters most in code that will be compiled. These characters are printable rather than control characters, so this substitution does not change them. VS Code handles them with a separate setting (`editor.unicodeHighlight.*`) that deco does not read.
 
 ## Auto-closing brackets
 
-`editor.autoClosingBrackets` closes a bracket or a quote as you open it, and steps
-over a closer you have already got.
+`editor.autoClosingBrackets` inserts the closing bracket or quote when you type the opening one, and types over an existing closer.
 
 ![Typing a bracket, a quote, and typing the closers back over them](img/auto-closing-brackets.svg)
 
@@ -191,50 +118,28 @@ over a closer you have already got.
 | `beforeWhitespace` | Only before whitespace or the end of a line |
 | `always` | Wherever the caret is |
 
-Each value is a rule about *where*, not about whether. Closing in the middle of a
-word turns `word` into `wo(r)rd`, which is why VS Code's default — and deco's — is
-conditional.
+Each value defines *where* a bracket is closed. Closing in the middle of a word would turn `word` into `wo(r)rd`, so the default in VS Code and deco is conditional.
 
-The pairs are the language's, which is what `languageDefined` means. Two entries in
-that table are worth stating:
+The pairs are defined per language, which is what `languageDefined` means. Two cases are notable:
 
-- **Rust's `'` is a lifetime.** `&'a str` is ordinary code and `&''a str` is what
-  closing it would write, so Rust has no apostrophe pair. rust-analyzer's own language
-  configuration leaves it out for the same reason.
-- **Markdown, HTML and XML have no apostrophe pair either.** An apostrophe in prose is
-  far more common there than a quoted string, and `don''t` is worse than nothing.
+- **Rust's `'` is a lifetime.** Closing it would turn `&'a str` into `&''a str`, so Rust has no apostrophe pair. rust-analyzer's language configuration omits it for the same reason.
+- **Markdown, HTML and XML have no apostrophe pair either.** Apostrophes in prose are more common there than quoted strings, and auto-closing would produce `don''t`.
 
-TypeScript and JavaScript add a backtick, since a template literal is a quote there.
-Everything else gets `()`, `[]`, `{}`, `""` and `''`.
+TypeScript and JavaScript add a backtick for template literals. All other languages use `()`, `[]`, `{}`, `""` and `''`.
 
-A quote both opens and closes, so **stepping over is tried first**: in front of a `"`
-the useful answer is to move past it rather than to open another pair.
+A quote both opens and closes, so **typing over an existing quote is tried first**. Typing `"` before a `"` moves past it instead of opening another pair.
 
-One keystroke is one undo step — `ctrl+z` after `(` takes back both halves, because
-one keystroke wrote them. And with several cursors, either all of them close or none
-do: a keystroke that inserted a pair in some places and a bare bracket in others is
-not an edit anybody can undo by looking at it.
+One keystroke is one undo step, so `ctrl+z` after `(` removes both brackets. With several cursors, either all cursors insert a pair or none do.
 
 ### What it deliberately does not do
 
-- **Surround a selection.** Typing `(` with text selected replaces it, as it always
-  has. Wrapping instead is `editor.autoSurround`, a separate setting deco does not
-  read — and closing a bracket *around* a replacement while leaving the replacement
-  out would be neither behaviour. `ctrl+shift+a` does surround, for comments.
-- **Remember which closers it inserted.** Typing `)` in front of any `)` steps over
-  it. VS Code tracks the ones it added and steps over only those; the state that needs
-  is a per-document list invalidated by every other edit, and the two answers differ
-  only where somebody typed both halves by hand and then typed a third closer.
-- **Delete both halves on backspace.** That is `editor.autoClosingDelete`, also
-  unread.
+- **Surround a selection.** Typing `(` with text selected replaces the selection. Wrapping is controlled by `editor.autoSurround`, a separate setting that deco does not read. `ctrl+shift+a` surrounds a selection with comment delimiters.
+- **Remember which closers it inserted.** Typing `)` before any `)` types over it. VS Code types over only closers it inserted, which requires a per-document list invalidated by other edits. The behaviours differ only when both brackets were typed manually and a third closer is typed.
+- **Delete both halves on backspace.** That is `editor.autoClosingDelete`, which deco also does not read.
 
 ## Multiple cursors
 
-`ctrl+d` is two behaviours behind one key, as it is in VS Code. The first press
-turns the caret into a selection of the word under it. Every press after that
-adds a cursor at the next occurrence, wrapping at the end of the file and
-skipping occurrences a cursor already sits on — so holding it walks the file
-rather than stalling. Once every occurrence is selected it says so.
+`ctrl+d` has two behaviours, as in VS Code. The first press selects the word under the caret. Each later press adds a cursor at the next occurrence, wrapping at the end of the file and skipping occurrences that already have a cursor. When every occurrence is selected, deco reports it.
 
 ![Selecting a word, adding a cursor at the next occurrence, and typing at both](img/multi-cursor.svg)
 
@@ -246,24 +151,15 @@ rather than stalling. Once every occurrence is selected it says so.
 | `ctrl+alt+up` / `ctrl+alt+down` | `editor.action.insertCursorAbove` / `…Below` | A cursor on the line above or below |
 | `escape` | `removeSecondaryCursors` | Back to one cursor |
 
-With a selection already made, `ctrl+d` searches for the **selected text** rather
-than a word, so selecting `oo` matches inside every `foo` — which a word-based
-search would miss. Matching is exact: you selected precisely that text, so `FOO`
-is a different string. (The find bar is the opposite way round — see
-[Find and replace](find-and-replace.md).)
+With a selection already made, `ctrl+d` searches for the **selected text** rather than a word, so selecting `oo` matches inside every `foo`. Matching is case-sensitive, so `FOO` does not match. (The find bar behaves differently; see [Find and replace](find-and-replace.md).)
 
-`ctrl+shift+l` makes the **last** occurrence primary, so the view scrolls to the
-end of the file and you can see how far the change reaches before you type.
+`ctrl+shift+l` makes the **last** occurrence primary, so the view scrolls to the last occurrence before you type.
 
-Expanding a bare caret expands **every** caret to its own word, as VS Code does.
-The cursors were placed deliberately and expanding each of them keeps that
-placement. A caret with no word under it stays a caret rather than selecting the
-whitespace it sits in, and a selection you already made is left as you made it.
+Expanding a bare caret expands **every** caret to its own word, as in VS Code. A caret with no word under it stays a caret rather than selecting whitespace, and existing selections are not changed.
 
 ## Word wrap
 
-`editor.wordWrap` breaks long lines to fit the window instead of running them off
-the right edge, and `alt+z` turns it on for the file you are looking at.
+`editor.wordWrap` breaks long lines to fit the window instead of letting them run past the right edge. `alt+z` toggles wrapping for the current file.
 
 ![A long line running off the edge, then wrapped, then walked with the arrow keys](img/word-wrap.svg)
 
@@ -278,60 +174,30 @@ the right edge, and `alt+z` turns it on for the file you are looking at.
 | `"wordWrapColumn"` | At `editor.wordWrapColumn`, whatever the window's width |
 | `"bounded"` | At whichever of those two is narrower |
 
-`"bounded"` is the one worth knowing about: it keeps prose to a readable measure
-on a wide screen without letting a narrow window wrap the same text twice.
+`"bounded"` limits line length on a wide screen and still wraps at the window width in a narrow window.
 
-The break goes **after whitespace**, at the last opportunity that fits, with two
-qualifications that exist because the obvious rule reads badly:
+The break is placed **after whitespace**, at the last break opportunity that fits, with two exceptions:
 
-- A space that would overflow does not force a break; it hangs past the right
-  edge, where it is invisible. Breaking before it would start the next row with a
-  space, which reads as indentation the file does not have.
-- Whitespace before a row's first word is not an opportunity. An indented line
-  would otherwise break immediately after its indent, spending a row on a lone tab
-  and starting the text at column zero — losing the one cue that says how deep the
-  line is.
+- A space that would overflow does not force a break. It extends past the right edge, where it is not visible. Breaking before it would start the next row with a space that looks like indentation.
+- Whitespace before a row's first word is not a break opportunity. Otherwise an indented line could break immediately after its indent, leaving a row with only whitespace and starting the text at column zero, which hides the line's indentation depth.
 
-A run with no whitespace in it breaks at the width. For code that is a URL or a
-base64 blob, where every break is arbitrary; for Chinese, Japanese and Korean it
-is the *right* answer, since they put no spaces between words. Proper line
-breaking — Unicode UAX #14, which knows that a closing bracket may not begin a
-row — needs a table deco does not carry, and it would be the first dependency
-added for cosmetics.
+A run with no whitespace breaks at the width. For code such as a URL or a base64 blob, any break position is arbitrary. For Chinese, Japanese and Korean, which do not put spaces between words, this is the correct behaviour. Full line breaking according to Unicode UAX #14, which for example prevents a closing bracket from starting a row, needs a table that deco does not include and would add a dependency for presentation only.
 
 ### The arrow keys move by row
 
-This is the half of word wrap that is easy to get wrong. With wrapping on, `down`
-moves one row and not one document line, because a row is what the key looks like
-it moves by; moving by line would pass over however many rows the current line
-occupies, which in prose is most of a paragraph. `home` and `end` are the ends of
-the *row* — except on a line's first row, where `home` keeps its usual trick of
-stopping at the first non-whitespace and then at column zero, and on a line's
-last row, where `end` is the end of the line.
+With wrapping on, `down` moves one row, not one document line. Moving by line would skip all rows of the current line, which in prose can be most of a paragraph. `home` and `end` move to the ends of the *row*, with two exceptions: on a line's first row, `home` stops at the first non-whitespace character and then at column zero, and on a line's last row, `end` moves to the end of the line.
 
-The sticky column a vertical motion keeps is measured **within the row** for the
-same reason. Measured from the line's start it would be a number with no meaning
-on screen, and every press of `down` through a wrapped paragraph would land
-somewhere unrelated to where the caret looked like it was.
+For the same reason, the sticky column used by vertical motion is measured **within the row**. A column measured from the line's start would not correspond to the caret's screen position.
 
-`end` and `home` clear that sticky column, so a `down` after them measures afresh
-from where they landed rather than returning to whatever was last aimed at.
+`end` and `home` clear the sticky column, so a following `down` uses the new caret position.
 
 ### What it costs
 
-Nothing that grows with the file. The scroll position is anchored to a document
-line plus an offset into it, rather than to a count of rows from the top of the
-file: counting rows from the top means wrapping the whole file to find out where
-the window is, on every keystroke. Anchored this way, drawing and scrolling both
-cost the height of the window — and so does finding the furthest the window may
-scroll, which walks backwards from the last line rather than forwards from the
-first.
+The cost does not grow with the file size. The scroll position is stored as a document line plus an offset into it, rather than as a row count from the top of the file, which would require wrapping the whole file on every keystroke. Drawing and scrolling therefore cost time proportional to the window height. Finding the maximum scroll position has the same cost, because it walks backwards from the last line.
 
 ### The continuation row keeps the line's indent
 
-`editor.wrappingIndent` decides how far a continuation row is pushed in, and it
-defaults to `same` — VS Code's default too, and the reason a wrapped block of code
-still reads as one block.
+`editor.wrappingIndent` sets the indentation of continuation rows. The default is `same`, as in VS Code, so a wrapped block of code keeps its visual structure.
 
 ![The same wrapped line under same, none and deepIndent](img/wrapping-indent.svg)
 
@@ -342,45 +208,21 @@ still reads as one block.
 | `indent` | One `editor.tabSize` deeper |
 | `deepIndent` | Two deeper |
 
-At `none` the second row of a nested line starts beside the unindented lines around
-it, which is how a wrap comes to be misread as code. The deeper settings make a
-wrapped row impossible to mistake for a statement of its own.
+With `none`, the second row of a nested line starts at the same column as the surrounding unindented lines and can be misread as code. The deeper settings keep a wrapped row distinguishable from a separate statement.
 
-The indent is **dropped** — not trimmed — once it would take more than half the
-width. Past that a wrapped line is more indent than text, and a deeply nested one
-would be wrapped into a column a few characters wide. A partial indent would line
-the continuation up with nothing, so the whole of it goes.
+The indent is **dropped entirely**, not reduced, once it would take more than half the width. Otherwise a deeply nested line would wrap into a column only a few characters wide. A partial indent would not align with anything, so none is used.
 
-It is not only cosmetic, which is why it reaches into the wrap itself: a row pushed
-in by four columns has four fewer to fill, and its tab stops land differently. The
-caret follows — a vertical motion keeps the column **of the screen**, so `down`
-across two rows pushed in by different amounts still goes straight down. A goal
-column that falls inside the indent lands on the row's first character, there being
-nothing further left on that row.
+The indent affects the wrap itself: a row indented by four columns has four fewer columns for text, and its tab stops change. Vertical motion keeps the **screen** column, so `down` across two rows with different indents moves straight down. A goal column inside the indent moves the caret to the row's first character.
 
 ### What is not there
 
-- **A wrap marker.** VS Code draws nothing either, but some editors mark the
-  break, and the gutter's blank continuation row is the only signal here.
-- **The GPU frontend does not wrap.** It has no chrome to draw at all yet, so it
-  lays out one line per row — see the [README](https://github.com/sabas0ba/deco#readme).
+- **A wrap marker.** VS Code draws none either, but some editors mark the break. In deco, the blank gutter on a continuation row is the only indication.
+- **The GPU frontend does not wrap.** It has no chrome yet and lays out one line per row. See the [README](https://github.com/sabas0ba/deco#readme).
 
-The setting is not written anywhere when you press `alt+z`. deco
-[does not write configuration files](configuration.md#colour-themes), and a
-keystroke that silently edited one would be a poor way to find that out. The
-toggle is per document — so per tab — and turning it on to read one Markdown file
-leaves the code in the next tab alone. Pressing it twice restores whatever
-`editor.wordWrap` asked for, including a `[language]` override of it, rather than
-assuming `"on"`.
+Pressing `alt+z` does not write the setting anywhere, because deco [does not write configuration files](configuration.md#colour-themes). The toggle applies per document, and therefore per tab, so turning it on for one Markdown file does not affect code in another tab. Pressing it twice restores the configured `editor.wordWrap` value, including a `[language]` override, rather than assuming `"on"`.
 
 ## Positions are UTF-16 code units
 
-Every position in deco is a line and a UTF-16 code-unit offset, which is what the
-Language Server Protocol and `vscode.Position` use. That is why a caret moves
-past an emoji in one press and a backspace removes the whole thing: the editor
-counts the same units a language server does, so no conversion sits between them
-to be wrong.
+Every position in deco is a line and a UTF-16 code-unit offset, as in the Language Server Protocol and `vscode.Position`. The caret moves past an emoji in one press and backspace removes the whole emoji. Because the editor uses the same units as a language server, positions need no conversion.
 
-Text is held in a rope, so an edit near the start of a large file costs the same
-as one near the end, and every edit is invertible — the undo history stores the
-inverse rather than a copy of the document.
+Text is stored in a rope, so an edit near the start of a large file costs the same as one near the end. Every edit is invertible, and the undo history stores the inverse edit rather than a copy of the document.

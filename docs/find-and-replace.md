@@ -4,11 +4,7 @@ Search is **literal**; regular-expression mode is not implemented. The find bar 
 
 ## Finding
 
-`ctrl+f` opens the bar, seeded from the selection if there is one — selected, so
-the next thing typed replaces it rather than appending. Typing narrows
-the query, `enter` and `F3` step forward, `shift+enter` and `shift+F3` step back,
-and both wrap. `alt+c` and `alt+w` toggle case sensitivity and whole-word
-matching; a capital letter in `[aa ww]` means the option is on.
+`ctrl+f` opens the bar with the selection, if there is one, as the query. The query is selected, so typing replaces it instead of appending. Typing narrows the query, `enter` and `F3` move forward, `shift+enter` and `shift+F3` move back, and both directions wrap. `alt+c` and `alt+w` toggle case sensitivity and whole-word matching; a capital letter in `[aa ww]` means the option is on.
 
 ![Opening the find bar, stepping through matches, and toggling whole-word](img/find.svg)
 
@@ -21,17 +17,11 @@ matching; a capital letter in `[aa ww]` means the option is on.
 | `alt+w` | `toggleFindWholeWord` |
 | `escape` | `closeFindWidget` |
 
-Every match is highlighted with `editor.findMatchHighlightBackground` and the
-current one with `editor.findMatchBackground` — VS Code's own theme keys, and its
-own distinction between the match you are on and the rest. The readout on the
-right is `3 of 7`. If the selection no longer corresponds to a match, it shows only the total, such as `7 results`.
+All matches are highlighted with `editor.findMatchHighlightBackground`, and the current match with `editor.findMatchBackground`. These are VS Code's theme keys, with VS Code's distinction between the current match and the others. The readout on the right shows `3 of 7`. If the selection no longer corresponds to a match, it shows only the total, such as `7 results`.
 
-`F3` works with the bar closed. With no query yet it searches for the selection,
-or for the word under the cursor, and reports where it landed in the status bar —
-which is the only place a count can go once the bar is gone.
+`F3` also works when the bar is closed. Without a query, it searches for the selection or for the word under the cursor, and reports the match position in the status bar, because the bar is not available to show a count.
 
-**Case sensitivity defaults to off**, which is what VS Code's find widget does.
-That is the opposite of `ctrl+d`, where you selected exactly the text you meant.
+**Case sensitivity is off by default**, as in VS Code's find widget. `ctrl+d` behaves the opposite way, because there you selected the exact text.
 
 ## Replacing
 
@@ -39,9 +29,7 @@ That is the opposite of `ctrl+d`, where you selected exactly the text you meant.
 the two inputs, `enter` on the replacement replaces the current match and steps to
 the next, and `ctrl+alt+enter` replaces every match **in one undo step**.
 
-The keyboard starts on whichever field is left to fill in: on the **replacement**
-when the query arrived seeded from a selection or was typed earlier, and on the
-**query** when there is nothing to replace yet.
+Keyboard focus starts in the field that still needs input: the **replacement** when the query was seeded from a selection or typed earlier, and the **query** when there is no query yet.
 
 ![Opening the replace row, filling both fields, and replacing every match](img/replace.svg)
 
@@ -52,99 +40,49 @@ when the query arrived seeded from a selection or was typed earlier, and on the
 | `ctrl+alt+enter` | `editor.action.replaceAll` |
 | `tab` / `shift+tab` | `deco.find.toggleField` |
 
-Two deliberate refusals:
+Two cases deliberately replace nothing:
 
-- **A replace pressed while the cursor is not on a match steps onto one instead
-  of changing anything.** VS Code does the same, and it is the safe reading of an
-  ambiguous keypress: replacing text you cannot see is worse than making you
-  press the key twice.
-- **A match that already reads as the replacement is left out.** Replacing `foo`
-  with `foo` neither dirties the file nor adds an undo step. This is reachable
-  rather than theoretical — a case-insensitive search for `foo` also finds `FOO`,
-  so replacing `foo` with `foo` across `foo FOO` reports one replacement, not two.
+- **Replace with the cursor not on a match moves to a match without changing anything.** VS Code does the same. The keypress is ambiguous, and replacing text you cannot see is worse than requiring a second keypress.
+- **A match that already equals the replacement is skipped.** Replacing `foo` with `foo` neither marks the file dirty nor adds an undo step. This case occurs in practice: a case-insensitive search for `foo` also finds `FOO`, so replacing `foo` with `foo` in `foo FOO` reports one replacement, not two.
 
-An empty replacement deletes the matches, which is a legitimate thing to want.
+An empty replacement deletes the matches.
 
 ## Replacing across the workspace
 
 ![ctrl+shift+h replacing a term in two files, one of them not open, undone with ctrl+z](img/replace-in-files.svg)
 
-`ctrl+shift+h` replaces a term everywhere in the workspace. It asks twice — what
-to look for, then what to put there — because deco has one prompt at a time
-where VS Code has a search view with two boxes. The first prompt is the same one
-`ctrl+shift+f` opens, seeded from the selection or the word under the cursor.
+`ctrl+shift+h` replaces a term throughout the workspace. It prompts twice, first for the search term and then for the replacement, because deco shows one prompt at a time, whereas VS Code has a search view with two input boxes. The first prompt is the same one `ctrl+shift+f` opens, seeded from the selection or the word under the cursor.
 
 | Key | Command |
 | --- | --- |
 | `ctrl+shift+h` | `workbench.action.replaceInFiles` |
 | `ctrl+shift+f` | `workbench.action.findInFiles` |
 
-**The whole thing is one undoable action.** It lands through the same
-[`WorkspaceEdit`](language-servers.md#rename) path a rename does: every file is
-checked before any of it is written, and one `ctrl+z` from any of them takes all
-of it back.
+**The whole replacement is one undoable action.** It is applied through the same [`WorkspaceEdit`](language-servers.md#rename) path as a rename: every file is checked before any file is written, and one `ctrl+z` in any affected file undoes all of it.
 
-**Files that are not open are opened, not written.** Nothing reaches the disk
-until you save — the status line says how many tabs appeared, and `ctrl+k s`
-writes them. Which is also what makes the whole operation reviewable: the tabs
-are the diff.
+**Files that are not open are opened, not written.** Nothing is written to disk until you save. The status line reports how many tabs were opened, and `ctrl+k s` saves them. This also makes the operation reviewable, because the opened tabs contain the changes.
 
-**The matches are found again before they are replaced.** The search says which
-*files* are involved; where the occurrences are is worked out afterwards, in the
-editor, against the buffer of any file a tab is holding. That matters for a file
-you have edited since the search read it from disk: the positions from disk
-point into a document that no longer exists, and replacing at them would edit
-the wrong text and then save it over the real file. It also means the count
-reported afterwards counts what was replaced rather than what was found a moment
-earlier.
+**Matches are found again before they are replaced.** The search identifies which *files* contain matches. The positions of the occurrences are then recomputed in the editor, using the buffer of any file that is open in a tab. This matters for a file edited since the search read it from disk: positions from disk would refer to outdated text, and replacing at them would change the wrong text and then save it over the real file. As a result, the reported count is the number of replacements made, not the number of matches found earlier.
 
-An empty replacement takes every occurrence out, which is a legitimate thing to
-want and is not refused.
+An empty replacement removes every occurrence; this is allowed.
 
-**A search that hit its limit says so.** The project search is bounded — see
-[Running commands](commands.md#search-in-files) — and a replace-all that was not
-quite all is the one result a user must not have to guess at, so the report says
-there may be more.
+**A search that reached its limit reports it.** Project search is bounded (see [Running commands](commands.md#search-in-files)). The report states that there may be more matches, so a replace-all that did not cover every match is not mistaken for a complete one.
 
-The match options are the project search's own, not the find bar's:
-case-sensitivity set for one does not change the other. Both are literal so far;
-[regular expressions](roadmap.md#the-gaps-behind-the-features) are not built yet.
+The match options are those of project search, not the find bar; case sensitivity set in one does not change the other. Both are currently literal; [regular expressions](roadmap.md#the-gaps-behind-the-features) are not built yet.
 
-In a [remote session](remote.md) the search, the reads and the edits all go
-through the connection, so a replacement reaches the files on the remote environment rather
-than paths that happen to exist on this machine.
+In a [remote session](remote.md), the search, reads and edits all go through the connection, so replacements change the files on the remote environment, not files at the same paths on the local machine.
 
 ## The find input is a text input
 
-While the find bar has the keyboard, `editorTextFocus` is false and
-`textInputFocus` is true — VS Code's distinction, because its find box is a text
-input inside the editor. deco copies it deliberately, with two consequences worth
-knowing:
+While the find bar has keyboard focus, `editorTextFocus` is false and `textInputFocus` is true. This follows VS Code, where the find box is a text input inside the editor. deco adopts this deliberately, with two consequences:
 
-- `ctrl+v` pastes into the query, not into the file. `ctrl+z` cannot rewrite the
-  document from behind an open bar; it is swallowed, along with `ctrl+a` and
-  `ctrl+x`, which would otherwise select or cut in a document you are not looking
-  at.
-- `tab`, `ctrl+space` and `ctrl+k ctrl+i` stop resolving at all, because they are
-  bound to `editorTextFocus`. No special-casing — the context key means what it
-  means in VS Code.
+- `ctrl+v` pastes into the query, not into the file. `ctrl+z` cannot change the document while the bar is open; it is ignored, as are `ctrl+a` and `ctrl+x`, which would otherwise select or cut in the document behind the bar.
+- `tab`, `ctrl+space` and `ctrl+k ctrl+i` do not resolve, because they are bound with `editorTextFocus`. No special handling is needed; the context key has the same meaning as in VS Code.
 
-The query has a caret and one possible selection: all of it. That is the state it
-opens in when `ctrl+f` seeds it from a selection, and the state `ctrl+a` puts it
-in — so the first thing typed replaces the seed instead of appending to it, and
-`ctrl+a` then backspace empties the field. `ctrl+c` and `ctrl+x` act on the whole
-query either way. A query longer than the bar scrolls to keep the caret visible,
-and on a terminal too narrow for everything the count is dropped first, the
-toggles second, and the query last: a search term you cannot see is one you
-cannot correct.
+The query has a caret and at most one selection, which covers the whole query. The query is in that state when `ctrl+f` seeds it from a selection and after `ctrl+a`, so the first typed character replaces the seeded text instead of appending to it, and `ctrl+a` followed by backspace clears the field. `ctrl+c` and `ctrl+x` always act on the whole query. A query longer than the bar scrolls to keep the caret visible. On a terminal too narrow for everything, the count is hidden first, then the toggles, and the query last, because a search term you cannot see cannot be corrected.
 
 ## Whole-word matching differs from VS Code, on purpose
 
-VS Code compiles the needle into `\bneedle\b` and so inherits `\b`'s definition:
-a *transition* between a word and a non-word character. With whole-word on,
-searching for `(` therefore matches `f(x)` but not ` ( ` — behaviour that falls
-out of the regex engine rather than out of anything anyone asked for.
+VS Code compiles the needle into `\bneedle\b` and therefore uses `\b`'s definition: a *transition* between a word character and a non-word character. With whole-word matching on, searching for `(` therefore matches `f(x)` but not ` ( `. This is a side effect of the regex engine, not intended behaviour.
 
-deco constrains only the ends of the needle that are themselves word characters.
-For every needle that begins and ends in a word character — every needle anyone
-types with the option on — the two agree.
+deco constrains only the ends of the needle that are word characters. For every needle that begins and ends with a word character, which covers typical whole-word searches, the two behave the same.

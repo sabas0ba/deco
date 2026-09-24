@@ -2,12 +2,12 @@
 #
 # The site is built by GitHub Pages itself ("Deploy from a branch" → `main`,
 # `/docs`), so only plugins on the Pages allow-list may appear here. Every one
-# below is already enabled by default there; listing them keeps a local
-# `bundle exec jekyll serve` building the same site GitHub does.
+# below is already enabled by default there. Listing them makes a local
+# `bundle exec jekyll serve` build the same site as GitHub.
 #
-# The theme lives in `_layouts` and `assets/css` rather than in a gem, because
-# the point of it is to look like deco — the palette is deco's own Dark Modern
-# and Light Modern, taken from `crates/deco-theme/src/defaults.rs`.
+# The theme is in `_layouts` and `assets/css` rather than in a gem so that the
+# site matches deco's appearance. The palette is deco's Dark Modern and Light
+# Modern, taken from `crates/deco-theme/src/defaults.rs`.
 
 title: deco
 tagline: A lightweight, VS Code-compatible text editor written in Rust
