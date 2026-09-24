@@ -1,14 +1,14 @@
-//! What the editor looks like: themes off the disk, and a screen that keeps its
-//! shape whatever size the terminal is.
+//! Appearance: themes loaded from disk, and a frame that matches the terminal
+//! size.
 //!
-//! The renderer has unit tests, and they are about layout given a session. These
-//! are about the other half — that a theme file in an extension directory is
-//! found, read and applied, and that the frame is still exactly as big as the
-//! terminal after the things that resize it.
+//! The renderer's unit tests cover layout for a given session. These scenarios
+//! test that a theme file in an extension directory is found, read and applied,
+//! and that the frame still matches the terminal size after operations that
+//! change the layout.
 
 use deco_e2e::Scenario;
 
-/// A theme file with an unmistakable background.
+/// A theme file with a distinctive background colour.
 const MAGENTA: &str = r##"{
     "name": "Acme Magenta",
     "type": "dark",
@@ -21,9 +21,9 @@ const MAGENTA: &str = r##"{
 
 #[test]
 fn a_theme_from_an_installed_extension_is_offered_and_applied() {
-    // The whole marketplace-compatibility claim, end to end: a directory that
-    // looks like an installed VS Code theme becomes an entry in `ctrl+k ctrl+t`,
-    // and choosing it repaints the screen.
+    // Marketplace theme compatibility, end to end: a directory in the layout of
+    // an installed VS Code theme appears in `ctrl+k ctrl+t`, and choosing it
+    // repaints the screen.
     let scenario = Scenario::new("theme")
         .theme_extension("acme.magenta-1.0.0", "Acme Magenta", MAGENTA)
         .file("a.txt", "hello\n");
@@ -81,7 +81,7 @@ fn a_theme_that_is_named_but_not_installed_is_reported_rather_than_ignored() {
         "the problem should name the theme: {:?}",
         editor.problems()
     );
-    // And the editor is still usable in whatever theme it fell back to.
+    // The editor is still usable with the fallback theme.
     editor.screen().assert_row_shows(0, "hello");
 }
 
@@ -104,9 +104,9 @@ fn the_built_in_themes_are_offered_even_with_nothing_installed() {
 
 #[test]
 fn the_frame_is_exactly_the_size_of_the_terminal_at_every_size() {
-    // A row short leaves whatever was underneath on screen; a row too wide wraps
-    // and pushes the whole frame up. Both are the kind of thing that only shows
-    // up on somebody else's terminal.
+    // Too few rows leave old content on screen, and a row that is too wide
+    // wraps and scrolls the whole frame up. Both errors often appear only at
+    // terminal sizes the developer did not test.
     for (width, height) in [(80, 24), (40, 10), (200, 60), (20, 5), (120, 3)] {
         let scenario = Scenario::new(&format!("size-{width}x{height}"))
             .size(width, height)
@@ -114,7 +114,7 @@ fn the_frame_is_exactly_the_size_of_the_terminal_at_every_size() {
         let mut editor = scenario.launch(&["a.txt"]);
         editor.screen().assert_fits();
 
-        // And with the chrome that costs rows.
+        // Also with UI elements that take rows.
         editor.press("ctrl+f");
         editor.screen().assert_fits();
         editor.press("escape");
@@ -144,8 +144,8 @@ fn resizing_the_terminal_reflows_without_losing_the_caret() {
 
 #[test]
 fn a_terminal_too_small_to_draw_in_does_not_panic() {
-    // People do drag a terminal down to nothing, and an editor that panics there
-    // takes the unsaved file with it.
+    // Users can resize a terminal to almost nothing, and a panic at that size
+    // would lose unsaved changes.
     let scenario = Scenario::new("tiny")
         .size(1, 1)
         .file("a.txt", "hello\nworld\n");
@@ -157,7 +157,8 @@ fn a_terminal_too_small_to_draw_in_does_not_panic() {
     editor.screen().assert_fits();
 }
 
-/// Fails if anything a terminal would execute is in the frame.
+/// Fails if the frame contains bytes that a terminal would interpret as control
+/// sequences.
 #[track_caller]
 fn assert_nothing_executable(screen: &deco_e2e::Screen) {
     assert!(
@@ -174,17 +175,16 @@ fn assert_nothing_executable(screen: &deco_e2e::Screen) {
 
 #[test]
 fn a_settings_file_cannot_put_an_escape_sequence_on_the_screen() {
-    // A cloned repository's `.vscode/settings.json` is somebody else's text, and
-    // deco quotes it back when it cannot make sense of it — here, the name of a
-    // theme that is not installed. That message reaches the status line without
-    // passing through the renderer's substitution of a *document's* text, so
-    // `paint` is what has to make it printable.
+    // A cloned repository's `.vscode/settings.json` is untrusted text, and deco
+    // includes parts of it in error messages, here the name of a theme that is
+    // not installed. That message reaches the status line without the
+    // renderer's sanitisation of document text, so `paint` must make it
+    // printable.
     //
-    // Spelled as JSON escapes rather than raw bytes, which is both what a hostile
-    // file would have to do and half the reason this is worth a scenario: a raw
-    // control character is invalid JSON and the parser refuses the whole file, so
-    // the only way one of these reaches a message is `\u001b` — perfectly valid
-    // JSON, decoding to exactly the byte a terminal acts on.
+    // The bytes are written as JSON escapes rather than raw bytes. A raw control
+    // character is invalid JSON and the parser rejects the whole file, so a
+    // malicious file must use escapes such as `\u001b`. That is valid JSON and
+    // decodes to the byte a terminal interprets.
     let scenario = Scenario::new("escape-setting")
         .file("a.txt", "hello\n")
         .workspace_settings(
@@ -203,21 +203,20 @@ fn a_settings_file_cannot_put_an_escape_sequence_on_the_screen() {
     assert_nothing_executable(&editor.screen());
 }
 
-// A file name is somebody else's text too, and it reaches the tab bar and the
-// status line without passing through the renderer's own substitution.
+// A file name is also untrusted text, and it reaches the tab bar and the status
+// line without the renderer's sanitisation.
 //
-// Unix only, because the hazard is. Windows refuses to *create* a name holding a
-// control byte — `ERROR_INVALID_NAME` — so there is no such file to open there,
-// and a scenario that tried would be asserting about the operating system's
-// refusal rather than about deco. The sibling above covers the same substitution
-// on every platform.
+// Unix only, because the problem exists only there. Windows rejects creating a
+// name that contains a control byte (`ERROR_INVALID_NAME`), so such a file
+// cannot exist, and the scenario would test the operating system rather than
+// deco. The scenario above covers the same sanitisation on every platform.
 #[cfg(unix)]
 #[test]
 fn a_file_whose_name_carries_an_escape_sequence_cannot_reach_the_terminal() {
-    // OSC 52 sets the clipboard on every terminal that supports it, and the bell
-    // rings. Declared here rather than beside the scenario above, which spells the
-    // same bytes as the JSON escapes a settings file has to use — and where a
-    // constant would be unused on the platforms this scenario is compiled out of.
+    // OSC 52 sets the clipboard on terminals that support it, and BEL rings the
+    // bell. Defined here rather than shared with the scenario above, which writes
+    // the same bytes as JSON escapes. A shared constant would be unused on
+    // platforms where this scenario is not compiled.
     let name = "evil\u{1b}]52;c;aGk=\u{7}.txt".to_owned();
     let scenario = Scenario::new("escape-name").file(&name, "hello\n");
     let mut editor = scenario.launch(&[&name]);
@@ -227,8 +226,8 @@ fn a_file_whose_name_carries_an_escape_sequence_cannot_reach_the_terminal() {
 
 #[test]
 fn a_line_of_wide_characters_does_not_paint_past_the_right_hand_edge() {
-    // Two columns per character, and a renderer that counts characters instead of
-    // columns paints twice the width it has.
+    // Each character is two columns wide. A renderer that counts characters
+    // instead of columns would draw twice the available width.
     let scenario = Scenario::new("wide")
         .size(20, 6)
         .file("a.txt", "漢字漢字漢字漢字漢字漢字漢字漢字\n");
@@ -239,8 +238,8 @@ fn a_line_of_wide_characters_does_not_paint_past_the_right_hand_edge() {
 
 #[test]
 fn syntax_highlighting_colours_a_keyword_differently_from_a_name() {
-    // The claim the highlighting makes, at the level anybody can see it: two
-    // things on one line are painted in two colours.
+    // Highlighting, checked on screen: two tokens on one line are drawn in
+    // different colours.
     let scenario = Scenario::new("highlight").file("a.rs", "fn greet() {}\n");
     let mut editor = scenario.launch(&["a.rs"]);
 

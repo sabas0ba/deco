@@ -1,9 +1,9 @@
 //! A typed, resolved view of the settings the editor reads on hot paths.
 //!
-//! Resolving `Value`s by string key on every keystroke would be both slow and
-//! error-prone. [`EditorSettings::resolve`] does it once per document (settings
-//! are resolved per language, so a Rust file and a Markdown file legitimately
-//! get different values) and hands the rest of the editor plain fields.
+//! Resolving `Value`s by string key on every keystroke would be slow and
+//! error-prone. [`EditorSettings::resolve`] resolves them once per document and
+//! gives the rest of the editor plain fields. Settings are resolved per
+//! language, so a Rust file and a Markdown file can get different values.
 
 use crate::settings::Settings;
 
@@ -23,10 +23,9 @@ pub enum WordWrap {
 
 /// `editor.wrappingIndent`.
 ///
-/// How far a continuation row is pushed in from the left. `Same` is VS Code's
-/// default and the reason a wrapped block of code still reads as one block: without
-/// it the second row of an indented line starts at column zero, next to the
-/// unindented lines around it.
+/// The indentation of a continuation row. `Same` is VS Code's default. It keeps a
+/// wrapped block of code visually aligned: without it, the second row of an
+/// indented line starts at column zero, next to the unindented lines around it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WrappingIndent {
     /// Continuation rows start at column zero.
@@ -55,7 +54,7 @@ impl WrappingIndent {
 /// `files.autoSave`.
 ///
 /// deco honours `off` and `afterDelay`. The two focus-driven values are recognised
-/// and **reported** rather than silently doing nothing: see
+/// and **reported** as unsupported instead of being ignored: see
 /// [`EditorSettings::unsupported`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AutoSave {
@@ -72,29 +71,29 @@ pub enum AutoSave {
 
 /// `editor.autoIndent`.
 ///
-/// deco reads three of VS Code's five values and treats the top two as the third,
-/// because the difference between them is a *language configuration* — the
-/// `indentationRules` an extension contributes — and deco has none to read. Saying so
-/// beats a setting that silently means something narrower than its name.
+/// deco reads three of VS Code's five values and treats `advanced` and `full` as
+/// `brackets`. Those two differ from `brackets` only through a *language
+/// configuration* (the `indentationRules` an extension contributes), and deco does
+/// not read language configurations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AutoIndent {
     /// A new line starts at column zero.
     None,
     /// A new line keeps the previous line's indentation.
     Keep,
-    /// And goes one level deeper after an opening bracket.
+    /// Like `Keep`, and one level deeper after an opening bracket.
     ///
-    /// `advanced` and `full` resolve here: both mean this plus rules from a language
-    /// configuration, and there is no language configuration.
+    /// `advanced` and `full` resolve here. Both mean this plus rules from a language
+    /// configuration, which deco does not have.
     #[default]
     Brackets,
 }
 
 /// `editor.autoClosingBrackets`.
 ///
-/// Each value is a rule about *where* a bracket closes itself, not whether the
-/// feature exists: closing one in the middle of a word turns `foo` into `f(o)oo`,
-/// which is why the default is conditional rather than `always`.
+/// Each value is a rule about *where* a bracket closes itself. The default is
+/// conditional, not `always`, because closing a bracket in the middle of a word
+/// turns `foo` into `f(o)oo`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AutoClosingBrackets {
     /// Wherever the caret is.
@@ -111,17 +110,16 @@ pub enum AutoClosingBrackets {
 
 /// The characters `languageDefined` will close a bracket in front of.
 ///
-/// VS Code's own `autoCloseBefore` default, less the whitespace it also allows —
-/// which is handled separately because the end of a line counts as whitespace here
-/// and is not a character at all.
+/// VS Code's `autoCloseBefore` default without its whitespace characters.
+/// Whitespace is handled separately because the end of a line also counts as
+/// whitespace here and is not a character.
 const AUTO_CLOSE_BEFORE: &str = ";:.,=}])>";
 
 impl AutoClosingBrackets {
     /// Whether a bracket typed before `next` should close itself.
     ///
-    /// `next` is the character the caret is in front of, or `None` at the end of a
-    /// line — where every setting but `never` closes, because there is nothing for
-    /// the closer to be in the middle of.
+    /// `next` is the character after the caret, or `None` at the end of a line.
+    /// At the end of a line, every setting except `never` closes the bracket.
     pub fn closes_before(self, next: Option<char>) -> bool {
         match self {
             Self::Never => false,
@@ -150,9 +148,8 @@ pub enum LineNumbers {
 
 /// `workbench.sideBar.location`.
 ///
-/// Not a per-language setting: which side the chrome is on is a property of the
-/// window, and a side bar that jumped across the screen when you switched tabs
-/// would be answering a question nobody asked.
+/// Not a per-language setting. The side bar position is a property of the window,
+/// so it must not change when the user switches to a tab of another language.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SideBarLocation {
     /// Down the left edge, as VS Code opens.
@@ -165,10 +162,9 @@ pub enum SideBarLocation {
 impl SideBarLocation {
     /// Reads `workbench.sideBar.location` out of the layered settings.
     ///
-    /// Its own function rather than a field on [`EditorSettings`], which is
-    /// resolved per document and per language — this belongs to the window, and
-    /// a field there would invite exactly the `[rust]` override that must not
-    /// mean anything.
+    /// A separate function, not a field on [`EditorSettings`]. That struct is
+    /// resolved per document and per language, so a field there would apply
+    /// language overrides such as `[rust]`, which must have no effect here.
     pub fn resolve(settings: &Settings) -> Self {
         match settings.get_str("workbench.sideBar.location", None) {
             Some("right") => Self::Right,
@@ -289,9 +285,9 @@ impl Default for EditorSettings {
 impl EditorSettings {
     /// Resolves the settings for a document of `language`.
     ///
-    /// Unknown enum spellings fall back to the default rather than failing:
-    /// a typo in `settings.json` should not stop the editor from opening the
-    /// file, and VS Code behaves the same way.
+    /// Unknown enum spellings fall back to the default instead of failing, so a
+    /// typo in `settings.json` does not stop the editor from opening the file.
+    /// VS Code behaves the same way.
     pub fn resolve(settings: &Settings, language: Option<&str>) -> Self {
         let s = settings;
         let l = language;
@@ -316,8 +312,8 @@ impl EditorSettings {
                 Some("onWindowChange") => AutoSave::OnWindowChange,
                 _ => AutoSave::Off,
             },
-            // VS Code's own default. Clamped away from zero, which would mean saving
-            // on every keystroke — and a save per character is a write per character.
+            // VS Code's default. Clamped to at least 100 ms. A value near zero would
+            // save, and write to disk, on every keystroke.
             auto_save_delay: s.get_u64("files.autoSaveDelay", l).unwrap_or(1000).max(100),
             render_control_characters: s
                 .get_bool("editor.renderControlCharacters", l)
@@ -398,11 +394,10 @@ impl EditorSettings {
 
     /// How far a continuation row of a line indented `leading` columns is pushed in.
     ///
-    /// Capped at half the available `width`: past that a wrapped line is more indent
-    /// than text, and a deeply nested line would be wrapped into a column two
-    /// characters wide. VS Code caps it for the same reason. The cap drops the indent
-    /// rather than trimming it, because a partial indent lines the continuation up
-    /// with nothing.
+    /// Capped at half the available `width`. Beyond that, a wrapped line is more
+    /// indent than text, and a deeply nested line would wrap into a very narrow
+    /// column. VS Code applies the same cap. When the cap is exceeded the indent is
+    /// dropped, not shortened, because a partial indent aligns with nothing.
     pub fn wrapping_prefix(&self, leading: usize, width: usize) -> usize {
         let Some(levels) = self.wrapping_indent.extra_levels() else {
             return 0;
@@ -417,10 +412,9 @@ impl EditorSettings {
 
     /// What these settings ask for that deco does not do, if anything.
     ///
-    /// Reported through [`crate::Settings`]'s reader rather than ignored, because a
-    /// setting that silently does nothing is the one thing worse than one that is
-    /// refused: nothing tells you it did nothing. An unknown colour theme is already
-    /// reported this way.
+    /// Reported through [`crate::Settings`]'s reader instead of being ignored, so
+    /// the user learns that the setting has no effect. An unknown colour theme is
+    /// reported the same way.
     pub fn unsupported(&self) -> Option<String> {
         let value = match self.auto_save {
             AutoSave::OnFocusChange => "onFocusChange",
@@ -448,7 +442,7 @@ impl EditorSettings {
         if self.line_height > 0.0 {
             self.line_height
         } else {
-            // VS Code's own heuristic for "unset".
+            // VS Code's heuristic for "unset".
             (self.font_size * 1.5).round()
         }
     }
@@ -605,8 +599,8 @@ mod tests {
 
     #[test]
     fn the_colour_theme_is_not_language_scoped() {
-        // A `[rust]` section must not be able to change the whole workbench
-        // theme just because a Rust file happens to be focused.
+        // A `[rust]` section must not change the workbench theme when a Rust
+        // file is focused.
         let s = resolve(
             r#"{"workbench.colorTheme": "Solarized Light", "[rust]": {"workbench.colorTheme": "Monokai"}}"#,
             Some("rust"),

@@ -1,40 +1,36 @@
 //! One edit across several documents, applied all at once or not at all.
 //!
-//! A language server answering `textDocument/rename` does not send a list of
-//! replacements for the file on screen — it sends replacements for every file
-//! that mentions the symbol, most of which are not open. The same shape carries
-//! a code action, a replace-across-files, and an agent's turn. What they share
-//! is the property that makes them different from the edits deco already
-//! applied: *partly* done is worse than not done at all. Half a rename leaves a
-//! project that does not build, and if the halves landed as separate undo steps
-//! there is no single keystroke that puts it back.
+//! A language server's response to `textDocument/rename` contains replacements
+//! for every file that mentions the symbol, most of which are not open. Code
+//! actions, replace-across-files and agent turns use the same structure. Unlike
+//! single-document edits, these must not be applied partially. Half a rename
+//! leaves a project that does not build, and if the parts were separate undo
+//! steps, no single undo would restore it.
 //!
-//! So this module answers two questions in this order, and never the second
-//! before the first:
+//! This module therefore works in two phases, and never starts the second before
+//! the first succeeds:
 //!
-//! 1. **Can all of it be applied?** Every document is resolved, every version
-//!    the server stated is checked, and every transaction is *built* — which is
-//!    where overlapping edits are caught — before a single buffer is touched.
-//!    A failure at any point leaves the session exactly as it was.
-//! 2. **Apply all of it**, recording one shared [`deco_core::Group`] across
-//!    every document that took part, so that `ctrl+z` from any of them takes
-//!    the whole thing back.
+//! 1. **Check that everything can be applied.** Every document is resolved,
+//!    every version the server stated is checked, and every transaction is
+//!    *built*, which detects overlapping edits, before any buffer is changed.
+//!    A failure at any point leaves the session unchanged.
+//! 2. **Apply everything**, recording one shared [`deco_core::Group`] across
+//!    all affected documents, so that `ctrl+z` in any of them reverts the whole
+//!    edit.
 //!
 //! # Files that are not open
 //!
-//! Most of a rename lands in files nobody has opened. VS Code writes those to
-//! disk directly. deco opens them instead, as background tabs holding unsaved
-//! changes, for two reasons. The core performs no I/O at all — the reason the
-//! whole editable surface is testable headlessly — so a write here would have
-//! to be a request to the frontend, and the undo of that write another one.
-//! And an editor that rewrites files you have never looked at, without being
-//! asked to save, is doing the one thing the rest of deco is careful not to:
-//! acting on your disk on somebody else's say-so. Opened rather than written,
-//! the change is visible, `ctrl+z` reaches it, and `ctrl+k s` is what makes it
-//! permanent.
+//! Most of a rename usually affects files that are not open. VS Code writes
+//! those directly to disk. deco opens them instead, as background tabs with
+//! unsaved changes, for two reasons. First, the core performs no I/O, which is
+//! what makes the editable surface testable headlessly. A write here would have
+//! to be a request to the frontend, and its undo another request. Second, deco
+//! does not modify files on disk on behalf of another program without an
+//! explicit save. When the files are opened instead of written, the change is
+//! visible, `ctrl+z` can revert it, and `ctrl+k s` saves it.
 //!
-//! The frontend supplies the text, because reading the file is I/O: [`Plan`]
-//! names the paths it needs and [`Plan::with_contents`] takes them back.
+//! The frontend supplies the text because reading the file is I/O. [`Plan`]
+//! lists the paths it needs and [`Plan::with_contents`] receives their text.
 
 use std::path::{Path, PathBuf};
 
@@ -43,22 +39,22 @@ use deco_lsp::uri::Uri;
 
 /// Why a workspace edit was refused.
 ///
-/// Every variant means nothing was changed. There is deliberately no error that
-/// leaves a session half-edited: that is the entire point of the type.
+/// Every variant means nothing was changed. No error leaves a session partially
+/// edited.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum WorkspaceError {
     /// A URI that does not name a file on this machine.
     ///
-    /// `untitled:` documents and a server's own synthetic schemes end up here.
-    /// Refused rather than skipped, because the edits deco *can* place are the
-    /// other half of a change that only makes sense whole.
+    /// `untitled:` documents and server-specific synthetic schemes produce this
+    /// error. The whole edit is rejected rather than skipping these documents,
+    /// because the remaining edits are only valid as a complete change.
     #[error("the server sent an edit for `{0}`, which is not a file deco can open")]
     NotAFile(String),
     /// The document changed after the server computed the edit.
     ///
-    /// Positions are only meaningful against the text they were computed for.
-    /// A rename that arrives after a keystroke has moved everything down a line
-    /// would replace whatever now sits at those coordinates.
+    /// Positions are valid only for the text they were computed against. If a
+    /// keystroke has moved the text down a line, applying the rename would
+    /// replace whatever is now at those coordinates.
     #[error("`{path}` has changed since the server read it — nothing was renamed")]
     Stale {
         /// Which document.
@@ -98,17 +94,17 @@ pub struct PlannedDocument {
     /// The text to start from, for a file no tab holds.
     ///
     /// Filled in by [`Plan::with_contents`]. Always `None` for a file that is
-    /// already open, whose buffer is the only correct starting point — a
-    /// document with unsaved changes edited from its text on disk would silently
-    /// discard them.
+    /// already open, because its buffer must be the starting point. Editing from
+    /// the text on disk would discard any unsaved changes.
     pub contents: Option<String>,
 }
 
 /// A workspace edit, checked as far as it can be without touching a buffer.
 ///
-/// Holding one is not permission to apply it: [`crate::Session::apply_workspace_edit`]
-/// re-checks everything that could have changed in between, which is why the
-/// plan can be handed to a frontend to fill in and handed back.
+/// A plan is not guaranteed to be applicable.
+/// [`crate::Session::apply_workspace_edit`] re-checks everything that could have
+/// changed in the meantime, so the plan can be passed to a frontend to fill in
+/// and then returned.
 #[derive(Debug, Clone)]
 pub struct Plan {
     documents: Vec<PlannedDocument>,
@@ -117,16 +113,15 @@ pub struct Plan {
 impl Plan {
     /// Resolves `edit` against the paths and versions of what is open.
     ///
-    /// `version_of` answers with the version last sent to the language server
-    /// for a path, or `None` for a document it is not tracking. It is a callback
-    /// rather than a lookup because those versions belong to the LSP client,
-    /// which lives in a frontend — but the *rule* about what a mismatch means
-    /// belongs here, where every caller gets the same one.
+    /// `version_of` returns the version last sent to the language server for a
+    /// path, or `None` for a document the client is not tracking. It is a
+    /// callback because the versions are held by the LSP client in a frontend.
+    /// The rule for handling a mismatch is defined here so that every caller
+    /// uses the same rule.
     ///
-    /// A server that stated no version gets no check. That is not the same as a
-    /// check that passed, and it is worth knowing which servers do it: the
-    /// `changes` spelling of a workspace edit carries no versions at all, so an
-    /// edit that arrives that way is applied on trust.
+    /// If the server states no version, no check is made. This is different
+    /// from a passed check. The `changes` form of a workspace edit carries no
+    /// versions, so an edit in that form is applied without a version check.
     pub(crate) fn build(
         edit: &WorkspaceEdit,
         resolve: impl Fn(&Uri) -> Option<PathBuf>,
@@ -135,10 +130,10 @@ impl Plan {
     ) -> Result<Self, WorkspaceError> {
         let mut documents = Vec::with_capacity(edit.changes.len());
         for change in &edit.changes {
-            // Through the caller rather than through `Uri::to_path`, because a
-            // server running on the far end of a remote session names files by
-            // *its* paths: the mapping back is the session's, and a plan built
-            // against the wrong end of it would edit files on the wrong machine.
+            // Resolved by the caller rather than by `Uri::to_path`. A server in
+            // the remote environment of a remote session uses remote paths, and
+            // the session owns the mapping to local paths. Using the wrong side
+            // of the mapping would edit files on the wrong machine.
             let path = resolve(&change.uri)
                 .ok_or_else(|| WorkspaceError::NotAFile(change.uri.as_str().to_owned()))?;
 
@@ -152,10 +147,10 @@ impl Plan {
                 }
             }
 
-            // Two URIs can spell one file — percent-encoding is not unique — and
-            // the two halves then belong to one document and one transaction.
-            // Opened twice they would be two buffers over one path, which is the
-            // divergent-copies problem tabs already refuse to create.
+            // Two URIs can name the same file because percent-encoding is not
+            // unique. Their edits are merged into one document and one
+            // transaction. Opening the file twice would create two buffers for
+            // one path, which tabs already prevent.
             if let Some(seen) = documents
                 .iter_mut()
                 .find(|seen: &&mut PlannedDocument| seen.path == path)
@@ -177,19 +172,17 @@ impl Plan {
 
     /// A plan whose documents were worked out by the caller.
     ///
-    /// For an edit that did not come from a language server and so has no URIs
-    /// to resolve and no versions to check — a replace across the workspace,
-    /// where the editor itself decided what to change. The checks that remain
-    /// are the ones [`crate::Session::apply_workspace_edit`] makes on every
-    /// plan, which are the ones that matter: nothing is written until all of it
-    /// can be.
+    /// Used for an edit that did not come from a language server, such as a
+    /// replace across the workspace, so there are no URIs to resolve and no
+    /// versions to check. [`crate::Session::apply_workspace_edit`] still makes
+    /// its checks on every plan: nothing is written until all of it can be.
     pub(crate) fn from_documents(documents: Vec<PlannedDocument>) -> Self {
         Self { documents }
     }
 
     /// The files this edit needs that no tab holds, in the server's order.
     ///
-    /// What the frontend has to read before [`Plan::with_contents`].
+    /// The frontend reads these before calling [`Plan::with_contents`].
     pub fn missing(&self) -> impl Iterator<Item = &Path> {
         self.documents
             .iter()
@@ -216,10 +209,9 @@ impl Plan {
 
     /// Supplies the text of the files [`Plan::missing`] named.
     ///
-    /// `read` is given a path and answers with its text, or with why it could
-    /// not be read — a file the server knows about may have been deleted since,
-    /// and a rename that cannot see one of the files it is changing must not
-    /// proceed with the rest.
+    /// `read` returns the text for a path, or the reason it could not be read.
+    /// A file known to the server may have been deleted since. If any file
+    /// cannot be read, the whole edit is rejected.
     pub fn with_contents(
         mut self,
         mut read: impl FnMut(&Path) -> Result<String, String>,
@@ -261,9 +253,9 @@ pub struct Applied {
 impl Applied {
     /// A sentence for the status bar.
     ///
-    /// Says how many files were opened as well as how many were changed,
-    /// because those tabs are unsaved work that appeared without being asked
-    /// for, and a user who is not told about them will not save them.
+    /// Reports how many files were opened as well as how many were changed.
+    /// The opened tabs contain unsaved changes the user did not open
+    /// explicitly, so the user must be told to save them.
     pub fn summary(&self, what: &str) -> String {
         let edits = plural(self.edits, "change", "changes");
         let documents = plural(self.documents, "file", "files");
@@ -351,9 +343,9 @@ mod tests {
 
     #[test]
     fn a_server_that_states_no_version_is_taken_on_trust() {
-        // The `changes` spelling carries none. Applying it is the only thing that
-        // can be done with it, so it is not an error — but it is not a check that
-        // passed either, which is why the two cases are written down separately.
+        // The `changes` form carries no version. It is applied without a version
+        // check rather than rejected. This test is separate from the passing
+        // check because the two cases differ.
         let plan = Plan::build(
             &workspace(&[("file:///w/a.rs", None)]),
             |uri: &Uri| uri.to_path(deco_lsp::uri::PathStyle::Unix).ok(),
@@ -382,8 +374,8 @@ mod tests {
 
     #[test]
     fn an_open_file_is_never_read_from_disk() {
-        // Its buffer may hold unsaved changes, and starting from the file on disk
-        // would discard them while reporting success.
+        // Its buffer may hold unsaved changes. Starting from the file on disk
+        // would discard them and still report success.
         let plan = Plan::build(
             &workspace(&[("file:///w/open.rs", None)]),
             |uri: &Uri| uri.to_path(deco_lsp::uri::PathStyle::Unix).ok(),

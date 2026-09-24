@@ -1,15 +1,15 @@
 //! Long sessions.
 //!
-//! Every other file here presses a handful of keys at a fresh editor. These press
-//! a few hundred at one editor without restarting it, because a class of bug only
-//! exists after the fifth thing: a find bar that leaves the keyboard behind, a
-//! prompt that comes back with the last query still in it, a tab whose selection
-//! belongs to a document that has since closed. None of it is visible in a
-//! scenario short enough to reason about.
+//! The other files here press a few keys in a newly started editor. These
+//! scenarios press a few hundred keys in one editor without restarting it,
+//! because some bugs appear only after several operations: a find bar that
+//! keeps keyboard focus, a prompt that reopens with the previous query, or a
+//! tab whose selection refers to a closed document. Short scenarios do not
+//! detect them.
 
 use deco_e2e::Scenario;
 
-/// A small project, of the shape somebody actually opens.
+/// A small project with a typical structure.
 fn project(name: &str) -> Scenario {
     Scenario::new(name)
         .user_settings(
@@ -56,7 +56,7 @@ fn an_afternoon_of_editing_ends_with_the_right_bytes_in_every_file() {
         editor.on_disk("src/main.rs")
     );
 
-    // Off to the other file, through quick open, and add a line to it.
+    // Open the other file through quick open, and add a line to it.
     editor.quick_open("greet");
     assert!(editor.path().is_some_and(|p| p.ends_with("greet.rs")));
     editor.press("ctrl+end");
@@ -64,11 +64,11 @@ fn an_afternoon_of_editing_ends_with_the_right_bytes_in_every_file() {
     editor.press("ctrl+s");
     assert!(editor.on_disk("src/greet.rs").contains("// checked"));
 
-    // Back to the first tab, which still knows where it was.
+    // Return to the first tab, which keeps its state.
     editor.press("ctrl+shift+tab");
     assert!(editor.path().is_some_and(|p| p.ends_with("main.rs")));
 
-    // A project-wide search, and open what it found.
+    // Search the project and open the result.
     editor.press("ctrl+shift+f");
     editor.press("ctrl+x");
     editor.type_text("checked");
@@ -77,13 +77,13 @@ fn an_afternoon_of_editing_ends_with_the_right_bytes_in_every_file() {
     editor.press("enter");
     assert!(editor.path().is_some_and(|p| p.ends_with("greet.rs")));
 
-    // Comment a line, think better of it, undo.
+    // Comment a line, then undo.
     editor.press("ctrl+/");
     let commented = editor.text();
     editor.press("ctrl+z");
     assert_ne!(editor.text(), commented);
 
-    // Everything that is still dirty goes to disk, and the screen is intact.
+    // Save all unsaved documents, and check that the screen is intact.
     editor.press("ctrl+k");
     editor.press("s");
     let screen = editor.screen();
@@ -96,9 +96,8 @@ fn an_afternoon_of_editing_ends_with_the_right_bytes_in_every_file() {
 
 #[test]
 fn the_keyboard_always_comes_back_to_the_document() {
-    // Open every widget in turn and escape out of it. If any of them keeps the
-    // keyboard, the typing at the end lands somewhere other than the file — which
-    // is the failure mode of every modal interface ever written.
+    // Open each widget in turn and close it with escape. If any widget keeps
+    // keyboard focus, the text typed at the end does not reach the file.
     let scenario = project("keyboard");
     let mut editor = scenario.launch(&["src/main.rs"]);
     let before = editor.text();
@@ -131,8 +130,8 @@ fn the_keyboard_always_comes_back_to_the_document() {
 
 #[test]
 fn a_widget_opened_over_another_one_does_not_leave_the_first_behind() {
-    // The palette over the find bar, quick open over the palette. Each one takes
-    // the keyboard, and the screen has to agree about which one has it.
+    // The palette over the find bar, quick open over the palette. Each takes
+    // keyboard focus, and the screen must show the widget that has it.
     let scenario = project("stacked");
     let mut editor = scenario.launch(&["src/main.rs"]);
 
@@ -181,10 +180,10 @@ fn splitting_the_window_and_editing_both_halves_keeps_them_apart() {
 
 #[test]
 fn a_hundred_keystrokes_of_nonsense_leave_the_editor_standing() {
-    // Not a fuzzer, and not pretending to be one: a fixed, ordinary-looking
-    // sequence of the keys people actually hit by accident, asserting only that
-    // the editor is still drawable and still writes what it says it has. Every
-    // widget key is in here, in an order nobody designed for.
+    // Not a fuzzer: a fixed sequence of keys that users commonly press by
+    // accident. It asserts only that the editor can still draw a frame and
+    // saves what it reports. Every widget key is included, in an arbitrary
+    // order.
     let keys = [
         "ctrl+f",
         "escape",
@@ -223,21 +222,21 @@ fn a_hundred_keystrokes_of_nonsense_leave_the_editor_standing() {
     for _ in 0..3 {
         for key in keys {
             editor.press(key);
-            // Drawable after every single one, which is the claim: a frame that
-            // does not fit its terminal is a corrupted screen on a real one.
+            // Check the frame after every key. A frame that does not fit its
+            // terminal corrupts the screen of a real terminal.
             editor.screen().assert_fits();
         }
     }
 
-    // And it can still be used afterwards.
+    // The editor is still usable afterwards.
     editor.press("ctrl+n");
     editor.type_text("still here\n");
     editor.press("ctrl+s");
     editor.type_text("after.txt");
     editor.press("enter");
-    // Next to the file deco was started with, which is what a relative path in
-    // the save prompt means. The ending is the platform's: this began as an
-    // untitled buffer, and `files.eol` does not reach one — see
+    // A relative path in the save prompt is resolved next to the file deco was
+    // started with. The ending is the platform's: this began as an untitled
+    // buffer, and `files.eol` does not apply to one. See
     // `files_eol_is_ignored_for_a_new_untitled_buffer` in `files.rs`.
     let ending = if cfg!(windows) { "\r\n" } else { "\n" };
     assert_eq!(
@@ -248,9 +247,8 @@ fn a_hundred_keystrokes_of_nonsense_leave_the_editor_standing() {
 
 #[test]
 fn what_the_editor_shows_agrees_with_what_it_would_write() {
-    // The invariant worth stating once: the status line's dirty marker, the
-    // session's own flag and the bytes on disk are three answers to one question,
-    // and they have to be the same answer at every step.
+    // The status line's dirty marker, the session's dirty flag and the bytes on
+    // disk must be consistent at every step.
     let scenario = project("agreement");
     let mut editor = scenario.launch(&["README.md"]);
 

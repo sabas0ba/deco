@@ -1,31 +1,31 @@
 //! Running a language server as a child process and moving bytes to and from it.
 //!
-//! Everything else in this crate is a pure state machine. This module is the
-//! part that is not: it spawns a program, owns two threads, and has to shut all
-//! of that down without leaking. The rules it follows, and the failure each one
-//! prevents:
+//! The rest of this crate is a pure state machine. This module is not: it
+//! spawns a program, owns two threads, and must shut them down without leaking
+//! resources. It follows these rules, each of which prevents a specific
+//! failure:
 //!
 //! - **A workspace-scoped server is not launched without confirmation.**
 //!   [`ServerProcess::spawn`] takes a [`Consent`] argument rather than reading
-//!   a flag, so the check cannot be forgotten at a call site. Cloning a
-//!   repository must not be enough to run a program.
-//! - **The command is an argument vector.** No shell is involved anywhere; see
+//!   a flag, so a call site cannot omit the check. Cloning a repository must
+//!   not be enough to run a program.
+//! - **The command is an argument vector.** No shell is used; see
 //!   [`crate::server`].
-//! - **stderr is drained continuously.** A pipe nobody reads fills up, and the
-//!   next write from the child blocks — forever, since the editor is waiting on
+//! - **stderr is drained continuously.** An unread pipe fills up, and the
+//!   child's next write blocks indefinitely because the editor is waiting on
 //!   stdout. A server that logs verbosely would appear to hang. The last lines
-//!   are kept in a bounded buffer, because they are the only explanation
-//!   available when a server dies during startup.
+//!   are kept in a bounded buffer, because they are the only information
+//!   available when a server exits during startup.
 //! - **Shutting down is `shutdown`, then `exit`, then wait, then kill.** A
 //!   process that is only dropped becomes an orphan holding a lock on the
-//!   project; a process that is only killed never flushes.
-//! - **A frame is size-checked before it is allocated.** Inherited from
-//!   [`crate::jsonrpc::MAX_FRAME_BYTES`]: a server is a program the user
-//!   installed, not a trusted part of the editor.
+//!   project. A process that is only killed does not flush its data.
+//! - **A frame's size is checked before allocation.** This uses
+//!   [`crate::jsonrpc::MAX_FRAME_BYTES`], because a server is a program the
+//!   user installed, not a trusted part of the editor.
 //!
-//! The pumping is split out into [`pump_messages`] and [`pump_lines`], which
-//! take any reader, so the interesting behaviour is tested against in-memory
-//! streams rather than against a language server that CI would have to install.
+//! The reading loops are in [`pump_messages`] and [`pump_lines`], which accept
+//! any reader. Their behaviour is therefore tested with in-memory streams
+//! instead of a language server that CI would have to install.
 
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader};
@@ -44,7 +44,7 @@ use crate::server::{ServerConfig, Trust};
 /// written by accident, and so the decision is visible in a diff.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Consent {
-    /// The definition is trusted by where it came from, or the user has agreed.
+    /// The definition is trusted because of its origin, or the user has agreed.
     Granted,
     /// No decision has been made. A workspace-scoped server will not start.
     NotAsked,
@@ -55,12 +55,12 @@ pub enum Consent {
 pub enum ReaderEvent {
     /// A message arrived.
     Message(Message),
-    /// The stream ended cleanly. The server is gone.
+    /// The stream ended cleanly. The server has exited.
     Closed,
-    /// The stream produced something unusable.
+    /// The stream produced invalid data.
     ///
-    /// Carried as a string rather than the error: the receiver is on another
-    /// thread and only ever renders this for a log.
+    /// Stored as a string rather than the error, because the receiver is on
+    /// another thread and only formats it for a log.
     Failed(String),
 }
 
@@ -68,13 +68,13 @@ pub enum ReaderEvent {
 ///
 /// Bounded, because a server that logs a line per keystroke would otherwise
 /// grow this without limit for the entire session. The *last* lines are kept
-/// rather than the first: when a server dies, the reason is at the end.
+/// rather than the first, because the reason for an exit is at the end.
 #[derive(Debug, Clone)]
 pub struct ErrorLog {
     lines: VecDeque<String>,
     capacity: usize,
-    /// Total lines seen, including the ones dropped, so a summary can say how
-    /// much is missing rather than implying this is everything.
+    /// Total lines seen, including dropped ones, so a summary can state how
+    /// many lines are missing.
     total: usize,
 }
 
@@ -112,7 +112,7 @@ impl ErrorLog {
         self.total - self.lines.len()
     }
 
-    /// Whether the server has said nothing.
+    /// Whether the server has written nothing.
     pub fn is_empty(&self) -> bool {
         self.lines.is_empty()
     }
@@ -132,9 +132,9 @@ impl ErrorLog {
 
 /// Reads framed messages until the stream ends, sending each one on.
 ///
-/// Returns when the stream closes or the receiver hangs up. A protocol error is
-/// terminal: the framing is length-prefixed, so a bad frame means the stream
-/// position is no longer known and every subsequent read would be garbage.
+/// Returns when the stream closes or the receiver is dropped. A protocol error
+/// ends the loop. The framing is length-prefixed, so after a bad frame the
+/// stream position is unknown and every later read would return invalid data.
 pub fn pump_messages(mut reader: impl BufRead, tx: &Sender<ReaderEvent>) {
     loop {
         let event = match jsonrpc::read(&mut reader) {
@@ -148,8 +148,8 @@ pub fn pump_messages(mut reader: impl BufRead, tx: &Sender<ReaderEvent>) {
                 return;
             }
         };
-        // A send failure means the editor dropped the process. Stopping is the
-        // correct response; there is nobody left to tell.
+        // A send failure means the editor dropped the process, so there is no
+        // receiver and the loop stops.
         if tx.send(event).is_err() {
             return;
         }
@@ -158,9 +158,8 @@ pub fn pump_messages(mut reader: impl BufRead, tx: &Sender<ReaderEvent>) {
 
 fn describe(error: &ProtocolError) -> String {
     match error {
-        // A truncated frame is what a server crashing mid-write looks like, and
-        // saying "unexpected end of file" alone sends people hunting for a bug
-        // in the editor.
+        // A truncated frame usually means the server crashed while writing.
+        // "unexpected end of file" alone suggests a bug in the editor.
         ProtocolError::Io(io) if io.kind() == std::io::ErrorKind::UnexpectedEof => {
             format!("the server stopped mid-message ({io})")
         }
@@ -170,8 +169,8 @@ fn describe(error: &ProtocolError) -> String {
 
 /// Reads lines until the stream ends, appending each to a shared log.
 ///
-/// Invalid UTF-8 is replaced rather than fatal: this is a diagnostic channel,
-/// and a server that logs a stray byte should not cost the log.
+/// Invalid UTF-8 is replaced instead of ending the loop. This is a diagnostic
+/// channel, and one invalid byte must not discard the log.
 pub fn pump_lines(reader: impl BufRead, log: &Mutex<ErrorLog>) {
     for line in reader.split(b'\n') {
         let Ok(bytes) = line else { return };
@@ -180,8 +179,8 @@ pub fn pump_lines(reader: impl BufRead, log: &Mutex<ErrorLog>) {
         if text.is_empty() {
             continue;
         }
-        // A poisoned mutex means a pump thread panicked. The log is only ever
-        // read for display, so recovering is strictly better than propagating.
+        // A poisoned mutex means a pump thread panicked. The log is only read
+        // for display, so recovering is always better than propagating.
         match log.lock() {
             Ok(mut log) => log.push(text),
             Err(poisoned) => poisoned.into_inner().push(text),
@@ -200,9 +199,8 @@ pub enum SpawnError {
     },
     /// The program could not be executed.
     ///
-    /// Overwhelmingly "not installed", which is worth saying plainly: deco
-    /// cannot install a language server and should not pretend the failure is
-    /// mysterious.
+    /// The usual cause is that the program is not installed. deco cannot
+    /// install a language server, so the error names the program.
     #[error("could not run `{program}`: {source}")]
     NotRunnable {
         /// What was attempted.
@@ -222,8 +220,8 @@ pub enum SpawnError {
 
 /// How long to wait for a server to exit on its own before killing it.
 ///
-/// Long enough for a server to finish flushing an index, short enough that
-/// quitting the editor does not feel broken.
+/// Long enough for a server to finish flushing an index, and short enough that
+/// quitting the editor does not appear to hang.
 pub const EXIT_GRACE: Duration = Duration::from_millis(2000);
 
 /// How many stderr lines to keep.
@@ -238,18 +236,19 @@ pub struct ServerProcess {
     incoming: Receiver<ReaderEvent>,
     stderr: Arc<Mutex<ErrorLog>>,
     stdout_thread: Option<JoinHandle<()>>,
-    /// Held separately from the stdout pump so it can be waited on alone: a
-    /// finished stderr thread is the only reliable signal that everything the
-    /// server said has been collected. See [`Self::stderr_after_exit`].
+    /// Held separately from the stdout pump so it can be waited on alone. A
+    /// finished stderr thread is the only reliable signal that all of the
+    /// server's stderr output has been collected. See
+    /// [`Self::stderr_after_exit`].
     stderr_thread: Option<JoinHandle<()>>,
 }
 
 impl ServerProcess {
     /// Starts a server.
     ///
-    /// `consent` is checked against the definition's [`Trust`]: a
-    /// workspace-scoped definition without [`Consent::Granted`] is refused, and
-    /// nothing is spawned.
+    /// `consent` is checked against the definition's [`Trust`]. A
+    /// workspace-scoped definition without [`Consent::Granted`] is rejected,
+    /// and nothing is spawned.
     pub fn spawn(config: &ServerConfig, consent: Consent) -> Result<Self, SpawnError> {
         if config.trust.needs_confirmation() && consent != Consent::Granted {
             return Err(SpawnError::NeedsConsent {
@@ -263,8 +262,8 @@ impl ServerProcess {
             .args(&config.command.args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            // Piped rather than inherited: a server writing to the terminal's
-            // real stderr would paint over the editor's alternate screen.
+            // Piped rather than inherited. A server writing to the terminal's
+            // stderr would draw over the editor's alternate screen.
             .stderr(Stdio::piped());
         for (name, value) in &config.env {
             command.env(name, value);
@@ -299,8 +298,8 @@ impl ServerProcess {
                 source,
             })?;
 
-        // Its own thread, not folded into the stdout loop: both can block, and
-        // an unread stderr pipe filling up would stall the server's next write.
+        // A separate thread, not part of the stdout loop. Both reads can block,
+        // and a full, unread stderr pipe would block the server's next write.
         let stderr_log = Arc::clone(&log);
         let stderr_thread = std::thread::Builder::new()
             .name(format!("deco-lsp-{}-stderr", config.id))
@@ -345,29 +344,29 @@ impl ServerProcess {
 
     /// Takes the next message if one is waiting, without blocking.
     pub fn try_recv(&self) -> Option<ReaderEvent> {
-        // Both failures collapse to `None`. `Empty` means nothing yet;
-        // `Disconnected` means the reader thread finished, which it only does
-        // after sending `Closed` or `Failed` — so that news has already been
-        // delivered and there is nothing further to report.
+        // Both failures become `None`. `Empty` means no message is waiting.
+        // `Disconnected` means the reader thread finished, which happens only
+        // after it sends `Closed` or `Failed`. That event has already been
+        // delivered, so there is nothing more to report.
         self.incoming.try_recv().ok()
     }
 
     /// Waits up to `timeout` for the next message.
     ///
-    /// Used during startup, where the editor genuinely has to wait for the
-    /// `initialize` reply before it can send anything else.
+    /// Used during startup, where the editor must wait for the `initialize`
+    /// reply before it can send anything else.
     pub fn recv_timeout(&self, timeout: Duration) -> Option<ReaderEvent> {
-        // As in `try_recv`: a disconnected channel has already delivered
-        // whatever the reader thread had to say.
+        // As in `try_recv`, a disconnected channel has already delivered the
+        // reader thread's final event.
         self.incoming.recv_timeout(timeout).ok()
     }
 
     /// The last lines the server wrote to stderr, as collected so far.
     ///
-    /// "So far" is the important part: the pump runs on its own thread, so a
-    /// caller that has just learned the server is gone may well be reading this
-    /// before the reason arrived. Use [`Self::stderr_after_exit`] when the
-    /// output is being read *because* the server died.
+    /// The pump runs on its own thread, so a caller that has just detected the
+    /// server's exit may read this before the final output is collected. Use
+    /// [`Self::stderr_after_exit`] when the output is read *because* the
+    /// server exited.
     pub fn stderr_tail(&self) -> ErrorLog {
         match self.stderr.lock() {
             Ok(log) => log.clone(),
@@ -375,24 +374,24 @@ impl ServerProcess {
         }
     }
 
-    /// Everything the server wrote to stderr, once there is no more coming.
+    /// Everything the server wrote to stderr, after all output is collected.
     ///
-    /// Two waits, in order, because they answer different questions:
+    /// There are two waits, in this order, because they check different
+    /// conditions:
     ///
-    /// 1. **Has the process exited?** Until it has, more output may still be
-    ///    produced, so there is nothing to conclude from an empty log.
-    /// 2. **Has the pump finished?** This is the part a naive implementation
-    ///    gets wrong. "Is there output yet" is a guess that wins or loses
-    ///    depending on machine speed — it passed on a developer laptop and
-    ///    failed on a CI runner. The thread returning is a *fact*: the pump ends
-    ///    when its read hits end of stream, which happens when the last handle
-    ///    to the write end of the pipe closes.
+    /// 1. **Has the process exited?** Until it has, it may produce more
+    ///    output, so an empty log does not mean anything yet.
+    /// 2. **Has the pump finished?** Checking whether output is available yet
+    ///    depends on timing: it passed on a developer laptop and failed on a
+    ///    CI runner. The thread returning is reliable. The pump ends when its
+    ///    read reaches end of stream, which happens when the last handle to the
+    ///    write end of the pipe is closed.
     ///
-    /// Both are bounded, because neither event is guaranteed: a server may not
-    /// be exiting at all, and one that has exited may have left a grandchild
-    /// holding the pipe open — `rust-analyzer` running `cargo` is exactly that
-    /// shape. On a timeout this returns what has been collected, which is no
-    /// worse than not having waited.
+    /// Both waits are bounded because neither event is guaranteed. A server
+    /// may not be exiting, and a server that has exited may have left a
+    /// grandchild holding the pipe open, for example `rust-analyzer` running
+    /// `cargo`. On a timeout this returns the output collected so far, which
+    /// is the same result as not waiting.
     pub fn stderr_after_exit(&mut self, grace: Duration) -> ErrorLog {
         let deadline = Instant::now() + grace;
 
@@ -419,24 +418,25 @@ impl ServerProcess {
 
     /// Whether the process has exited, and with what status.
     pub fn exited(&mut self) -> Option<std::process::ExitStatus> {
-        // `try_wait` also reaps, which is what keeps a finished server from
-        // lingering as a zombie for the rest of the session.
+        // `try_wait` also reaps the process, so a finished server does not
+        // remain as a zombie for the rest of the session.
         self.child.try_wait().ok().flatten()
     }
 
-    /// Closes stdin, which is how a server is told there is nothing more coming.
+    /// Closes stdin, which tells the server that no more input will follow.
     ///
     /// Separate from [`Self::stop`] because it must happen *after* `exit` is
-    /// sent and not before: a server reading its stdin would see the close as
-    /// an abrupt disconnect.
+    /// sent. Otherwise a server reading its stdin would see the close as an
+    /// abrupt disconnect.
     pub fn close_stdin(&mut self) {
         self.stdin = None;
     }
 
-    /// Waits for the process to exit, killing it if it outstays `grace`.
+    /// Waits for the process to exit, and kills it if it runs longer than
+    /// `grace`.
     ///
-    /// Returns whether it left on its own. Both outcomes are normal enough to
-    /// report rather than to fail on: some servers exit on `exit`, and some
+    /// Returns whether it exited without being killed. Both outcomes are
+    /// normal, so neither is an error: some servers exit on `exit`, and some
     /// need the signal.
     pub fn stop(&mut self, grace: Duration) -> bool {
         self.close_stdin();
@@ -448,8 +448,8 @@ impl ServerProcess {
                 return true;
             }
             // Polling rather than blocking on `wait`, so the grace period is
-            // actually bounded. 10ms is below the threshold of noticing and
-            // costs nothing over a two-second window.
+            // bounded. A 10ms interval is not noticeable and has negligible
+            // cost over a two-second window.
             std::thread::sleep(Duration::from_millis(10));
         }
 
@@ -461,9 +461,9 @@ impl ServerProcess {
 
     /// Joins the pump threads.
     ///
-    /// They end on their own once the child's pipes close, which killing or
-    /// reaping the child guarantees. Joining after that is what stops threads
-    /// accumulating across a session that restarts a server repeatedly.
+    /// They end when the child's pipes close, which killing or reaping the
+    /// child guarantees. Joining them prevents threads from accumulating when
+    /// a session restarts a server repeatedly.
     fn join_threads(&mut self) {
         for thread in [self.stdout_thread.take(), self.stderr_thread.take()]
             .into_iter()
@@ -476,11 +476,11 @@ impl ServerProcess {
 
 impl Drop for ServerProcess {
     fn drop(&mut self) {
-        // A dropped server that is never stopped becomes an orphan — still
-        // holding a build lock on the project, still using a core. The grace
-        // period here is short: a caller that wanted a clean shutdown should
-        // have called `stop` after `exit`, and by the time `drop` runs the
-        // editor is usually on its way out.
+        // A dropped server that is never stopped becomes an orphan process that
+        // holds a build lock on the project and uses a CPU core. The grace
+        // period here is short. A caller that needs a clean shutdown calls
+        // `stop` after `exit`, and `drop` usually runs while the editor is
+        // quitting.
         if self.child.try_wait().ok().flatten().is_none() {
             self.stop(Duration::from_millis(200));
         } else {
@@ -491,8 +491,8 @@ impl Drop for ServerProcess {
 
 impl std::fmt::Debug for ServerProcess {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Hand-written because `Child` and `JoinHandle` render as noise, and a
-        // server is identified by its id and pid.
+        // Implemented by hand because the `Child` and `JoinHandle` output is not
+        // useful. A server is identified by its id and pid.
         f.debug_struct("ServerProcess")
             .field("id", &self.id)
             .field("program", &self.program)
@@ -564,8 +564,8 @@ mod tests {
 
     #[test]
     fn a_clean_end_of_stream_is_closed_not_failed() {
-        // The difference is how the editor reports it: a server that shut down
-        // is not the same as a server that crashed.
+        // The editor reports these differently: a server that shut down is not
+        // a server that crashed.
         let (tx, rx) = mpsc::channel();
         pump_messages(Cursor::new(Vec::new()), &tx);
         assert!(matches!(rx.recv().unwrap(), ReaderEvent::Closed));
@@ -573,10 +573,10 @@ mod tests {
 
     #[test]
     fn a_truncated_frame_is_reported_as_stopping_mid_message() {
-        // What a server crashing mid-write looks like. Saying "unexpected end
-        // of file" alone sends people looking for a bug in the editor.
-        // Two messages, the second cut short: the first must still arrive, so
-        // that a crash mid-conversation does not discard what was already said.
+        // Simulates a server crashing while writing. "unexpected end of file"
+        // alone suggests a bug in the editor. The second of two messages is
+        // truncated. The first must still arrive, so that a crash does not
+        // discard messages that were already received.
         let mut stream = framed(&[notification("a"), notification("b")]);
         stream.truncate(stream.len() - 5);
         let (tx, rx) = mpsc::channel();
@@ -592,8 +592,8 @@ mod tests {
     #[test]
     fn the_pump_stops_at_the_first_protocol_error() {
         // The framing is length-prefixed, so after a bad frame the stream
-        // position is unknown and every later read would be garbage. Continuing
-        // would turn one error into a flood.
+        // position is unknown and every later read would return invalid data.
+        // Continuing would turn one error into many.
         let mut stream = b"Content-Length: notanumber\r\n\r\n".to_vec();
         stream.extend_from_slice(&framed(&[notification("never-read")]));
         let (tx, rx) = mpsc::channel();
@@ -607,13 +607,13 @@ mod tests {
 
     #[test]
     fn the_pump_stops_when_the_receiver_is_gone() {
-        // Otherwise the thread spins reading a server nobody is listening to,
-        // for as long as that server keeps talking.
+        // Otherwise the thread keeps reading output that nothing receives, for
+        // as long as the server keeps writing.
         let messages: Vec<Message> = (0..50).map(|_| notification("a")).collect();
         let stream = framed(&messages);
         let (tx, rx) = mpsc::channel();
         drop(rx);
-        // The test is that this returns at all rather than blocking forever.
+        // The test checks that this returns instead of blocking.
         pump_messages(Cursor::new(stream), &tx);
     }
 
@@ -650,7 +650,7 @@ mod tests {
 
     #[test]
     fn stderr_survives_invalid_utf8() {
-        // A diagnostic channel must not be lost to a stray byte.
+        // One invalid byte must not discard the diagnostic output.
         let log = Mutex::new(ErrorLog::new(10));
         pump_lines(Cursor::new(b"ok\n\xff\xfe\nlast\n".as_ref()), &log);
         let log = log.into_inner().unwrap();
@@ -660,7 +660,7 @@ mod tests {
 
     #[test]
     fn the_error_log_keeps_the_last_lines_not_the_first() {
-        // When a server dies, the reason is at the end.
+        // When a server exits, the reason is at the end.
         let mut log = ErrorLog::new(3);
         for i in 0..10 {
             log.push(format!("line {i}"));
@@ -686,8 +686,8 @@ mod tests {
 
     #[test]
     fn a_zero_capacity_log_still_keeps_one_line() {
-        // Rounded up rather than rejected: a log that silently discards
-        // everything is worse than one that keeps the last line.
+        // Rounded up rather than rejected, so the log keeps at least the last
+        // line instead of discarding everything.
         let mut log = ErrorLog::new(0);
         log.push("only");
         assert_eq!(log.lines().collect::<Vec<_>>(), vec!["only"]);
@@ -706,7 +706,7 @@ mod tests {
 
     #[test]
     fn an_empty_summary_says_so_rather_than_being_blank() {
-        // A blank error message reads like the editor lost the reason.
+        // A blank error message would look as if the editor lost the reason.
         let log = ErrorLog::new(5);
         assert!(log.is_empty());
         assert_eq!(log.summary(), "the server wrote nothing to stderr");
@@ -714,9 +714,9 @@ mod tests {
 
     #[test]
     fn a_workspace_server_is_not_spawned_without_consent() {
-        // Cloning a repository must not be enough to run a program. Checked
-        // before the spawn, so the refusal does not depend on the program being
-        // absent.
+        // Cloning a repository must not be enough to run a program. The check
+        // runs before the spawn, so the rejection does not depend on the
+        // program being absent.
         let config = config(Trust::Workspace);
         assert!(needs_consent(&config));
         assert!(matches!(
@@ -730,8 +730,8 @@ mod tests {
         for trust in [Trust::User, Trust::BuiltIn] {
             let config = config(trust);
             assert!(!needs_consent(&config));
-            // It still fails, but on the program being missing rather than on
-            // consent — which is the distinction being asserted.
+            // It still fails, but because the program is missing, not because
+            // of consent. This test checks that distinction.
             assert!(matches!(
                 ServerProcess::spawn(&config, Consent::NotAsked),
                 Err(SpawnError::NotRunnable { .. })
@@ -741,8 +741,8 @@ mod tests {
 
     #[test]
     fn a_missing_program_says_which_one() {
-        // deco cannot install a language server, so the message has to be
-        // plain enough to act on.
+        // deco cannot install a language server, so the message must tell the
+        // user what to install.
         let Err(error) = ServerProcess::spawn(&config(Trust::User), Consent::Granted) else {
             panic!("a nonexistent program cannot start");
         };
@@ -755,8 +755,8 @@ mod tests {
 
     #[test]
     fn consent_is_a_type_rather_than_a_bool() {
-        // Guards the property the type exists for: the two states are not
-        // interchangeable with `true`/`false` at a call site.
+        // Checks the purpose of the type: the two states cannot be replaced by
+        // `true`/`false` at a call site.
         assert_ne!(Consent::Granted, Consent::NotAsked);
     }
 }

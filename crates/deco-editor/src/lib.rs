@@ -1,12 +1,12 @@
 //! The frontend-agnostic editor session.
 //!
 //! Everything a user can do to text lives here, addressed by VS Code's command
-//! identifiers. The terminal and GPU frontends are then thin: translate a key
-//! event into a chord, ask [`deco_keymap`] which command it resolves to, and
-//! call [`commands::execute`].
+//! identifiers. The terminal and GPU frontends only translate a key event into
+//! a chord, ask [`deco_keymap`] which command it resolves to, and call
+//! [`commands::execute`].
 //!
-//! Nothing in this crate knows what a terminal or a window is, which is what
-//! lets the entire editable surface be tested headlessly.
+//! This crate does not depend on a terminal or a window, so the entire
+//! editable surface can be tested headlessly.
 
 pub mod commands;
 pub mod document;

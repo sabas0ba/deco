@@ -32,15 +32,15 @@ fn read_optional(path: &Path, problems: &mut Vec<String>) -> Option<String> {
 ///
 /// deco's own configuration directory is preferred; if it holds no
 /// `settings.json`, VS Code's is read instead so an existing setup works
-/// without being copied. Nothing is ever written back to VS Code's directory —
-/// the import is one-way on purpose.
+/// without being copied. Nothing is ever written back to VS Code's directory;
+/// the import is intentionally one-way.
 ///
 /// `remote_settings` is the connected machine's own `machine-settings.json`,
 /// already fetched over the connection because this machine cannot read it.
-/// It becomes the [`Scope::Remote`] layer: above the user's, below the
-/// workspace's, exactly where VS Code puts it — and **untrusted**, so a
-/// language server defined there still has to be confirmed and the extension
-/// sandbox will not take its word.
+/// It becomes the [`Scope::Remote`] layer, above the user's and below the
+/// workspace's, as in VS Code. The layer is **untrusted**: a language server
+/// defined there still has to be confirmed, and the extension sandbox ignores
+/// its settings.
 pub fn load(
     env: &Env,
     layout: Layout,

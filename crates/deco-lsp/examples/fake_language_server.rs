@@ -1,15 +1,14 @@
-//! A minimal, deliberately misbehaving language server, for tests.
+//! A minimal language server for tests, which misbehaves on purpose.
 //!
-//! `tests/server_process.rs` spawns this to exercise the parts of the client
-//! that only exist once a real process and real pipes are involved. It is an
-//! example rather than a `[[bin]]` so that it is built by `cargo test` and
-//! never shipped, and a separate program rather than the test binary
-//! re-executing itself because libtest writes its own progress to stdout —
-//! which would land in the middle of the frame stream and be read as a
-//! malformed message.
+//! `tests/server_process.rs` spawns this to test the parts of the client that
+//! require a real process and real pipes. It is an example rather than a
+//! `[[bin]]` so that `cargo test` builds it and it is never shipped. It is a
+//! separate program, not the test binary re-executing itself, because libtest
+//! writes its progress to stdout. That output would be mixed into the frame
+//! stream and read as a malformed message.
 //!
-//! `DECO_TEST_LSP_ROLE` selects which behaviour to act out. Each role
-//! corresponds to a failure mode the editor has to survive; see the test file.
+//! `DECO_TEST_LSP_ROLE` selects the behaviour. Each role corresponds to a
+//! failure mode the editor must handle; see the test file.
 
 use std::io::{self, BufRead, Write};
 use std::time::Duration;
@@ -20,15 +19,15 @@ fn main() {
 }
 
 fn serve(role: &str) -> i32 {
-    // Before reading anything, so that "died at startup" is distinguishable
-    // from "never started".
+    // Checked before reading anything, so that "exited at startup" can be
+    // distinguished from "never started".
     if role == "die-immediately" {
         eprintln!("fake server: refusing to run");
         return 3;
     }
     if role == "silent" {
-        // Never answers `initialize`. Exercises the startup timeout, without
-        // which a broken server hangs the editor at launch.
+        // Never answers `initialize`. Tests the startup timeout, without which
+        // a broken server blocks the editor at launch.
         loop {
             std::thread::sleep(Duration::from_secs(60));
         }
@@ -47,24 +46,24 @@ fn serve(role: &str) -> i32 {
         match method.as_str() {
             "initialize" => {
                 if role == "die-slowly" {
-                    // Reads, stalls, *then* explains itself. Without waiting
-                    // for the stderr pump to finish, the editor reports this
-                    // server as having said nothing.
+                    // Reads, waits, and *then* writes to stderr. If the editor
+                    // does not wait for the stderr pump to finish, it reports
+                    // no stderr output for this server.
                     std::thread::sleep(Duration::from_millis(120));
                     eprintln!("fake server: took a moment, then gave up");
                     return 6;
                 }
                 if role == "die-after-reading" {
-                    // Reads the frame, then leaves without answering. This is
-                    // the case where the editor's write *succeeds* and the only
-                    // signal is stdout closing — so the reason has to survive
-                    // the race between that and the stderr pump.
+                    // Reads the frame, then exits without answering. The
+                    // editor's write *succeeds*, and the only signal is stdout
+                    // closing. The stderr message must still be reported
+                    // despite the race between that and the stderr pump.
                     eprintln!("fake server: read the request, then gave up");
                     return 5;
                 }
                 if role == "garbage-on-initialize" {
-                    // Not a frame at all. Exercises the protocol-error path
-                    // across a real pipe.
+                    // Not a frame. Tests the protocol-error path across a real
+                    // pipe.
                     let _ = output.write_all(b"this is not a frame\r\n\r\n");
                     let _ = output.flush();
                     return 0;
@@ -83,14 +82,13 @@ fn serve(role: &str) -> i32 {
                         }},
                     }),
                 );
-                // Read by the test that asserts stderr is drained rather than
-                // left to fill its pipe.
+                // Read by the test that checks stderr is drained instead of
+                // filling its pipe.
                 eprintln!("fake server: initialized");
             }
             "textDocument/didOpen" => {
-                // Answers about the URI it was given rather than one it made up,
-                // which is what lets a test see the path mapping as the server
-                // saw it.
+                // Reports the URI it received, so a test can check the path
+                // mapping as the server sees it.
                 if role == "echo-uri-on-open" {
                     let uri = params
                         .get("textDocument")
@@ -145,10 +143,10 @@ fn serve(role: &str) -> i32 {
             }
             "textDocument/didSave" => {
                 if role == "die-on-save" {
-                    // Leaving without a word, which is what a crash looks like
-                    // from the editor's side. On save rather than on close, so
-                    // the document is still open when the editor notices — that
-                    // is the state in which a later edit has to fail cleanly.
+                    // Exits without a response, which the editor sees as a
+                    // crash. This happens on save rather than on close, so the
+                    // document is still open when the editor detects the exit.
+                    // A later edit must then fail cleanly.
                     eprintln!("fake server: crashing on save");
                     return 4;
                 }
@@ -159,8 +157,8 @@ fn serve(role: &str) -> i32 {
             ),
             "exit" => return 0,
             _ => {
-                // Every request is answered, as a real server must: one left
-                // hanging would stall the client.
+                // Every request is answered, as required of a real server. An
+                // unanswered request would stall the client.
                 if let Some(id) = id {
                     if !id.is_null() {
                         send(
@@ -174,12 +172,10 @@ fn serve(role: &str) -> i32 {
     }
 }
 
-/// Reads one framed message, returning its method and id.
-/// Reads one frame and reports its method, id and params.
+/// Reads one frame and returns its method, id and params.
 ///
-/// The params are returned because one role answers *about what it was told* —
-/// a server that echoes back the URI it received is the only way a test can see
-/// what actually went on the wire.
+/// The params are returned because one role echoes back the URI it received.
+/// This is the only way a test can see what was actually sent.
 fn read_frame(
     input: &mut impl BufRead,
 ) -> Option<(String, Option<serde_json::Value>, serde_json::Value)> {

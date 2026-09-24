@@ -4,14 +4,14 @@
  * The `vscode` module extensions import.
  *
  * Every function here is a thin wrapper over an RPC to deco. Nothing in this
- * file touches the filesystem, the network or a child process directly — it
- * cannot, because the sandbox has removed those — so the capability check in
- * deco is unavoidable rather than merely conventional.
+ * file accesses the filesystem, the network or a child process directly, and it
+ * cannot, because the sandbox has removed that access. Every operation therefore
+ * goes through the capability check in deco.
  *
- * This is a subset of the VS Code API, and deliberately so: each method added
- * here is a method that must first be given a capability mapping in
- * crates/deco-ext/src/protocol.rs. A method with no mapping is refused by deco,
- * so the two files cannot drift apart silently in the unsafe direction.
+ * This is intentionally a subset of the VS Code API. Each method added here
+ * needs a capability mapping in crates/deco-ext/src/protocol.rs first. deco
+ * rejects a method with no mapping, so a mismatch between the two files makes
+ * a method unusable, never unguarded.
  */
 
 /** A zero-based document position, matching `vscode.Position`. */
@@ -34,7 +34,7 @@ class Position {
 /** A document range, matching `vscode.Range`. */
 class Range {
   constructor(start, end) {
-    // VS Code normalises reversed ranges rather than rejecting them.
+    // VS Code normalises reversed ranges instead of rejecting them.
     if (end.isBefore(start)) {
       [start, end] = [end, start];
     }
@@ -98,7 +98,7 @@ class EventEmitter {
       try {
         listener(value);
       } catch {
-        // One bad listener must not stop the others; deco logs the throw.
+        // A listener that throws must not stop the others. deco logs the error.
       }
     }
   }
@@ -173,7 +173,7 @@ function createApi(rpc, context) {
 
       /**
        * The brokered filesystem. Every call names a path, and deco checks it
-       * against the extension's declared scopes before touching anything.
+       * against the extension's declared scopes before accessing the file.
        */
       fs: {
         readFile: (path) => rpc.request('fs.readFile', { path }),

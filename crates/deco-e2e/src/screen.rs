@@ -5,14 +5,13 @@ use deco_tui::render::Frame;
 
 /// A painted frame, as characters.
 ///
-/// The assertions are deliberately about text rather than about the session:
-/// "the editor opened the file" is a claim about a struct, and "the file's name
-/// is on the tab bar and its first line is on row two" is a claim about what the
-/// person in front of it can see. Only the second one catches a renderer that
-/// stopped drawing.
+/// The assertions check displayed text rather than session state. "The editor
+/// opened the file" is a statement about a struct. "The file's name is on the
+/// tab bar and its first line is on row two" is a statement about what the user
+/// sees. Only the second detects a renderer that stopped drawing.
 ///
-/// Every failure prints the whole screen, because the useful question about a
-/// missing string is never "is it missing" but "what is there instead".
+/// Every failure prints the whole screen, so the message shows what is
+/// displayed instead of the missing string.
 pub struct Screen {
     lines: Vec<String>,
     frame: Frame,
@@ -29,17 +28,15 @@ impl Screen {
                     .spans
                     .iter()
                     // What the terminal would receive, not what the frame holds.
-                    // `app::paint` substitutes every span on its way out, and it
-                    // is the last thing that does: the renderer substitutes a
-                    // document's own text, but a file name or a search result
-                    // carrying somebody else's bytes is only made printable here.
-                    // A screen that skipped this step would be asserting about a
-                    // string no terminal ever sees.
+                    // `app::paint` sanitises every span before output, as the
+                    // last step. The renderer sanitises document text, but a file
+                    // name or a search result with untrusted bytes is made
+                    // printable only in `app::paint`. Without this step the
+                    // assertions would check strings no terminal receives.
                     .map(|span| deco_tui::render::sanitise(&span.text).into_owned())
                     .collect();
-                // Trailing blanks are padding to the terminal's width, and a
-                // scenario that had to write them out would be asserting about
-                // the padding.
+                // Trailing blanks are padding to the terminal's width. They are
+                // removed so that scenarios do not need to include them.
                 painted.trim_end().to_owned()
             })
             .collect();
@@ -83,8 +80,9 @@ impl Screen {
 
     /// The colours of the cell at `(row, column)`, foreground then background.
     ///
-    /// `None` past the end of a row: the frame pads to the terminal's width, so
-    /// this is only ever `None` for a row the frame does not have.
+    /// Returns `None` for a row the frame does not have or a column past the
+    /// end of a row. The frame pads rows to the terminal's width, so in practice
+    /// only a missing row returns `None`.
     pub fn colours_at(&self, row: usize, column: usize) -> Option<(Rgba, Rgba)> {
         let row = self.frame.rows.get(row)?;
         let mut seen = 0usize;
@@ -153,8 +151,8 @@ impl Screen {
 
     /// Fails unless the frame is exactly as tall and as wide as the terminal.
     ///
-    /// A row short of the height leaves whatever was underneath it on screen,
-    /// and a row wider than the width wraps and pushes the whole frame up.
+    /// Too few rows leave old content visible below the frame, and a row wider
+    /// than the terminal wraps and scrolls the whole frame up.
     #[track_caller]
     pub fn assert_fits(&self) -> &Self {
         let (width, height) = self.size;

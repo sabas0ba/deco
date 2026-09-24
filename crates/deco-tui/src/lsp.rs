@@ -1,26 +1,26 @@
 //! Attaching a language server to the terminal frontend.
 //!
-//! `deco-lsp` deliberately owns no policy: it can start a server, but it does
-//! not decide which one, when, or what to do when one dies. That lives here,
-//! because the answers are about the editor's behaviour rather than about the
+//! `deco-lsp` intentionally contains no policy: it can start a server, but it
+//! does not decide which one, when, or what to do when one exits. That policy
+//! is in this module because it concerns editor behaviour rather than the
 //! protocol.
 //!
-//! The policy, and why:
+//! The policy:
 //!
 //! - **One server, for the open document's language.** deco edits one document
-//!   at a time, so starting more would be speculative work for files that are
-//!   not open. When the document changes language, the old server is stopped
-//!   and a new one started.
+//!   at a time, so starting more would do work for files that are not open.
+//!   When the document changes language, the old server is stopped and a new
+//!   one started.
 //! - **A workspace-defined server is not started, and the user is told why.**
-//!   Approving one needs a prompt the terminal frontend does not have yet, and
-//!   the safe direction is obvious: not running a program is recoverable,
-//!   running the wrong one is not. The message names the server so the user can
-//!   move the definition into their own settings if they want it.
-//! - **A server that fails costs itself and nothing else.** Every failure ends
-//!   as a line in the status bar and an editor that still works.
+//!   Approving one requires a prompt the terminal frontend does not have yet.
+//!   Not running a program can be recovered from; running the wrong one cannot.
+//!   The message names the server so the user can move the definition into
+//!   their own settings if they want it.
+//! - **A server failure affects only that server.** Every failure results in a
+//!   status bar message, and the editor keeps working.
 //! - **Polling never blocks.** The event loop waits on the terminal with a
-//!   timeout and drains the server in between, so a busy server cannot make
-//!   typing feel slow and a silent one cannot freeze the editor.
+//!   timeout and drains the server in between, so a busy server does not slow
+//!   down typing and an unresponsive one does not freeze the editor.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -36,13 +36,13 @@ use deco_lsp::{Hover, RequestId, ServerRegistry, Trust};
 
 use crate::suggest::Suggest;
 
-/// How long to wait for the handshake before giving up on a server.
+/// How long to wait for the handshake before abandoning a server.
 ///
-/// Shorter than [`deco_lsp::supervisor::INITIALIZE_TIMEOUT`] because this
-/// happens while the user is looking at an empty screen waiting for their file.
+/// Shorter than [`deco_lsp::supervisor::INITIALIZE_TIMEOUT`] because the user
+/// is waiting for their file on an empty screen during the handshake.
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The same, for a server on the other end of a transport.
+/// The same, for a server reached through a transport.
 const REMOTE_STARTUP_TIMEOUT: Duration = Duration::from_secs(45);
 
 /// The language-server side of a terminal session.
@@ -50,24 +50,24 @@ pub struct Lsp {
     registry: ServerRegistry,
     enabled: bool,
     supervisor: Option<Supervisor>,
-    /// The language the running server was started for, so a document in
-    /// another language is noticed.
+    /// The language the running server was started for, used to detect a
+    /// document in another language.
     language: Option<String>,
-    /// The document the server has been told about.
+    /// The document the server has been notified about.
     open: Option<PathBuf>,
     root: Option<PathBuf>,
     paths: PathMap,
-    /// Where a server should run, and how to reach it if that is elsewhere.
+    /// Where a server should run, and how to reach it if it is remote.
     location: Location,
     /// The hover currently on screen, and the position it describes.
     ///
-    /// Kept with its position so it can be dismissed the moment the cursor
-    /// leaves the range the server answered about — a hover box describing a
-    /// different token than the one under the caret is actively misleading.
+    /// Stored with its position so it can be dismissed as soon as the cursor
+    /// leaves the range the hover describes. A hover box for a different token
+    /// than the one under the caret is misleading.
     hover: Option<ShownHover>,
-    /// The hover request in flight, if any. At most one: a second would race
-    /// the first and whichever answered last would win, which is not
-    /// necessarily the one the user is waiting for.
+    /// The hover request in flight, if any. At most one: a second request would
+    /// race the first, and the last response would win even if it is not the
+    /// one the user is waiting for.
     hover_request: Option<RequestId>,
     /// The go-to-definition request in flight.
     definition_request: Option<RequestId>,
@@ -75,12 +75,12 @@ pub struct Lsp {
     references_request: Option<RequestId>,
     /// The outstanding `semanticTokens/full` request, if any.
     semantic_request: Option<RequestId>,
-    /// The outstanding `documentSymbol` request, and which document asked.
+    /// The outstanding `documentSymbol` request, and the document it is for.
     ///
-    /// The path is kept because the answer names positions and not a file, and the
-    /// user may have switched tabs while the server was indexing — the list has to
-    /// navigate the document that was asked about, not whichever is on screen when
-    /// it arrives.
+    /// The path is stored because the response contains positions but no file,
+    /// and the user may have switched tabs while the server was indexing. The
+    /// list must navigate the requested document, not the one on screen when the
+    /// response arrives.
     symbols_request: Option<(RequestId, PathBuf)>,
     /// A fingerprint of the text last sent to the server.
     sent: Option<u64>,
@@ -96,39 +96,39 @@ pub struct Lsp {
     code_action_request: Option<RequestId>,
     /// The `codeAction/resolve` in flight, for the action that was chosen.
     resolve_request: Option<RequestId>,
-    /// What the server last offered, in the order it offered them.
+    /// The code actions the server last returned, in the server's order.
     ///
-    /// Held here rather than handed to the session, because most of an action is
-    /// the server's own JSON — the edit, and the `data` a resolve is matched by.
-    /// The prompt gets a title and an index; this is what that index is into.
+    /// Stored here rather than in the session, because most of an action is the
+    /// server's JSON: the edit, and the `data` used to match a resolve. The
+    /// prompt receives a title and an index into this list.
     ///
-    /// Cleared when a new list arrives and when the server goes away, so a stale
-    /// index can never select an action from a question nobody asked.
+    /// Cleared when a new list arrives and when the server stops, so a stale
+    /// index cannot select an action from an outdated list.
     code_actions: Vec<deco_lsp::CodeAction>,
 }
 
 /// A hover being displayed.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShownHover {
-    /// What the server said.
+    /// The server's response.
     pub hover: Hover,
-    /// Where the cursor was when it was asked for.
+    /// Where the cursor was when the hover was requested.
     pub asked_at: Position,
 }
 
 impl ShownHover {
     /// Whether this hover still describes what is under the cursor.
     ///
-    /// The server's own range when it gave one, since that is authoritative
-    /// about which token it answered for. Failing that, the exact position it
-    /// was asked about: guessing a wider area would keep a stale box on screen.
+    /// Uses the server's range when it provides one, because that range
+    /// identifies the token the hover describes. Otherwise uses the exact
+    /// requested position: guessing a wider area would keep a stale box on
+    /// screen.
     pub fn applies_at(&self, position: Position) -> bool {
         match self.hover.range {
             Some(range) => {
                 // Inclusive of the end, unlike a diagnostic: a hover range
-                // covers an identifier, and the caret sitting just after the
-                // last character is still on that identifier as far as the user
-                // is concerned.
+                // covers an identifier, and a caret just after the last
+                // character is still on that identifier for the user.
                 position >= range.start && position <= range.end
             }
             None => position == self.asked_at,
@@ -140,10 +140,11 @@ impl ShownHover {
 ///
 /// A cheap fingerprint of a document's text.
 ///
-/// Only ever compared with another fingerprint of the same document, so a
-/// collision would have to be between two states of one file — and the cost of
-/// one is a redundant `didChange`, not a wrong result. `DefaultHasher` rather
-/// than a real digest because this is a change detector, not a checksum.
+/// Only compared with another fingerprint of the same document, so a collision
+/// can only occur between two states of one file. The cost of a collision is a
+/// redundant `didChange`, not a wrong result. `DefaultHasher` is used rather
+/// than a cryptographic digest because this is a change detector, not a
+/// checksum.
 fn fingerprint(text: &str) -> u64 {
     use std::hash::{Hash as _, Hasher as _};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -153,10 +154,10 @@ fn fingerprint(text: &str) -> u64 {
 
 /// `path` relative to `root` when it is inside it, and whole otherwise.
 ///
-/// A references list is mostly locations in the workspace, and
-/// `/home/you/work/project/src/main.rs` repeated down the column crowds out the
-/// part that differs. A location outside the workspace keeps its full path,
-/// because there the directory is the informative part.
+/// A references list mostly contains locations in the workspace, and repeating
+/// `/home/you/work/project/src/main.rs` in every row hides the part that
+/// differs. A location outside the workspace keeps its full path, because there
+/// the directory is the useful part.
 fn shorten(path: &Path, root: Option<&Path>) -> String {
     root.and_then(|root| path.strip_prefix(root).ok())
         .unwrap_or(path)
@@ -164,14 +165,13 @@ fn shorten(path: &Path, root: Option<&Path>) -> String {
         .replace('\\', "/")
 }
 
-/// The anchor a completion list filters from. A server is asked at the cursor
-/// and answers about the whole word, so the editor has to agree with it about
-/// where that word started — otherwise the list filters against the wrong text,
-/// which looks like the server returning nonsense.
+/// The anchor a completion list filters from. The server is queried at the
+/// cursor and responds for the whole word, so the editor must use the same word
+/// start. Otherwise the list filters against the wrong text.
 ///
-/// "Word" here is the identifier rule every language deco knows shares:
-/// alphanumeric plus `_`. Deliberately not the server's idea of a word, because
-/// the protocol gives no way to ask.
+/// "Word" here uses the identifier rule shared by every language deco supports:
+/// alphanumeric plus `_`. The server's definition of a word is not used because
+/// the protocol provides no way to query it.
 fn word_start(session: &Session) -> Position {
     let cursor = session.view.selections.primary().active;
     let Some(line) = session
@@ -183,15 +183,15 @@ fn word_start(session: &Session) -> Position {
         return cursor;
     };
 
-    // Counted in UTF-16 units, since that is what a position is.
+    // Counted in UTF-16 units, because positions use UTF-16 units.
     let mut start = cursor.character;
     let units: Vec<u16> = line.encode_utf16().collect();
     while start > 0 {
         let index = (start - 1) as usize;
         let Some(&unit) = units.get(index) else { break };
-        // Surrogates are part of a character outside the Basic Multilingual
-        // Plane — an emoji, say — which is never an identifier character, so the
-        // word ends here.
+        // A surrogate is part of a character outside the Basic Multilingual
+        // Plane, such as an emoji. These are not treated as identifier
+        // characters, so the word ends here.
         let Some(c) = char::from_u32(unit as u32) else {
             break;
         };
@@ -205,8 +205,8 @@ fn word_start(session: &Session) -> Position {
 
 /// The characters between two columns of a line, as typed.
 ///
-/// Used to replay into a completion filter what the user typed while waiting for
-/// the server's answer.
+/// Used to apply the characters typed while waiting for the server's response
+/// to the completion filter.
 fn typed_between(line: &str, from: u32, to: u32) -> Vec<char> {
     let units: Vec<u16> = line.encode_utf16().collect();
     let from = from as usize;
@@ -219,22 +219,22 @@ fn typed_between(line: &str, from: u32, to: u32) -> Vec<char> {
 
 /// Where a language server runs.
 ///
-/// The whole of remote language support is this enum and the [`PathMap`] it
-/// hands out. A server is a program speaking a protocol over its stdin and
-/// stdout, and every transport deco has already carries exactly that — so
-/// running one on the far end is a question of which command to spawn and which
-/// paths to put in the messages, and nothing about the protocol changes.
+/// Remote language support consists of this enum and the [`PathMap`] it
+/// returns. A server is a program that uses the protocol over stdin and stdout,
+/// and every deco transport already carries stdin and stdout. Running a server
+/// remotely therefore only changes the command to spawn and the paths in the
+/// messages. The protocol is unchanged.
 #[derive(Debug, Clone)]
 pub enum Location {
     /// On this machine, reading the checkout the editor is looking at.
     Here,
     /// On the machine the session is connected to.
     Remote {
-        /// How to reach it.
+        /// The remote machine to connect to.
         authority: deco_remote::Authority,
-        /// How to build the command that gets there.
+        /// Options for building the transport command.
         options: deco_remote::TransportOptions,
-        /// The directory it serves, as *it* spells it.
+        /// The directory the server serves, as a path on the remote machine.
         workspace: PathBuf,
     },
 }
@@ -242,10 +242,9 @@ pub enum Location {
 impl Location {
     /// How long to wait for a server to answer `initialize`.
     ///
-    /// Longer over a transport, and not by a little: the wait covers an SSH
-    /// handshake and a language server reading a project from a disk this
-    /// machine never touches. Ten seconds is generous locally and would be a
-    /// coin toss on a real remote.
+    /// Much longer over a transport: the wait includes an SSH handshake and a
+    /// language server reading a project from a remote disk. Ten seconds is
+    /// enough locally but often not enough for a real remote host.
     pub fn startup_timeout(&self) -> Duration {
         match self {
             Self::Here => STARTUP_TIMEOUT,
@@ -253,7 +252,7 @@ impl Location {
         }
     }
 
-    /// How the editor's paths relate to the ones a server there will see.
+    /// The mapping between the editor's paths and the paths the server uses.
     pub fn paths(&self) -> PathMap {
         match self {
             Self::Here => PathMap::host(),
@@ -261,13 +260,12 @@ impl Location {
         }
     }
 
-    /// The definition, with its command changed into one that runs it there.
+    /// The definition, with its command changed to run at this location.
     ///
-    /// Environment variables move into the argument vector as `env NAME=VALUE`
-    /// rather than staying on the config, because [`deco_lsp`] sets them on the
-    /// process it spawns — which over a transport is `ssh`, on this machine.
-    /// They would have been set in the wrong place and silently not reached the
-    /// server at all.
+    /// Environment variables are moved into the argument vector as
+    /// `env NAME=VALUE` rather than kept in the config, because [`deco_lsp`]
+    /// sets them on the process it spawns. Over a transport that process is the
+    /// local `ssh`, so the variables would not reach the server.
     pub fn resolve(&self, config: &ServerConfig) -> Result<ServerConfig, String> {
         let Self::Remote {
             authority, options, ..
@@ -280,11 +278,11 @@ impl Location {
         if !config.env.is_empty() {
             argv.push("env".to_owned());
             for (name, value) in &config.env {
-                // A name with an `=` in it would split in the wrong place and
-                // set a variable nobody asked for; a NUL or a newline cannot be
-                // passed through an argument vector at all. Refused by name
-                // rather than mangled, which is the same rule the server
-                // definition itself is read under.
+                // A name containing `=` would split in the wrong place and set
+                // a different variable. A NUL or a newline cannot be passed in
+                // an argument vector. Such a variable is rejected by name rather
+                // than altered, which is the same rule used when reading the
+                // server definition.
                 if name.is_empty()
                     || name.contains('=')
                     || [name.as_str(), value.as_str()]
@@ -308,8 +306,8 @@ impl Location {
                 program: command.program,
                 args: command.args,
             },
-            // Moved into the argument vector above, so leaving them here as well
-            // would set them twice: once uselessly on this machine.
+            // Moved into the argument vector above. Keeping them here would also
+            // set them on the local process, where they have no effect.
             env: Vec::new(),
             ..config.clone()
         })
@@ -317,15 +315,15 @@ impl Location {
 }
 
 impl Lsp {
-    /// Reads the configuration and prepares to attach servers here.
+    /// Reads the configuration and prepares to attach local servers.
     pub fn new(session: &mut Session, root: Option<PathBuf>) -> Self {
         Self::with_location(session, root, Location::Here)
     }
 
-    /// The same, saying where the servers should run.
+    /// The same, with the location where servers should run.
     ///
-    /// Nothing is started here: which server to run depends on the document,
-    /// which may not be open yet.
+    /// No server is started here: the server depends on the document, which may
+    /// not be open yet.
     pub fn with_location(session: &mut Session, root: Option<PathBuf>, location: Location) -> Self {
         let enabled = deco_lsp::settings::enabled(&session.settings);
         let (registry, problems) = deco_lsp::settings::registry(&session.settings);
@@ -342,8 +340,8 @@ impl Lsp {
             open: None,
             paths: location.paths(),
             root: match &location {
-                // The root a server is told about has to be one it can see, and
-                // in a remote session that is a directory on the other machine.
+                // The root sent to a server must be accessible to it. In a
+                // remote session that is a directory on the remote machine.
                 Location::Remote { workspace, .. } => Some(workspace.clone()),
                 Location::Here => root,
             },
@@ -372,8 +370,8 @@ impl Lsp {
 
     /// Asks for completions at the cursor.
     ///
-    /// `trigger` records whether the user asked or a trigger character was
-    /// typed; the server changes what it offers accordingly.
+    /// `trigger` records whether the user invoked completion or typed a trigger
+    /// character. The server adjusts its results accordingly.
     pub fn request_completion(&mut self, session: &mut Session, trigger: CompletionTrigger) {
         self.dismiss_suggest();
         let (Some(path), Some(supervisor)) =
@@ -385,8 +383,9 @@ impl Lsp {
         match supervisor.completion(&path, position, trigger) {
             Ok(Some(id)) => self.completion_request = Some(id),
             Ok(None) => {
-                // Only worth saying when the user asked. A trigger character
-                // that finds no provider should type itself and stay quiet.
+                // Only useful when the user invoked completion. A trigger
+                // character with no provider should insert the character
+                // without a message.
                 session.status = Some("this server does not offer completion".to_owned());
             }
             Err(error) => self.report(session, error.to_string()),
@@ -394,7 +393,7 @@ impl Lsp {
         self.sync_context(session);
     }
 
-    /// The characters that should open a list without being asked.
+    /// The characters that open a list automatically.
     pub fn completion_triggers(&self) -> &[String] {
         self.supervisor
             .as_ref()
@@ -437,7 +436,7 @@ impl Lsp {
     /// Narrows an open list as the user types, closing it when nothing matches.
     ///
     /// Called after the character has been inserted into the document, so the
-    /// list and the text agree about what has been typed.
+    /// list and the text contain the same typed characters.
     pub fn typed(&mut self, session: &mut Session, c: char) -> bool {
         let Some(suggest) = self.suggest.as_mut() else {
             return false;
@@ -463,9 +462,9 @@ impl Lsp {
 
     /// Inserts the selected item, replacing what the list was matching.
     ///
-    /// Returns whether anything was accepted, so the caller can fall through to
-    /// the key's ordinary meaning — `enter` with no list open has to insert a
-    /// newline.
+    /// Returns whether anything was accepted, so the caller can fall back to the
+    /// key's ordinary behaviour. For example, `enter` with no list open must
+    /// insert a newline.
     pub fn accept(&mut self, session: &mut Session, now_ms: u64) -> bool {
         let Some(suggest) = self.suggest.as_ref() else {
             return false;
@@ -476,10 +475,10 @@ impl Lsp {
             return false;
         };
 
-        // The server's own range when it gave one: it knows where the completion
-        // begins, and guessing from the document is how `Hash` + `HashMap`
-        // becomes `HashHashMap`. Failing that, the span from where the list
-        // opened to the cursor, which is exactly what was matched against.
+        // Use the server's range when it provides one, because the server knows
+        // where the completion begins. Guessing from the document can turn
+        // `Hash` + `HashMap` into `HashHashMap`. Otherwise use the span from
+        // where the list opened to the cursor, which is the text that was matched.
         let cursor = session.view.selections.primary().active;
         let range = item.replace.unwrap_or(deco_core::position::Range::ordered(
             suggest.anchor(),
@@ -497,8 +496,8 @@ impl Lsp {
             return true;
         }
         if item.was_snippet {
-            // Said plainly rather than silently inserting the reduced text: the
-            // user asked for a snippet and got a best effort.
+            // Report that the reduced text was inserted instead of the snippet,
+            // rather than inserting it without notice.
             session.status = Some(format!(
                 "{}: inserted without tab stops (unsupported snippet syntax)",
                 item.label
@@ -516,17 +515,17 @@ impl Lsp {
 
     /// Republishes every context key derived from the server's state.
     ///
-    /// One function called from every path that changes that state, rather than
-    /// each site remembering which keys it invalidated. A stale `when` key is a
-    /// keybinding that silently does the wrong thing — F12 dead while a server
-    /// offers definitions, or escape swallowed with no hover on screen — and
-    /// that is the hardest kind of bug to notice.
+    /// Every path that changes that state calls this one function, instead of
+    /// each call site updating the keys it affects. A stale `when` key makes a
+    /// keybinding behave incorrectly without any error, for example F12 doing
+    /// nothing while a server offers definitions, or escape being consumed with
+    /// no hover on screen. Such bugs are hard to notice.
     fn sync_context(&self, session: &mut Session) {
-        // A server the session has no *document* with offers nothing: it was
-        // never told about this buffer, so `F2` and `F12` would either do
-        // nothing or ask it about a URI it has never seen. That happens when the
-        // open file is deleted, or renamed to something with no language — the
-        // server survives, the document does not.
+        // A server with no open *document* in the session offers nothing. It was
+        // never notified about this buffer, so `F2` and `F12` would either do
+        // nothing or send a URI the server does not know. This happens when the
+        // open file is deleted, or renamed to a name with no language: the server
+        // keeps running but the document is closed.
         let capabilities = self
             .open
             .as_ref()
@@ -535,8 +534,8 @@ impl Lsp {
         let has =
             |f: fn(&deco_lsp::ServerCapabilities) -> bool| capabilities.map(f).unwrap_or(false);
 
-        // VS Code's own names, so a `when` clause copied out of somebody's
-        // keybindings.json gates on the same thing here.
+        // VS Code's names, so a `when` clause copied from a VS Code
+        // keybindings.json checks the same condition here.
         session
             .context
             .set("editorHasHoverProvider", has(|c| c.hover));
@@ -575,9 +574,8 @@ impl Lsp {
 
     /// Requests a hover for the cursor's position.
     ///
-    /// Any hover already on screen is dismissed first: it described the previous
-    /// position, and leaving it up while a new one is fetched shows the user an
-    /// answer to a question they are no longer asking.
+    /// Any hover already on screen is dismissed first, because it describes the
+    /// previous position.
     pub fn request_hover(&mut self, session: &mut Session) {
         self.dismiss_hover();
         self.sync_context(session);
@@ -598,10 +596,10 @@ impl Lsp {
 
     /// Asks the server to format the document, or the selection if there is one.
     ///
-    /// The selection decides which method is used, rather than a separate
-    /// keybinding choosing wrongly: `ctrl+shift+i` with text selected almost
-    /// always means "format this", and reformatting the whole file instead is a
-    /// diff nobody asked for.
+    /// The selection determines which method is used, rather than a separate
+    /// keybinding. `ctrl+shift+i` with text selected almost always means
+    /// "format the selection", and reformatting the whole file would produce an
+    /// unwanted diff.
     pub fn request_formatting(&mut self, session: &mut Session, selection_only: bool) {
         let (Some(path), Some(supervisor)) =
             (session.document.path.clone(), self.supervisor.as_mut())
@@ -621,8 +619,8 @@ impl Lsp {
         match raised {
             Ok(Some(id)) => {
                 self.format_request = Some(id);
-                // Said up front: formatting a large file can take a moment, and
-                // silence looks like a key that does nothing.
+                // Shown immediately: formatting a large file can take a moment,
+                // and without a message the key appears to do nothing.
                 session.status = Some("Formatting…".to_owned());
             }
             Ok(None) => {
@@ -632,7 +630,7 @@ impl Lsp {
         }
     }
 
-    /// Asks what the server offers to do about the selection.
+    /// Requests the code actions the server offers for the selection.
     pub fn request_code_actions(&mut self, session: &mut Session) {
         let (Some(path), Some(supervisor)) =
             (session.document.path.clone(), self.supervisor.as_mut())
@@ -640,8 +638,8 @@ impl Lsp {
             session.status = Some("no language server for this file".to_owned());
             return;
         };
-        // The selection, or the caret when there is none — which is how VS Code
-        // asks, and why a quick fix works without selecting the error first.
+        // The selection, or the caret when there is none. VS Code does the same,
+        // so a quick fix works without selecting the error first.
         let selection = session.view.selections.primary();
         let range = deco_core::position::Range::ordered(selection.anchor, selection.active);
 
@@ -657,7 +655,7 @@ impl Lsp {
         }
     }
 
-    /// Puts what the server offered into the picker.
+    /// Puts the server's code actions into the picker.
     fn offer_code_actions(&mut self, session: &mut Session, actions: Vec<deco_lsp::CodeAction>) {
         let entries = actions
             .iter()
@@ -665,9 +663,9 @@ impl Lsp {
             .map(|(index, action)| {
                 let entry =
                     deco_editor::commands::PaletteEntry::new(&index.to_string(), &action.title);
-                // The second column says either why it cannot be run or what
-                // kind of thing it is — in that order, because a disabled
-                // action's reason is the only thing about it worth reading.
+                // The second column shows why the action cannot be run, or else
+                // its kind. The reason takes precedence because it is the most
+                // relevant information for a disabled action.
                 match (&action.disabled, action.short_kind()) {
                     (Some(reason), _) => entry.with_detail(&format!("unavailable — {reason}")),
                     (None, Some(kind)) => entry.with_detail(kind),
@@ -682,8 +680,8 @@ impl Lsp {
     /// Carries out the action the user chose from the picker.
     ///
     /// `id` is the index the picker was given. An action that already has its
-    /// edit is applied here; one that does not goes back to the server first and
-    /// is applied when the resolved answer arrives.
+    /// edit is applied here. Otherwise the action is resolved by the server first
+    /// and applied when the resolved response arrives.
     pub fn run_code_action(
         &mut self,
         session: &mut Session,
@@ -696,9 +694,8 @@ impl Lsp {
             .and_then(|index| self.code_actions.get(index))
             .cloned()
         else {
-            // The list was replaced or dropped between the prompt opening and
-            // this arriving. Nothing to do, and nothing worth alarming anyone
-            // about.
+            // The list was replaced or dropped after the prompt opened. Nothing
+            // to do, and no message is needed.
             return;
         };
 
@@ -717,9 +714,9 @@ impl Lsp {
                     self.resolve_request = Some(id);
                     session.status = Some(format!("{}…", action.title));
                 }
-                // The server offered an action with no edit and no way to ask
-                // for one. Naming it is the only honest answer: there is nothing
-                // here to apply and never was.
+                // The server offered an action with no edit and no way to
+                // resolve one. Report the action by name, because there is
+                // nothing to apply.
                 Some(Ok(None)) | None => {
                     session.status = Some(format!(
                         "`{}` came with no edit, and this server cannot resolve one",
@@ -734,7 +731,7 @@ impl Lsp {
         self.apply_code_action(session, &action, files);
     }
 
-    /// Applies a resolved action's edit, or says why there is nothing to apply.
+    /// Applies a resolved action's edit, or reports why there is nothing to apply.
     fn apply_code_action(
         &mut self,
         session: &mut Session,
@@ -742,10 +739,10 @@ impl Lsp {
         files: &mut crate::extensions::Files<'_>,
     ) {
         let Some(edit) = &action.edit else {
-            // Either the resolve came back with nothing, or the action was only
-            // ever a `Command`. Running a server command is `workspace/executeCommand`,
-            // whose result comes back as a `workspace/applyEdit` *request* — a
-            // different direction of authority, and not wired here.
+            // Either the resolve returned no edit, or the action is only a
+            // `Command`. Running a server command uses `workspace/executeCommand`,
+            // and its result arrives as a server-to-client `workspace/applyEdit`
+            // *request*. That direction is not implemented here.
             let detail = match &action.command {
                 Some(command) => {
                     format!("it runs the server command `{command}`, which deco cannot")
@@ -758,9 +755,9 @@ impl Lsp {
 
         let edit = match deco_lsp::WorkspaceEdit::from_json(edit) {
             Ok(edit) => edit,
-            // A file created, renamed or deleted. Refused for one action rather
-            // than for the whole menu, which is why the edit is parsed here and
-            // not while listing.
+            // A file create, rename or delete operation. Only this action is
+            // rejected, not the whole menu, which is why the edit is parsed here
+            // and not while listing.
             Err(error) => {
                 self.report(session, format!("`{}`: {error}", action.title));
                 return;
@@ -782,10 +779,10 @@ impl Lsp {
                 |path| supervisor.version_of(path),
             )
             .and_then(|plan| {
-                // Through `files` rather than `std::fs`: in a remote session the
-                // language server runs where the files are, so the paths in its
-                // answer are paths over there, and reading them here would find
-                // either nothing or the wrong file.
+                // Read through `files` rather than `std::fs`. In a remote
+                // session the language server runs on the remote machine, so
+                // the paths in its response are remote paths. Reading them
+                // locally would find either nothing or the wrong file.
                 plan.with_contents(|path| files.read(&path.display().to_string()))
             });
 
@@ -800,8 +797,8 @@ impl Lsp {
         match session.apply_workspace_edit(plan, 0) {
             Ok(applied) => {
                 session.status = Some(applied.summary(&action.title));
-                // The answer arrived through the poll rather than through a
-                // keypress, so the loop's own sync has already run this turn.
+                // The response arrived through the poll rather than a keypress,
+                // so the loop's own sync has already run in this iteration.
                 self.changed(session);
             }
             Err(error) => self.report(session, error.to_string()),
@@ -810,9 +807,8 @@ impl Lsp {
 
     /// Opens the rename prompt, if this server can rename at all.
     ///
-    /// Checked before asking rather than after: a prompt that appears, takes a
-    /// name, and only then reports that renaming is not on offer has wasted the
-    /// one thing it asked for.
+    /// The capability is checked before the prompt opens, so the user does not
+    /// type a name only to learn that rename is not supported.
     pub fn offer_rename(&mut self, session: &mut Session) {
         let Some(supervisor) = self.supervisor.as_ref() else {
             session.status = Some("no language server for this file".to_owned());
@@ -825,7 +821,7 @@ impl Lsp {
         session.offer_rename();
     }
 
-    /// Asks the server what renaming the symbol under the cursor would change.
+    /// Requests the edits for renaming the symbol under the cursor.
     pub fn request_rename(&mut self, session: &mut Session, new_name: &str) {
         let (Some(path), Some(supervisor)) =
             (session.document.path.clone(), self.supervisor.as_mut())
@@ -836,9 +832,8 @@ impl Lsp {
         match supervisor.rename(&path, position, new_name) {
             Ok(Some(id)) => {
                 self.rename_request = Some(id);
-                // A rename reads every file in the project on some servers, so
-                // this is the one request where silence is long enough to look
-                // like a key that did nothing.
+                // Some servers read every file in the project for a rename, so
+                // without a message the key can appear to do nothing.
                 session.status = Some(format!("Renaming to `{new_name}`…"));
             }
             Ok(None) => {
@@ -848,11 +843,11 @@ impl Lsp {
         }
     }
 
-    /// Applies what the server said a rename would change.
+    /// Applies the edits the server returned for a rename.
     ///
-    /// The reading of files is here because this is the layer with a filesystem;
-    /// every decision about *whether* to apply is in `deco_editor::workspace`,
-    /// which is where it can be tested without one.
+    /// Files are read here because this layer has filesystem access. Every
+    /// decision about *whether* to apply is in `deco_editor::workspace`, where
+    /// it can be tested without a filesystem.
     fn apply_rename(
         &mut self,
         session: &mut Session,
@@ -864,7 +859,7 @@ impl Lsp {
             return;
         }
         let Some(supervisor) = self.supervisor.as_ref() else {
-            // The server went away between asking and answering.
+            // The server stopped between the request and the response.
             return;
         };
         let paths = supervisor.paths();
@@ -876,10 +871,10 @@ impl Lsp {
                 |path| supervisor.version_of(path),
             )
             .and_then(|plan| {
-                // Through `files` rather than `std::fs`: in a remote session the
-                // language server runs where the files are, so the paths in its
-                // answer are paths over there, and reading them here would find
-                // either nothing or the wrong file.
+                // Read through `files` rather than `std::fs`. In a remote
+                // session the language server runs on the remote machine, so
+                // the paths in its response are remote paths. Reading them
+                // locally would find either nothing or the wrong file.
                 plan.with_contents(|path| files.read(&path.display().to_string()))
             });
 
@@ -894,11 +889,10 @@ impl Lsp {
         match session.apply_workspace_edit(plan, 0) {
             Ok(applied) => {
                 session.status = Some(applied.summary("Renamed"));
-                // This answer arrived through the poll rather than through a
-                // keypress, so the loop's own "tell the server what the text is
-                // now" has already run for this turn. Without this the server
-                // would keep answering about the old name until the next
-                // keystroke — including about the rename that just happened.
+                // This response arrived through the poll rather than a keypress,
+                // so the loop's own text sync has already run in this iteration.
+                // Without this call the server would keep using the old text,
+                // including the old name, until the next keystroke.
                 self.changed(session);
             }
             Err(error) => self.report(session, error.to_string()),
@@ -907,10 +901,10 @@ impl Lsp {
 
     /// Asks the server to classify the whole document.
     ///
-    /// Skipped while an answer is outstanding: a request per keystroke would queue
-    /// classifications of text that has already changed, and the newest answer is
-    /// the only one worth having. The lexer's colouring stands in the meantime,
-    /// which is why the delay is not visible as an absence of colour.
+    /// Skipped while a request is outstanding. A request per keystroke would
+    /// queue classifications of text that has already changed, and only the
+    /// newest response is useful. The lexer's colouring remains in the meantime,
+    /// so the delay does not show as missing colour.
     pub fn request_semantic_tokens(&mut self, session: &mut Session) {
         if self.semantic_request.is_some() {
             return;
@@ -920,15 +914,14 @@ impl Lsp {
         else {
             return;
         };
-        // Silent: this is a refinement nobody asked for by pressing a key, so a
-        // status line about it would be noise, and a server that does not offer it
-        // is not a problem to report.
+        // No status message: this request is not triggered by a key press, and
+        // a server that does not support it is not an error.
         if let Ok(Some(id)) = supervisor.semantic_tokens(&path) {
             self.semantic_request = Some(id);
         }
     }
 
-    /// Requests everything that refers to whatever is under the cursor.
+    /// Requests all references to the symbol under the cursor.
     pub fn request_references(&mut self, session: &mut Session) {
         let (Some(path), Some(supervisor)) =
             (session.document.path.clone(), self.supervisor.as_mut())
@@ -967,7 +960,7 @@ impl Lsp {
         }
     }
 
-    /// Requests the definition of whatever is under the cursor.
+    /// Requests the definition of the symbol under the cursor.
     pub fn request_definition(&mut self, session: &mut Session) {
         let (Some(path), Some(supervisor)) =
             (session.document.path.clone(), self.supervisor.as_mut())
@@ -978,9 +971,9 @@ impl Lsp {
         match supervisor.definition(&path, position) {
             Ok(Some(id)) => {
                 self.definition_request = Some(id);
-                // Said before the answer arrives, because a server that has to
-                // index first can take seconds and silence looks like a
-                // keybinding that does nothing.
+                // Shown before the response arrives. A server that has to index
+                // first can take seconds, and without a message the keybinding
+                // appears to do nothing.
                 session.status = Some("Looking for the definition…".to_owned());
             }
             Ok(None) => {
@@ -995,8 +988,8 @@ impl Lsp {
         self.hover = None;
         if let (Some(id), Some(supervisor)) = (self.hover_request.take(), self.supervisor.as_mut())
         {
-            // Advisory, and the answer is dropped when it arrives — but a hover
-            // the user has moved past is work the server can stop doing.
+            // Cancellation is advisory, and the response is dropped when it
+            // arrives. Cancelling lets the server stop work on an obsolete hover.
             let _ = supervisor.cancel(&id);
         }
     }
@@ -1026,50 +1019,50 @@ impl Lsp {
     /// Starts or switches the server to suit the open document.
     ///
     /// Idempotent: calling it for a document whose server is already running
-    /// does nothing, which is what lets the event loop call it freely.
-    /// Tells the server about files a delete took away.
+    /// does nothing, so the event loop can call it at any time.
+    /// Notifies the server about deleted files.
     ///
-    /// A deleted file's document is still open as far as the server is
-    /// concerned, under a URI that no longer names anything — so it keeps
-    /// answering about it, and its diagnostics outlive the file. Drained from
-    /// the session, so each deletion produces one `didClose` per file.
+    /// The server still considers a deleted file's document open, under a URI
+    /// that no longer exists, so it keeps responding about it and its
+    /// diagnostics remain after the file is gone. Paths are drained from the
+    /// session, so each deletion produces one `didClose` per file.
     pub fn close_deleted(&mut self, session: &mut Session) {
         for path in session.take_closed_documents() {
             if !self.enabled {
                 continue;
             }
-            // A server that never had it open, or that has since stopped, is
-            // not an error worth showing anybody: the file is gone either way.
+            // A server that never opened the file, or has since stopped, is not
+            // an error to report: the file is deleted in either case.
             if let Some(supervisor) = self.supervisor.as_mut() {
                 let _ = supervisor.did_close(&path);
             }
-            // The cache has to forget it too. `sync_open` skips `didOpen` when
-            // the cached path already matches, so leaving it would mean a file
-            // deleted and then recreated under the same name was never reopened
-            // — the server had dropped it, and every edit after that went
-            // nowhere.
+            // The cache must be cleared too. `sync_open` skips `didOpen` when the
+            // cached path already matches. If the cache were kept, a file deleted
+            // and then recreated under the same name would never be reopened:
+            // the server had closed it, and later edits would not reach it.
             if self.open.as_deref() == Some(path.as_path()) {
                 self.open = None;
                 self.sent = None;
-                // And everything in flight about it. A reply that was already on
-                // its way writes itself back into the session when it lands —
-                // `Update::SemanticTokens` only checks that the request id still
-                // matches — which would undo the very cleanup that closing the
-                // document just did. Nothing would clear it afterwards either:
+                // Also drop every request in flight for it. A reply already in
+                // transit is written back into the session when it arrives,
+                // because `Update::SemanticTokens` only checks that the request
+                // id still matches. That would undo the cleanup done by closing
+                // the document. Nothing would clear it afterwards either:
                 // `changed` returns early for a document with no path, so the
-                // stale spans would sit over the buffer for good.
+                // stale spans would remain over the buffer permanently.
                 self.forget_requests();
             }
         }
-        // The `when` clauses go with it: nothing is open, so nothing is offered.
+        // Update the `when` clauses: nothing is open, so no feature is offered.
         self.sync_context(session);
     }
 
-    /// Drops every request whose answer would write into the session.
+    /// Drops every request whose response would write into the session.
     ///
-    /// Not a cancellation on the wire: the server may still reply, and the reply
-    /// is discarded because nothing is waiting for that id any more. `$/cancelRequest`
-    /// would be politer to the server and makes no difference here.
+    /// This does not send a cancellation. The server may still reply, and the
+    /// reply is discarded because nothing waits for that id any more.
+    /// `$/cancelRequest` would save the server some work but makes no
+    /// difference here.
     fn forget_requests(&mut self) {
         self.hover = None;
         self.hover_request = None;
@@ -1090,8 +1083,8 @@ impl Lsp {
             return;
         }
         let Some(path) = session.document.path.clone() else {
-            // An unsaved buffer has no URI, so there is nothing a server could
-            // be told about it.
+            // An unsaved buffer has no URI, so the server cannot be notified
+            // about it.
             return;
         };
         let Some(language) = session.document.language().map(str::to_owned) else {
@@ -1103,8 +1096,8 @@ impl Lsp {
             return;
         }
 
-        // A different language needs a different server, and the old one has
-        // nothing left to say about a file it can no longer see.
+        // A different language needs a different server, and the old server
+        // no longer has a document to work on.
         self.detach();
 
         let candidates: Vec<_> = self
@@ -1117,27 +1110,26 @@ impl Lsp {
             return;
         }
 
-        // Workspace-defined servers are set aside rather than tried. Setting them
-        // aside rather than stopping at the first one is what keeps a workspace
-        // from disabling a language: a repository that defines its own server
-        // gets that definition declined, and the user's own server still starts.
+        // Workspace-defined servers are skipped rather than tried. Skipping them,
+        // instead of stopping at the first one, prevents a workspace from
+        // disabling a language: a repository's own server definition is
+        // declined, and the user's server still starts.
         //
-        // They are also named here, before anything is started, rather than as a
-        // loop walks past them. A loop leaves the moment a server starts or fails
-        // to, so reporting afterwards meant the disclosure was reached only when
-        // every candidate had been refused — and the ordinary case, a user who
-        // has a server of their own, was told nothing at all.
+        // They are also reported here, before anything is started, rather than
+        // inside the start loop. The loop exits as soon as a server starts or
+        // fails to start, so reporting inside it only happened when every
+        // candidate had been declined. In the common case, where the user has
+        // their own server, nothing was reported.
         let (refused, trusted): (Vec<_>, Vec<_>) = candidates
             .iter()
             .partition(|config| config.trust == Trust::Workspace);
         let refused: Vec<&str> = refused.iter().map(|config| config.id.as_str()).collect();
         if !refused.is_empty() {
-            // The problem list rather than the status bar: `attach` runs on every
-            // tab switch and language change, and a row that reappeared each time
-            // would push aside whatever else the editor had to say. The list is
+            // Reported in the problem list rather than the status bar. `attach`
+            // runs on every tab switch and language change, and a status message
+            // shown each time would replace other messages. The problem list is
             // printed once before the frontend starts and shown by
-            // `--print-config`, which is where a user goes to ask why a server is
-            // not running.
+            // `--print-config`, where a user checks why a server is not running.
             let problem = format!(
                 "{} defined by this workspace and not started; move the definition into your own settings to run it",
                 refused.join(", ")
@@ -1147,13 +1139,12 @@ impl Lsp {
             }
         }
 
-        // The best candidate deco is willing to run, and only that one: the list
-        // is in preference order, so a definition that fails to start is a
-        // broken configuration to report rather than a reason to quietly run a
-        // different server than the one asked for.
+        // Start only the best trusted candidate. The list is in preference order,
+        // so a definition that fails to start is reported as a configuration
+        // error rather than replaced by a different server without notice.
         if let Some(config) = trusted.first() {
-            // Rewritten to run wherever this session's servers run, which for a
-            // remote session means the same definition wrapped in the transport.
+            // Rewritten to run where this session's servers run. For a remote
+            // session, the same definition is wrapped in the transport.
             let config = match self.location.resolve(config) {
                 Ok(config) => config,
                 Err(problem) => {
@@ -1176,9 +1167,9 @@ impl Lsp {
                     self.sync_context(session);
                 }
                 Err(error) => {
-                    // First line only in the status bar: a startup failure
-                    // carries the whole stderr tail, which is invaluable in a
-                    // log and unreadable in a single row.
+                    // Only the first line goes to the status bar. A startup
+                    // failure includes the stderr tail, which is useful in a
+                    // log but unreadable in a single row.
                     let summary = error.to_string();
                     let first = summary.lines().next().unwrap_or("failed to start");
                     session.status = Some(format!("{}: {first}", config.id));
@@ -1188,8 +1179,8 @@ impl Lsp {
             return;
         }
 
-        // Nothing started, so the status bar is free to say why — and with no
-        // server for this language there is nothing else competing for the row.
+        // No server started, so the status bar can show the reason. With no
+        // server for this language, no other message competes for the row.
         if !refused.is_empty() {
             session.status = Some(format!(
                 "{} defined by this workspace and not started",
@@ -1198,7 +1189,7 @@ impl Lsp {
         }
     }
 
-    /// Tells the server about the open document if it does not know it yet.
+    /// Notifies the server about the open document if it has not been notified yet.
     fn sync_open(&mut self, session: &mut Session, path: &Path, language: &str) {
         if self.open.as_deref() == Some(path) {
             return;
@@ -1220,14 +1211,14 @@ impl Lsp {
         }
     }
 
-    /// Tells the server the document changed.
+    /// Notifies the server that the document changed.
     ///
-    /// Full text every time. The incremental path exists in `deco-lsp` and is
-    /// tested, but the editor does not yet keep a per-notification list of
-    /// applied ranges, and inventing one from the undo history would be a
-    /// guess. Sending the whole document is correct, just less efficient — and
-    /// a wrong incremental range corrupts the server's copy silently, which is
-    /// far worse than a large write.
+    /// Always sends the full text. The incremental path exists in `deco-lsp` and
+    /// is tested, but the editor does not yet record the applied ranges per
+    /// notification, and reconstructing them from the undo history would be
+    /// unreliable. Sending the whole document is correct but less efficient. A
+    /// wrong incremental range would corrupt the server's copy without any
+    /// error.
     pub fn changed(&mut self, session: &mut Session) {
         let (Some(path), Some(supervisor)) =
             (session.document.path.clone(), self.supervisor.as_mut())
@@ -1239,20 +1230,20 @@ impl Lsp {
         }
         let text = session.document.buffer.text();
 
-        // The event loop calls this after every keypress, most of which move the
-        // cursor without touching the text. A fingerprint tells the two apart, so
-        // an arrow key no longer sends the whole document — and, more visibly, no
-        // longer throws away a classification that is still correct.
+        // The event loop calls this after every keypress, and most keypresses
+        // move the cursor without changing the text. The fingerprint detects
+        // this, so an arrow key does not send the whole document or discard a
+        // classification that is still correct.
         let fingerprint = fingerprint(&text);
         if self.sent == Some(fingerprint) {
             return;
         }
         self.sent = Some(fingerprint);
 
-        // The old classification described the text before this edit. Dropped
-        // rather than kept until the answer arrives: a token list applied to
-        // shifted text colours the wrong words, which is worse than the lexer's
-        // colouring alone for the moment it takes to answer.
+        // The old classification describes the text before this edit. It is
+        // dropped rather than kept until the response arrives, because a token
+        // list applied to shifted text colours the wrong words. The lexer's
+        // colouring alone is better until the response arrives.
         session.semantic_tokens.clear();
 
         if let Err(error) = supervisor.did_change(&path, &[], &text) {
@@ -1262,7 +1253,7 @@ impl Lsp {
         self.request_semantic_tokens(session);
     }
 
-    /// Tells the server the document was saved.
+    /// Notifies the server that the document was saved.
     pub fn saved(&mut self, session: &mut Session) {
         let (Some(path), Some(supervisor)) =
             (session.document.path.clone(), self.supervisor.as_mut())
@@ -1275,7 +1266,7 @@ impl Lsp {
         }
     }
 
-    /// Drains whatever the server has said and applies it. Never blocks.
+    /// Drains all pending server messages and applies them. Never blocks.
     ///
     /// Returns whether anything changed, so the caller can skip a repaint.
     pub fn poll(
@@ -1296,9 +1287,9 @@ impl Lsp {
 
     /// Applies updates already drained from a server.
     ///
-    /// Split from [`Lsp::poll`] so that what an answer *does* can be asserted
-    /// without a language server installed: the alternative is a test suite that
-    /// passes or fails depending on what happens to be on the machine.
+    /// Separate from [`Lsp::poll`] so the effect of a response can be tested
+    /// without a language server installed. Otherwise test results would depend
+    /// on what is installed on the machine.
     fn absorb(
         &mut self,
         session: &mut Session,
@@ -1318,16 +1309,16 @@ impl Lsp {
         for update in updates {
             match update {
                 Update::Diagnostics { uri, diagnostics } => {
-                    // Only the document on screen: a server may report on files
-                    // deco is not showing, and there is nowhere to put those.
+                    // Only the document on screen. A server may report on files
+                    // deco is not showing, and those reports are not stored here.
                     if Some(&uri) == open_uri.as_ref() {
                         session.set_diagnostics(diagnostics);
                         changed = true;
                     }
                 }
                 Update::Message { kind, message } => {
-                    // 1 is an error, 2 a warning. Anything gentler is a
-                    // progress note and does not deserve the status bar.
+                    // 1 is an error, 2 a warning. Lower severities are
+                    // informational and are not shown in the status bar.
                     if kind <= 2 {
                         session.status = Some(message);
                         changed = true;
@@ -1337,24 +1328,24 @@ impl Lsp {
                     let first = reason.lines().next().unwrap_or("stopped").to_owned();
                     session.status = Some(format!("{id} stopped: {first}"));
                     session.problems.push(format!("{id}: {reason}"));
-                    // Its diagnostics are unowned now — nothing will ever
-                    // correct or retract them.
+                    // No server will update or clear its diagnostics now, so
+                    // they are removed.
                     session.set_diagnostics(Vec::new());
                     self.supervisor = None;
                     self.language = None;
                     self.open = None;
-                    // The same set closing a deleted document drops, so a new
-                    // kind of request cannot be added to one place and forgotten
-                    // in the other.
+                    // The same set that closing a deleted document drops, so a
+                    // new kind of request cannot be added to one place and
+                    // missed in the other.
                     self.forget_requests();
-                    // The features that were on offer went with the server.
+                    // The server's features are no longer available.
                     self.sync_context(session);
                     return true;
                 }
                 Update::Hover { id, hover } => {
-                    // Only the answer to the request still outstanding. An
-                    // earlier one arriving late describes a position the user
-                    // has left.
+                    // Only the response to the outstanding request. A late
+                    // response to an earlier request describes a position the
+                    // cursor has left.
                     if self.hover_request.as_ref() != Some(&id) {
                         continue;
                     }
@@ -1366,8 +1357,8 @@ impl Lsp {
                                 asked_at: session.view.selections.primary().active,
                             });
                         }
-                        // The server answered, and the answer is "nothing".
-                        // Saying so beats a keypress that appears to do nothing.
+                        // The server returned no hover. Report it so the
+                        // keypress does not appear to do nothing.
                         None => session.status = Some("no information here".to_owned()),
                     }
                     self.sync_context(session);
@@ -1394,8 +1385,8 @@ impl Lsp {
                     changed |= self.go_to(session, &method, &locations, files);
                 }
                 Update::Symbols { id, symbols } => {
-                    // Only the outstanding request: an answer to a superseded one
-                    // describes a file the prompt is no longer about.
+                    // Only the outstanding request. A response to a superseded
+                    // request is for a different prompt.
                     let Some((asked, path)) = self.symbols_request.take() else {
                         continue;
                     };
@@ -1421,8 +1412,8 @@ impl Lsp {
                     items,
                     incomplete,
                 } => {
-                    // Only the outstanding request: an earlier list arriving late
-                    // describes a position the user has typed past.
+                    // Only the outstanding request. A late list from an earlier
+                    // request describes a position the user has typed past.
                     if self.completion_request.as_ref() != Some(&id) {
                         continue;
                     }
@@ -1433,10 +1424,10 @@ impl Lsp {
                         let anchor = word_start(session);
                         let mut suggest = Suggest::new(items, anchor, incomplete);
                         // The characters between the word's start and the cursor
-                        // were typed before the answer came back, so they are
-                        // replayed into the filter. Without this the list shows
-                        // everything the server offered at the word's start,
-                        // ignoring what the user has since narrowed it to.
+                        // were typed before the response arrived, so they are
+                        // applied to the filter. Without this the list shows every
+                        // item for the word's start and ignores the characters
+                        // typed since.
                         let cursor = session.view.selections.primary().active;
                         if anchor.line == cursor.line && cursor.character > anchor.character {
                             let line = session
@@ -1476,9 +1467,9 @@ impl Lsp {
                                 if count == 1 { "" } else { "s" }
                             ));
                         }
-                        // A broken server, and the file is untouched. Worth
-                        // saying loudly: the user pressed a key and nothing
-                        // happened, and the reason is not their fault.
+                        // The server sent invalid edits, and the file is
+                        // unchanged. Report it in the status bar and the problem
+                        // list, because the key press had no visible effect.
                         Err(error) => {
                             session.status = Some(format!("{short}: {error}"));
                             session.problems.push(format!("{method}: {error}"));
@@ -1509,16 +1500,16 @@ impl Lsp {
                     self.rename_request = None;
                     match edit {
                         Ok(edit) => self.apply_rename(session, edit, files),
-                        // A server asking for something deco cannot do — a file
-                        // created, renamed or deleted. Nothing was changed, and
-                        // the message says which operation it was.
+                        // The server requested an operation deco does not
+                        // support: a file create, rename or delete. Nothing was
+                        // changed, and the message names the operation.
                         Err(error) => self.report(session, error.to_string()),
                     }
                     changed = true;
                 }
                 Update::RequestFailed { method, reason, .. } => {
-                    // The short name: `textDocument/hover` in a status bar is
-                    // mostly punctuation.
+                    // Use the last segment of the method name, which is easier to
+                    // read in the status bar than `textDocument/hover`.
                     let short = method.rsplit('/').next().unwrap_or(&method);
                     session.status = Some(format!("{short}: {reason}"));
                     session.problems.push(format!("{method}: {reason}"));
@@ -1541,41 +1532,39 @@ impl Lsp {
         files: &mut crate::extensions::Files<'_>,
     ) -> bool {
         let Some(target) = locations.first() else {
-            // A successful answer meaning the server found nothing. Reporting it
-            // is the difference between "no definition" and "the editor is
-            // broken".
+            // A successful response with no result. Reporting it distinguishes
+            // "no definition" from an editor that does not respond.
             session.status = Some("no definition found".to_owned());
             return true;
         };
 
-        // Several answers is a question, not a result: offer them rather than
-        // picking one. The same list references uses, for the same reason.
+        // With several results, offer them as a list rather than picking one.
+        // References use the same list.
         if locations.len() > 1 {
             self.offer_locations(session, locations, files);
             return true;
         }
 
         let Ok(path) = self.paths.from_uri(&target.uri) else {
-            // `jdt:`, `untitled:` and friends. The editor cannot open one, and
-            // pretending otherwise would create an empty buffer named after a
-            // URI.
+            // `jdt:`, `untitled:` and similar schemes. The editor cannot open
+            // them, and trying would create an empty buffer named after a URI.
             session.status = Some(format!("cannot open {}", target.uri));
             return true;
         };
 
         let same_file = session.document.path.as_deref() == Some(path.as_path());
         if !same_file {
-            // Into a new tab (or the tab already holding that file), so unsaved
-            // work in the current document is not at risk and no longer needs to
-            // block the jump.
-            // Through `files`: a server running on the far end of a remote
-            // session points at files over there, and reading the path here
+            // Open in a new tab (or the tab already holding that file), so
+            // unsaved changes in the current document are kept and do not block
+            // the jump.
+            // Read through `files`: in a remote session the server runs on the
+            // remote machine and returns remote paths. Reading the path locally
             // would open either nothing or an unrelated local file.
             match files.read(&path.display().to_string()) {
                 Ok(text) => {
                     session.open(path.clone(), &text);
-                    // The new document needs its own server, and the old one
-                    // needs telling that the previous file is closed.
+                    // The new document needs its own server, and the old server
+                    // must be notified that the previous file is closed.
                     self.attach(session);
                     self.refresh_diagnostics(session);
                 }
@@ -1604,10 +1593,9 @@ impl Lsp {
 
     /// Offers `locations` as a list to pick from.
     ///
-    /// The same prompt a project-wide search uses, because the two are the same
-    /// question — which of these places do you want to be? — and a second list
-    /// widget that behaved almost identically would be a second place for it to
-    /// behave slightly differently.
+    /// Uses the same prompt as project-wide search, because both select one of
+    /// several locations. A second, nearly identical list widget could diverge in
+    /// behaviour.
     fn offer_locations(
         &mut self,
         session: &mut Session,
@@ -1615,23 +1603,23 @@ impl Lsp {
         files: &mut crate::extensions::Files<'_>,
     ) {
         let paths = self.paths.clone();
-        // The line's text is what makes a list of locations readable, and for a
-        // location in a file that is not on screen it has to be read from disk.
-        // One cache per response, because a server answering "find all references"
-        // routinely returns twenty locations in the same file.
+        // The line's text makes a list of locations readable. For a location in a
+        // file that is not on screen, it has to be read from disk. There is one
+        // cache per response, because "find all references" often returns many
+        // locations in the same file.
         let mut cache: std::collections::HashMap<PathBuf, Vec<String>> =
             std::collections::HashMap::new();
         let mut entries = Vec::new();
 
         for location in locations {
             let Ok(path) = paths.from_uri(&location.uri) else {
-                // `jdt:` and friends: nothing here can open one, and an entry that
-                // cannot be opened is worse than one that is missing.
+                // `jdt:` and similar schemes cannot be opened here, so they are
+                // omitted rather than listed as entries that cannot be opened.
                 continue;
             };
             let lines = cache.entry(path.clone()).or_insert_with(|| {
-                // The open document's own text rather than what is on disk, since
-                // the two differ exactly when there are unsaved changes.
+                // Use the open document's text rather than the file on disk,
+                // because they differ when there are unsaved changes.
                 if session.document.path.as_deref() == Some(path.as_path()) {
                     session
                         .document
@@ -1641,7 +1629,7 @@ impl Lsp {
                         .map(str::to_owned)
                         .collect()
                 } else {
-                    // Same machine as the file itself; see `go_to`.
+                    // Read on the machine where the file is; see `go_to`.
                     files
                         .read(&path.display().to_string())
                         .map(|text| text.lines().map(str::to_owned).collect())
@@ -1670,12 +1658,12 @@ impl Lsp {
         ));
     }
 
-    /// Opens the go-to-symbol prompt over what the server found.
+    /// Opens the go-to-symbol prompt with the symbols the server returned.
     ///
-    /// Every entry carries `path`, so accepting one goes through the same
-    /// open-a-file-at-a-position path a search result does. For the document
-    /// already on screen that is a tab switch onto itself, which keeps unsaved
-    /// changes; for one the user has since navigated away from it comes back.
+    /// Every entry includes `path`, so accepting one uses the same "open a file
+    /// at a position" path as a search result. For the document already on
+    /// screen, this switches to its own tab and keeps unsaved changes. If the
+    /// user has navigated away from the document, it is shown again.
     fn offer_symbols(
         &mut self,
         session: &mut Session,
@@ -1691,8 +1679,8 @@ impl Lsp {
                     &symbol.qualified(),
                     symbol.position,
                 );
-                // The kind in the second column, because it is what tells a field
-                // from a method of the same name.
+                // The kind is shown in the second column to distinguish a field
+                // from a method with the same name.
                 match symbol.kind {
                     Some(kind) => entry.with_detail(kind),
                     None => entry,
@@ -1712,10 +1700,10 @@ impl Lsp {
 
     /// Reloads the active document's diagnostics from the store.
     ///
-    /// For a tab switch: the server has been publishing for every file it knows
-    /// about all along, but only the on-screen document's publications reach the
-    /// session — so a document coming back from the background has to collect
-    /// what it missed.
+    /// Used on a tab switch. The server publishes diagnostics for every file it
+    /// knows, but only publications for the on-screen document reach the
+    /// session. A document that returns from the background therefore has to
+    /// load the diagnostics published in the meantime.
     pub fn refresh_diagnostics(&self, session: &mut Session) {
         let Some(supervisor) = self.supervisor.as_ref() else {
             return;
@@ -1762,7 +1750,7 @@ impl Lsp {
 
 impl Drop for Lsp {
     fn drop(&mut self) {
-        // Quitting the editor must not leave a language server running: they
+        // Quitting the editor must not leave a language server running. Servers
         // are long-lived and hold build locks on the project.
         self.detach();
     }
@@ -1895,13 +1883,13 @@ mod tests {
             .resolve(&definition(Vec::new()))
             .expect("a command");
         assert_eq!(resolved.command.program, "ssh");
-        // The server's own command survives as the tail, as separate arguments:
-        // the transport never assembles a shell string.
+        // The server's command remains at the end, as separate arguments. The
+        // transport never builds a shell string.
         let tail = &resolved.command.args[resolved.command.args.len() - 3..];
         assert_eq!(tail, ["taplo", "lsp", "stdio"]);
         assert!(resolved.command.args.contains(&"myhost".to_owned()));
-        // Everything else about the definition is untouched — it is the same
-        // server, started somewhere else.
+        // The rest of the definition is unchanged: it is the same server,
+        // started on another machine.
         assert_eq!(resolved.id, "toml-lsp");
         assert_eq!(resolved.language_ids, ["toml"]);
     }
@@ -1909,9 +1897,8 @@ mod tests {
     #[test]
     fn environment_variables_travel_to_the_far_end_rather_than_being_set_here() {
         // `deco-lsp` sets `env` on the process it spawns, which over a transport
-        // is `ssh` on this machine. Left there they would be set in the wrong
-        // place and never reach the server, which is the kind of failure that
-        // looks like the setting being ignored.
+        // is the local `ssh`. If they stayed in `env`, they would never reach the
+        // server, and the setting would appear to be ignored.
         let config = definition(vec![
             ("RUST_LOG".to_owned(), "debug".to_owned()),
             ("PATH_EXTRA".to_owned(), "/opt/bin".to_owned()),
@@ -1928,13 +1915,13 @@ mod tests {
 
     #[test]
     fn an_environment_variable_that_cannot_be_sent_is_refused_by_name() {
-        // `NAME=VALUE` splits at the first `=`, so a name containing one would
-        // set a variable nobody asked for.
+        // `NAME=VALUE` splits at the first `=`, so a name containing `=` would
+        // set a different variable.
         let config = definition(vec![("A=B".to_owned(), "c".to_owned())]);
         let error = remote().resolve(&config).expect_err("a refusal");
         assert!(error.contains("A=B"), "{error}");
 
-        // And a newline cannot be carried in an argument vector at all.
+        // A newline cannot be passed in an argument vector.
         let config = definition(vec![("A".to_owned(), "one\ntwo".to_owned())]);
         assert!(remote().resolve(&config).is_err());
     }
@@ -1957,19 +1944,19 @@ mod tests {
 
     #[test]
     fn a_remote_server_is_given_longer_to_start() {
-        // The wait covers an SSH handshake and a server reading a project from a
-        // disk this machine never touches.
+        // The wait includes an SSH handshake and a server reading a project from
+        // a remote disk.
         assert!(remote().startup_timeout() > Location::Here.startup_timeout());
     }
 
-    /// A session pinned to Linux, so the keymap and context keys agree
-    /// regardless of which platform the test runs on.
+    /// A session fixed to Linux, so the keymap and context keys are the same
+    /// on every platform the test runs on.
     ///
-    /// The document is a `.toml` file, not `.rs`, deliberately: `rust` has a
-    /// built-in server definition, so a test using it would try to launch
-    /// whatever `rust-analyzer` happens to be on the machine running CI and
-    /// pass or fail depending on that. `toml` has no built-in entry, so these
-    /// tests see only what they configure.
+    /// The document is intentionally a `.toml` file, not `.rs`. `rust` has a
+    /// built-in server definition, so a test using it would try to launch any
+    /// `rust-analyzer` installed on the CI machine, and the result would depend
+    /// on that. `toml` has no built-in entry, so these tests use only what they
+    /// configure.
     fn session(settings: Settings) -> Session {
         let mut session = Session::new(settings, None, deco_keymap::binding::Platform::Linux);
         session.open(PathBuf::from("/w/Cargo.toml"), "[package]\n");
@@ -1994,10 +1981,10 @@ mod tests {
     fn a_server_with_no_document_offers_nothing() {
         let mut s = session(Settings::default());
         let lsp = Lsp::new(&mut s, None);
-        // Whatever a supervisor might be running, nothing is open — so `F2` and
-        // `F12` must not resolve. Their `when` clauses gate on these, and a key
-        // that reaches a server which was never told about this buffer either
-        // does nothing or asks about a URI it has never seen.
+        // Regardless of what a supervisor might be running, no document is open,
+        // so `F2` and `F12` must not resolve. Their `when` clauses check these
+        // keys. A key sent to a server that was never notified about this buffer
+        // either does nothing or sends a URI the server does not know.
         lsp.sync_context(&mut s);
         for key in [
             "editorHasRenameProvider",
@@ -2024,8 +2011,8 @@ mod tests {
 
     #[test]
     fn a_workspace_defined_server_is_not_started_and_says_so() {
-        // Cloning a repository must not be enough to run a program, and a
-        // silent refusal would look like the feature is broken.
+        // Cloning a repository must not be enough to run a program, and an
+        // unreported refusal would look like a broken feature.
         let mut s = session(settings_with(
             Scope::Workspace,
             r#"{"deco.lsp.servers": {"theirs": {"languages": ["toml"], "command": "./taplo"}}}"#,
@@ -2034,12 +2021,12 @@ mod tests {
         lsp.attach(&mut s);
 
         assert!(!lsp.is_ready());
-        // Nothing else claims the language, so the status bar is free to carry it.
+        // No other server handles the language, so the status bar shows it.
         let status = s.status.expect("the refusal must be visible");
         assert!(status.contains("theirs"), "{status}");
         assert!(status.contains("workspace"), "{status}");
-        // And the problem list has it either way, which is where it stays once
-        // the status bar has moved on.
+        // The problem list always contains it, and keeps it after the status
+        // bar shows another message.
         assert!(
             s.problems.iter().any(|problem| problem.contains("theirs")),
             "{:?}",
@@ -2087,7 +2074,7 @@ mod tests {
 
     #[test]
     fn an_unsaved_buffer_starts_nothing() {
-        // It has no path, so no URI, so nothing a server could be told about.
+        // It has no path and therefore no URI, so a server cannot be notified.
         let mut s = Session::new(
             Settings::with_defaults(),
             None,
@@ -2137,10 +2124,10 @@ mod tests {
 
     #[test]
     fn a_workspace_server_cannot_displace_the_users_own() {
-        // The bug this guards: a repository defining a competing server for a
-        // language would otherwise be chosen first, get declined for want of
-        // consent, and leave the language with no server at all — a way for a
-        // cloned repo to switch the feature off.
+        // Regression test: a repository defining a competing server for a
+        // language was chosen first, declined for lack of consent, and left the
+        // language with no server. A cloned repository could disable the
+        // feature this way.
         let mut s = session(settings_with_layers(&[
             (
                 Scope::User,
@@ -2156,14 +2143,13 @@ mod tests {
         let mut lsp = Lsp::new(&mut s, None);
         lsp.attach(&mut s);
 
-        // `mine` is tried — it fails only because the program does not exist,
-        // which is what the status line says.
+        // `mine` is tried. It fails only because the program does not exist,
+        // and the status line reports that.
         let status = s.status.as_deref().expect("something must be reported");
         assert!(status.starts_with("mine:"), "{status}");
-        // And `theirs` is still named, even though the loop left before reaching
-        // the end. The refusal is the user's to act on: they cannot decide to
-        // move the definition into their own settings without being told it was
-        // declined.
+        // `theirs` is still reported, even though the loop exited before
+        // reaching it. The user needs to know it was declined to decide whether
+        // to move the definition into their own settings.
         assert!(
             s.problems.iter().any(|problem| problem.contains("theirs")),
             "{:?}",
@@ -2173,8 +2159,8 @@ mod tests {
 
     #[test]
     fn a_refusal_is_recorded_once_however_often_attach_runs() {
-        // `attach` runs on every tab switch and language change, so a disclosure
-        // that appended each time would fill the problem list with copies.
+        // `attach` runs on every tab switch and language change. Appending the
+        // message each time would fill the problem list with duplicates.
         let mut s = session(settings_with(
             Scope::Workspace,
             r#"{"deco.lsp.servers": {"theirs": {"languages": ["toml"], "command": "./taplo"}}}"#,
@@ -2196,7 +2182,7 @@ mod tests {
 
     #[test]
     fn a_configured_server_is_preferred_over_a_built_in_one() {
-        // A configuration is an instruction; a built-in is a guess.
+        // A configured server is an explicit choice; a built-in is a default.
         let mut s = session(settings_with(
             Scope::User,
             r#"{"deco.lsp.servers": {"mine": {"languages": ["rust"],
@@ -2217,8 +2203,8 @@ mod tests {
 
     #[test]
     fn attach_is_idempotent_when_nothing_can_start() {
-        // The event loop calls it freely, so repeated calls must not accumulate
-        // status messages or problems.
+        // The event loop calls it repeatedly, so repeated calls must not
+        // accumulate status messages or problems.
         let mut s = session(settings_with(
             Scope::User,
             r#"{"deco.lsp.servers": {"ghost": {"languages": ["toml"],
@@ -2228,8 +2214,8 @@ mod tests {
         lsp.attach(&mut s);
         let after_one = s.problems.len();
         assert!(after_one > 0);
-        // A second attach retries, which is intended — a server may have been
-        // installed since. What matters is that it does not panic or leak.
+        // A second attach retries intentionally, because a server may have been
+        // installed since. It must not panic or leak.
         lsp.attach(&mut s);
         assert!(!lsp.is_ready());
     }
@@ -2264,7 +2250,7 @@ mod tests {
     #[test]
     fn a_hover_is_dismissed_when_the_cursor_leaves_its_range() {
         // A box describing a different token than the one under the caret is
-        // actively misleading, which is worse than no box.
+        // misleading and worse than no box.
         let mut s = session(Settings::with_defaults());
         let mut lsp = Lsp::new(&mut s, None);
         lsp.hover = Some(ShownHover {
@@ -2305,16 +2291,16 @@ mod tests {
         lsp.offer_locations(&mut s, &[location("/w/a.toml", 1, 6)], &mut here());
         let prompt = s.prompt.as_ref().expect("a list should be open");
         assert_eq!(prompt.matches(), 1);
-        // The path is shortened against the workspace root, and the line's text
-        // is what makes the row readable.
+        // The path is shortened relative to the workspace root, and the line's
+        // text makes the row readable.
         assert_eq!(prompt.selected().unwrap().title, "a.toml:2: two = total");
         assert_eq!(s.status.as_deref(), Some("1 location"));
     }
 
     #[test]
     fn the_open_documents_own_text_is_used_rather_than_what_is_on_disk() {
-        // They differ exactly when there are unsaved changes, and the list has to
-        // describe what the user is looking at.
+        // They differ when there are unsaved changes, and the list must show the
+        // text the user sees.
         let mut s = session(Settings::with_defaults());
         s.open(PathBuf::from("/w/a.toml"), "edited in memory\n");
         let mut lsp = Lsp::new(&mut s, Some(PathBuf::from("/w")));
@@ -2369,8 +2355,8 @@ mod tests {
 
     #[test]
     fn a_stale_references_answer_is_ignored() {
-        // The same rule the other requests follow: an answer to a question the
-        // user has moved on from describes a position that no longer exists.
+        // Same rule as the other requests: a response to a superseded request
+        // describes a position that no longer applies.
         let mut s = session(Settings::with_defaults());
         let mut lsp = Lsp::new(&mut s, None);
         lsp.references_request = Some(deco_lsp::RequestId::Number(7));
@@ -2383,8 +2369,8 @@ mod tests {
 
     #[test]
     fn the_end_of_a_hover_range_still_counts_as_inside() {
-        // Unlike a diagnostic: the caret sitting just after an identifier's last
-        // character is still on that identifier as far as the user is concerned.
+        // Unlike a diagnostic: a caret just after an identifier's last character
+        // is still on that identifier for the user.
         let shown = ShownHover {
             hover: hover_of(
                 "x",
@@ -2412,8 +2398,8 @@ mod tests {
 
     #[test]
     fn context_keys_are_false_with_no_server() {
-        // F12 must look dead when nothing offers definitions — that is correct,
-        // not a bug, and the keys are what make it so.
+        // F12 must do nothing when no server offers definitions. This is
+        // intended, and these keys implement it.
         let mut s = session(Settings::with_defaults());
         let lsp = Lsp::new(&mut s, None);
         lsp.sync_context(&mut s);
@@ -2432,8 +2418,8 @@ mod tests {
 
     #[test]
     fn requesting_code_actions_without_a_server_says_so() {
-        // `ctrl+.` is gated on the context key, so this is reached from the
-        // palette, where the command is offered unconditionally.
+        // `ctrl+.` depends on the context key, so this path is reached from the
+        // palette, where the command is always offered.
         let mut s = session(Settings::with_defaults());
         let mut lsp = Lsp::new(&mut s, None);
         lsp.request_code_actions(&mut s);
@@ -2446,8 +2432,8 @@ mod tests {
 
     #[test]
     fn detaching_forgets_the_actions_that_were_on_offer() {
-        // An index into a list from a server that is gone would select whatever
-        // happened to land at that position next.
+        // An index into a list from a stopped server would select whatever
+        // action is at that position in a later list.
         let mut s = session(Settings::with_defaults());
         let mut lsp = Lsp::new(&mut s, None);
         lsp.code_actions = code_actions(&json!([{"title": "Fix", "edit": {"changes": {}}}]));
@@ -2487,18 +2473,18 @@ mod tests {
 
     #[test]
     fn an_action_that_only_runs_a_command_is_refused_by_name() {
-        // Running one is `workspace/executeCommand`, whose result comes back as
-        // a request in the other direction. Saying so beats a key that appears
-        // to work and changes nothing.
+        // Running a command uses `workspace/executeCommand`, whose result arrives
+        // as a server-to-client request. Reporting this is better than a key that
+        // appears to work but changes nothing.
         let mut s = session(Settings::with_defaults());
         let mut lsp = Lsp::new(&mut s, None);
         lsp.code_actions = code_actions(&json!([
             {"title": "Organize imports", "command": "rust-analyzer.organizeImports"},
         ]));
 
-        // Its `edit` is absent, but it is not an action waiting to be filled in:
-        // `codeAction/resolve` takes a `CodeAction`, so this goes straight to the
-        // refusal rather than to a round trip the server cannot answer.
+        // Its `edit` is absent, but it is not an unresolved action.
+        // `codeAction/resolve` takes a `CodeAction`, so this is rejected
+        // immediately rather than sent in a request the server cannot handle.
         lsp.run_code_action(&mut s, "0", &mut here());
         let status = s.status.clone().expect("a reason");
         assert!(
@@ -2521,7 +2507,7 @@ mod tests {
 
     #[test]
     fn an_action_that_wants_a_file_operation_is_refused_by_name() {
-        // Refused for this action alone. The rest of the menu is untouched,
+        // Only this action is rejected. The rest of the menu is unaffected,
         // which is why the edit is parsed on selection rather than on listing.
         let mut s = session(Settings::with_defaults());
         let mut lsp = Lsp::new(&mut s, None);
@@ -2569,7 +2555,7 @@ mod tests {
 
     #[test]
     fn detaching_forgets_the_hover_and_the_requests_in_flight() {
-        // Their answers can never arrive now, and a box left on screen would
+        // Their responses can no longer arrive, and a box left on screen would
         // describe a document the server no longer has.
         let mut s = session(Settings::with_defaults());
         let mut lsp = Lsp::new(&mut s, None);
@@ -2588,8 +2574,8 @@ mod tests {
 
     #[test]
     fn renaming_without_a_server_says_why_no_prompt_opened() {
-        // Unlike a key that was never bound, this one *was* asked for: the
-        // command came from the palette, where it is offered unconditionally.
+        // Unlike an unbound key, this command was explicitly invoked from the
+        // palette, where it is always offered.
         let mut s = session(Settings::with_defaults());
         let mut lsp = Lsp::new(&mut s, None);
         lsp.offer_rename(&mut s);
@@ -2610,8 +2596,8 @@ mod tests {
 
     #[test]
     fn detaching_forgets_a_rename_request() {
-        // Its answer can never arrive now, and applying a stale one would edit
-        // several files against positions the server no longer stands behind.
+        // Its response can no longer arrive, and applying a stale one would edit
+        // several files at positions that may no longer be valid.
         let mut s = session(Settings::with_defaults());
         let mut lsp = Lsp::new(&mut s, None);
         lsp.rename_request = Some(deco_lsp::RequestId::Number(1));
@@ -2630,7 +2616,7 @@ mod tests {
 
     #[test]
     fn detaching_forgets_a_formatting_request() {
-        // Its answer can never arrive now, and applying a stale one would
+        // Its response can no longer arrive, and applying a stale one would
         // reformat against a document the server no longer has.
         let mut s = session(Settings::with_defaults());
         let mut lsp = Lsp::new(&mut s, None);
@@ -2641,8 +2627,8 @@ mod tests {
 
     #[test]
     fn the_formatting_context_key_is_false_with_no_server() {
-        // ctrl+shift+i is gated on it, so the key is dead until a server offers
-        // formatting — which is correct, not a bug.
+        // ctrl+shift+i depends on it, so the key does nothing until a server
+        // offers formatting. This is intended.
         let mut s = session(Settings::with_defaults());
         let lsp = Lsp::new(&mut s, None);
         lsp.sync_context(&mut s);
@@ -2652,12 +2638,12 @@ mod tests {
         );
     }
 
-    /// A local filesystem, for the paths a test's edits never actually reach.
+    /// A local filesystem, for tests whose edits never read a file.
     fn here() -> crate::extensions::Files<'static> {
         crate::extensions::Files::Here
     }
 
-    /// The actions a server would have sent, parsed the way one arriving is.
+    /// Code actions parsed the same way as actions received from a server.
     fn code_actions(value: &serde_json::Value) -> Vec<deco_lsp::CodeAction> {
         deco_lsp::CodeAction::list_from_json(value)
     }
@@ -2692,10 +2678,10 @@ mod tests {
         assert_eq!(prompt.matches(), 2);
         let first = prompt.selected().expect("a selection");
         assert_eq!(first.title, "one");
-        // The kind, so a field and a method of the same name are told apart.
+        // The kind distinguishes a field from a method with the same name.
         assert_eq!(first.detail.as_deref(), Some("key"));
-        // And the document, so accepting it navigates the file that was asked
-        // about rather than whichever is on screen.
+        // The document is included, so accepting the entry navigates the
+        // requested file rather than the one on screen.
         assert_eq!(first.id, "/w/a.toml");
         assert_eq!(s.status.as_deref(), Some("2 symbols"));
     }
@@ -2725,14 +2711,14 @@ mod tests {
 
     #[test]
     fn a_superseded_symbol_answer_is_ignored() {
-        // Two `ctrl+shift+o` presses in a row: the first answer describes a list
-        // the prompt is no longer about.
+        // Two `ctrl+shift+o` presses in a row: the first response belongs to a
+        // superseded request.
         let mut s = session(Settings::with_defaults());
         s.open(PathBuf::from("/w/a.toml"), "one = 1\n");
         let mut lsp = Lsp::new(&mut s, None);
         lsp.symbols_request = Some((deco_lsp::RequestId::Number(9), PathBuf::from("/w/a.toml")));
 
-        // An answer to an older request leaves the outstanding one in place.
+        // A response to an older request leaves the outstanding one in place.
         let stale = Update::Symbols {
             id: deco_lsp::RequestId::Number(8),
             symbols: vec![symbol("stale", Some("key"), 0)],
@@ -2762,8 +2748,8 @@ mod tests {
 
     #[test]
     fn the_symbol_provider_gates_its_key() {
-        // ctrl+shift+o is gated on it, so the key is dead until a server offers
-        // document symbols.
+        // ctrl+shift+o depends on it, so the key does nothing until a server
+        // offers document symbols.
         let mut s = session(Settings::with_defaults());
         let lsp = Lsp::new(&mut s, None);
         lsp.sync_context(&mut s);

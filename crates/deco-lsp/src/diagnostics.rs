@@ -1,18 +1,17 @@
 //! Diagnostics pushed by a server, and deciding which of them still apply.
 //!
-//! A server publishes diagnostics for a whole document at a time: each
-//! `textDocument/publishDiagnostics` replaces everything previously known about
-//! that URI, rather than adding to it. An empty list is therefore meaningful —
-//! it is how a server says "the errors are gone" — and dropping it as
-//! uninteresting leaves stale red squiggles on screen forever.
+//! A server publishes diagnostics for a whole document at a time. Each
+//! `textDocument/publishDiagnostics` replaces all previous diagnostics for that
+//! URI instead of adding to them. An empty list therefore means that the errors
+//! are fixed. Ignoring it would leave stale error underlines on screen.
 //!
-//! The subtler problem is ordering. Analysis takes time, so a result computed
-//! against version 4 can arrive after the user has typed their way to version
-//! 7. Its ranges refer to text that no longer exists, and showing it puts
-//! errors under the wrong characters. Servers that support it stamp the
-//! publication with the version it was computed from, which is why the client
-//! asks for `versionSupport`; [`DiagnosticStore::publish`] uses it to discard
-//! what arrives late.
+//! Ordering is a second problem. Analysis takes time, so a result computed
+//! for version 4 can arrive after the user has reached version 7. Its ranges
+//! refer to text that no longer exists, and showing it places errors under the
+//! wrong characters. Servers that support it include the version the
+//! publication was computed from. The client requests `versionSupport` for
+//! this reason, and [`DiagnosticStore::publish`] uses the version to discard
+//! late results.
 
 use std::collections::HashMap;
 
@@ -24,15 +23,15 @@ use crate::uri::Uri;
 /// How serious a diagnostic is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum Severity {
-    /// Something is wrong. Ordered first so that the worst problem on a line
-    /// is the one whose colour the line gets.
+    /// An error. Ordered first so that a line is coloured by its most severe
+    /// problem.
     #[default]
     Error,
-    /// Something is suspicious.
+    /// A possible problem.
     Warning,
-    /// Something is worth knowing.
+    /// Informational.
     Information,
-    /// A gentle suggestion, usually rendered as a faint underline.
+    /// A suggestion, usually rendered as a faint underline.
     Hint,
 }
 
@@ -40,8 +39,8 @@ impl Severity {
     /// Reads the protocol's numeric encoding.
     ///
     /// An unknown or absent value becomes [`Severity::Error`], following the
-    /// specification: a server that does not classify its diagnostics is
-    /// reporting problems, and under-reporting severity would hide them.
+    /// specification. An unclassified diagnostic still reports a problem, and
+    /// a lower severity could hide it.
     pub fn from_number(value: Option<i64>) -> Self {
         match value {
             Some(2) => Self::Warning,
@@ -74,8 +73,8 @@ pub struct Diagnostic {
     /// a string or a number on the wire.
     #[serde(skip)]
     pub code: Option<String>,
-    /// Which tool produced it, e.g. `rustc` or `clippy`. Servers that front
-    /// several tools use this to say which one spoke.
+    /// Which tool produced it, e.g. `rustc` or `clippy`. Servers that wrap
+    /// several tools use this to identify the tool.
     #[serde(skip)]
     pub source: Option<String>,
     /// The text to show.
@@ -85,15 +84,16 @@ pub struct Diagnostic {
 impl Diagnostic {
     /// Reads one diagnostic from a `publishDiagnostics` array.
     ///
-    /// Returns `None` only when there is no usable range, since a diagnostic
-    /// that cannot be placed cannot be drawn. Everything else degrades: a
-    /// missing message becomes empty, an unknown severity becomes an error.
+    /// Returns `None` only when there is no usable range, because a diagnostic
+    /// without a position cannot be drawn. Other missing fields get defaults:
+    /// a missing message becomes empty, and an unknown severity becomes an
+    /// error.
     pub fn from_json(value: &serde_json::Value) -> Option<Self> {
         Some(Self {
             range: read_range(value.get("range")?)?,
             severity: Severity::from_number(value.get("severity").and_then(|v| v.as_i64())),
-            // `code` is `integer | string` in the protocol, and both appear:
-            // rust-analyzer sends strings, several others send numbers.
+            // `code` is `integer | string` in the protocol, and both are used.
+            // rust-analyzer sends strings, and several others send numbers.
             code: value.get("code").and_then(|code| match code {
                 serde_json::Value::String(s) => Some(s.clone()),
                 serde_json::Value::Number(n) => Some(n.to_string()),
@@ -111,8 +111,9 @@ impl Diagnostic {
         })
     }
 
-    /// Whether this diagnostic covers a position, treating its range as
-    /// half-open — except for an empty range, which still has to be hoverable.
+    /// Whether this diagnostic covers a position. The range is treated as
+    /// half-open, except that an empty range covers its start position so that
+    /// it can still be hovered.
     pub fn contains(&self, position: Position) -> bool {
         if self.range.is_empty() {
             return position == self.range.start;
@@ -139,9 +140,9 @@ fn read_range(value: &serde_json::Value) -> Option<Range> {
 }
 
 fn read_position(value: &serde_json::Value) -> Option<Position> {
-    // Negative or absent coordinates are clamped to zero rather than rejected:
-    // a server that miscounts should cost one misplaced squiggle, not the whole
-    // document's diagnostics.
+    // Negative or absent coordinates are clamped to zero rather than rejected.
+    // A server that miscounts then causes one misplaced underline instead of
+    // losing the whole document's diagnostics.
     let line = value.get("line").and_then(|v| v.as_i64()).unwrap_or(0);
     let character = value.get("character").and_then(|v| v.as_i64()).unwrap_or(0);
     Some(Position::new(
@@ -183,9 +184,9 @@ impl DiagnosticStore {
     /// Applies a `publishDiagnostics` payload.
     ///
     /// `current_version` is the version the editor holds for that document, or
-    /// `None` if it is not tracking one. A publication stamped with an older
-    /// version is discarded; one with no stamp is trusted, because a server
-    /// that does not report versions gives nothing better to go on.
+    /// `None` if it is not tracking one. A publication with an older version is
+    /// discarded. A publication without a version is accepted, because there
+    /// is no other way to check it.
     pub fn publish(
         &mut self,
         uri: Uri,
@@ -200,8 +201,8 @@ impl DiagnosticStore {
         }
         let count = diagnostics.len();
         if diagnostics.is_empty() {
-            // Dropping the key rather than storing an empty vector, so that
-            // `documents()` lists only what actually has problems.
+            // Remove the key instead of storing an empty vector, so that
+            // `documents()` lists only documents with diagnostics.
             self.by_uri.remove(&uri);
         } else {
             self.by_uri.insert(uri, diagnostics);
@@ -216,9 +217,9 @@ impl DiagnosticStore {
 
     /// The diagnostics for a document, sorted by position and then by severity.
     ///
-    /// Servers order their output however they like — often by the order
-    /// analysis finished — which makes "the next error" unstable if used
-    /// directly for navigation.
+    /// Servers use arbitrary order, often the order in which analysis
+    /// finished. Using that order directly would make "next error" navigation
+    /// unstable.
     pub fn sorted_for_uri(&self, uri: &Uri) -> Vec<&Diagnostic> {
         let mut sorted: Vec<&Diagnostic> = self.for_uri(uri).iter().collect();
         sorted.sort_by(|a, b| {
@@ -268,8 +269,7 @@ impl DiagnosticStore {
 
     /// Forgets everything, as when a server exits.
     ///
-    /// A dead server's diagnostics are not merely stale, they are unowned:
-    /// nothing will ever correct or retract them.
+    /// After a server exits, nothing can update or remove its diagnostics.
     pub fn clear_all(&mut self) {
         self.by_uri.clear();
     }
@@ -341,7 +341,7 @@ mod tests {
 
     #[test]
     fn a_numeric_code_is_accepted_as_well_as_a_string() {
-        // The protocol allows either, and both appear in the wild.
+        // The protocol allows either, and servers use both.
         let parsed = Diagnostic::from_json(&json!({
             "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}},
             "code": 2304,
@@ -353,7 +353,7 @@ mod tests {
 
     #[test]
     fn an_absent_severity_is_an_error() {
-        // Per the specification. Guessing lower would hide real problems.
+        // Per the specification. A lower default could hide real problems.
         assert_eq!(Severity::from_number(None), Severity::Error);
         assert_eq!(Severity::from_number(Some(99)), Severity::Error);
     }
@@ -382,8 +382,8 @@ mod tests {
 
     #[test]
     fn a_diagnostic_without_a_range_is_dropped() {
-        // It cannot be drawn anywhere, and placing it at the origin would put
-        // an unrelated error on the first line.
+        // It cannot be drawn, and placing it at the origin would show an
+        // unrelated error on the first line.
         assert!(Diagnostic::from_json(&json!({"message": "somewhere"})).is_none());
     }
 
@@ -421,8 +421,8 @@ mod tests {
 
     #[test]
     fn an_empty_publication_clears_the_document() {
-        // This is how a server says the errors are fixed. Ignoring it because
-        // the list is empty leaves stale squiggles on screen permanently.
+        // An empty list means the errors are fixed. Ignoring it would leave
+        // stale underlines on screen.
         let mut store = DiagnosticStore::new();
         store.publish(uri(), None, vec![diagnostic(0, Severity::Error, "a")], None);
         assert_eq!(
@@ -435,8 +435,8 @@ mod tests {
 
     #[test]
     fn a_publication_from_an_older_version_is_discarded() {
-        // Analysis of version 4 arriving after the user reached version 7:
-        // its ranges point at text that no longer exists.
+        // Analysis of version 4 arrives after the user reached version 7. Its
+        // ranges refer to text that no longer exists.
         let mut store = DiagnosticStore::new();
         store.publish(
             uri(),
@@ -480,8 +480,8 @@ mod tests {
 
     #[test]
     fn an_unversioned_publication_is_trusted() {
-        // A server that does not stamp versions offers nothing better to go on,
-        // and discarding its output would mean showing no diagnostics at all.
+        // Without a version there is no way to check the publication, and
+        // discarding it would mean showing no diagnostics at all.
         let mut store = DiagnosticStore::new();
         assert_eq!(
             store.publish(
@@ -496,8 +496,8 @@ mod tests {
 
     #[test]
     fn diagnostics_sort_by_position_then_severity() {
-        // Servers emit in whatever order analysis finished, which makes
-        // "go to next error" jump around without this.
+        // Servers emit diagnostics in the order analysis finished. Without
+        // sorting, "go to next error" would move unpredictably.
         let mut store = DiagnosticStore::new();
         store.publish(
             uri(),
@@ -539,8 +539,8 @@ mod tests {
 
     #[test]
     fn a_range_end_is_exclusive() {
-        // Otherwise the diagnostic for `foo` also lights up the character after
-        // it, and two adjacent diagnostics both claim the boundary.
+        // Otherwise the diagnostic for `foo` would also cover the character
+        // after it, and two adjacent diagnostics would both cover the boundary.
         let d = diagnostic(0, Severity::Error, "x"); // characters 0..5
         assert!(d.contains(Position::new(0, 4)));
         assert!(!d.contains(Position::new(0, 5)));
@@ -608,8 +608,8 @@ mod tests {
         assert!(store.for_uri(&a).is_empty());
         assert_eq!(store.for_uri(&b).len(), 1);
 
-        // A dead server's diagnostics are unowned: nothing will ever retract
-        // them, so they go with it.
+        // After a server exits, nothing can remove its diagnostics, so they are
+        // cleared.
         store.clear_all();
         assert_eq!(store.documents().count(), 0);
     }

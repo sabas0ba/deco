@@ -1,19 +1,18 @@
 //! Keeping a server's copy of a document identical to the editor's.
 //!
-//! Everything a language server says is relative to the text it believes a
-//! document holds. If that copy drifts by one character, every diagnostic,
-//! completion and hover is subtly wrong, and nothing reports an error — the
-//! server answers confidently about text that does not exist. So the rules
-//! here are enforced rather than assumed:
+//! Every server response refers to the server's copy of the document. If that
+//! copy differs by one character, every diagnostic, completion and hover is
+//! slightly wrong, and no error is reported. The following rules are therefore
+//! enforced, not assumed:
 //!
-//! - A document must be opened before it is changed, and changed only while
-//!   open. Both are protocol violations that servers respond to by crashing or
-//!   by going quiet.
-//! - The version increases by one on every change and is never reused, because
-//!   it is the only handle anything has for deciding whether a server's answer
-//!   still applies to what is on screen.
-//! - Incremental changes are sent in the order they were applied, since each
-//!   range is expressed in the coordinates left by the one before it.
+//! - A document must be opened before it is changed, and can be changed only
+//!   while open. Violating either rule breaks the protocol, and servers react
+//!   by crashing or by stopping their responses.
+//! - The version increases by one on every change and is never reused. It is
+//!   the only way to decide whether a server's response still applies to the
+//!   current text.
+//! - Incremental changes are sent in the order they were applied, because each
+//!   range uses the coordinates produced by the previous change.
 
 use std::collections::HashMap;
 
@@ -68,8 +67,8 @@ pub struct OpenDocument {
 pub enum SyncError {
     /// The document was already open.
     ///
-    /// Two `didOpen`s for one URI leave the server holding two copies with no
-    /// way to tell which subsequent changes belong to which.
+    /// Two `didOpen`s for one URI leave the server with two copies, and later
+    /// changes cannot be assigned to either one.
     #[error("{0} is already open")]
     AlreadyOpen(String),
     /// The document was never opened.
@@ -79,8 +78,8 @@ pub enum SyncError {
 
 /// The set of documents a single server has been told about.
 ///
-/// Per server, not global: two servers attached to the same file each keep
-/// their own version counter, and they need not agree.
+/// This is per server, not global. Two servers attached to the same file each
+/// have their own version counter, and the counters can differ.
 #[derive(Debug, Clone, Default)]
 pub struct DocumentSync {
     open: HashMap<Uri, OpenDocument>,
@@ -149,13 +148,13 @@ impl DocumentSync {
 
     /// Bumps the version and returns the `didChange` parameters.
     ///
-    /// `full_text` is used when the server asked for full syncs, and is what
-    /// makes this callable without the caller knowing which kind was
-    /// negotiated. `changes` is ignored in that case.
+    /// `full_text` is used when the server requested full syncs, and `changes`
+    /// is then ignored. The caller therefore does not need to know which kind
+    /// was negotiated.
     ///
-    /// Returns `Ok(None)` when the server wants no change notifications, which
-    /// is different from an error: the version still advances, so a later
-    /// diagnostic stamped with an older version is still recognisably stale.
+    /// Returns `Ok(None)` when the server wants no change notifications. This
+    /// is not an error: the version still advances, so a later diagnostic with
+    /// an older version is still detected as stale.
     pub fn change(
         &mut self,
         uri: &Uri,
@@ -168,11 +167,11 @@ impl DocumentSync {
             .get_mut(uri)
             .ok_or_else(|| SyncError::NotOpen(uri.as_str().to_owned()))?;
 
-        // Saturating rather than wrapping: a version that went negative would
-        // compare as older than every diagnostic already received, so every
-        // subsequent result would be discarded as stale and the editor would
-        // quietly stop showing errors. Pinning at the maximum is wrong too, but
-        // it is wrong in a way that keeps working.
+        // Saturating, not wrapping. A negative version would compare as older
+        // than every diagnostic already received, so every later result would
+        // be discarded as stale and the editor would stop showing errors
+        // without notice. Staying at the maximum is also incorrect, but
+        // diagnostics keep working.
         document.version = document.version.saturating_add(1);
         let version = document.version;
 
@@ -187,8 +186,8 @@ impl DocumentSync {
                 }
                 .to_json()]
             }
-            // Order is preserved deliberately: each range is expressed in the
-            // document as the previous change left it.
+            // Order is preserved because each range refers to the document as
+            // left by the previous change.
             TextDocumentSyncKind::Incremental => {
                 changes.iter().map(ContentChange::to_json).collect()
             }
@@ -257,8 +256,8 @@ mod tests {
 
     #[test]
     fn opening_twice_is_refused() {
-        // The server would end up holding two copies with no way to tell which
-        // one a later change applies to.
+        // The server would have two copies, and a later change could not be
+        // assigned to either one.
         let mut sync = opened();
         assert_eq!(
             sync.open(uri(), "rust", "x"),
@@ -335,8 +334,8 @@ mod tests {
 
     #[test]
     fn an_incremental_sync_preserves_the_order_of_the_edits() {
-        // Each range is expressed in the document as the previous edit left it,
-        // so reordering or deduplicating them corrupts the server's copy.
+        // Each range refers to the document as left by the previous edit, so
+        // reordering or deduplicating them corrupts the server's copy.
         let mut sync = opened();
         let changes = [
             ContentChange::Incremental {
@@ -362,8 +361,8 @@ mod tests {
 
     #[test]
     fn a_range_is_serialised_in_the_shape_lsp_expects() {
-        // deco_core::Range must reach the wire as {start:{line,character}, end:…}
-        // and not as some tuple; a mismatch is rejected as invalid params.
+        // deco_core::Range must be serialised as {start:{line,character}, end:…},
+        // not as a tuple. Servers reject any other shape as invalid params.
         let mut sync = opened();
         let changes = [ContentChange::Incremental {
             range: Range::new(Position::new(2, 4), Position::new(3, 0)),
@@ -381,8 +380,8 @@ mod tests {
 
     #[test]
     fn a_server_wanting_no_changes_gets_none_but_the_version_still_moves() {
-        // The version is what makes a late diagnostic recognisably stale, so it
-        // has to advance even when nothing is sent.
+        // The version is used to detect a late diagnostic as stale, so it must
+        // advance even when nothing is sent.
         let mut sync = opened();
         assert_eq!(
             sync.change(&uri(), TextDocumentSyncKind::None, &[], "x"),
@@ -429,8 +428,8 @@ mod tests {
 
     #[test]
     fn a_reopened_document_starts_over_at_version_one() {
-        // Closing tells the server to forget the document entirely, so its
-        // counter resets with it.
+        // Closing tells the server to discard the document, so its counter is
+        // reset as well.
         let mut sync = opened();
         sync.change(&uri(), TextDocumentSyncKind::Full, &[], "x")
             .unwrap();

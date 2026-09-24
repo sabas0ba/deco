@@ -1,24 +1,23 @@
-//! Starting and talking to the Node extension host process.
+//! Starting and communicating with the Node extension host process.
 //!
 //! # Defence in depth
 //!
-//! Four independent layers stand between an extension and the machine, so that
-//! a bug in any one of them is not on its own sufficient. This module builds the
-//! command line for layers 1 to 3; [`crate::sandbox`] wraps it in layer 0:
+//! Four independent layers separate an extension from the machine, so a bug in
+//! any single layer is not enough to escape. This module builds the command line
+//! for layers 1 to 3; [`crate::sandbox`] wraps it in layer 0:
 //!
 //! 0. **A container** whose image is pinned by digest, with no network, nothing
-//!    writable and no view of the workspace. It is the only layer that also pins
-//!    the runtime the other three are properties of.
+//!    writable and no access to the workspace. It is the only layer that also
+//!    pins the runtime that the other three layers depend on.
 //!
 //! 1. **Node's permission model** (`--permission`, Node 22.13+) blocks filesystem,
-//!    child-process and worker access at the runtime level. This is the only
-//!    layer the extension cannot talk its way around, because it is enforced
-//!    below JavaScript.
-//! 2. **The host bootstrap** removes the network globals and refuses to load the
-//!    `fs`, `net`, `http`, `child_process` and related built-ins, so the failure
-//!    mode is a clear error rather than a permission trap.
-//! 3. **The capability broker** in deco checks every brokered request that does
-//!    get through, which is where the user's actual consent lives.
+//!    child-process and worker access at the runtime level. The extension cannot
+//!    bypass this layer from JavaScript, because it is enforced below JavaScript.
+//! 2. **The host bootstrap** removes the network globals and rejects loading the
+//!    `fs`, `net`, `http`, `child_process` and related built-ins, so the extension
+//!    gets a clear error instead of a permission failure.
+//! 3. **The capability broker** in deco checks every brokered request that
+//!    passes the other layers. This is where the user's consent is applied.
 //!
 //! Node's permission model does not cover the network, which is why layer 2 is
 //! not redundant.
@@ -66,14 +65,14 @@ pub struct HostConfig {
     pub limits: HostLimits,
     /// Whether to pass `--permission`. Requires Node 22.13 or newer, where the
     /// permission model became stable and the flag lost its `--experimental-`
-    /// prefix; older Node rejects the flag outright, so callers that support
-    /// older runtimes must turn it off and rely on layers 2 and 3 alone.
+    /// prefix. Older Node rejects the flag, so callers that support older
+    /// runtimes must turn it off and rely on layers 2 and 3 only.
     pub node_permission_model: bool,
     /// Whether extensions may use `eval` and `new Function`.
     ///
-    /// Off by default. Some bundled extensions do need it, so it is a setting
-    /// rather than a hard rule — but it is off unless asked for, because code
-    /// generated at runtime is exactly what a supply-chain payload uses.
+    /// Off by default. Some bundled extensions need it, so it is a setting and
+    /// not a fixed rule. It stays off unless enabled because supply-chain
+    /// payloads commonly rely on code generated at runtime.
     pub allow_code_generation: bool,
 }
 
@@ -92,9 +91,9 @@ pub struct HostSpec {
 
 /// Builds the command line for a host process.
 ///
-/// The environment is constructed from nothing rather than filtered from the
-/// parent's. A denylist would need updating every time a new tool invents a
-/// `*_TOKEN` variable; an allowlist of three entries does not.
+/// The environment is built from scratch instead of filtered from the parent's.
+/// A denylist would need updating whenever a new tool adds a `*_TOKEN`
+/// variable; an allowlist of three entries does not.
 pub fn build_spec(config: &HostConfig, extension_id: &str) -> HostSpec {
     let mut args: Vec<String> = Vec::new();
 
@@ -109,8 +108,8 @@ pub fn build_spec(config: &HostConfig, extension_id: &str) -> HostSpec {
 
     if config.node_permission_model {
         args.push("--permission".to_owned());
-        // No --allow-child-process and no --allow-worker: spawning is brokered
-        // through deco or it does not happen.
+        // No --allow-child-process and no --allow-worker: spawning is only
+        // possible through the deco broker.
         for root in &config.readable_roots {
             args.push(format!("--allow-fs-read={}", root.display()));
         }
@@ -121,7 +120,7 @@ pub fn build_spec(config: &HostConfig, extension_id: &str) -> HostSpec {
     let mut env = BTreeMap::new();
     env.insert("DECO_EXTENSION_ID".to_owned(), extension_id.to_owned());
     env.insert("DECO_HOST_PROTOCOL".to_owned(), PROTOCOL_VERSION.to_owned());
-    // Node refuses to start on Windows without this one.
+    // Node does not start on Windows without this variable.
     if cfg!(windows) {
         if let Some(system_root) = std::env::var_os("SystemRoot") {
             env.insert(
@@ -139,14 +138,14 @@ pub fn build_spec(config: &HostConfig, extension_id: &str) -> HostSpec {
     }
 }
 
-/// The protocol version deco speaks. The host refuses to start if it does not
-/// match, so a stale bootstrap script fails loudly instead of subtly.
+/// The protocol version deco uses. The host does not start if its version does
+/// not match, so a stale bootstrap script fails with a clear error.
 pub const PROTOCOL_VERSION: &str = "1";
 
 /// A line-delimited JSON connection to a host process.
 ///
 /// Generic over its streams so the whole request/response path can be tested
-/// against in-memory buffers rather than a real process.
+/// with in-memory buffers instead of a real process.
 pub struct Connection<R: Read, W: Write> {
     reader: BufReader<R>,
     writer: W,
@@ -169,10 +168,10 @@ impl<R: Read, W: Write> Connection<R, W> {
 
     /// Reads the next message, or `None` at end of stream.
     ///
-    /// A line that is not valid JSON is skipped rather than fatal: the host's
-    /// stdout can pick up stray output from a misbehaving extension, and
-    /// dropping the connection over it would be a denial of service any
-    /// extension could trigger with one `console.log`.
+    /// A line that is not valid JSON is skipped instead of ending the connection.
+    /// The host's stdout can contain stray output from a misbehaving extension.
+    /// Dropping the connection would let any extension cause a denial of service
+    /// with one `console.log`.
     pub fn receive(&mut self) -> std::io::Result<Option<Message>> {
         let mut line = String::new();
         loop {
@@ -213,8 +212,8 @@ pub enum HostError {
 
 /// Checks that everything [`build_spec`] refers to actually exists.
 ///
-/// Called before spawning so a missing runtime is reported as a clear message
-/// rather than as an opaque failure from the OS.
+/// Called before spawning so a missing runtime is reported with a clear message
+/// instead of an opaque OS error.
 pub fn verify(config: &HostConfig) -> Result<(), HostError> {
     if !config.node.exists() {
         return Err(HostError::NodeNotFound {
@@ -241,8 +240,8 @@ pub fn spawn(config: &HostConfig, extension_id: &str) -> Result<std::process::Ch
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        // `env_clear` is what makes the allowlist above meaningful; without it
-        // the inserts below would merely add to an inherited environment.
+        // `env_clear` makes the allowlist effective. Without it, the variables
+        // set below would be added to the inherited environment.
         .env_clear();
     for (key, value) in &spec.env {
         command.env(key, value);

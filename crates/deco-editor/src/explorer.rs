@@ -1,24 +1,24 @@
-//! The file tree: what it holds, what it shows, and what it has to ask for.
+//! The file tree: its cached listings, the rows it shows, and the listings it
+//! requests.
 //!
 //! # Fed, not reading
 //!
-//! There is no `read_dir` in this file. The core has no filesystem — a document
-//! is handed its text, never a path to read — and that is what lets the whole
-//! editable surface be tested without one. The tree keeps that: it holds
-//! whatever it has been *told* a directory contains, and when it is asked to
-//! show a directory it has not been told about it says so, through
-//! [`Explorer::wanted`], for whoever does have a filesystem to answer.
+//! There is no `read_dir` in this file. The core has no filesystem access: a
+//! document receives its text and never reads a path. This allows the editable
+//! surface to be tested without a filesystem. The tree follows the same rule.
+//! It holds the directory contents it has been given, and when it needs to show
+//! a directory it has no contents for, it requests them through
+//! [`Explorer::wanted`] so that the frontend can read them.
 //!
-//! That is not a purity exercise. The same property is what makes the tree work
-//! on a remote workspace: `deco-remote` answers the request over the connection
-//! instead of `std::fs`, and nothing here changes. Quick open already lists a
-//! remote workspace this way.
+//! This design also makes the tree work on a remote workspace: `deco-remote`
+//! answers the request over the connection instead of through `std::fs`, and
+//! nothing here changes. Quick open already lists a remote workspace this way.
 //!
 //! # Bounded by the window
 //!
-//! A directory is read when it is first expanded, not before, so a workspace
-//! costs what its *visible* rows cost rather than what it contains.
-//! [`Explorer::rows`] walks the expanded parts only, and the caller takes the
+//! A directory is read when it is first expanded, not before, so the cost
+//! depends on the *visible* rows rather than on the workspace size.
+//! [`Explorer::rows`] walks only the expanded parts, and the caller takes the
 //! slice that fits the side bar.
 
 use std::collections::BTreeMap;
@@ -26,9 +26,9 @@ use std::path::{Path, PathBuf};
 
 /// One entry a directory listing reports.
 ///
-/// Only what the tree draws and sorts by. Size, permissions and times are
-/// deliberately absent: nothing shows them, and carrying them would mean
-/// deciding how stale they are allowed to be.
+/// Holds only what the tree draws and sorts by. Size, permissions and times are
+/// omitted because nothing shows them, and storing them would require a policy
+/// for how stale they may be.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
     /// The entry's own name, not its path.
@@ -66,31 +66,31 @@ pub struct Row {
     pub depth: usize,
     /// Whether it is a directory.
     pub is_dir: bool,
-    /// Whether it is expanded — meaningless for a file.
+    /// Whether it is expanded. Not meaningful for a file.
     pub expanded: bool,
     /// Whether the selection is on it.
     pub selected: bool,
 }
 
-/// What a directory's contents are, as far as the tree knows.
+/// The cached contents of a directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Contents {
-    /// Asked for, not yet answered.
+    /// Requested, not yet received.
     Pending,
-    /// Answered, and this is what is in it.
+    /// Received listing.
     Known(Vec<Entry>),
 }
 
 /// The workspace tree.
 ///
-/// Expansion and selection live here rather than in a frontend, because both
-/// survive a redraw and neither is a property of a terminal. Two frontends draw
-/// this; only one model decides what it says.
+/// Expansion and selection are stored here rather than in a frontend, because
+/// both persist across redraws and neither is specific to a terminal. Two
+/// frontends draw this tree from one shared model.
 #[derive(Debug, Clone)]
 pub struct Explorer {
-    /// The workspace root. Its own name is not a row — the tree is what is *in*
-    /// the workspace, and a single root row that can never be collapsed is a row
-    /// spent on nothing.
+    /// The workspace root. The root itself has no row. The tree shows what is
+    /// *in* the workspace, and a root row that cannot be collapsed would waste a
+    /// row.
     root: PathBuf,
     /// Directory contents, keyed by path. A directory absent from here has never
     /// been expanded.
@@ -101,14 +101,13 @@ pub struct Explorer {
     selected: usize,
     /// The first visible row, so a long tree can be scrolled.
     scroll: usize,
-    /// A path [`Explorer::reveal`] is still trying to land on.
+    /// A path [`Explorer::reveal`] has not yet selected.
     ///
-    /// Revealing a file means opening the directories above it, and those are
-    /// read one listing at a time — so at the moment `reveal` is called the row
-    /// it wants usually does not exist yet. Holding the path here lets
-    /// [`Explorer::fill`] put the selection on it when it appears, which is what
-    /// makes revealing the file deco was started with work: the tree has never
-    /// seen any of it.
+    /// Revealing a file expands the directories above it, and those are read
+    /// one listing at a time, so the target row usually does not exist yet when
+    /// `reveal` is called. Storing the path here lets [`Explorer::fill`] select
+    /// the row when it appears. This is required to reveal the file deco was
+    /// started with, because at that point the tree has no listings.
     revealing: Option<PathBuf>,
 }
 
@@ -135,18 +134,17 @@ impl Explorer {
 
     /// A directory whose contents the tree needs and does not have.
     ///
-    /// One at a time, and only ones that are actually being shown: an expanded
-    /// directory inside a collapsed one is not on screen, so reading it now
-    /// would be work for a row nobody can see. The caller answers with
-    /// [`Explorer::fill`] and asks again — a directory whose children are
-    /// themselves expanded takes as many turns as it has levels, which is the
-    /// price of never reading more than the window needs.
+    /// Returns one directory at a time, and only directories that are shown. An
+    /// expanded directory inside a collapsed one is not on screen, so it is not
+    /// read yet. The caller answers with [`Explorer::fill`] and calls this
+    /// again. A directory with expanded descendants therefore takes one round
+    /// per level, so that no more is read than the window needs.
     pub fn wanted(&self) -> Option<PathBuf> {
         if matches!(self.listings.get(&self.root), Some(Contents::Pending)) {
             return Some(self.root.clone());
         }
-        // An expanded directory is always in the map — `set_expanded` puts it
-        // there — so `Pending` is the whole of "asked for and unanswered".
+        // `set_expanded` always adds an expanded directory to the map, so
+        // `Pending` covers every requested and unanswered directory.
         self.rows()
             .into_iter()
             .find(|row| {
@@ -157,11 +155,11 @@ impl Explorer {
 
     /// Records what `dir` contains.
     ///
-    /// Entries are sorted here rather than trusted from the caller: `read_dir`
-    /// gives no order, and a tree that reshuffles when it is re-read is one you
-    /// cannot learn. Directories come first and then case-insensitively by name,
-    /// which is what VS Code's explorer does and what every file manager has
-    /// trained people to expect.
+    /// Entries are sorted here rather than kept in the caller's order, because
+    /// `read_dir` returns no defined order and the tree should not reorder on
+    /// each read. Directories come first, then entries are sorted
+    /// case-insensitively by name, as in VS Code's explorer and common file
+    /// managers.
     pub fn fill(&mut self, dir: &Path, mut entries: Vec<Entry>) {
         entries.sort_by(|a, b| {
             b.is_dir
@@ -177,9 +175,9 @@ impl Explorer {
 
     /// Forgets `dir`'s contents so it is read again when next shown.
     ///
-    /// The tree has no way to notice a file appearing on disk — there is no
-    /// watcher, and adding one is its own piece of work with its own failure
-    /// modes on every platform. This is what a refresh is built out of.
+    /// The tree cannot detect new files on disk because there is no file
+    /// watcher, which would need separate platform-specific work. Refresh is
+    /// implemented with this method.
     pub fn invalidate(&mut self, dir: &Path) {
         if self.listings.contains_key(dir) {
             self.listings.insert(dir.to_path_buf(), Contents::Pending);
@@ -188,10 +186,10 @@ impl Explorer {
 
     /// Forgets the contents of `prefix` and of everything under it.
     ///
-    /// What a half-finished recursive delete needs: the directory itself may
-    /// survive, so re-reading its *parent* rediscovers it and leaves its own
-    /// cached listing — and every expanded listing below that — describing files
-    /// that are gone.
+    /// Used after a partially completed recursive delete. The directory itself
+    /// may remain, so re-reading only its *parent* would find it again and keep
+    /// its cached listing, and every expanded listing below it, describing files
+    /// that no longer exist.
     pub fn invalidate_under(&mut self, prefix: &Path) {
         let stale: Vec<PathBuf> = self
             .listings
@@ -206,10 +204,10 @@ impl Explorer {
 
     /// Drops everything the tree remembers at or under `prefix`.
     ///
-    /// For something that has *gone*, rather than merely changed. Invalidating
+    /// Used for a path that has been removed, not only changed. Invalidating
     /// would keep the expansion state and the map entry, so a directory later
-    /// created with the same name would come back already open — and, until its
-    /// listing arrived, showing the rows of the one that was deleted.
+    /// created with the same name would appear already expanded and, until its
+    /// listing arrived, would show the rows of the deleted directory.
     pub fn forget_under(&mut self, prefix: &Path) {
         self.listings.retain(|dir, _| !dir.starts_with(prefix));
         self.expanded.retain(|dir| !dir.starts_with(prefix));
@@ -226,10 +224,9 @@ impl Explorer {
     /// Moves what the tree remembers about `from` to `to`.
     ///
     /// A rename does not change what is *in* a directory, and a listing holds
-    /// names rather than paths — so the contents are still right and only the
-    /// key is wrong. Re-keying keeps a renamed directory open with its rows
-    /// intact, which is what a rename looks like from the outside, and leaves
-    /// nothing behind for the old name to inherit if it is created again.
+    /// names rather than paths, so only the key needs to change. Re-keying
+    /// keeps a renamed directory expanded with its rows, and leaves no state
+    /// under the old name for a new entry with that name to inherit.
     pub fn rekey_under(&mut self, from: &Path, to: &Path) {
         let moved: Vec<PathBuf> = self
             .listings
@@ -264,10 +261,10 @@ impl Explorer {
 
     /// Every path the tree knows about at or under `prefix`.
     ///
-    /// Only what has actually been read — expanded directories and their
-    /// entries — so it is bounded by what is on screen rather than by what the
-    /// workspace contains. For a caller with a filesystem that wants to find out
-    /// whether any of it has gone.
+    /// Includes only what has been read (expanded directories and their
+    /// entries), so the result is bounded by what has been shown rather than by
+    /// the workspace size. A caller with filesystem access uses this to check
+    /// whether any of these paths were removed.
     pub fn known_paths_under(&self, prefix: &Path) -> Vec<PathBuf> {
         let mut out = Vec::new();
         for (dir, contents) in &self.listings {
@@ -288,8 +285,8 @@ impl Explorer {
 
     /// Whether the root's listing has arrived.
     ///
-    /// The difference between "this workspace is empty" and "nobody has read it
-    /// yet" — which is a sentence the side bar shows, so it has to be askable.
+    /// Distinguishes an empty workspace from one that has not been read yet.
+    /// The side bar shows different text for each case.
     pub fn loaded(&self) -> bool {
         matches!(self.listings.get(&self.root), Some(Contents::Known(_)))
     }
@@ -351,8 +348,8 @@ impl Explorer {
 
     /// Opens the selected directory, or moves into it if it is already open.
     ///
-    /// Right-arrow in VS Code's explorer does both, and the second is what makes
-    /// arrowing through a tree feel like one gesture rather than two.
+    /// Right-arrow in VS Code's explorer does both, so repeated presses move
+    /// down through the tree.
     pub fn expand(&mut self) {
         let Some(row) = self.selection() else {
             return;
@@ -377,7 +374,7 @@ impl Explorer {
             self.set_expanded(&row.path, false);
             return;
         }
-        // Up to the parent — the other half of the one-gesture rule.
+        // Move to the parent, the counterpart of `expand` stepping in.
         let Some(parent) = row.path.parent() else {
             return;
         };
@@ -401,12 +398,11 @@ impl Explorer {
 
     /// Opens every directory on the way to `path` and selects it.
     ///
-    /// The directories are expanded whether or not their contents are known, and
-    /// the selection is *remembered* rather than applied: the row for `path`
-    /// usually does not exist yet, because the listings that would produce it
-    /// have only just been asked for. [`Explorer::fill`] lands it as they
-    /// arrive. That is what lets this be called for a file the tree has never
-    /// seen — which is every file, at startup.
+    /// The directories are expanded whether or not their contents are known,
+    /// and the selection is *stored* rather than applied, because the row for
+    /// `path` usually does not exist until the requested listings arrive.
+    /// [`Explorer::fill`] applies it when they do. This allows revealing a file
+    /// the tree has no listing for, which is every file at startup.
     pub fn reveal(&mut self, path: &Path) {
         if path.strip_prefix(&self.root).is_err() {
             return;
@@ -433,10 +429,10 @@ impl Explorer {
 
     /// Puts the selection on the revealed path once its row exists.
     ///
-    /// Gives up when the directory that would hold it has been read and it is
-    /// not there — a file that was deleted, or one outside what the listing
-    /// reports. Without that, a reveal nobody can satisfy would sit there and
-    /// steal the selection from every later listing.
+    /// Cancels the reveal when the parent directory has been read and the path
+    /// is not in it, for example because the file was deleted or is not
+    /// reported by the listing. Otherwise an unsatisfiable reveal would remain
+    /// pending and move the selection whenever a later listing arrives.
     fn land_reveal(&mut self) {
         let Some(path) = self.revealing.clone() else {
             return;
@@ -456,7 +452,7 @@ impl Explorer {
 
     /// Scrolls so the selection is within `height` rows of the top.
     ///
-    /// Called by whoever knows how tall the side bar is, which is not this.
+    /// Called by the code that knows the side bar's height.
     pub fn scroll_into_view(&mut self, height: usize) {
         if height == 0 {
             return;
@@ -528,9 +524,8 @@ impl Explorer {
 
     /// Keeps the selection on a row that exists.
     ///
-    /// Collapsing a directory can take the selected row away with it, and a
-    /// selection pointing past the end draws nothing highlighted — which reads
-    /// as the tree having lost focus rather than as a row having gone.
+    /// Collapsing a directory can remove the selected row. A selection past the
+    /// end highlights nothing, which looks as if the tree lost focus.
     fn clamp(&mut self) {
         let len = self.len();
         if len == 0 {
@@ -564,7 +559,7 @@ mod tests {
     #[test]
     fn a_directory_is_not_read_until_it_is_opened() {
         let mut explorer = tree();
-        // Nothing outstanding: the root arrived and nothing else is showing.
+        // No pending request: the root is loaded and nothing else is shown.
         assert_eq!(explorer.wanted(), None);
 
         explorer.select_next(); // Cargo.toml, README.md, src — dirs first.
@@ -572,7 +567,7 @@ mod tests {
         assert_eq!(explorer.selection().unwrap().name, "src");
         explorer.expand();
 
-        // Now it is on screen and unknown, so the tree asks.
+        // It is now shown and not loaded, so the tree requests it.
         assert_eq!(explorer.wanted().as_deref(), Some(Path::new("/w/src")));
     }
 
@@ -592,7 +587,7 @@ mod tests {
                 .map(|i| Entry::file(&format!("f{i}.rs")))
                 .collect(),
         );
-        // Known but not expanded: the thousand files cost nothing.
+        // Loaded but not expanded: the thousand files add no rows.
         assert_eq!(explorer.len(), 3);
         explorer.select_first();
         explorer.expand();
@@ -608,7 +603,7 @@ mod tests {
         explorer.select_next();
         assert_eq!(explorer.selection().unwrap().name, "main.rs");
 
-        // The selected row is inside what is being closed.
+        // The selected row is inside the directory being collapsed.
         explorer.select_previous();
         explorer.collapse();
         let selection = explorer.selection().expect("a row is still selected");
@@ -641,8 +636,8 @@ mod tests {
     fn revealing_a_file_opens_every_directory_above_it() {
         let mut explorer = tree();
         explorer.reveal(Path::new("/w/src/deep/main.rs"));
-        // Both directories are open and both have been asked for, even though
-        // neither has been answered.
+        // Both directories are expanded and requested, although neither
+        // listing has arrived.
         assert_eq!(explorer.wanted().as_deref(), Some(Path::new("/w/src")));
 
         explorer.fill(Path::new("/w/src"), vec![Entry::dir("deep")]);
@@ -665,7 +660,8 @@ mod tests {
         explorer.fill(Path::new("/w/src"), vec![Entry::file("main.rs")]);
         assert_eq!(explorer.selection().unwrap().name, "src");
 
-        // A later listing must not be hijacked by the abandoned reveal.
+        // The cancelled reveal must not change the selection on a later
+        // listing.
         explorer.select_next();
         let before = explorer.selection().unwrap().path;
         explorer.fill(
@@ -714,9 +710,8 @@ mod tests {
 
     #[test]
     fn a_stale_subtree_is_re_read_rather_than_shown_again() {
-        // What a failed rename leaves behind: the source directory's listing is
-        // still `Known`, so expanding it asks for nothing and the rows it holds
-        // are whatever was there before.
+        // State after a failed rename: the source directory's listing is still
+        // `Known`, so expanding it requests nothing and shows the old rows.
         let mut explorer = tree();
         explorer.select_first();
         explorer.expand();
@@ -755,9 +750,8 @@ mod tests {
         explorer.fill(Path::new("/w/src/deep"), vec![Entry::file("main.rs")]);
         assert_eq!(explorer.wanted(), None);
 
-        // Something removed part of `src`. Re-reading only its parent would
-        // rediscover `src` and leave these listings describing files that have
-        // gone.
+        // Part of `src` was removed. Re-reading only its parent would find
+        // `src` again and keep these listings for files that no longer exist.
         explorer.invalidate_under(Path::new("/w/src"));
         assert_eq!(explorer.wanted().as_deref(), Some(Path::new("/w/src")));
         explorer.fill(Path::new("/w/src"), vec![Entry::dir("deep")]);
@@ -821,7 +815,7 @@ mod tests {
         assert!(known.contains(&PathBuf::from("/w/src")));
         assert!(known.contains(&PathBuf::from("/w/Cargo.toml")));
         // `starts_with` is component-based, so `/w/src` matches the prefix
-        // `/w/src` — the question is whether anything *inside* it is known.
+        // `/w/src`. The check is whether any path *inside* it is known.
         assert!(
             !known
                 .iter()

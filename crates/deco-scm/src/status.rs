@@ -1,9 +1,9 @@
-//! What `git status --porcelain=v2` said, and the parser that reads it.
+//! The `git status --porcelain=v2` data model and its parser.
 //!
-//! Nothing here spawns anything. The parser takes a string and returns a
-//! [`Status`], so every shape git can produce — detached head, an unborn
-//! branch, a rename, a merge conflict, a path with a space in it — is a test
-//! with a string literal in it rather than a repository CI has to build.
+//! Nothing here spawns a process. The parser takes a string and returns a
+//! [`Status`], so every output form git can produce (a detached head, an unborn
+//! branch, a rename, a merge conflict, a path with a space) can be tested with a
+//! string literal instead of a repository built in CI.
 
 use std::path::PathBuf;
 
@@ -12,25 +12,24 @@ use thiserror::Error;
 
 /// Output that was not the format `--porcelain=v2` promises.
 ///
-/// Kept as one variant with a description rather than a case per field: this
-/// is a contract git has kept since 2.11, so a mismatch means the assumption
-/// that `git` is git is wrong, and the only useful thing to do is say which
-/// line was not understood.
+/// A single type with a description rather than one case per field. Git has
+/// kept this format stable since 2.11, so a mismatch means the program is not a
+/// compatible git, and the only useful information is which line was not
+/// understood.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[error("`git status` said something this does not understand: {0}")]
 pub struct Malformed(pub String);
 
-/// Where `HEAD` is.
+/// The state of `HEAD`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Head {
-    /// On a branch, with at least one commit on it.
+    /// On a branch with at least one commit.
     Branch(String),
-    /// On a branch that does not exist yet: `git init` and nothing committed.
+    /// On a branch that does not exist yet: `git init` with nothing committed.
     ///
-    /// Worth its own variant rather than folding into [`Head::Branch`] because
-    /// there is no commit to compare against — every tracked-file question has
-    /// the answer "there are no tracked files", and a caller that offers to
-    /// show a diff should not.
+    /// A separate variant from [`Head::Branch`] because there is no commit to
+    /// compare against. There are no tracked files, and a caller should not
+    /// offer to show a diff.
     Unborn(String),
     /// Not on a branch. The full commit id; shorten it for display with
     /// [`Head::label`].
@@ -38,11 +37,11 @@ pub enum Head {
 }
 
 impl Head {
-    /// What to put in a status bar.
+    /// The label for a status bar.
     ///
-    /// A detached head is shortened to seven characters, which is what `git`
-    /// itself abbreviates to by default. Not a prefix of the *branch* name,
-    /// which is the user's word and is shown whole.
+    /// A detached head is shortened to seven characters, git's default
+    /// abbreviation length. Branch names are chosen by the user and are shown
+    /// in full.
     pub fn label(&self) -> String {
         match self {
             Self::Branch(name) | Self::Unborn(name) => name.clone(),
@@ -51,35 +50,36 @@ impl Head {
     }
 }
 
-/// The branch this one is set to track, and how far apart they are.
+/// The upstream branch this branch tracks, and the distance between them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Upstream {
-    /// Its name, as git prints it — `origin/main`.
+    /// Its name as git prints it, such as `origin/main`.
     pub name: String,
-    /// Commits here that are not there.
+    /// Commits on this branch that are not on the upstream.
     pub ahead: usize,
-    /// Commits there that are not here.
+    /// Commits on the upstream that are not on this branch.
     pub behind: usize,
 }
 
-/// What happened to one file, on one side.
+/// The change to one file on one side.
 ///
-/// `git` reports two of these per tracked entry: what the index has staged
-/// relative to `HEAD`, and what the working tree has relative to the index.
+/// `git` reports two of these per tracked entry: the index relative to `HEAD`
+/// (staged), and the working tree relative to the index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Change {
-    /// Nothing on this side. Git's `.`.
+    /// No change on this side. Git's `.`.
     None,
     /// Contents differ.
     Modified,
-    /// A regular file became a symlink, or the like. Git's `T`.
+    /// The file type changed, for example a regular file became a symlink.
+    /// Git's `T`.
     ///
     /// Distinct from [`Change::Modified`] because the contents may be
-    /// identical and the thing is still not what it was.
+    /// identical while the type differs.
     TypeChanged,
     /// New to the index.
     Added,
-    /// Gone.
+    /// Removed.
     Deleted,
     /// Moved, with the old name in [`FileStatus::original`].
     Renamed,
@@ -102,7 +102,7 @@ impl Change {
         })
     }
 
-    /// Whether this side has anything to report.
+    /// Whether this side has no change.
     pub fn is_none(&self) -> bool {
         matches!(self, Self::None)
     }
@@ -111,66 +111,65 @@ impl Change {
 /// Why a file is in the list.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum State {
-    /// Git is tracking it and something differs.
+    /// Tracked by git, with a change on at least one side.
     ///
-    /// At least one of the two is not [`Change::None`] — an entry with nothing
-    /// on either side is not reported at all.
+    /// At least one of the two is not [`Change::None`]; git does not report
+    /// entries with no change on either side.
     Tracked {
         /// The index against `HEAD`: what a commit would record.
         staged: Change,
         /// The working tree against the index: what a `git add` would stage.
         worktree: Change,
     },
-    /// Not in the index at all.
+    /// Not in the index.
     Untracked,
-    /// A merge left it with conflicts, and neither side is the answer.
+    /// A merge left the file with unresolved conflicts.
     Conflicted,
 }
 
-/// One line of `git status`.
+/// One entry of `git status`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileStatus {
-    /// Where it is now, relative to the repository root.
+    /// The current path, relative to the repository root.
     pub path: PathBuf,
-    /// Where it was, for a rename or a copy.
+    /// The previous path, for a rename or a copy.
     pub original: Option<PathBuf>,
-    /// Why it is listed.
+    /// The reason the file is listed.
     pub state: State,
 }
 
 /// Everything one `git status` run reported.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Status {
-    /// Where `HEAD` is.
+    /// The state of `HEAD`.
     pub head: Head,
-    /// The commit `HEAD` names, or `None` on a branch with nothing on it yet.
+    /// The commit `HEAD` names, or `None` on a branch with no commits yet.
     ///
-    /// Kept even for a named branch, where it is not shown anywhere: it is the
-    /// only thing here that changes when someone commits, and a caller holding
-    /// the *committed text* of a file needs to know when to throw that away.
-    /// Without it a commit made in a terminal would leave every gutter drawing
-    /// against the wrong version until the file was closed.
+    /// Kept even for a named branch, where it is not displayed. It is the only
+    /// field that changes on commit, and a caller caching a file's committed
+    /// text uses it to invalidate that cache. Without it, a commit made in a
+    /// terminal would leave gutters comparing against the old version until
+    /// the file was closed.
     pub commit: Option<String>,
-    /// The tracked branch, when there is one.
+    /// The upstream branch, if any.
     pub upstream: Option<Upstream>,
-    /// Every file git had something to say about.
+    /// Every file git reported.
     ///
-    /// Ignored files are not in here: the run asks for the default, which
-    /// leaves them out, and a list dominated by `target/` would be useless.
+    /// Ignored files are excluded: the run uses git's default, which omits
+    /// them, and a list dominated by `target/` would not be useful.
     pub entries: Vec<FileStatus>,
 }
 
 impl Status {
-    /// How many files differ from `HEAD` in any way, untracked ones included.
+    /// How many files differ from `HEAD` in any way, including untracked files.
     ///
-    /// One per *file*, not one per side: a file that is both staged and
-    /// modified since is one thing the user has to think about, and counting
-    /// it twice would make the status bar disagree with the list.
+    /// Counted per file, not per side. A file that is staged and modified again
+    /// counts once, so the status bar agrees with the list.
     pub fn changed(&self) -> usize {
         self.entries.len()
     }
 
-    /// How many have something staged.
+    /// How many entries have a staged change.
     pub fn staged(&self) -> usize {
         self.entries
             .iter()
@@ -191,7 +190,7 @@ impl Status {
             .count()
     }
 
-    /// How many git has never been told about.
+    /// How many entries are untracked.
     pub fn untracked(&self) -> usize {
         self.entries
             .iter()
@@ -199,7 +198,7 @@ impl Status {
             .count()
     }
 
-    /// How many a merge left unresolved.
+    /// How many entries have unresolved merge conflicts.
     pub fn conflicted(&self) -> usize {
         self.entries
             .iter()
@@ -214,19 +213,19 @@ impl Status {
 
     /// The one-line form for a status bar.
     ///
-    /// Lives here rather than in a renderer because it is a decision about
-    /// what to say, not about how to paint it. The GPU frontend has no status
-    /// bar yet; when it grows one, this is what it will show, and the two will
-    /// not have to be kept in step by hand.
+    /// Defined here rather than in a renderer because it decides the content,
+    /// not the presentation. The GPU frontend has no status bar yet; when it
+    /// adds one, it will show this string, so the two do not need to be kept in
+    /// sync manually.
     ///
-    /// Markers rather than words, and each omitted at zero — the same bargain
-    /// the problem tallies make, for the same reason: a permanent `0 changed`
-    /// is noise, and the absence of the marker is the signal.
+    /// Uses markers rather than words, and omits each marker at zero, like the
+    /// problem counts. A permanent `0 changed` would be noise; the absence of
+    /// a marker is the signal.
     ///
-    /// - `±4` — four files differ from `HEAD`.
-    /// - `↑2 ↓1` — two commits to push, one to pull.
-    /// - `!2` — two files a merge left conflicted, which is the one thing here
-    ///   that has to be dealt with before anything else works.
+    /// - `±4`: four files differ from `HEAD`.
+    /// - `↑2 ↓1`: two commits to push, one to pull.
+    /// - `!2`: two files with merge conflicts, which must be resolved before
+    ///   other operations work.
     pub fn summary(&self) -> String {
         let mut out = self.head.label();
         if !self.is_clean() {
@@ -250,11 +249,11 @@ impl Status {
 
 /// Reads `git status --porcelain=v2 --branch -z`.
 ///
-/// `-z` is not an optimisation. Without it git C-quotes any path with a space,
-/// a quote or a non-ASCII byte in it, and a rename's two paths are separated by
-/// a tab that a path may legally contain — so a parser would have to undo git's
-/// quoting exactly, and get it wrong for the files most likely to expose it.
-/// With `-z` every field ends at a NUL and there is no quoting at all.
+/// `-z` is required for correctness. Without it, git C-quotes any path
+/// containing a space, a quote or a non-ASCII byte, and separates a rename's
+/// two paths with a tab, which a path may also contain. A parser would have to
+/// reverse git's quoting exactly. With `-z`, every field ends at a NUL and
+/// nothing is quoted.
 ///
 /// The records, from git's documentation:
 ///
@@ -282,10 +281,10 @@ pub fn parse(output: &str) -> Result<Status, Malformed> {
 
     while let Some(record) = records.next() {
         // Split off the tag rather than matching whole prefixes: `?` and `!`
-        // carry a path that may start with anything at all.
+        // are followed by a path that may start with any character.
         let (tag, rest) = match record.split_once(' ') {
             Some(split) => split,
-            // A record with no space is not one of the five shapes.
+            // A record with no space matches none of the five record types.
             None => return Err(Malformed(record.to_owned())),
         };
         match tag {
@@ -298,25 +297,24 @@ pub fn parse(output: &str) -> Result<Status, Malformed> {
                     "branch.head" => head = Some(value.to_owned()),
                     "branch.upstream" => upstream_name = Some(value.to_owned()),
                     "branch.ab" => ahead_behind = Some(parse_ab(value, record)?),
-                    // `# stash <n>` and anything git adds later. Skipping is
-                    // deliberate: a new header must not turn a working status
-                    // bar into an error message.
+                    // `# stash <n>` and any header git adds later. These are
+                    // skipped so that a new header does not cause an error.
                     _ => {}
                 }
             }
             "1" => entries.push(tracked(rest, record, 7)?),
             "2" => {
                 let mut entry = tracked(rest, record, 8)?;
-                // The one record that spans two: git writes the new path, a
-                // NUL, then the old one.
+                // The only record that spans two NUL-separated fields: git
+                // writes the new path, a NUL, then the old path.
                 let original = records.next().ok_or_else(|| Malformed(record.into()))?;
                 entry.original = Some(PathBuf::from(original));
                 entries.push(entry);
             }
             "u" => {
-                // Ten fields before the path, and the two-letter code says
-                // *how* it conflicted, which the list does not use: a file
-                // needing a human is a file needing a human.
+                // Ten fields before the path. The two-letter code describes the
+                // type of conflict, which the list does not use: every
+                // conflicted file needs manual resolution.
                 let path = field_after(rest, 9).ok_or_else(|| Malformed(record.into()))?;
                 entries.push(FileStatus {
                     path: PathBuf::from(path),
@@ -329,9 +327,9 @@ pub fn parse(output: &str) -> Result<Status, Malformed> {
                 original: None,
                 state: State::Untracked,
             }),
-            // Ignored files are only reported when they are asked for, and
-            // they are not asked for. Handled rather than rejected so that
-            // turning the flag on later is a change of one call site.
+            // Ignored files are reported only when requested, and they are not
+            // requested. They are skipped rather than rejected so that enabling
+            // the flag later requires changing only one call site.
             "!" => {}
             _ => return Err(Malformed(record.to_owned())),
         }
@@ -339,7 +337,7 @@ pub fn parse(output: &str) -> Result<Status, Malformed> {
 
     let oid = oid.ok_or_else(|| Malformed("no `# branch.oid` header".into()))?;
     let head = head.ok_or_else(|| Malformed("no `# branch.head` header".into()))?;
-    // `(initial)` is git saying there is no commit, not a commit called that.
+    // `(initial)` means there is no commit; it is not a commit id.
     let commit = (oid != "(initial)").then(|| oid.clone());
     let head = if head == "(detached)" {
         Head::Detached(oid)
@@ -384,10 +382,11 @@ fn parse_ab(value: &str, record: &str) -> Result<(usize, usize), Malformed> {
     Ok((ahead, behind))
 }
 
-/// A `1` or `2` record: the same leading fields, a different count of them.
+/// Parses a `1` or `2` record, which share their leading fields but differ in
+/// field count.
 ///
-/// `before` is how many fields come between the tag and the path — seven for
-/// an ordinary change, eight for a rename or copy, whose extra field is the
+/// `before` is the number of fields between the tag and the path: seven for an
+/// ordinary change, eight for a rename or copy, whose extra field is the
 /// similarity score.
 fn tracked(rest: &str, record: &str, before: usize) -> Result<FileStatus, Malformed> {
     let xy = rest.split(' ').next().unwrap_or_default();
@@ -414,9 +413,8 @@ fn tracked(rest: &str, record: &str, before: usize) -> Result<FileStatus, Malfor
 /// Everything after the first `count` space-separated fields.
 ///
 /// The path is the rest of the record rather than the next field: with `-z`
-/// nothing quotes it, so a name with spaces in it arrives with its spaces. An
-/// empty tail is `None` — a record that names no path is malformed, not a
-/// record about a file called "".
+/// it is not quoted, so a name containing spaces keeps them. An empty tail is
+/// `None`, because a record without a path is malformed.
 fn field_after(rest: &str, count: usize) -> Option<&str> {
     let mut remaining = rest;
     for _ in 0..count {
@@ -429,8 +427,8 @@ fn field_after(rest: &str, count: usize) -> Option<&str> {
 mod tests {
     use super::*;
 
-    /// Builds the NUL-terminated form git actually writes, so the tests read
-    /// as the records they are rather than as escape sequences.
+    /// Builds the NUL-terminated form git writes, so the tests list readable
+    /// records instead of escape sequences.
     fn output(records: &[&str]) -> String {
         records
             .iter()
@@ -648,7 +646,7 @@ mod tests {
     #[test]
     fn output_that_is_not_gits_is_refused_rather_than_guessed() {
         for bad in [
-            // No headers at all: something answered, but not `git status`.
+            // No headers: the output is not from `git status`.
             "? only.rs\0",
             // A tag with no space after it.
             "# branch.oid 1c9d4e5\0# branch.head main\0x\0",

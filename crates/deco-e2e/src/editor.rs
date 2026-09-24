@@ -11,13 +11,13 @@ use deco_tui::app::{Driver, Flow, Options};
 use crate::screen::Screen;
 use crate::world::Scenario;
 
-/// How much later the next keystroke is, in milliseconds.
+/// The interval between keystrokes, in milliseconds.
 ///
-/// The editor's clock is handed to it per keystroke, so a scenario decides how
-/// fast its user types. 20ms is a brisk but ordinary rate, and it matters:
-/// `deco-core` coalesces edits within 500ms into one undo step, so typing a word
-/// at this rate undoes as a word — which is what a person expects, and what a
-/// scenario that pressed every key at `now_ms = 0` would never notice breaking.
+/// The editor receives the clock with each keystroke, so a scenario sets the
+/// typing speed. 20ms is a fast but realistic rate. `deco-core` merges edits
+/// within 500ms into one undo step, so a word typed at this rate is undone as
+/// one word. A scenario that pressed every key at `now_ms = 0` would not detect
+/// a regression in this behaviour.
 const KEYSTROKE_MS: u64 = 20;
 
 /// deco, started and waiting for a key.
@@ -32,22 +32,22 @@ pub struct Editor {
 }
 
 impl Editor {
-    /// Starts the editor the way the binary does: configuration, then files,
-    /// then the event loop's own setup.
+    /// Starts the editor in the same order as the binary: configuration, then
+    /// files, then the event loop's setup.
     pub(crate) fn start(scenario: &Scenario, cli: deco::cli::Cli) -> anyhow::Result<Self> {
         Self::start_with(scenario, cli, None)
     }
 
-    /// The same, with the session's files on the other end of `remote`.
+    /// Like [`Editor::start`], with the session's files read through `remote`.
     pub(crate) fn start_with(
         scenario: &Scenario,
         cli: deco::cli::Cli,
         mut remote: Option<deco_tui::RemoteSession>,
     ) -> anyhow::Result<Self> {
         let boot = scenario.boot();
-        // The same order the binary uses: the remote's machine settings are a
-        // *layer*, so they have to be fetched before the session resolves a
-        // theme and builds a keymap out of them.
+        // The same order as the binary. The remote's machine settings are a
+        // settings layer, so they must be fetched before the session resolves
+        // the theme and builds the keymap.
         let remote_settings = match remote.as_mut() {
             Some(remote) if remote.client.serves("settings.read") => {
                 remote.client.machine_settings()?.1
@@ -56,9 +56,9 @@ impl Editor {
         };
         let mut session = deco::startup::session(&cli, &boot, remote_settings.as_deref());
         if let Some(remote) = remote.as_mut() {
-            // Fetched through the connection rather than read from disk, which is
-            // what the binary does in a remote session — and what makes the
-            // documents here carry the far end's relative paths.
+            // Fetched through the connection rather than read from disk, as the
+            // binary does in a remote session. The documents therefore have the
+            // remote side's relative paths.
             for path in &cli.files {
                 let text = remote.client.read(&path.display().to_string())?;
                 session.open(path.clone(), &text);
@@ -68,9 +68,9 @@ impl Editor {
         }
         deco::startup::focus_first(&mut session, cli.files.len());
 
-        // Absolute, which is what the binary's own working directory would have
-        // made of it: the driver resolves this one against the process's working
-        // directory, and a scenario's working directory is a field rather than a
+        // Made absolute here, as the binary's working directory would make it.
+        // The driver resolves a relative path against the process's working
+        // directory, but a scenario's working directory is a field, not a
         // property of the process.
         let started_with = cli
             .files
@@ -83,10 +83,9 @@ impl Editor {
                 started_with,
                 remote,
                 extension_roots: scenario.extension_roots(),
-                // Under the scenario's own home, so a scenario that answers a
-                // permission question writes it somewhere it owns — and a second
-                // launch of the same scenario can be asked whether the answer
-                // stuck.
+                // Under the scenario's home, so a permission answer is written
+                // to the scenario's own directory. A second launch of the same
+                // scenario can check that the answer was saved.
                 permissions_file: Some(scenario.home().join("deco/permissions.json")),
                 home: Some(scenario.home().to_path_buf()),
                 cwd: boot.cwd.clone(),
@@ -98,8 +97,8 @@ impl Editor {
             session,
             driver,
             now_ms: 0,
-            // Where `on_disk` looks. For a remote session that is the directory
-            // the *server* is serving, which may not be this machine's.
+            // The directory `on_disk` reads. For a remote session this is the
+            // directory the server serves.
             workspace: scenario.served_workspace(),
             size: scenario.terminal_size(),
             quit: false,
@@ -108,12 +107,12 @@ impl Editor {
 
     // ---- pressing keys ----------------------------------------------------
 
-    /// Presses one chord, spelled the way `keybindings.json` spells it —
-    /// `ctrl+shift+p`, `f12`, `escape`, `alt+up`.
+    /// Presses one chord, written as in `keybindings.json`: `ctrl+shift+p`,
+    /// `f12`, `escape`, `alt+up`.
     ///
-    /// The spelling is parsed by the keymap's own parser and then turned back
-    /// into the terminal event a terminal would send, so the translation layer
-    /// in `deco-tui::keys` is on the path too. A two-chord sequence such as
+    /// The keymap's parser reads the chord, which is then converted to the
+    /// event a terminal would send, so the translation layer in
+    /// `deco-tui::keys` is also tested. A two-chord sequence such as
     /// `ctrl+k ctrl+t` is two calls, or one call to [`Editor::press_all`].
     pub fn press(&mut self, chord: &str) -> &mut Self {
         let parsed = Chord::parse(chord).unwrap_or_else(|error| panic!("`{chord}`: {error}"));
@@ -139,18 +138,16 @@ impl Editor {
 
     /// Types text, one character at a time, as a terminal reports it.
     ///
-    /// A newline is the Enter key, and a tab is the Tab key — because that is
-    /// what pressing them produces, and because typing a literal `\n` into a
-    /// document is not something a keyboard can do.
+    /// A newline is sent as the Enter key and a tab as the Tab key, because a
+    /// keyboard cannot type a literal `\n` into a document.
     pub fn type_text(&mut self, text: &str) -> &mut Self {
         for character in text.chars() {
             let event = match character {
                 '\n' => KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
                 '\t' => KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
-                // Exactly what crossterm delivers: the character that was
-                // produced, with no modifier inferred from it. An uppercase
-                // letter implying Shift is `deco-tui::keys`' rule to apply, not
-                // this harness's to pre-empt.
+                // As crossterm delivers it: the produced character with no
+                // inferred modifier. Treating an uppercase letter as Shift is
+                // done by `deco-tui::keys`, not by this harness.
                 other => KeyEvent::new(KeyCode::Char(other), KeyModifiers::NONE),
             };
             self.send(event);
@@ -158,8 +155,8 @@ impl Editor {
         self
     }
 
-    /// Opens the command palette, types `name`, and accepts the first match —
-    /// which is how a command with no keybinding is actually run.
+    /// Opens the command palette, types `name`, and accepts the first match.
+    /// This is how a user runs a command that has no keybinding.
     pub fn palette(&mut self, name: &str) -> &mut Self {
         self.press("ctrl+shift+p");
         self.type_text(name);
@@ -173,17 +170,16 @@ impl Editor {
         self.press("enter")
     }
 
-    /// Time passing on the editor's own clock, with nobody at the keyboard.
+    /// Advances the editor's clock by `ms` without any key input.
     ///
-    /// This is the idle path, and it advances only the clock the editor is
-    /// handed — it does not sleep. That makes it exactly right for
-    /// `files.autoSave: "afterDelay"`, where a scenario wants to say "a minute
-    /// went by" without taking a minute.
+    /// This runs the idle path and advances only the clock passed to the
+    /// editor; it does not sleep. Use it for `files.autoSave: "afterDelay"`,
+    /// where a scenario simulates a minute passing without waiting a minute.
     ///
-    /// It is exactly wrong for waiting on a language server, which is a separate
-    /// process that needs real time to answer: a loop of `wait` runs in
-    /// microseconds and collects nothing, which looks identical to a broken
-    /// feature. [`Editor::settle_until`] is the one to reach for there.
+    /// Do not use it to wait for a language server. The server is a separate
+    /// process that needs real time to answer, and a loop of `wait` finishes in
+    /// microseconds without collecting anything, which looks the same as a
+    /// broken feature. Use [`Editor::settle_until`] instead.
     pub fn wait(&mut self, ms: u64) -> &mut Self {
         self.now_ms += ms;
         self.driver
@@ -192,20 +188,19 @@ impl Editor {
         self
     }
 
-    /// Polls until `ready` holds, or fails saying what it was waiting for.
+    /// Polls until `ready` returns true, or panics with a message naming `what`.
     ///
-    /// A language server is a separate process on the other end of a pipe, so its
-    /// answer arrives when it arrives — there is no keystroke that makes it have
-    /// happened. This is the editor's own idle path, run in a loop: the same poll
-    /// that collects diagnostics while a person sits still.
+    /// A language server is a separate process connected through a pipe, so its
+    /// response arrives at an unpredictable time and no keystroke can force it.
+    /// This runs the editor's idle path in a loop, the same poll that collects
+    /// diagnostics while the user is idle.
     ///
-    /// It sleeps for real, unlike [`Editor::wait`], because real time is what a
-    /// subprocess needs. The clock the editor is handed advances only a little,
-    /// so that settling for an answer cannot silently trip the auto-save delay.
+    /// Unlike [`Editor::wait`], it sleeps in real time, because a subprocess
+    /// needs real time. The editor's clock advances only slightly, so waiting
+    /// for a response does not unintentionally trigger the auto-save delay.
     ///
-    /// The budget is generous and the failure is loud: a scenario that gave up
-    /// after two polls would be a scenario that fails on a loaded machine and
-    /// passes on a quiet one.
+    /// The time limit is long and a timeout panics with details. A short limit
+    /// would make a scenario fail on a loaded machine and pass on an idle one.
     #[track_caller]
     pub fn settle_until(&mut self, what: &str, ready: impl Fn(&Editor) -> bool) -> &mut Self {
         const STEP: Duration = Duration::from_millis(5);
@@ -232,11 +227,11 @@ impl Editor {
         }
     }
 
-    /// Waits for the language server to have started and said hello.
+    /// Waits until the language server has started and completed initialization.
     ///
-    /// Every scenario about a server needs this first: until the handshake is
-    /// done there are no capabilities, and until there are capabilities `f12` is
-    /// not bound to anything.
+    /// Every language server scenario calls this first. Capabilities are
+    /// unknown until the handshake completes, and without them keys such as
+    /// `f12` are not bound.
     #[track_caller]
     pub fn settle_lsp(&mut self) -> &mut Self {
         self.settle_until("the language server to be ready", |editor| {
@@ -254,8 +249,8 @@ impl Editor {
     fn send(&mut self, event: KeyEvent) -> &mut Self {
         self.now_ms += KEYSTROKE_MS;
         let Some(chord) = deco_tui::keys::chord_from_event(event) else {
-            // A terminal event that carries no key. The editor would ignore it,
-            // and so does this.
+            // A terminal event without a key. The editor ignores it, so this
+            // does too.
             return self;
         };
         match self
@@ -281,7 +276,7 @@ impl Editor {
         self.session.status.as_deref()
     }
 
-    /// Everything startup and the editor have complained about.
+    /// The problems reported by startup and the editor.
     pub fn problems(&self) -> &[String] {
         &self.session.problems
     }
@@ -306,14 +301,13 @@ impl Editor {
         self.quit
     }
 
-    /// The driver, for the assertions that are about what the frontend is
-    /// holding rather than about the session — a hover that has arrived, a
-    /// completion list that is open, a language server that is ready.
+    /// The driver, for assertions about frontend state rather than the session:
+    /// a received hover, an open completion list, a ready language server.
     pub fn driver(&self) -> &Driver {
         &self.driver
     }
 
-    /// The session itself, for the assertions a screen cannot make.
+    /// The session, for assertions that cannot be made on the screen.
     pub fn session(&self) -> &Session {
         &self.session
     }
@@ -322,16 +316,16 @@ impl Editor {
 
     /// A file in the workspace, as it is on disk right now.
     ///
-    /// This is the assertion that matters after a save: the editor's own idea of
-    /// the document proves nothing about what a `cat` would show.
+    /// Use this to check a save. The editor's in-memory document does not show
+    /// what was written to disk.
     pub fn on_disk(&self, relative: &str) -> String {
         let path = self.workspace.join(relative);
         std::fs::read_to_string(&path)
             .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()))
     }
 
-    /// A file in the workspace as raw bytes, for the endings and encodings a
-    /// `String` comparison would paper over.
+    /// A file in the workspace as raw bytes, for checking line endings and
+    /// encodings that a `String` comparison would hide.
     pub fn on_disk_bytes(&self, relative: &str) -> Vec<u8> {
         let path = self.workspace.join(relative);
         std::fs::read(&path).unwrap_or_else(|error| panic!("reading {}: {error}", path.display()))
@@ -342,7 +336,8 @@ impl Editor {
         self.workspace.join(relative).exists()
     }
 
-    /// Changes a file behind the editor's back, the way another program would.
+    /// Writes a file directly on disk, as another program would, without going
+    /// through the editor.
     pub fn change_on_disk(&self, relative: &str, contents: &str) {
         let path = self.workspace.join(relative);
         std::fs::write(&path, contents).unwrap_or_else(|error| {
@@ -350,7 +345,7 @@ impl Editor {
         });
     }
 
-    /// The workspace directory, for the paths a scenario has to spell in full.
+    /// The workspace directory, for scenarios that need absolute paths.
     pub fn workspace(&self) -> &Path {
         &self.workspace
     }
@@ -358,9 +353,9 @@ impl Editor {
 
 /// The terminal event that produces `chord`.
 ///
-/// The inverse of `deco_tui::keys::chord_from_event`, and only that: a scenario
-/// spells a keystroke the way `keybindings.json` does, and this turns it into what
-/// a terminal would have sent so that the real translation runs on the way in.
+/// The inverse of `deco_tui::keys::chord_from_event`. A scenario writes a
+/// keystroke as in `keybindings.json`, and this converts it to the event a
+/// terminal would send, so the real translation runs on input.
 fn to_event(chord: Chord) -> KeyEvent {
     let mut modifiers = KeyModifiers::NONE;
     if chord.modifiers.ctrl {

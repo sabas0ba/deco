@@ -140,10 +140,11 @@ pub enum DeclarationSource {
     Manifest,
     /// The extension predates deco's capability model and declared nothing.
     ///
-    /// deco does not guess on its behalf: an undeclared extension starts with
-    /// no capabilities at all, and the user grants them explicitly. That will
-    /// break extensions written for VS Code's ambient-authority model, which is
-    /// the point — the alternative is granting everything silently.
+    /// deco does not infer capabilities for it. An undeclared extension starts
+    /// with no capabilities, and the user grants them explicitly. This breaks
+    /// extensions that rely on VS Code's model, where an extension has every
+    /// permission of its process. The alternative would be to grant everything
+    /// without asking.
     Undeclared,
 }
 
@@ -167,9 +168,8 @@ impl Manifest {
 
     /// The fully qualified `publisher.name` identifier.
     ///
-    /// A manifest with no publisher gets the `local.` prefix rather than a bare
-    /// name, so an unpublished extension can never collide with a marketplace
-    /// one.
+    /// A manifest with no publisher gets the `local.` prefix instead of a bare
+    /// name, so an unpublished extension never collides with a marketplace one.
     pub fn identifier(&self) -> String {
         match &self.publisher {
             Some(publisher) => format!("{publisher}.{}", self.name),
@@ -194,8 +194,8 @@ impl Manifest {
     /// declarative (a theme or grammar pack).
     ///
     /// Declarative extensions never start a host process, so they never need a
-    /// capability at all — which is why themes from the marketplace work in
-    /// deco with no consent prompt.
+    /// capability. This is why marketplace themes work in deco without a
+    /// consent prompt.
     pub fn has_code(&self) -> bool {
         self.main.is_some()
     }

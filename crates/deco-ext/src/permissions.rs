@@ -1,31 +1,29 @@
-//! Permission decisions that outlive the session they were made in.
+//! Permission decisions that persist across sessions.
 //!
-//! A decision remembered only in memory means being asked again every time the
-//! editor starts, which is the shape of prompt that teaches people to stop
-//! reading prompts. So they are written down.
+//! If decisions were kept only in memory, the user would be asked again every
+//! time the editor starts. Repeated prompts train users to stop reading them, so
+//! decisions are stored on disk.
 //!
-//! # What a stored decision is a decision about
+//! # Scope of a stored decision
 //!
-//! **This version of this extension.** Every entry records the version it was
-//! decided for, and a decision about a version that is no longer installed is
-//! ignored — the user is asked again. A grant on disk otherwise outlives the
-//! reason it was given: an extension that was allowed to read the workspace at
-//! 1.0.0 is different code at 1.1.0, and carrying the answer across would be
-//! allowing something without having seen what it now does. That is the one rule
-//! here worth arguing about, and it is deliberately the strict reading.
+//! A decision applies to **this version of this extension**. Every entry records
+//! the version it was made for. A decision for a version that is no longer
+//! installed is ignored, and the user is asked again. An extension that was
+//! allowed to read the workspace at 1.0.0 is different code at 1.1.0, and a grant
+//! must not carry across an update the user has not reviewed. This is the strict
+//! interpretation, chosen on purpose.
 //!
-//! An update therefore costs a prompt. That is the intended price.
+//! An update therefore causes a new prompt. This is intended.
 //!
-//! # What this file is
+//! # File format
 //!
-//! JSON next to `settings.json`, `0600` on Unix. Not because it is secret —
-//! nothing in it is — but because anything that can write it can grant
-//! capabilities to code that runs as you, so it must not be a file another
-//! account can edit.
+//! JSON next to `settings.json`, mode `0600` on Unix. The contents are not
+//! secret, but anything that can write the file can grant capabilities to code
+//! that runs as the user, so other accounts must not be able to edit it.
 //!
 //! A file that cannot be read or does not parse is reported and treated as
-//! empty. Refusing to start an editor because a permissions file is damaged
-//! would be a worse failure than asking again.
+//! empty. Asking again is better than refusing to start the editor because the
+//! permissions file is damaged.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -47,8 +45,8 @@ pub struct Remembered {
 
 /// Every extension's remembered decisions, as they are stored.
 ///
-/// A `BTreeMap` so the file is written in a stable order: a permissions file that
-/// reshuffles itself on every save is one nobody can read a diff of.
+/// A `BTreeMap` so the file is written in a stable order. Without it, entries
+/// would be reordered on every save and diffs would be unreadable.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(transparent)]
 pub struct Permissions {
@@ -58,20 +56,20 @@ pub struct Permissions {
 /// Why a permissions file could not be used.
 #[derive(Debug, thiserror::Error)]
 pub enum PermissionsError {
-    /// The file is there and could not be read.
+    /// The file exists and could not be read.
     #[error("could not read {path}: {source}")]
     Unreadable {
         /// The file that was tried.
         path: PathBuf,
-        /// What the operating system said.
+        /// The operating system error.
         source: std::io::Error,
     },
-    /// The file is there and is not what this expects.
+    /// The file exists and is not in the expected format.
     #[error("{path} is not a permissions file deco understands: {source}")]
     Malformed {
         /// The file that was tried.
         path: PathBuf,
-        /// What the parser said.
+        /// The parser error.
         source: serde_json::Error,
     },
     /// The file could not be written.
@@ -79,7 +77,7 @@ pub enum PermissionsError {
     Unwritable {
         /// The file that was tried.
         path: PathBuf,
-        /// What the operating system said.
+        /// The operating system error.
         source: std::io::Error,
     },
 }
@@ -87,8 +85,8 @@ pub enum PermissionsError {
 impl Permissions {
     /// Reads the decisions from `path`.
     ///
-    /// A missing file is no decisions rather than an error: not having decided
-    /// anything yet is the ordinary state of a new installation.
+    /// A missing file means no decisions, not an error. A new installation has
+    /// no decisions yet.
     pub fn load(path: &Path) -> Result<Self, PermissionsError> {
         let text = match std::fs::read_to_string(path) {
             Ok(text) => text,
@@ -102,8 +100,8 @@ impl Permissions {
                 })
             }
         };
-        // An empty file is what an interrupted write leaves behind, and it is not
-        // valid JSON. Treated as no decisions, because that is what it holds.
+        // An interrupted write can leave an empty file, which is not valid JSON.
+        // It holds no decisions, so treat it as empty.
         if text.trim().is_empty() {
             return Ok(Self::default());
         }
@@ -115,9 +113,9 @@ impl Permissions {
 
     /// Writes the decisions to `path`, creating its directory if it is missing.
     ///
-    /// Written to a temporary name and renamed, so a crash mid-write leaves the
-    /// previous decisions rather than a truncated file — the same reason the
-    /// installer stages a binary beside its destination.
+    /// Written to a temporary name and renamed, so a crash during the write leaves
+    /// the previous decisions instead of a truncated file. The installer stages a
+    /// binary beside its destination for the same reason.
     pub fn save(&self, path: &Path) -> Result<(), PermissionsError> {
         let unwritable = |source: std::io::Error| PermissionsError::Unwritable {
             path: path.to_owned(),
@@ -133,10 +131,10 @@ impl Permissions {
         std::fs::rename(&staged, path).map_err(unwritable)
     }
 
-    /// What was decided about `id` at `version`, if anything still applies.
+    /// The decisions for `id` at `version`, if any still apply.
     ///
-    /// Nothing when the stored decision was about a different version: that is
-    /// the rule this module exists to enforce.
+    /// Returns `None` when the stored decisions are for a different version. This
+    /// is the main rule this module enforces.
     pub fn for_extension(&self, id: &str, version: &str) -> Option<&GrantStore> {
         self.by_extension
             .get(id)
@@ -146,9 +144,9 @@ impl Permissions {
 
     /// Whether `id` has decisions stored for some *other* version.
     ///
-    /// Worth saying out loud when it happens: "you are being asked again because
-    /// this extension was updated" is the difference between a prompt that makes
-    /// sense and one that looks like deco forgot.
+    /// Lets the prompt explain that the user is asked again because the extension
+    /// was updated. Without that explanation, the prompt looks like deco lost the
+    /// earlier decision.
     pub fn stale_for(&self, id: &str, version: &str) -> Option<&str> {
         self.by_extension
             .get(id)
@@ -158,9 +156,8 @@ impl Permissions {
 
     /// Replaces what is remembered about `id` at `version`.
     ///
-    /// An entry whose decisions are empty is removed rather than stored: a
-    /// version with nothing decided about it is indistinguishable from one that
-    /// was never asked about, and keeping it would grow the file forever.
+    /// An entry with no decisions is removed instead of stored. It is equivalent
+    /// to having no entry, and keeping it would make the file grow without bound.
     pub fn set(&mut self, id: &str, version: &str, grants: GrantStore) {
         if grants.allowed.is_empty() && grants.denied.is_empty() {
             self.by_extension.remove(id);
@@ -183,8 +180,8 @@ impl Permissions {
 
 /// Makes a file readable and writable by its owner alone.
 ///
-/// A no-op off Unix, where the permission model is different and deco has nothing
-/// useful to say about it — stated rather than silently skipped.
+/// A no-op on platforms other than Unix, which use a different permission model
+/// that deco does not configure.
 fn restrict(path: &Path) -> Result<(), std::io::Error> {
     #[cfg(unix)]
     {
@@ -243,14 +240,14 @@ mod tests {
 
     #[test]
     fn an_update_means_the_decision_no_longer_applies() {
-        // The rule this module is for. A grant given to 1.0.0 is a decision about
-        // code that is no longer what is installed.
+        // The main rule of this module. A grant for 1.0.0 applies to code that is
+        // no longer installed.
         let mut permissions = Permissions::default();
         permissions.set("acme.tools", "1.0.0", granted());
 
         assert!(permissions.for_extension("acme.tools", "1.1.0").is_none());
         assert!(permissions.for_extension("acme.tools", "1.0.0").is_some());
-        // And the reason is available, so the prompt can say why it is asking.
+        // The previous version is available, so the prompt can explain why it asks.
         assert_eq!(permissions.stale_for("acme.tools", "1.1.0"), Some("1.0.0"));
         assert_eq!(permissions.stale_for("acme.tools", "1.0.0"), None);
     }
@@ -280,8 +277,8 @@ mod tests {
             "{error}"
         );
 
-        // An empty file is what an interrupted write leaves, and it holds no
-        // decisions — which is different from holding something unreadable.
+        // An interrupted write can leave an empty file. It holds no decisions,
+        // which is different from holding unreadable content.
         std::fs::write(&path, "").expect("a file");
         assert!(Permissions::load(&path).expect("a read").is_empty());
         let _ = std::fs::remove_dir_all(path.parent().expect("a parent"));
@@ -292,9 +289,9 @@ mod tests {
     fn the_file_is_readable_by_its_owner_alone() {
         use std::os::unix::fs::PermissionsExt;
 
-        // Nothing in it is secret. What matters is the other direction: anything
-        // that can write this file can grant capabilities to code that runs as
-        // you.
+        // The contents are not secret. The concern is write access: anything that
+        // can write this file can grant capabilities to code that runs as the
+        // user.
         let path = scratch("mode");
         let mut permissions = Permissions::default();
         permissions.set("acme.tools", "1.0.0", granted());
@@ -305,7 +302,7 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o600, "{mode:o}");
-        // And the staging file it was renamed from is gone.
+        // The staging file was renamed and no longer exists.
         assert!(!path.with_extension("json.incoming").exists());
         let _ = std::fs::remove_dir_all(path.parent().expect("a parent"));
     }

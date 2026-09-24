@@ -1,5 +1,5 @@
-//! The world a scenario runs in: a home directory, a workspace, and the files
-//! in both of them.
+//! The environment a scenario runs in: a home directory, a workspace, and the
+//! files in both.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -9,17 +9,16 @@ use deco_keymap::binding::Platform;
 
 use crate::editor::Editor;
 
-/// Distinguishes two scenarios built in the same process, so that tests running
-/// on different threads cannot land in the same directory.
+/// Distinguishes scenarios built in the same process, so that tests running on
+/// different threads do not use the same directory.
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// A machine deco is about to start on.
+/// A simulated machine for deco to start on.
 ///
 /// Everything is under one temporary directory: `home/` holds the configuration
-/// deco and VS Code would read, and `work/` is the folder the files are in. The
-/// directory is removed when the scenario is dropped — unless the test failed, in
-/// which case it is left behind and its path printed, because the fastest way to
-/// understand a failing end-to-end test is to look at what it built.
+/// deco and VS Code would read, and `work/` contains the workspace files. The
+/// directory is removed when the scenario is dropped. If the test failed, the
+/// directory is kept and its path is printed so the files can be inspected.
 pub struct Scenario {
     root: PathBuf,
     home: PathBuf,
@@ -27,33 +26,32 @@ pub struct Scenario {
     layout: Layout,
     platform: Platform,
     size: (u16, u16),
-    /// Written at launch rather than when it is set, because the harness has a
-    /// key of its own to put in front of it — see [`Scenario::language_servers`].
+    /// Written at launch rather than when set, because the harness inserts a
+    /// key of its own before it. See [`Scenario::language_servers`].
     user_settings: Option<String>,
-    /// Written at launch for the same reason, and to the same rule: a scenario
-    /// about deco reading VS Code's file has to have VS Code's file be the one
-    /// the harness's own keys are in, or writing them would create the deco file
-    /// whose absence is the thing being tested.
+    /// Also written at launch. In a scenario about deco reading VS Code's file,
+    /// the harness's keys must go into VS Code's file. Writing them to deco's
+    /// file would create the file whose absence is being tested.
     vscode_settings: Option<String>,
     language_servers: bool,
-    /// A workspace for the far end that is not this machine's, once a scenario
-    /// has put a file on it — see [`Scenario::remote_file`].
+    /// A separate workspace for the remote side, set once a scenario adds a file
+    /// to it. See [`Scenario::remote_file`].
     remote: Option<PathBuf>,
-    /// The file the far end serves as its own machine settings, if a scenario
-    /// set one — see [`Scenario::remote_machine_settings`].
+    /// The file the remote side serves as its machine settings, if a scenario
+    /// set one. See [`Scenario::remote_machine_settings`].
     machine_settings: Option<PathBuf>,
 }
 
 impl Scenario {
-    /// A new, empty machine. `name` only has to be unique enough to recognise in
-    /// a directory listing.
+    /// A new, empty machine. `name` only needs to be recognisable in a
+    /// directory listing.
     pub fn new(name: &str) -> Self {
         let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
         let root =
             std::env::temp_dir().join(format!("deco-e2e-{name}-{}-{unique}", std::process::id()));
         // A previous run that was killed rather than dropped leaves its
-        // directory behind, and a scenario starting inside one would inherit
-        // files it never wrote.
+        // directory behind. Remove it so the scenario does not start with files
+        // it did not write.
         let _ = std::fs::remove_dir_all(&root);
         let home = root.join("home");
         let workspace = root.join("work");
@@ -63,9 +61,9 @@ impl Scenario {
             root,
             home,
             workspace,
-            // Not `Layout::host()`. A scenario asserting about where settings are
-            // read from would otherwise assert something different on each
-            // platform, and the three layouts are all reachable from any of them.
+            // Not `Layout::host()`. Otherwise a scenario about where settings are
+            // read from would behave differently on each platform. All three
+            // layouts can be selected on any platform.
             layout: Layout::Xdg,
             platform: Platform::Linux,
             size: (80, 24),
@@ -85,7 +83,7 @@ impl Scenario {
         self
     }
 
-    /// Which platform's keybindings win — `key` against `mac`, and the
+    /// Which platform's keybindings apply: `key` or `mac`, and the
     /// `isMac`-style context keys.
     pub fn platform(mut self, platform: Platform) -> Self {
         self.platform = platform;
@@ -110,8 +108,8 @@ impl Scenario {
         self
     }
 
-    /// Writes a file as raw bytes, for the contents a `&str` cannot hold — a
-    /// UTF-8 BOM, a lone CR, a file that is not valid UTF-8 at all.
+    /// Writes a file as raw bytes, for contents that are inconvenient or
+    /// impossible in a `&str`: a UTF-8 BOM, a lone CR, or invalid UTF-8.
     pub fn bytes(self, relative: &str, contents: &[u8]) -> Self {
         let path = self.workspace.join(relative);
         if let Some(parent) = path.parent() {
@@ -129,17 +127,15 @@ impl Scenario {
 
     /// Lets this machine start language servers.
     ///
-    /// Off by default, and the default is the point. A scenario is meant to say
-    /// the same thing on every machine it runs on, and a machine with
-    /// `rust-analyzer` installed is a different machine from one without: the
-    /// status line carries a server's message, a completion list opens on a `.`,
-    /// and a scenario about saving a file starts failing because of something it
-    /// never mentioned. So the machine a scenario gets is one with no language
-    /// servers installed, expressed the way a user would express it —
+    /// Off by default. A scenario must behave the same on every machine, but a
+    /// machine with `rust-analyzer` installed behaves differently: the status
+    /// line shows a server's message, a completion list opens on `.`, and a
+    /// scenario about saving a file can fail for an unrelated reason. By default
+    /// the scenario therefore disables language servers with the user setting
     /// `"deco.lsp.enabled": false` in `settings.json`.
     ///
-    /// Turn it on to write a scenario about the language-server path, and give
-    /// the machine a server it can really run through `deco.lsp.servers`.
+    /// Turn it on for a scenario about language servers, and configure a server
+    /// that can run on the machine through `deco.lsp.servers`.
     pub fn language_servers(mut self, enabled: bool) -> Self {
         self.language_servers = enabled;
         self
@@ -147,21 +143,21 @@ impl Scenario {
 
     /// Installs a language server for `language` that this scenario can rely on.
     ///
-    /// The server is [`examples/language_server.rs`], a real program on a real
-    /// pipe speaking real LSP — not a stub the editor is handed. `role` is
-    /// `argv[1]` and selects what it offers; `"full"` answers everything.
+    /// The server is [`examples/language_server.rs`], a separate program that
+    /// speaks LSP over a pipe, not a stub passed to the editor. `role` is
+    /// `argv[1]` and selects the features it offers; `"full"` enables all of
+    /// them.
     ///
-    /// Written the way a user writes it, into `deco.lsp.servers`, so the
-    /// configuration path is on the way in too. Turns [`Scenario::language_servers`]
-    /// on, because a machine with a server on it is one where they are enabled.
+    /// The definition is written into `deco.lsp.servers` as a user would write
+    /// it, so the configuration path is also tested. This also enables
+    /// [`Scenario::language_servers`].
     ///
     /// [`examples/language_server.rs`]: https://github.com/sabas0ba/deco/blob/main/crates/deco-e2e/examples/language_server.rs
     pub fn language_server(mut self, language: &str, role: &str) -> Self {
         self.language_servers = true;
         let program = fake_server();
-        // Through `serde_json` rather than `format!`: on Windows the path is
-        // full of backslashes, every one of which has to be escaped to survive
-        // being read back as JSON.
+        // Through `serde_json` rather than `format!`, because backslashes in a
+        // Windows path must be escaped to be read back correctly as JSON.
         let definition = serde_json::json!({
             "deco.lsp.servers": {
                 "fake": {
@@ -172,8 +168,8 @@ impl Scenario {
             },
         });
         let text = serde_json::to_string_pretty(&definition).expect("serialisable");
-        // Spliced into whatever the scenario already asked for, so a scenario can
-        // have both a server and settings of its own.
+        // Combined with any settings the scenario already set, so a scenario can
+        // have both a server and its own settings.
         self.user_settings = Some(match self.user_settings.take() {
             Some(existing) => splice(&text, &existing),
             None => text,
@@ -181,19 +177,17 @@ impl Scenario {
         self
     }
 
-    /// Writes a file onto the far end, in a directory this machine's workspace
-    /// is not.
+    /// Writes a file on the remote side, in a directory separate from the local
+    /// workspace.
     ///
     /// Without this, [`Scenario::launch_remote`] serves the scenario's own
-    /// workspace, and "the far end" and "this machine" are one directory — which
-    /// means a scenario cannot tell a file that came over the connection from
-    /// one that was read off the local disk, and cannot tell a write that went to
-    /// the server from a write that went here. Both look identical when the two
-    /// are the same folder.
+    /// workspace, so the remote and local sides are the same directory. A
+    /// scenario then cannot distinguish a file read through the connection from
+    /// one read from the local disk, or a write to the server from a local write.
     ///
-    /// Using this makes them different folders, so those questions have answers.
-    /// [`Editor::on_disk`] then looks at the far end's, because that is where a
-    /// remote session's files are.
+    /// With this method the two sides are different directories.
+    /// [`Editor::on_disk`] then reads the remote directory, because a remote
+    /// session's files are there.
     pub fn remote_file(mut self, relative: &str, contents: &str) -> Self {
         let remote = self.root.join("remote");
         let path = remote.join(relative);
@@ -205,21 +199,21 @@ impl Scenario {
         self
     }
 
-    /// The directory the far end serves: its own if a scenario gave it one, and
-    /// otherwise this machine's workspace.
+    /// The directory the remote side serves: the remote workspace if a scenario
+    /// created one, otherwise the local workspace.
     pub(crate) fn served_workspace(&self) -> PathBuf {
         self.remote
             .clone()
             .unwrap_or_else(|| self.workspace.clone())
     }
 
-    /// The far end's own `machine-settings.json`.
+    /// The remote side's `machine-settings.json`.
     ///
-    /// The settings a *machine* has, as opposed to the ones a person has: what
-    /// a session connected to that machine picks up as its `remote` layer.
-    /// Written into the scenario's directory and named to the server on its
-    /// command line, because the server is a separate process and a test cannot
-    /// change its environment without changing every other test's too.
+    /// These are per-machine settings, as opposed to user settings. A session
+    /// connected to that machine uses them as its `remote` layer. The file is
+    /// written into the scenario's directory and passed to the server on its
+    /// command line. The server is a separate process, and changing the
+    /// environment in a test would affect every other test.
     pub fn remote_machine_settings(mut self, json: &str) -> Self {
         let path = self.root.join("remote-machine-settings.json");
         write_config(&path, json);
@@ -240,7 +234,7 @@ impl Scenario {
         self
     }
 
-    /// VS Code's `keybindings.json`, read under the same rule.
+    /// VS Code's `keybindings.json`, read under the same condition.
     pub fn vscode_keybindings(self, json: &str) -> Self {
         let path = self.vscode_paths().keybindings;
         write_config(&path, json);
@@ -261,12 +255,12 @@ impl Scenario {
         self
     }
 
-    /// Installs a theme extension into deco's extensions directory, the way a
-    /// marketplace download would land there.
+    /// Installs a theme extension into deco's extensions directory, in the same
+    /// form as a marketplace download.
     ///
-    /// `id` is the directory name, which is `publisher.name-version` for anything
-    /// installed by VS Code. `label` is the theme's name as the picker will show
-    /// it, and `theme` is the theme file's own JSON.
+    /// `id` is the directory name, which is `publisher.name-version` for
+    /// extensions installed by VS Code. `label` is the theme name shown in the
+    /// picker, and `theme` is the JSON content of the theme file.
     pub fn theme_extension(self, id: &str, label: &str, theme: &str) -> Self {
         let directory = self.deco_paths().extensions.join(id);
         std::fs::create_dir_all(&directory).expect("an extension directory");
@@ -290,13 +284,13 @@ impl Scenario {
 
     // ---- starting it ------------------------------------------------------
 
-    /// Starts deco with `args`, exactly as they would be typed after the program
-    /// name. Relative paths are taken against the workspace, which is where the
-    /// shell would have been.
+    /// Starts deco with `args`, as they would be typed after the program name.
+    /// Relative paths are resolved against the workspace, which is the shell's
+    /// working directory.
     ///
-    /// Panics if the arguments do not parse: a scenario that mistypes a flag is a
-    /// broken test rather than a finding, and [`Scenario::usage_error`] is how a
-    /// scenario asserts about a command line that should be refused.
+    /// Panics if the arguments do not parse, because a mistyped flag is an error
+    /// in the test. Use [`Scenario::usage_error`] to assert that a command line
+    /// is rejected.
     pub fn launch(&self, args: &[&str]) -> Editor {
         self.write_user_settings();
         let cli = match deco::cli::parse(args.iter().map(|arg| arg.to_string())) {
@@ -308,24 +302,23 @@ impl Scenario {
             .unwrap_or_else(|error| panic!("`deco {}` did not start: {error:#}", args.join(" ")))
     }
 
-    /// The same, with the workspace served by a real `deco --server` process.
+    /// Like [`Scenario::launch`], with the workspace served by a real
+    /// `deco --server` process.
     ///
-    /// The one substitution: `ssh host` is not in front of the server command.
-    /// What that leaves out is an argument vector, tested where it is built; what
-    /// it keeps is everything a remote session actually depends on — a second
-    /// process, a framed protocol over its stdio, documents keyed by paths
-    /// relative to the far end's workspace, and a server that refuses anything
-    /// outside it.
+    /// The only difference from a real session is that the server command is
+    /// not prefixed with `ssh host`. That omits only an argument vector, which
+    /// is tested where it is built. Everything a remote session depends on is
+    /// kept: a second process, a framed protocol over its stdio, documents keyed
+    /// by paths relative to the remote workspace, and a server that rejects
+    /// anything outside it.
     ///
-    /// The authority is a real one so that language servers resolve the way they
-    /// would in a session: they are wrapped in a transport, and a scenario with
-    /// no `docker` on it sees that reported rather than silently running one
-    /// here.
-    /// `server_binary` is a `deco` to run as the far end. It is a parameter
-    /// rather than something this works out for itself because `CARGO_BIN_EXE_*`
-    /// is only defined for tests of the package that builds the binary, and a
-    /// harness guessing at a path under `target/` would be a different kind of
-    /// wrong.
+    /// The authority is real so that language servers resolve as in a real
+    /// session: they are wrapped in a transport. A scenario without `docker`
+    /// reports that error instead of running the server locally.
+    /// `server_binary` is the `deco` binary to run as the remote side. It is a
+    /// parameter because `CARGO_BIN_EXE_*` is only defined for tests of the
+    /// package that builds the binary, and guessing a path under `target/` is
+    /// unreliable.
     pub fn launch_remote(&self, args: &[&str], server_binary: &std::path::Path) -> Editor {
         self.write_user_settings();
         let cli = match deco::cli::parse(args.iter().map(|arg| arg.to_string())) {
@@ -367,8 +360,8 @@ impl Scenario {
                 authority: deco_remote::Authority::parse("attached-container+scenario")
                     .expect("an authority"),
                 options: deco_remote::TransportOptions::default(),
-                // As the *server* spells it, which is what every path in the
-                // session is relative to.
+                // The path as the server reports it. Every path in the session
+                // is relative to it.
                 workspace: std::path::PathBuf::from(hello.workspace),
             },
         };
@@ -376,11 +369,11 @@ impl Scenario {
             .unwrap_or_else(|error| panic!("`deco {}` did not start: {error:#}", args.join(" ")))
     }
 
-    /// Why `deco` refused to start.
+    /// The error message when `deco` fails to start.
     ///
-    /// Startup can fail for reasons a command line cannot be blamed for — a file
-    /// that is really a directory, a file the account cannot read — and what the
-    /// person in the terminal sees then is this message and no editor.
+    /// Startup can fail with a valid command line, for example when a file is a
+    /// directory or cannot be read by the account. The user then sees this
+    /// message and no editor.
     pub fn startup_error(&self, args: &[&str]) -> String {
         self.write_user_settings();
         let cli = match deco::cli::parse(args.iter().map(|arg| arg.to_string())) {
@@ -396,14 +389,13 @@ impl Scenario {
 
     /// Writes the `settings.json` a launch will read.
     ///
-    /// The harness has two keys of its own, and they go into whichever file the
-    /// scenario is exercising: deco's if the scenario wrote one, VS Code's if it
-    /// wrote only that. Putting them in deco's file unconditionally would create
-    /// the very file a scenario about reading VS Code's is asserting is absent.
+    /// The harness has two keys of its own. They go into the file the scenario
+    /// tests: deco's if the scenario wrote one, VS Code's if it wrote only that.
+    /// Always writing them to deco's file would create the file that a scenario
+    /// about reading VS Code's settings expects to be absent.
     ///
-    /// They go in first, so that anything the scenario wrote comes later and
-    /// therefore wins — the rule the JSONC layer already applies to a repeated
-    /// key.
+    /// They are written first, so the scenario's own keys come later and take
+    /// precedence. The JSONC layer uses the last value of a repeated key.
     fn write_user_settings(&self) {
         let mut defaults: Vec<&str> = Vec::new();
         if !self.language_servers {
@@ -411,13 +403,12 @@ impl Scenario {
                 "    // deco-e2e: this machine has no language servers installed.\n    \"deco.lsp.enabled\": false",
             );
         }
-        // Deliberately *not* pinning `files.eol` here, tempting as it is. A new
-        // file's ending depends on the platform, so a scenario asserting the bytes
-        // of a file it created has to say which ending it expects — but setting
-        // the key is not a way to make that go away, because in deco an explicit
-        // `files.eol` also converts the ending of every *existing* file that is
-        // opened. A harness default would silently change what those scenarios
-        // were testing. Each scenario that creates a file says so for itself.
+        // `files.eol` is intentionally not set here. A new file's line ending
+        // depends on the platform, so a scenario that checks the bytes of a file
+        // it created must specify the expected ending. A harness default would
+        // not work: in deco an explicit `files.eol` also converts the line
+        // endings of every existing file that is opened, which would change what
+        // other scenarios test. Each scenario that creates a file sets it itself.
 
         match (&self.user_settings, &self.vscode_settings) {
             (Some(own), vscode) => {
@@ -441,7 +432,7 @@ impl Scenario {
         }
     }
 
-    /// What `deco` says about a command line it refuses.
+    /// The error message `deco` prints for a rejected command line.
     pub fn usage_error(&self, args: &[&str]) -> String {
         match deco::cli::parse(args.iter().map(|arg| arg.to_string())) {
             Err(error) => error.to_string(),
@@ -459,7 +450,7 @@ impl Scenario {
 
     // ---- what the harness needs to know about it --------------------------
 
-    /// The machine as [`deco::startup`] sees it.
+    /// The machine as passed to [`deco::startup`].
     pub(crate) fn boot(&self) -> deco::startup::Boot {
         deco::startup::Boot {
             env: Env {
@@ -505,9 +496,8 @@ impl Scenario {
 impl Drop for Scenario {
     fn drop(&mut self) {
         if std::thread::panicking() {
-            // Left where it is, and said out loud: the first question about a
-            // failing scenario is what was on disk when it failed, and an
-            // assertion message cannot carry a directory.
+            // Keep the directory and print its path, so the files on disk at the
+            // time of the failure can be inspected.
             eprintln!(
                 "deco-e2e: the scenario that just failed is still at {}",
                 self.root.display()
@@ -520,15 +510,14 @@ impl Drop for Scenario {
 
 /// A settings object holding the harness's keys, then the scenario's own.
 ///
-/// Spliced textually rather than parsed and merged, because a scenario's JSON is
-/// JSONC — it has comments in it, on purpose, because a real `settings.json`
-/// does — and a merge through a JSON value would throw them away.
+/// Combined as text rather than parsed and merged. A scenario's settings are
+/// JSONC and contain comments, as a real `settings.json` does, and merging
+/// through a JSON value would drop them.
 fn with_defaults(defaults: &[&str], own: Option<&str>) -> String {
     if defaults.is_empty() {
-        // Nothing of the harness's to add, so the scenario's own text goes to
-        // disk exactly as it was written — and an object with only a leading
-        // comma in it, which is what splicing nothing in front would produce, is
-        // not valid JSON.
+        // No harness keys, so the scenario's text is written unchanged.
+        // Splicing an empty list would leave a leading comma, which is not
+        // valid JSON.
         return own.unwrap_or("{}").to_owned();
     }
     let mut json = String::from("{\n");
@@ -554,9 +543,8 @@ fn with_defaults(defaults: &[&str], own: Option<&str>) -> String {
 /// The `language_server` example, built alongside the tests that use it.
 ///
 /// `cargo test` puts examples in `target/<profile>/examples/` and the test
-/// binary in `target/<profile>/deps/`, so it is two levels up and across. There
-/// is no `CARGO_BIN_EXE_*` for an example, which is why this is derived rather
-/// than looked up.
+/// binary in `target/<profile>/deps/`. The path is derived from the test
+/// binary's path because there is no `CARGO_BIN_EXE_*` for an example.
 fn fake_server() -> PathBuf {
     let test_binary = std::env::current_exe().expect("the test binary's own path");
     let profile = test_binary
@@ -575,12 +563,12 @@ fn fake_server() -> PathBuf {
     path
 }
 
-/// One JSON object's keys in front of another's.
+/// Places one JSON object's keys before another's.
 ///
-/// Textual rather than parsed and merged, for the reason `with_defaults` is: a
-/// scenario's settings are JSONC with comments in them, and a merge through a
-/// JSON value would throw those away. `first` wins only where `second` does not
-/// repeat the key, since a repeated key takes its last value.
+/// Combined as text for the same reason as `with_defaults`: a scenario's
+/// settings are JSONC with comments, and merging through a JSON value would drop
+/// them. A key in `first` applies only if `second` does not repeat it, because a
+/// repeated key takes its last value.
 fn splice(first: &str, second: &str) -> String {
     let first = first.trim().trim_end_matches('}').trim_end();
     let second = second.trim();

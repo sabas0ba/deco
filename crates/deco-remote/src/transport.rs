@@ -1,10 +1,10 @@
-//! Turning an authority into a command that runs something on the remote.
+//! Building the command that runs a program on the remote for an authority.
 //!
-//! Every command here is built as an argument vector and handed to the OS
-//! directly. Nothing is ever assembled into a shell string, because a hostname
-//! or container id can come from a URI someone else wrote — a `deco-remote://`
-//! link, a `.code-workspace` file — and `ssh "$host" "$cmd"` with a host of
-//! `x; rm -rf ~` is a remote-code-execution bug rather than a quoting bug.
+//! Every command is built as an argument vector and passed to the OS directly.
+//! Nothing is assembled into a shell string, because a hostname or container id
+//! can come from an untrusted source such as a `deco-remote://` link or a
+//! `.code-workspace` file. With `ssh "$host" "$cmd"`, a host of `x; rm -rf ~`
+//! would allow remote code execution.
 
 use std::path::{Path, PathBuf};
 
@@ -34,11 +34,11 @@ pub enum TransportError {
     /// The authority is local, so there is nothing to connect to.
     #[error("the local machine needs no transport")]
     Local,
-    /// A hostname or container id contained something that cannot appear in one.
+    /// A hostname or container id contained characters that are not valid in it.
     ///
-    /// Rejected rather than escaped: no legitimate hostname or container id
-    /// contains a newline or a NUL, and treating one as ordinary text would
-    /// mean trusting every downstream tool to quote it correctly.
+    /// Rejected rather than escaped. No legitimate hostname or container id
+    /// contains a newline or a NUL, and accepting one would rely on every
+    /// downstream tool to quote it correctly.
     #[error("`{value}` is not a valid {field}")]
     InvalidTarget {
         /// What was being validated.
@@ -71,23 +71,22 @@ pub struct TransportOptions {
     pub connect_timeout_secs: u32,
     /// Where SSH keeps its control socket, or `None` for no multiplexing.
     ///
-    /// Multiplexing turns each additional channel into a fast local operation
-    /// instead of another authentication round-trip, which matters most for
-    /// [`forward`](crate::forward): a browser opening one page can make twenty
-    /// connections, and twenty SSH handshakes is not a feature anyone would use.
+    /// With multiplexing, each additional channel reuses the existing
+    /// connection instead of performing another authentication round-trip. This
+    /// matters most for [`forward`](crate::forward): a browser opening one page
+    /// can make twenty connections, and twenty SSH handshakes would be too slow.
     ///
-    /// It is a path rather than a flag because `ControlMaster` alone does
-    /// nothing — OpenSSH's `ControlPath` has no default, and without one the
-    /// setting is silently inert. Saying "multiplex: true" and passing no path
-    /// is exactly the shape of a claim that is not true, so the type no longer
-    /// allows it.
+    /// It is a path rather than a flag because `ControlMaster` alone has no
+    /// effect: OpenSSH's `ControlPath` has no default, and without one the
+    /// setting is ignored. The type therefore cannot express multiplexing
+    /// without a path.
     pub control_path: Option<PathBuf>,
 }
 
 impl Default for TransportOptions {
-    /// No multiplexing, because working out where to put a socket touches the
-    /// filesystem and a `Default` that quietly creates directories is a
-    /// surprise. [`TransportOptions::multiplexed`] is the one that does.
+    /// No multiplexing, because choosing a socket location touches the
+    /// filesystem, and `Default` should not create directories.
+    /// [`TransportOptions::multiplexed`] enables it.
     fn default() -> Self {
         Self {
             connect_timeout_secs: 20,
@@ -100,11 +99,11 @@ impl TransportOptions {
     /// The default, plus a control socket in a directory only this account can
     /// use.
     ///
-    /// Falls back to no multiplexing rather than to a worse location: a control
-    /// socket is a live, authenticated connection to the remote, so a directory
-    /// another local user can write to would hand them the session. That is why
-    /// the candidates below are only ever the account's own runtime directory or
-    /// its `~/.ssh`, and never the shared temporary directory.
+    /// Falls back to no multiplexing rather than to a less secure location. A
+    /// control socket is a live, authenticated connection to the remote, so a
+    /// directory writable by another local user would give that user the
+    /// session. The only candidates are therefore the account's runtime
+    /// directory and its `~/.ssh`, never the shared temporary directory.
     pub fn multiplexed() -> Self {
         Self {
             control_path: control_directory().ok(),
@@ -113,10 +112,10 @@ impl TransportOptions {
     }
 }
 
-/// A private directory for SSH control sockets, created if it is not there.
+/// A private directory for SSH control sockets, created if it does not exist.
 ///
 /// Returns an error rather than a fallback when the account has no private
-/// directory to offer, or when the one it has is open to anyone else.
+/// directory, or when the directory is accessible to other users.
 fn control_directory() -> Result<PathBuf, std::io::Error> {
     // Windows' `ssh.exe` does not support `ControlMaster`; reject multiplexing
     // before constructing a command with unsupported options.
@@ -126,7 +125,7 @@ fn control_directory() -> Result<PathBuf, std::io::Error> {
         ));
     }
     // `XDG_RUNTIME_DIR` is per-user and 0700 by definition; `~/.ssh` is the
-    // other place a control socket conventionally lives. Neither is shared.
+    // other conventional location for control sockets. Neither is shared.
     let base = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".ssh")))
@@ -134,12 +133,12 @@ fn control_directory() -> Result<PathBuf, std::io::Error> {
     private_directory(&base.join("deco"))
 }
 
-/// Creates `directory` if it is not there, and makes sure it is this account's
-/// alone.
+/// Creates `directory` if it does not exist, and ensures only this account can
+/// access it.
 ///
-/// Split out from the search above so it can be tested against a directory a
-/// test chose, rather than by setting environment variables that every other
-/// test in the process shares.
+/// Separate from the lookup above so that tests can pass their own directory
+/// instead of setting environment variables shared by every test in the
+/// process.
 fn private_directory(directory: &Path) -> Result<PathBuf, std::io::Error> {
     let directory = directory.to_path_buf();
     std::fs::create_dir_all(&directory)?;
@@ -147,13 +146,11 @@ fn private_directory(directory: &Path) -> Result<PathBuf, std::io::Error> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        // The directory may have been there already, and the entire value of
-        // this location is that nobody else can reach into it — so it is checked
-        // rather than assumed.
+        // The directory may already exist, so its privacy is checked rather
+        // than assumed.
         //
-        // A symlink is refused outright: following one would put the socket
-        // wherever it points, which is the one thing this is choosing a location
-        // to avoid.
+        // A symlink is rejected, because following it would place the socket
+        // at an uncontrolled location.
         if std::fs::symlink_metadata(&directory)?
             .file_type()
             .is_symlink()
@@ -163,10 +160,9 @@ fn private_directory(directory: &Path) -> Result<PathBuf, std::io::Error> {
                 directory.display()
             )));
         }
-        // This doubles as the ownership check, which is why it is unconditional
-        // rather than only when the mode looks wrong: `chmod` succeeds for the
-        // owner and fails for everyone else, so a directory belonging to another
-        // user fails here instead of being used.
+        // This also checks ownership, so it runs unconditionally rather than
+        // only when the mode is wrong. `chmod` succeeds only for the owner, so a
+        // directory owned by another user fails here instead of being used.
         std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))?;
     }
     Ok(directory)
@@ -189,8 +185,8 @@ pub fn command_for(
             let mut args = vec![
                 "-o".to_owned(),
                 format!("ConnectTimeout={}", options.connect_timeout_secs),
-                // Batch mode: fail rather than block on a password prompt deco
-                // has nowhere to display.
+                // Batch mode: fail instead of blocking on a password prompt
+                // that deco cannot display.
                 "-o".to_owned(),
                 "BatchMode=yes".to_owned(),
             ];
@@ -201,10 +197,9 @@ pub fn command_for(
                     "-o".to_owned(),
                     "ControlPersist=600".to_owned(),
                     "-o".to_owned(),
-                    // `%C` is a hash of the connection rather than its parts:
-                    // socket paths have a length limit near 104 bytes, and a
-                    // long hostname under a long home directory quietly exceeds
-                    // it.
+                    // `%C` is a hash of the connection parameters. Socket paths
+                    // are limited to about 104 bytes, and a long hostname under
+                    // a long home directory can exceed that limit.
                     format!("ControlPath={}/%C", control_path.display()),
                 ]);
             }
@@ -235,8 +230,8 @@ pub fn command_for(
             validate("container id", id)?;
             let mut args = vec![
                 "exec".to_owned(),
-                // Interactive so stdin reaches the server; no TTY, because the
-                // protocol is framed binary rather than a terminal session.
+                // `-i` so stdin reaches the server. No TTY, because the protocol
+                // is a framed byte stream rather than a terminal session.
                 "-i".to_owned(),
                 id.clone(),
             ];
@@ -248,8 +243,9 @@ pub fn command_for(
 
 /// The command that starts deco's headless server on the remote.
 ///
-/// The server speaks the framed protocol over its stdin and stdout, so the
-/// transport command above is all that stands between the two ends.
+/// The server uses the framed protocol over its stdin and stdout, so the
+/// transport command above is the only connection needed between client and
+/// server.
 pub fn server_command(server_path: &str, workspace: Option<&str>) -> Vec<String> {
     let mut args = vec![
         server_path.to_owned(),
@@ -278,10 +274,9 @@ mod tests {
 
     #[test]
     fn without_a_control_path_no_multiplexing_is_claimed() {
-        // `ControlMaster=auto` on its own does nothing at all: OpenSSH's
-        // `ControlPath` has no default, and without one the setting is silently
-        // inert. Emitting it anyway would be asserting a property deco does not
-        // have — which is what this used to do.
+        // `ControlMaster=auto` alone has no effect: OpenSSH's `ControlPath` has
+        // no default, and without one the setting is ignored. An earlier version
+        // emitted it anyway, implying multiplexing that did not happen.
         let command = ssh("ssh-remote+myhost");
         assert!(
             !command
@@ -307,8 +302,8 @@ mod tests {
         .unwrap();
         assert!(command.args.contains(&"ControlMaster=auto".to_owned()));
         assert!(command.args.contains(&"ControlPersist=600".to_owned()));
-        // `%C` rather than the parts of the connection: socket paths have a
-        // length limit near 104 bytes that a long hostname quietly exceeds.
+        // `%C` rather than the connection parameters: socket paths are limited
+        // to about 104 bytes, which a long hostname can exceed.
         assert!(command
             .args
             .contains(&"ControlPath=/run/user/1000/deco/%C".to_owned()));
@@ -332,10 +327,10 @@ mod tests {
             .permissions()
             .mode();
         // A control socket is a live authenticated connection to the remote, so
-        // a directory anyone else can reach into hands them the session.
+        // a directory accessible to other users would give them the session.
         assert_eq!(mode & 0o777, 0o700, "{mode:o}");
 
-        // An existing directory left open is tightened rather than used as it is.
+        // An existing directory with loose permissions is tightened before use.
         std::fs::set_permissions(&made, std::fs::Permissions::from_mode(0o755)).expect("loosened");
         private_directory(&directory).expect("a directory");
         assert_eq!(
@@ -353,8 +348,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_control_socket_directory_that_is_a_symlink_is_refused() {
-        // Following one would put the socket wherever it points, which is the
-        // one thing choosing a private location is meant to avoid.
+        // Following a symlink would place the socket at an uncontrolled
+        // location.
         let base = std::env::temp_dir().join(format!(
             "deco-control-link-{}-{:?}",
             std::process::id(),
@@ -405,9 +400,8 @@ mod tests {
 
     #[test]
     fn a_hostname_is_separated_from_the_options_by_a_double_dash() {
-        // Without `--`, a host called `-oProxyCommand=...` would be read as an
-        // ssh option — which is a well-known way to turn a URL into command
-        // execution.
+        // Without `--`, a host named `-oProxyCommand=...` would be parsed as an
+        // ssh option, a known way to turn a URL into command execution.
         let command = ssh("ssh-remote+myhost");
         let dashes = command.args.iter().position(|a| a == "--").unwrap();
         assert_eq!(command.args[dashes + 1], "myhost");
@@ -430,8 +424,8 @@ mod tests {
 
     #[test]
     fn a_hostname_containing_shell_metacharacters_stays_one_argument() {
-        // It is never concatenated into a shell string, so it cannot break out;
-        // this test pins that the value arrives whole.
+        // The value is never concatenated into a shell string. This test checks
+        // that it is passed as a single argument.
         let authority = Authority::Ssh {
             host: "user@host;rm".into(),
             port: None,

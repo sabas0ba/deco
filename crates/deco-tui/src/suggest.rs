@@ -1,23 +1,20 @@
 //! The completion list, as state.
 //!
-//! Pure: it holds the items a server returned and the prefix typed since, and
-//! answers what should be shown and what should be inserted. Nothing here reads
-//! the terminal or touches the document, which is what lets the filtering and
-//! selection rules — the parts that are actually easy to get wrong — be tested
-//! directly.
+//! This module is pure. It holds the items a server returned and the prefix typed
+//! since then, and determines what is shown and what is inserted. It does not
+//! read the terminal or modify the document, so the filtering and selection
+//! rules can be tested directly.
 //!
 //! # Filtering happens here, not on the server
 //!
-//! A server is asked once, at the position where the list opened, and returns
-//! everything plausible there. As the user keeps typing, the list narrows
-//! locally. That is how VS Code behaves and it is the only way the list can feel
-//! immediate — a round trip per keystroke would make every character wait on a
-//! process.
+//! The server is queried once, at the position where the list opened, and
+//! returns all candidates for that position. As the user keeps typing, the list
+//! is narrowed locally. VS Code behaves the same way. A server round trip per
+//! keystroke would delay every typed character.
 //!
-//! The consequence is that the widget has to know where the list opened, so it
-//! can tell which of the characters on screen are the prefix being matched. Get
-//! that wrong and the list filters against the wrong text, which looks like the
-//! server returning nonsense.
+//! The widget therefore has to know where the list opened, so it can determine
+//! which characters on screen are the prefix being matched. If the position is
+//! wrong, the list filters against the wrong text.
 
 use deco_core::position::Position;
 use deco_lsp::requests::{CompletionItem, CompletionKind};
@@ -33,9 +30,8 @@ pub struct Shown<'a> {
 
 /// How an item matched the typed prefix.
 ///
-/// Ordered so that the better kind of match sorts first. A prefix match is what
-/// the user almost always means; a fuzzy match is a guess worth offering but not
-/// worth putting at the top.
+/// Ordered so that the better kind of match sorts first. A prefix match is
+/// usually what the user wants. A fuzzy match is offered but ranked below it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Rank {
     /// The prefix matched exactly, including case.
@@ -62,17 +58,15 @@ pub struct Suggest {
 
 /// How many rows the list will show at once.
 ///
-/// Enough to be useful, few enough to leave the code visible — the point of a
-/// completion list is to choose between candidates in context.
+/// The limit keeps the surrounding code visible while choosing a candidate.
 pub const MAX_ROWS: usize = 8;
 
 impl Suggest {
     /// Opens a list at `anchor` with the items a server returned.
     ///
     /// The selected row starts on the server's `preselect` if it marked one, and
-    /// on the first item otherwise. Honouring `preselect` matters: a server that
-    /// knows the likely answer puts it there, and ignoring it means the user
-    /// arrows past what they wanted.
+    /// on the first item otherwise. Servers use `preselect` to mark the most
+    /// likely item.
     pub fn new(items: Vec<CompletionItem>, anchor: Position, incomplete: bool) -> Self {
         let mut suggest = Self {
             items,
@@ -111,8 +105,8 @@ impl Suggest {
 
     /// Whether there is nothing left to show.
     ///
-    /// The caller should close the list: an empty box is worse than none, and it
-    /// is how the widget says the user has typed past every candidate.
+    /// This means the user has typed past every candidate. The caller should
+    /// close the list rather than show an empty box.
     pub fn is_empty(&self) -> bool {
         self.visible().is_empty()
     }
@@ -135,7 +129,7 @@ impl Suggest {
         if self.prefix.pop().is_none() {
             return false;
         }
-        // Widening re-ranks too: what was the best match for `pri` is not
+        // Widening also changes the ranking: the best match for `pri` is not
         // necessarily the best match for `pr`.
         self.selected = 0;
         true
@@ -170,9 +164,9 @@ impl Suggest {
 
     /// The items to draw, best match first, capped at [`MAX_ROWS`].
     ///
-    /// Recomputed rather than cached: the prefix changes on every keystroke, and
-    /// a cache that has to be invalidated on each one buys nothing but a chance
-    /// to forget.
+    /// Recomputed rather than cached. The prefix changes on every keystroke, so a
+    /// cache would be invalidated on every call and would only add a way to
+    /// return stale results.
     pub fn visible(&self) -> Vec<Shown<'_>> {
         let mut matched: Vec<Shown<'_>> = self
             .items
@@ -183,9 +177,9 @@ impl Suggest {
         matched.sort_by(|a, b| {
             a.rank
                 .cmp(&b.rank)
-                // The server's own ordering within a rank: it uses `sortText` to
-                // put the likely answer first, and overriding that with
-                // alphabetical order makes a good server look arbitrary.
+                // Within a rank, keep the server's ordering. Servers use
+                // `sortText` to put the likely item first, so alphabetical order
+                // is only a fallback.
                 .then_with(|| a.item.sort_key().cmp(b.item.sort_key()))
                 .then_with(|| a.item.label.cmp(&b.item.label))
         });
@@ -210,8 +204,8 @@ impl Suggest {
 
 /// How well `filter` matches `prefix`, or `None` if it does not.
 ///
-/// An empty prefix matches everything, which is what makes a list opened by
-/// `ctrl+space` show the whole set.
+/// An empty prefix matches everything, so a list opened by `ctrl+space` shows
+/// every item.
 fn rank(filter: &str, prefix: &str) -> Option<Rank> {
     if prefix.is_empty() {
         return Some(Rank::Prefix);
@@ -219,9 +213,9 @@ fn rank(filter: &str, prefix: &str) -> Option<Rank> {
     if filter.starts_with(prefix) {
         return Some(Rank::Prefix);
     }
-    // Case-insensitively next, because typing `hash` should find `HashMap` —
-    // and comparing lowercase forms rather than ASCII-lowering both, so that
-    // a non-ASCII identifier is matched by the same rule as an ASCII one.
+    // Case-insensitive match next, so typing `hash` finds `HashMap`. Both sides
+    // use full Unicode lowercasing rather than ASCII lowercasing, so non-ASCII
+    // identifiers follow the same rule as ASCII ones.
     if filter.to_lowercase().starts_with(&prefix.to_lowercase()) {
         return Some(Rank::PrefixInsensitive);
     }
@@ -286,7 +280,7 @@ mod tests {
 
     #[test]
     fn an_empty_prefix_shows_everything() {
-        // What a list opened by ctrl+space has to do.
+        // Required for a list opened by ctrl+space.
         let s = suggest(&["push", "pop", "len"]);
         assert_eq!(s.matches(), 3);
         assert!(!s.is_empty());
@@ -303,7 +297,7 @@ mod tests {
 
     #[test]
     fn typing_past_every_candidate_empties_the_list() {
-        // The caller closes the widget on this: an empty box is worse than none.
+        // The caller closes the widget in this case instead of showing an empty box.
         let mut s = suggest(&["push"]);
         for c in "pushx".chars() {
             s.push(c);
@@ -323,8 +317,8 @@ mod tests {
 
     #[test]
     fn backspacing_out_of_the_word_reports_that_it_is_done() {
-        // The user has deleted back past where the list opened, so it no longer
-        // describes what is being typed.
+        // The user has deleted past the position where the list opened, so the
+        // list no longer applies to the text being typed.
         let mut s = suggest(&["push"]);
         assert!(!s.pop(), "there was no prefix to delete");
     }
@@ -345,7 +339,7 @@ mod tests {
 
     #[test]
     fn a_subsequence_matches_and_ranks_last() {
-        // `hm` finding `HashMap` is useful; it should not outrank a real prefix.
+        // `hm` should find `HashMap`, but rank below a real prefix match.
         let mut s = suggest(&["hmm", "HashMap"]);
         s.push('h');
         s.push('m');
@@ -372,8 +366,8 @@ mod tests {
 
     #[test]
     fn the_servers_sort_text_orders_within_a_rank() {
-        // Servers put the likely answer first; alphabetical order would override
-        // that and make a good server look arbitrary.
+        // Servers use `sortText` to put the likely item first. Alphabetical
+        // order must not override it.
         let mut items = vec![item("apple"), item("zebra")];
         items[1].sort = Some("0000".into());
         let s = Suggest::new(items, Position::ZERO, false);
@@ -407,12 +401,11 @@ mod tests {
     #[test]
     fn narrowing_selects_the_best_match_again() {
         // `tab` accepts whatever is selected, so it has to be the best match for
-        // what has been typed. Keeping the previous item selected meant typing
-        // more could leave the selection on something that no longer ranked first.
+        // what has been typed. If the previous item stayed selected, typing more
+        // could leave the selection on an item that no longer ranks first.
         //
-        // The data matters: both items survive the narrowing and the arrowed-to
-        // one is not the best match, which is the only case where the two rules
-        // give different answers.
+        // Both items remain after narrowing and the item selected with the arrow
+        // key is not the best match. Only this case distinguishes the two rules.
         let mut s = suggest(&["ab", "abc"]);
         s.push('a');
         s.next();
@@ -429,7 +422,7 @@ mod tests {
 
     #[test]
     fn widening_selects_the_best_match_too() {
-        // What was the best match for `abc` is not necessarily the best for `ab`.
+        // The best match for `abc` is not necessarily the best for `ab`.
         let mut s = suggest(&["ab", "abc"]);
         s.push('a');
         s.push('b');

@@ -1,20 +1,19 @@
 //! Provisioning a deco, using this machine as the remote.
 //!
-//! `deco_remote::install` decides what to refuse against a scripted remote, so
-//! the refusals are pinned there. What cannot be pinned there is whether the
-//! commands it sends are the right commands: `dd`, `chmod` and `mv` either move
-//! an executable binary or they do not, and a fake that agrees with the code
-//! about them proves nothing.
+//! `deco_remote::install` tests its rejections against a scripted remote. Those
+//! tests cannot check whether the commands it sends are correct: only real
+//! `dd`, `chmod` and `mv` show whether an executable binary is installed, and a
+//! fake that shares the code's assumptions proves nothing.
 //!
-//! So the runner below is real. It runs each argv on this machine with `HOME`
-//! pointed at a temporary directory, which is the whole of the difference
-//! between it and [`deco_remote::TransportRunner`] — that one puts `ssh host`
-//! in front. The binary really is copied, the install really is executed, and
-//! the last test connects a client to what came out of it.
+//! The runner below is therefore real. It runs each argv on this machine with
+//! `HOME` set to a temporary directory. That is the only difference from
+//! [`deco_remote::TransportRunner`], which adds `ssh host` in front. The binary
+//! is actually copied, the install is actually executed, and the first test
+//! connects a client to the result.
 //!
 //! Unix only: `uname`, `dd`, `chmod` and `mv` are the remote's tools, and a
-//! Windows machine standing in for the remote has none of them. That is not a
-//! gap in coverage of Windows *clients*, which build the same argv either way.
+//! Windows machine standing in for the remote has none of them. Windows
+//! *clients* are still covered, because they build the same argv.
 
 #![cfg(unix)]
 
@@ -41,9 +40,9 @@ impl Runner for LocalRunner {
 
         let mut child = OsCommand::new(&argv[0])
             .args(&argv[1..])
-            // The point of the temporary home: `$HOME` in the probe's script is
-            // expanded by the "remote", so this is what decides where a default
-            // install lands — and nothing touches the real one.
+            // `$HOME` in the probe's script is expanded by the "remote", so the
+            // temporary home decides where a default install goes, and the real
+            // home is not touched.
             .env("HOME", &self.home)
             .stdin(if stdin.is_some() {
                 Stdio::piped()
@@ -105,18 +104,17 @@ fn an_install_puts_a_binary_there_that_actually_runs_and_serves() {
         }
     );
 
-    // It arrived whole. A truncated upload is the failure this would catch, and
-    // the one a fake runner never could.
+    // The whole file arrived. This catches a truncated upload, which a fake
+    // runner cannot.
     assert_eq!(
         std::fs::metadata(&expected).expect("a binary").len(),
         std::fs::metadata(this_deco()).expect("this binary").len()
     );
-    // And nothing is left beside it: the staging file is renamed, not copied.
+    // No staging file remains: it is renamed, not copied.
     assert!(!home.join(".deco/bin/deco.incoming").exists());
 
-    // The point of all of it — what was installed serves the protocol. Run
-    // directly rather than over a transport, which is the same substitution
-    // `remote_session.rs` makes.
+    // The installed binary serves the protocol. It is run directly rather than
+    // over a transport, as in `remote_session.rs`.
     let workspace = home.join("project");
     std::fs::create_dir_all(&workspace).expect("a workspace");
     std::fs::write(workspace.join("main.rs"), "fn main() {}\n").expect("a file");
@@ -155,9 +153,8 @@ fn a_second_install_of_the_same_version_sends_nothing() {
         matches!(&outcome, Installed::AlreadyThere { version, .. } if version == &expected),
         "{outcome:?}"
     );
-    // Not rewritten: the version answer is what decides, and a re-upload over a
-    // slow link every time the editor starts would be the cost of getting it
-    // wrong.
+    // Not rewritten: the reported version decides. Otherwise every editor
+    // start would re-upload the binary, possibly over a slow link.
     assert_eq!(
         std::fs::metadata(&installed)
             .and_then(|meta| meta.modified())
@@ -170,9 +167,8 @@ fn a_second_install_of_the_same_version_sends_nothing() {
 
 #[test]
 fn a_real_file_that_is_not_deco_survives_being_pointed_at() {
-    // The refusal is unit-tested against a fake; this checks the file is still
-    // there afterwards, which is the part that actually matters to whoever
-    // mistyped the path.
+    // The rejection is unit-tested against a fake; this checks that the file is
+    // still intact afterwards, which matters to a user who mistyped the path.
     let home = remote_home("stranger");
     let notes = home.join("notes.txt");
     std::fs::write(&notes, "not a binary\n").expect("a file");
@@ -197,10 +193,10 @@ fn a_real_file_that_is_not_deco_survives_being_pointed_at() {
 
 #[test]
 fn an_install_that_cannot_be_completed_fails_rather_than_half_happening() {
-    // The destination's directory cannot be created, because a file is already
-    // in its way. Chosen over a read-only directory deliberately: this test also
-    // runs as root in CI's containers, and root is not stopped by a permission
-    // bit — it is stopped by `bin` not being a directory.
+    // The destination directory cannot be created because a file already has
+    // that path. A read-only directory is not used because this test also runs
+    // as root in CI containers, and root ignores permission bits but not a
+    // `bin` that is not a directory.
     let home = remote_home("blocked");
     let blocker = home.join("bin");
     std::fs::write(&blocker, "in the way\n").expect("a file");
@@ -214,13 +210,13 @@ fn an_install_that_cannot_be_completed_fails_rather_than_half_happening() {
         ForOther::Refuse,
     )
     .expect_err("a failure");
-    // It says which step, because "could not put deco on the remote" alone
-    // leaves a person with nothing to check.
+    // The error names the step, because "could not put deco on the remote"
+    // alone gives the user nothing to check.
     assert!(matches!(error, InstallError::Step { .. }), "{error}");
     assert!(error.to_string().contains("install directory"), "{error}");
 
-    // And the file that was in the way is untouched — a failed install is not
-    // allowed to be destructive.
+    // The blocking file is unchanged: a failed install must not be
+    // destructive.
     assert_eq!(
         std::fs::read_to_string(&blocker).expect("still there"),
         "in the way\n"
@@ -229,12 +225,11 @@ fn an_install_that_cannot_be_completed_fails_rather_than_half_happening() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// A [`LocalRunner`] that claims to be a machine this one is not.
+/// A [`LocalRunner`] that reports a different platform from this machine.
 ///
-/// Only the probe is intercepted; everything after it runs for real, so what is
-/// exercised below is the actual staging, upload, `chmod`, rename and
-/// does-it-run check — with the *download* path chosen instead of "send the
-/// binary I am running".
+/// Only the probe is intercepted; everything after it runs for real. The tests
+/// below therefore exercise the actual staging, upload, `chmod`, rename and
+/// run check, using the *download* path instead of sending the running binary.
 struct ForeignRunner {
     inner: LocalRunner,
     os: &'static str,
@@ -307,8 +302,8 @@ fn release_archive(root: &Path, target: &str) -> Vec<u8> {
 
 #[test]
 fn a_different_platform_is_still_refused_unless_the_download_was_asked_for() {
-    // The rule the separate flag exists for. `--remote-install` alone reaches
-    // nothing: it sends the file already running here, or it refuses.
+    // The reason for the separate flag. `--remote-install` alone downloads
+    // nothing: it sends the binary already running here, or it refuses.
     let home = remote_home("mismatch-refused");
     let mut runner = ForeignRunner {
         inner: LocalRunner { home: home.clone() },
@@ -332,10 +327,10 @@ fn a_different_platform_is_still_refused_unless_the_download_was_asked_for() {
 
 #[test]
 fn a_download_for_the_remotes_platform_is_checked_and_then_installed() {
-    // The whole path, with only the network replaced: probe says another
+    // The whole path with only the network replaced: the probe reports another
     // platform, the checksums and archive come from the table, the checksum is
-    // verified here, the member is taken out of the archive, and what lands on
-    // the "remote" runs and reports its version.
+    // verified here, the binary is extracted from the archive, and the installed
+    // file on the "remote" runs and reports its version.
     let home = remote_home("downloaded");
     let scratch = home.join("scratch");
     std::fs::create_dir_all(&scratch).expect("a directory");
@@ -392,8 +387,8 @@ fn a_download_for_the_remotes_platform_is_checked_and_then_installed() {
 
 #[test]
 fn a_download_that_does_not_match_its_checksum_installs_nothing() {
-    // The refusal that matters. The bytes arrive, they are not what the release
-    // vouches for, and the destination is left as it was — empty.
+    // The downloaded bytes do not match the release checksum, so they are
+    // rejected and the destination stays empty.
     let home = remote_home("bad-checksum");
     let scratch = home.join("scratch");
     std::fs::create_dir_all(&scratch).expect("a directory");

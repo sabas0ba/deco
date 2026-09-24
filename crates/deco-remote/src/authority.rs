@@ -2,9 +2,9 @@
 //!
 //! A remote authority names where a workspace actually lives:
 //! `ssh-remote+myhost`, `wsl+Ubuntu`, `dev-container+<id>`. VS Code writes them
-//! into `vscode-remote://` URIs and into window state, so parsing the same
-//! strings is what lets a deco window be opened from a VS Code link — and lets
-//! a user type the authority they already know.
+//! into `vscode-remote://` URIs and into window state. Parsing the same strings
+//! lets deco open a window from a VS Code link and accept authorities in the
+//! form users already know.
 
 use std::fmt;
 
@@ -97,9 +97,9 @@ impl Authority {
                             port: text.to_owned(),
                         })
                 };
-                // A bracketed IPv6 literal is full of colons, so the port
-                // separator is the one *after* the closing bracket — splitting
-                // on the last colon would cut the address in half.
+                // A bracketed IPv6 literal contains colons, so the port
+                // separator is the colon after the closing bracket. Splitting
+                // on the last colon would split the address.
                 let (host, port) = if target.starts_with('[') {
                     match target.rfind("]:") {
                         Some(idx) => (

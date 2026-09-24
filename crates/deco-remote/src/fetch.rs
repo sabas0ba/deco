@@ -1,39 +1,34 @@
-//! Getting a deco built for *the remote's* platform, rather than this one's.
+//! Downloading a deco built for the remote platform instead of the local one.
 //!
 //! [`install`](crate::install) can only send the binary this machine is running,
-//! so a macOS laptop provisioning a Linux server had nothing to send. This is
-//! the part that fetches one — from the same releases the README tells a person
-//! to download by hand, verified against the same `SHA256SUMS` it tells them to
-//! check.
+//! so a macOS laptop could not provision a Linux server. This module downloads a
+//! binary from the same releases the README lists for manual download and
+//! verifies it against the same `SHA256SUMS` file.
 //!
-//! # Plumbing outside, verification inside
+//! # External tools and in-process verification
 //!
-//! The transfer and the decompression are done by `curl` and `tar`, which every
-//! platform this runs on already ships. The **checksum is computed here**, in
-//! deco's own code, against bytes already in memory.
+//! `curl` and `tar` handle transfer and decompression; every supported platform
+//! ships them. The **checksum is computed in deco's own code**, against bytes
+//! already in memory.
 //!
-//! That line is deliberate and it is the only one that matters. Shelling out for
-//! a download is delegating a chore; shelling out for the integrity check would
-//! be delegating the answer to "is this the binary the project published", which
-//! is the whole question. An editor that let an external tool decide that would
-//! not be checking anything — it would be asking something else whether it had
-//! checked.
+//! Only the integrity check must run in-process. Delegating it to an external
+//! tool would let that tool decide whether the binary is the one the project
+//! published.
 //!
-//! It also keeps the dependency this adds to one crate rather than the roughly
-//! forty an in-process HTTPS stack costs, which for a program that argues about
-//! its dependency count is not a small consideration.
+//! This design adds one crate as a dependency, compared with roughly forty for
+//! an in-process HTTPS stack.
 //!
-//! # What is still refused
+//! # Unsupported platforms
 //!
-//! A platform with no published build. `uname` is asked what the remote is, and
-//! a combination the release matrix does not carry is refused **by name** rather
-//! than answered with the nearest thing — a binary for the wrong libc runs far
-//! enough to be confusing and not far enough to work.
+//! A platform with no published build is rejected. The remote platform is
+//! detected with `uname`, and a combination the release matrix does not build is
+//! rejected **by name** rather than substituted with the closest build. A binary
+//! for the wrong libc can start and then fail in confusing ways.
 //!
-//! `uname` also cannot tell glibc from musl, so an Alpine remote is asked for
-//! and given the `-gnu` build. That is caught, late but honestly, by the check
-//! [`install::ensure`](crate::install::ensure) already makes after uploading:
-//! the binary is asked for its version, and one that cannot run does not answer.
+//! `uname` cannot distinguish glibc from musl, so an Alpine remote receives the
+//! `-gnu` build. [`install::ensure`](crate::install::ensure) detects this after
+//! uploading: it runs the binary to query its version, and a binary that cannot
+//! run fails that check.
 
 use std::path::{Path, PathBuf};
 
@@ -41,7 +36,7 @@ use sha2::{Digest, Sha256};
 
 use crate::install::Platform;
 
-/// Where releases live, from the manifest rather than written out again here.
+/// The repository URL for releases, taken from the manifest.
 const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
 
 /// Why a binary for the remote could not be obtained.
@@ -126,10 +121,10 @@ pub enum FetchError {
 
 /// The release target triple for a platform, if one is published.
 ///
-/// Only the combinations the release matrix actually builds. The Windows
-/// triples are absent on purpose: the installer talks to the remote with
-/// `uname`, `mkdir`, `dd`, `chmod` and `mv`, so a remote it can reach is a
-/// POSIX one and a `.zip` is never the file to fetch.
+/// Only the combinations the release matrix builds are listed. Windows triples
+/// are intentionally absent: the installer runs `uname`, `mkdir`, `dd`, `chmod`
+/// and `mv` on the remote, so the remote is always POSIX and a `.zip` is never
+/// needed.
 pub fn target_for(platform: &Platform) -> Result<&'static str, FetchError> {
     match (platform.os.as_str(), platform.arch.as_str()) {
         ("linux", "x86_64") => Ok("x86_64-unknown-linux-gnu"),
@@ -149,8 +144,8 @@ pub fn asset_for(target: &str) -> String {
 
 /// The path inside that archive holding the binary.
 ///
-/// `cargo xtask dist` stages under a directory named for the target, so the
-/// member is predictable rather than something to search for.
+/// `cargo xtask dist` stages files under a directory named for the target, so
+/// the member path is fixed and does not need to be searched for.
 pub fn member_for(target: &str) -> String {
     format!("deco-{target}/deco")
 }
@@ -167,9 +162,9 @@ pub fn checksums_url(version: &str) -> String {
 
 /// The expected hash for `asset`, from the text of a `SHA256SUMS` file.
 ///
-/// The format `sha256sum` writes and reads: a hash, two spaces, a name. Matched
-/// on the whole name rather than a suffix, so `deco-x86_64-unknown-linux-gnu.tar.gz`
-/// cannot be satisfied by a line for some other file ending the same way.
+/// Uses the `sha256sum` format: a hash, two spaces, a name. The whole name is
+/// matched rather than a suffix, so `deco-x86_64-unknown-linux-gnu.tar.gz`
+/// cannot match a line for another file with the same ending.
 pub fn checksum_for<'a>(checksums: &'a str, asset: &str) -> Option<&'a str> {
     checksums.lines().find_map(|line| {
         let (hash, name) = line.split_once("  ")?;
@@ -179,7 +174,7 @@ pub fn checksum_for<'a>(checksums: &'a str, asset: &str) -> Option<&'a str> {
 
 /// The SHA-256 of `bytes`, lowercase hex.
 ///
-/// deco's own, for the reason in this module's header.
+/// Computed in-process, for the reason given in the module documentation.
 pub fn digest_of(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
@@ -190,11 +185,10 @@ pub fn digest_of(bytes: &[u8]) -> String {
         .collect()
 }
 
-/// Refuses `bytes` unless they hash to what the release published.
+/// Rejects `bytes` unless their hash matches the one the release published.
 ///
-/// Compared case-insensitively, because a hash is a number and `AB` and `ab`
-/// are the same one — a comparison that said otherwise would reject a perfectly
-/// good download for its spelling.
+/// The comparison is case-insensitive because hex digits `AB` and `ab` denote
+/// the same value.
 pub fn verify(bytes: &[u8], expected: &str, asset: &str, version: &str) -> Result<(), FetchError> {
     let actual = digest_of(bytes);
     if actual.eq_ignore_ascii_case(expected.trim()) {
@@ -210,19 +204,19 @@ pub fn verify(bytes: &[u8], expected: &str, asset: &str, version: &str) -> Resul
 
 /// Something that can retrieve a URL.
 ///
-/// A trait so the tests never reach the network. Everything above it — which is
-/// all of the deciding — runs against bytes a test chose.
+/// A trait so that tests do not use the network. All verification logic runs
+/// against bytes supplied by the test.
 pub trait Fetcher {
-    /// The bytes at `url`, or why not.
+    /// The bytes at `url`, or an error message.
     fn get(&mut self, url: &str) -> Result<Vec<u8>, String>;
 }
 
 /// A [`Fetcher`] that runs the machine's own `curl`.
 ///
-/// `--fail` so an error page is an error rather than a 400-byte "binary";
-/// `--location` because a release asset is served as a redirect; `--silent`
-/// with `--show-error` so the only thing on stderr is the reason it did not
-/// work.
+/// - `--fail` turns an HTTP error page into an error instead of a 400-byte
+///   "binary".
+/// - `--location` follows the redirect used to serve release assets.
+/// - `--silent` with `--show-error` limits stderr to the failure reason.
 #[derive(Debug, Default)]
 pub struct Curl;
 
@@ -251,10 +245,9 @@ fn on_path(tool: &str, path: Option<&std::ffi::OsStr>) -> bool {
 /// The binary inside `archive`, without unpacking the archive.
 ///
 /// `tar xzO` writes the one member to standard output, so nothing from the
-/// archive reaches the filesystem — a tree with a `..` in it or a symlink
-/// pointing somewhere it should not has nowhere to land. The archive has already
-/// been checked against the release's own checksum by the time this runs, so
-/// what is being read here is byte-for-byte what the project published.
+/// archive is extracted to the filesystem. Entries containing `..` or malicious
+/// symlinks therefore cannot write outside the target. The archive has already
+/// been verified against the release checksum when this runs.
 fn binary_from(archive: &Path, member: &str, asset: &str) -> Result<Vec<u8>, FetchError> {
     if !on_path("tar", std::env::var_os("PATH").as_deref()) {
         return Err(FetchError::NoTool {
@@ -291,8 +284,7 @@ fn binary_from(archive: &Path, member: &str, asset: &str) -> Result<Vec<u8>, Fet
 
 /// A deco built for `platform`, downloaded and checked, left at a local path.
 ///
-/// The caller uploads it exactly as it uploads this machine's own binary — the
-/// difference between the two is over by the time this returns.
+/// The caller uploads it in the same way as this machine's own binary.
 pub fn binary_for(
     fetcher: &mut dyn Fetcher,
     platform: &Platform,
@@ -302,9 +294,8 @@ pub fn binary_for(
     let target = target_for(platform)?;
     let asset = asset_for(target);
 
-    // The checksums first. Downloading the archive and *then* discovering there
-    // is nothing to check it against would leave a decision to make about bytes
-    // already in hand, and the only safe answer to that is the one taken here.
+    // Fetch the checksums first. If the asset has no checksum, fail before
+    // downloading the archive.
     let checksums_at = checksums_url(version);
     let checksums = fetcher
         .get(&checksums_at)
@@ -335,9 +326,8 @@ pub fn binary_for(
 
     verify(&archive, &expected, &asset, version)?;
 
-    // Written only after it has been checked. A file on disk is something
-    // another process can pick up, and an unverified download that briefly looks
-    // like a deco is worth not creating at all.
+    // Write to disk only after verification. Another process could pick up a
+    // file on disk, so an unverified download is never written.
     let staged = into.join(&asset);
     if let Some(parent) = staged.parent() {
         std::fs::create_dir_all(parent).map_err(|source| FetchError::Unwritable {
@@ -393,19 +383,19 @@ mod tests {
             "x86_64-apple-darwin"
         );
 
-        // Refused by name rather than answered with the nearest thing.
+        // Rejected by name rather than substituted with the closest build.
         let error = target_for(&platform("freebsd", "x86_64")).expect_err("a refusal");
         assert!(error.to_string().contains("freebsd-x86_64"), "{error}");
         assert!(target_for(&platform("linux", "riscv64")).is_err());
-        // Windows has published builds, but not ones this can reach: the
-        // installer speaks POSIX to the remote, so it is never the answer here.
+        // Windows has published builds, but the installer requires a POSIX
+        // remote, so they are never selected here.
         assert!(target_for(&platform("windows", "x86_64")).is_err());
     }
 
     #[test]
     fn the_urls_are_the_ones_the_readme_tells_a_person_to_use() {
-        // If these drift from the documented manual install, one of the two is
-        // wrong and nobody finds out until a release.
+        // These must match the documented manual install. Otherwise the mismatch
+        // would only be found at release time.
         assert_eq!(
             asset_url("0.1.0", &asset_for("x86_64-unknown-linux-gnu")),
             "https://github.com/sabas0ba/deco/releases/download/v0.1.0/\
@@ -433,8 +423,8 @@ ca77f2fe1ecba8fe554b4a7108fa267b0a5c63ee02553883c003086c05ea6b16  SHA256SUMS
             checksum_for(SUMS, "deco-x86_64-unknown-linux-gnu.tar.gz"),
             Some("bc03aec5dc6d531fb826ba05569f4a7900604e35a2d27ee9c1308d4e9e19dfbc")
         );
-        // `-gnu` and `-musl` end alike enough that a suffix match would confuse
-        // them, and the two are different binaries.
+        // A suffix match could confuse `-gnu` and `-musl` names, which are
+        // different binaries.
         assert_eq!(
             checksum_for(SUMS, "deco-x86_64-unknown-linux-musl.tar.gz"),
             Some("4ce3b344a078603b7c907b935188ead640fd7506f913b06381c8dab6be788912")
@@ -445,9 +435,8 @@ ca77f2fe1ecba8fe554b4a7108fa267b0a5c63ee02553883c003086c05ea6b16  SHA256SUMS
 
     #[test]
     fn the_digest_is_the_one_sha256sum_would_print() {
-        // The empty string and "abc" are the values every SHA-256
-        // implementation is checked against, so a broken wiring of the crate
-        // shows up here rather than as a release that will not install.
+        // The empty string and "abc" are standard SHA-256 test vectors. Incorrect
+        // use of the crate fails here rather than at install time.
         assert_eq!(
             digest_of(b""),
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -473,7 +462,7 @@ ca77f2fe1ecba8fe554b4a7108fa267b0a5c63ee02553883c003086c05ea6b16  SHA256SUMS
         assert!(said.contains(&digest_of(b"not the release")), "{said}");
         assert!(said.contains("discarded"), "{said}");
 
-        // A hash is a number; its spelling is not part of it.
+        // Letter case and surrounding whitespace are ignored.
         assert!(verify(b"abc", &digest_of(b"abc").to_uppercase(), "a", "0.1.0").is_ok());
         assert!(verify(b"abc", &format!(" {}\n", digest_of(b"abc")), "a", "0.1.0").is_ok());
     }
@@ -504,8 +493,8 @@ ca77f2fe1ecba8fe554b4a7108fa267b0a5c63ee02553883c003086c05ea6b16  SHA256SUMS
 
     /// A real `.tar.gz` holding one member, built by the machine's own `tar`.
     ///
-    /// A fixture rather than a checked-in blob, so what is parsed is what this
-    /// platform's `tar` actually writes.
+    /// Generated rather than checked in, so the test reads what this platform's
+    /// `tar` writes.
     fn archive_holding(root: &Path, target: &str, contents: &[u8]) -> Vec<u8> {
         let stage = root.join(format!("deco-{target}"));
         std::fs::create_dir_all(&stage).expect("a directory");
@@ -553,7 +542,7 @@ ca77f2fe1ecba8fe554b4a7108fa267b0a5c63ee02553883c003086c05ea6b16  SHA256SUMS
 
     #[test]
     fn an_archive_that_is_not_what_the_release_published_is_discarded() {
-        // The test this module exists for. The bytes arrive, they are wrong, and
+        // The main case for this module: the downloaded bytes do not match, and
         // nothing is written.
         let root = scratch("corrupt");
         let target = "x86_64-unknown-linux-gnu";
@@ -578,9 +567,9 @@ ca77f2fe1ecba8fe554b4a7108fa267b0a5c63ee02553883c003086c05ea6b16  SHA256SUMS
 
     #[test]
     fn an_archive_nothing_vouches_for_is_refused_before_it_is_downloaded() {
-        // No line for this asset means no way to check it, and the answer to
-        // that is not "use it anyway". The archive is deliberately absent from
-        // the table too: reaching for it would be a 404 rather than a refusal.
+        // Without a checksum line the asset cannot be verified, so it is rejected.
+        // The archive is also absent from the table, so a download attempt would
+        // produce a 404 error instead of `NotListed`.
         let root = scratch("unlisted");
         let mut fetcher = Canned(vec![(
             checksums_url("0.1.0"),

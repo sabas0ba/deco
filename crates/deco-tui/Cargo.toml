@@ -15,15 +15,15 @@ deco-editor.workspace = true
 deco-ext.workspace = true
 deco-keymap.workspace = true
 deco-lsp.workspace = true
-# Remote mode: the same event loop drives a session whose files live on another
-# machine, so the client that fetches them belongs here rather than in the binary.
+# Remote mode: the same event loop drives a session whose files are on another
+# machine, so the client that fetches them is in this crate rather than in the binary.
 deco-remote.workspace = true
 deco-scm.workspace = true
 deco-syntax.workspace = true
 deco-theme.workspace = true
 anyhow.workspace = true
 crossterm.workspace = true
-# Already in the graph through every deco crate that speaks a protocol. The host's
-# messages are JSON, and starting one means building their parameters.
+# Already a dependency of every deco crate that implements a protocol. Extension
+# host messages are JSON, and starting a host requires building their parameters.
 serde_json.workspace = true
 unicode-width.workspace = true

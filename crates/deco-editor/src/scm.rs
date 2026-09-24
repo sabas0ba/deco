@@ -1,38 +1,36 @@
-//! The source-control view: what `git status` said, as a list you can act on.
+//! The source-control view: the output of `git status` as a list of actionable
+//! rows.
 //!
-//! A side-bar tenant beside the [file tree](crate::explorer), and fed the same
-//! way — handed a [`deco_scm::Status`] rather than running anything, because
-//! the core has no filesystem and cannot spawn a process. What it adds is the
-//! shape a person needs: the entries grouped by what you would *do* about
-//! them, a selection that survives a refresh, and one row per thing that can
-//! be staged.
+//! This is a side-bar view like the [file tree](crate::explorer), and it gets
+//! its data the same way: it receives a [`deco_scm::Status`] rather than
+//! running git, because the core has no filesystem access and cannot spawn a
+//! process. The view groups entries by the action they need, keeps the
+//! selection across refreshes, and shows one row per stageable change.
 //!
 //! # One file, sometimes two rows
 //!
-//! A file can be staged *and* modified since. Git reports that as one entry
-//! with two halves; the view shows it twice, under **Staged Changes** and
-//! under **Changes**, because they are two different things you can act on —
-//! unstaging the first and staging the second do opposite things to the same
-//! file. VS Code splits it the same way, and a single row would make
-//! `git.stage` ambiguous about which half it meant.
+//! A file can be staged *and* modified afterwards. Git reports this as one
+//! entry with two parts. The view shows it twice, under **Staged Changes** and
+//! under **Changes**, because each part has its own actions: unstaging the
+//! first and staging the second do opposite things to the same file. VS Code
+//! splits it the same way. A single row would make it ambiguous which part
+//! `git.stage` applies to.
 //!
-//! The status bar's count does *not* do this: `±2` is how many files need
-//! thinking about, and counting one file twice there would make the bar
-//! disagree with itself.
+//! The status bar's count does *not* split files. `±2` is the number of changed
+//! files, and counting one file twice would make the count inconsistent.
 
 use std::path::{Path, PathBuf};
 
 use deco_scm::{Change, State, Status};
 
-/// Where a row sits, and therefore what can be done to it.
+/// The heading a row is under, which determines the actions available for it.
 ///
-/// The order is the order they are shown in, and it is the order of what has
-/// to be dealt with first: a conflict blocks everything, staged changes are
-/// what a commit would record, and untracked files are the ones git does not
-/// know about yet.
+/// Variants are declared in display order, which is also priority order: a
+/// conflict blocks everything, staged changes are what a commit would record,
+/// and untracked files are not yet known to git.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Group {
-    /// A merge left it unresolved. Nothing else matters until this does.
+    /// A merge left it unresolved. This must be resolved before anything else.
     Conflicts,
     /// The index against `HEAD`: what committing now would record.
     Staged,
@@ -59,9 +57,9 @@ impl Group {
 pub struct Row {
     /// Where the file is, relative to the repository root.
     ///
-    /// The same coordinates [`deco_scm::Status`] reports in and
-    /// [`deco_scm::Git::committed`] answers about — so a row can be handed
-    /// straight to git without a conversion nobody would remember to do.
+    /// This is the same form [`deco_scm::Status`] reports and
+    /// [`deco_scm::Git::committed`] accepts, so a row can be passed to git
+    /// without conversion.
     pub path: PathBuf,
     /// Which heading it sits under.
     pub group: Group,
@@ -74,9 +72,9 @@ pub struct Row {
 impl Row {
     /// The single letter git uses, for the column beside the name.
     ///
-    /// `U` for a conflict, which is git's own letter for an unmerged path, and
-    /// `?` for something untracked — neither of which is a [`Change`], because
-    /// neither is a thing that happened to a tracked file.
+    /// `U` for a conflict, which is git's letter for an unmerged path, and `?`
+    /// for an untracked file. Neither is a [`Change`], because neither describes
+    /// a change to a tracked file.
     pub fn letter(&self) -> char {
         match (self.group, self.change) {
             (Group::Conflicts, _) => 'U',
@@ -100,7 +98,7 @@ impl Row {
     }
 
     /// The directory it is in, for the dimmer second column. `None` at the
-    /// repository root, where there is nothing to say.
+    /// repository root.
     pub fn directory(&self) -> Option<String> {
         let parent = self.path.parent()?;
         (!parent.as_os_str().is_empty()).then(|| parent.display().to_string())
@@ -109,15 +107,15 @@ impl Row {
 
 /// The view: rows, and which one is selected.
 ///
-/// Only files are rows. The headings a renderer draws between them are derived
-/// from [`Row::group`] as it walks the list, which keeps the selection from
-/// ever landing on something that cannot be staged.
+/// Only files are rows. A renderer derives the headings between them from
+/// [`Row::group`] while iterating the list, so the selection can never be on a
+/// heading.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SourceControl {
     rows: Vec<Row>,
     selected: usize,
-    /// The first drawn line, headings included, so a repository with more
-    /// changes than fit can be walked. The tree keeps one for the same reason.
+    /// The first drawn line, headings included, so that a repository with more
+    /// changes than fit on screen can be scrolled. The tree does the same.
     scroll: usize,
 }
 
@@ -132,11 +130,10 @@ impl SourceControl {
     /// Replaces the rows with a fresh status, keeping the selection where it
     /// can.
     ///
-    /// By path and group first, then by path if the selected half disappeared.
-    /// A refresh reorders the list whenever something is staged, and a
-    /// selection that stayed on row 3 would land on a different file than the
-    /// one the user was looking at — which is how a following command ends up
-    /// acting on the wrong thing.
+    /// The selection is matched by path and group first, then by path alone if
+    /// the selected part disappeared. A refresh reorders the list whenever
+    /// something is staged. Keeping the row number instead would move the
+    /// selection to a different file, and the next command would act on it.
     pub fn refresh(&mut self, status: &Status) {
         let was = self.selection().map(|row| (row.path.clone(), row.group));
         self.rows = rows_of(status);
@@ -145,19 +142,19 @@ impl SourceControl {
                 self.rows
                     .iter()
                     .position(|row| row.path == path && row.group == group)
-                    // Staging the working-tree half of a file that already
-                    // has an index half removes the selected row but leaves
-                    // the same file under Staged Changes. Follow that
-                    // remaining half before falling back to a row number,
-                    // otherwise the next command can act on its neighbour.
+                    // Staging the working-tree part of a file that already
+                    // has an index part removes the selected row but leaves
+                    // the same file under Staged Changes. Select that
+                    // remaining row before falling back to a row number,
+                    // otherwise the next command can act on the next file.
                     .or_else(|| self.rows.iter().position(|row| row.path == path))
             })
-            // The file it was on is gone — staged, committed, reverted. The
-            // index is kept rather than reset to the top, so the selection
-            // lands next to where the user was working.
+            // The file is no longer listed (staged, committed or reverted).
+            // The index is kept rather than reset to the top, so the selection
+            // stays near where the user was working.
             .unwrap_or_else(|| self.selected.min(self.rows.len().saturating_sub(1)));
-        // A list that shortened under a scrolled view would otherwise be drawn
-        // from a line that no longer exists, and show nothing at all.
+        // Otherwise a shortened list could be drawn from a line that no longer
+        // exists and show nothing.
         self.scroll = self.scroll.min(self.line_of(self.selected));
     }
 
@@ -188,14 +185,14 @@ impl SourceControl {
 
     /// Scrolls so the selection is within `height` rows of the top.
     ///
-    /// Called by whoever knows how tall the side bar is, which is not this —
-    /// the same bargain the tree makes. Without it a repository with more
-    /// changes than fit would let the selection walk off the bottom, and the
-    /// next stage or unstage would act on a file nothing on screen shows.
+    /// Called by the code that knows the side bar's height, as for the tree.
+    /// Without it, in a repository with more changes than fit, the selection
+    /// could move below the visible area, and the next stage or unstage would
+    /// act on a file that is not shown.
     ///
-    /// The headings are counted, because they take rows too: a list drawn as
-    /// four groups of three is nineteen rows, not twelve, and scrolling by the
-    /// file count alone would leave the last one just off screen.
+    /// Headings are counted because they also take rows: a list drawn as four
+    /// groups of three is nineteen rows, not twelve. Scrolling by the file count
+    /// alone would leave the last row just off screen.
     pub fn scroll_into_view(&mut self, height: usize) {
         if height == 0 {
             return;
@@ -227,9 +224,9 @@ impl SourceControl {
 
     /// Moves down, stopping at the end rather than wrapping.
     ///
-    /// The tree does the same. Wrapping in a list you are stepping through to
-    /// stage things means an unnoticed jump from the last file to the first,
-    /// and the next keystroke acting on the wrong one.
+    /// The tree does the same. When stepping through files to stage them,
+    /// wrapping would move from the last file to the first without notice, and
+    /// the next keystroke would act on the wrong file.
     pub fn select_next(&mut self) {
         if self.selected + 1 < self.rows.len() {
             self.selected += 1;
@@ -253,9 +250,8 @@ impl SourceControl {
 
     /// Puts the selection on a particular file, if it is listed.
     ///
-    /// The first row for that path, whichever group it is in — a caller naming
-    /// a file means the file, and picking the staged half over the unstaged
-    /// one is not a decision it has made.
+    /// Selects the first row for that path, whichever group it is in. The
+    /// caller names a file, not a staged or unstaged part of it.
     pub fn reveal(&mut self, path: &Path) -> bool {
         match self.rows.iter().position(|row| row.path == path) {
             Some(at) => {
@@ -268,8 +264,8 @@ impl SourceControl {
 
     /// How many rows sit under each heading, in display order.
     ///
-    /// For a renderer that wants to draw `Changes (3)` the way VS Code does,
-    /// without walking the list itself.
+    /// Lets a renderer draw `Changes (3)` as VS Code does without iterating the
+    /// list itself.
     pub fn groups(&self) -> Vec<(Group, usize)> {
         let mut out: Vec<(Group, usize)> = Vec::new();
         for row in &self.rows {
@@ -300,8 +296,7 @@ fn rows_of(status: &Status) -> Vec<Row> {
                 original: None,
             }),
             State::Tracked { staged, worktree } => {
-                // Both halves, when both have something to say. See the module
-                // docs: they are two different things to act on.
+                // One row for each part that has a change. See the module docs.
                 if !staged.is_none() {
                     rows.push(Row {
                         path: entry.path.clone(),
@@ -315,20 +310,19 @@ fn rows_of(status: &Status) -> Vec<Row> {
                         path: entry.path.clone(),
                         group: Group::Changes,
                         change: *worktree,
-                        // A rename is recorded in the *index*; the working-tree
-                        // half of the same entry is about the file at its new
-                        // name, and carrying the old one there would label it
-                        // as a move that this half did not make.
+                        // A rename is recorded in the *index*. The working-tree
+                        // part of the same entry describes the file at its new
+                        // name, so it does not carry the old name.
                         original: None,
                     });
                 }
             }
         }
     }
-    // By group first, then by path, so the list is stable across refreshes and
-    // reads in the order the headings do. `sort_by_key` is stable, so files
-    // keep git's order within a group when their paths tie — which they cannot,
-    // but relying on that would be one more thing to be wrong about.
+    // Sorted by group, then by path, so the order is stable across refreshes
+    // and matches the headings. `sort_by_key` is stable, so rows with equal
+    // paths in a group would keep git's order. Paths cannot tie, but the code
+    // does not rely on that.
     rows.sort_by(|one, two| {
         one.group
             .cmp(&two.group)
@@ -403,9 +397,9 @@ mod tests {
         view.select_next();
         assert_eq!(view.selection().unwrap().path, PathBuf::from("work.rs"));
 
-        // `staged.rs` gets committed, so the list shortens from the top. A
+        // `staged.rs` is committed, so the list shortens from the top. A
         // selection that stayed on row 1 would now be on `new.rs`, and the
-        // next `git.stage` would act on a file the user never looked at.
+        // next `git.stage` would act on a file the user did not select.
         view.refresh(&status(&[UNSTAGED, UNTRACKED]));
         assert_eq!(view.selection().unwrap().path, PathBuf::from("work.rs"));
     }
@@ -416,8 +410,7 @@ mod tests {
         assert_eq!(view.selection().unwrap().group, Group::Changes);
 
         // The same file, now staged. It has moved to a different heading, and
-        // the selection follows it there rather than to whatever took its old
-        // place.
+        // the selection follows it rather than staying on the old row number.
         view.refresh(&status(&[
             "1 M. N... 100644 100644 100644 aaaaaaa bbbbbbb work.rs",
         ]));
@@ -452,8 +445,8 @@ mod tests {
         view.select_last();
         assert_eq!(view.selection().unwrap().path, PathBuf::from("new.rs"));
 
-        // `new.rs` is committed away. The selection lands beside where the
-        // user was, not back at the beginning of a list they had scrolled.
+        // `new.rs` is committed. The selection stays near its previous
+        // position instead of returning to the top of the list.
         view.refresh(&status(&[STAGED, UNSTAGED]));
         assert_eq!(view.selection().unwrap().path, PathBuf::from("work.rs"));
     }
@@ -497,9 +490,8 @@ mod tests {
 
     #[test]
     fn a_rename_carries_its_old_name_on_the_staged_half_only() {
-        // Git records a rename in the index. The working-tree half of the same
-        // entry is about the file at its *new* name, so labelling it as a move
-        // would say the working tree did something it did not.
+        // Git records a rename in the index. The working-tree part of the same
+        // entry describes the file at its *new* name and is not a move.
         let view = SourceControl::from_status(&status(&[
             "2 RM N... 100644 100644 100644 aaaaaaa bbbbbbb R100 new/name.rs",
             "old/name.rs",

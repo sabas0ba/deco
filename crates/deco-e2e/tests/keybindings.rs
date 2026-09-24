@@ -1,9 +1,8 @@
 //! A `keybindings.json` on disk, and the keys it changes.
 //!
-//! A keybinding is only real once pressing the key runs the command. Resolving
-//! the rule correctly and then never reaching the command is the failure these
-//! scenarios exist to catch, so every one of them presses a key and looks at
-//! what happened to the document.
+//! A keybinding works only if pressing the key runs the command. These
+//! scenarios detect a rule that resolves correctly but does not reach the
+//! command, so each one presses a key and checks the document.
 
 use deco_keymap::binding::Platform;
 
@@ -26,9 +25,8 @@ fn a_rebound_key_runs_the_command_it_was_bound_to() {
 
 #[test]
 fn a_removed_default_stops_doing_what_it_used_to() {
-    // `-command` is how VS Code takes a default away, and somebody who has
-    // removed `ctrl+/` expects `ctrl+/` to do nothing at all — not to fall back
-    // to the default it was written to cancel.
+    // VS Code removes a default binding with `-command`. After removing
+    // `ctrl+/`, the key must do nothing, not fall back to the removed default.
     let scenario = Scenario::new("remove-default")
         .user_keybindings(r#"[{ "key": "ctrl+/", "command": "-editor.action.commentLine" }]"#)
         .file("a.rs", "let x = 1;\n");
@@ -54,7 +52,7 @@ fn a_users_binding_wins_over_the_built_in_one_for_the_same_key() {
     let mut editor = scenario.launch(&["a.rs"]);
 
     editor.press("ctrl+/");
-    // Not commented — and something was selected instead.
+    // Not commented; the text was selected instead.
     assert_eq!(editor.text(), "let x = 1;\nlet y = 2;\n");
     editor.type_text("z");
     assert_eq!(
@@ -75,7 +73,7 @@ fn a_two_key_chord_needs_both_keys() {
         .file("a.rs", "let x = 1;\n");
     let mut editor = scenario.launch(&["a.rs"]);
 
-    // The first key alone does nothing but wait for the second.
+    // The first key alone only waits for the second.
     editor.press("ctrl+k");
     assert_eq!(editor.text(), "let x = 1;\n");
     editor.press("ctrl+w");
@@ -84,8 +82,8 @@ fn a_two_key_chord_needs_both_keys() {
 
 #[test]
 fn a_chord_that_is_abandoned_does_not_leave_the_keyboard_stuck() {
-    // Pressing the first half of a chord and then something else is a thing
-    // people do by accident constantly. The editor has to come back.
+    // Pressing the first key of a chord followed by another key is a common
+    // mistake. The editor must return to normal input.
     let scenario = Scenario::new("chord-abandoned").file("a.txt", "x\n");
     let mut editor = scenario.launch(&["a.txt"]);
 
@@ -120,8 +118,8 @@ fn a_when_clause_decides_whether_the_binding_applies() {
 
 #[test]
 fn a_mac_keyboard_gets_the_mac_half_of_the_default_bindings() {
-    // Every default that differs per platform carries a `mac` field, and a
-    // machine that is a Mac has to get that half rather than the other one.
+    // Every platform-specific default has a `mac` field, and a Mac must use
+    // that key instead of the other.
     let scenario = Scenario::new("mac-defaults")
         .platform(Platform::Mac)
         .file("a.rs", "let x = 1;\n");
@@ -130,7 +128,7 @@ fn a_mac_keyboard_gets_the_mac_half_of_the_default_bindings() {
     editor.press("cmd+/");
     assert_eq!(editor.text(), "// let x = 1;\n");
 
-    // And the key the other platforms use is not also bound here.
+    // The key used on other platforms is not bound here.
     editor.press("ctrl+/");
     assert_eq!(editor.text(), "// let x = 1;\n");
 }
@@ -179,8 +177,8 @@ fn a_broken_keybindings_file_leaves_the_defaults_working_and_says_so() {
         !editor.problems().is_empty(),
         "a keybindings file that does not parse should be reported"
     );
-    // And the built-in bindings still work, because an editor whose keyboard
-    // stopped answering is worse than one that ignored a broken file.
+    // The built-in bindings still work. Ignoring a broken file is better than
+    // an editor that does not respond to keys.
     editor.press("ctrl+/");
     assert_eq!(editor.text(), "// let x = 1;\n");
 }

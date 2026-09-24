@@ -1,25 +1,25 @@
 //! How the screen is divided: between the chrome regions, and within the
 //! editor between the gutter and the groups.
 //!
-//! Here rather than in a frontend because two things now need the same answer.
-//! The renderer needs it to draw, and the core needs it to wrap: where a line
-//! breaks depends on how many columns are left for text, so a session that did
-//! not know its own layout could only wrap by asking a frontend — and then the
-//! two would be free to disagree about the width, which is the sort of
-//! disagreement that shows up as a caret one column off the text it belongs to.
+//! This is in the core rather than in a frontend because both the renderer and
+//! the core use it. The renderer uses it to draw, and the core uses it to wrap
+//! lines, since the break position depends on the columns available for text.
+//! If the frontend computed the layout, the two could disagree about the width
+//! and draw the caret one column away from its text.
 //!
-//! Pure arithmetic over state the session already has. Nothing here touches a
+//! The functions are pure arithmetic over session state. Nothing here touches a
 //! terminal.
 
 use deco_config::{LineNumbers, SideBarLocation};
 
 use crate::Document;
 
-/// A rectangle of cells, from the top-left of the area the frontend handed over.
+/// A rectangle of cells, relative to the top-left of the area provided by the
+/// frontend.
 ///
-/// Cells rather than pixels: this is the terminal's unit, and the GPU frontend
-/// multiplies by its own metrics. Putting pixels here would make the core know
-/// about fonts.
+/// The unit is cells, not pixels. Cells are the terminal's unit, and the GPU
+/// frontend multiplies by its own font metrics, so the core does not depend on
+/// fonts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Rect {
     /// Columns from the left edge.
@@ -41,45 +41,43 @@ impl Rect {
 
 /// How wide the side bar is when it fits.
 ///
-/// A fixed count rather than a fraction, because what will live in it is a file
-/// tree, and a tree that changed width with the window would reflow every path
-/// on every resize. VS Code's own side bar is a fixed pixel width for the same
-/// reason. Not a setting: VS Code has none either — it remembers a dragged
-/// width, and deco [writes no files](../../../docs/configuration.md) to remember
-/// one in.
+/// A fixed column count rather than a fraction of the window. The side bar
+/// shows a file tree, and a width that followed the window would reflow every
+/// path on each resize. VS Code's side bar also has a fixed pixel width. This is
+/// not a setting: VS Code has no such setting either, and it stores a dragged
+/// width, while deco [writes no files](../../../docs/configuration.md) in which
+/// to store one.
 pub const SIDE_BAR_WIDTH: usize = 30;
 
-/// The narrowest a side bar can be squeezed to before it is not shown at all.
+/// The narrowest width a side bar can shrink to before it is hidden.
 ///
-/// A tree in ten columns is a column of ellipses; below that it is worse than
-/// the space it took from the editor.
+/// A tree in ten columns shows mostly ellipses, which is not worth the space it
+/// takes from the editor.
 pub const MIN_SIDE_BAR_WIDTH: usize = 12;
 
 /// How tall the panel is when it fits.
 pub const PANEL_HEIGHT: usize = 10;
 
-/// The shortest a panel can be squeezed to before it is not shown at all.
+/// The shortest height a panel can shrink to before it is hidden.
 ///
-/// Two rows of content under a rule. Less than that shows a border and nothing
-/// else, which is chrome for its own sake.
+/// This is two rows of content under a rule. A smaller panel would show only
+/// its border.
 pub const MIN_PANEL_HEIGHT: usize = 3;
 
-/// What the editor keeps whatever else is asked for.
+/// The minimum size the editor keeps regardless of other regions.
 ///
-/// A region never takes the editor below this. The text is what the window is
-/// for, and an editor squeezed to nothing to make room for a file tree has the
-/// priority backwards.
+/// A region never shrinks the editor below this. The editor has priority over
+/// the side bar and panel.
 pub const MIN_EDITOR_WIDTH: usize = 20;
 /// The same, in rows.
 pub const MIN_EDITOR_HEIGHT: usize = 3;
 
 /// Where the screen's regions ended up.
 ///
-/// A region that is asked for but does not fit is `None` rather than a rectangle
-/// of nothing: "there is no room for it in this window" and "it is hidden" are
-/// different facts, and only the first should be undone by making the window
-/// bigger. Visibility stays [session state](crate::Session); this is only the
-/// arithmetic.
+/// A requested region that does not fit is `None` rather than an empty
+/// rectangle. "No room in this window" and "hidden" are different states, and
+/// only the first changes when the window grows. Visibility remains
+/// [session state](crate::Session); this type holds only the computed layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Regions {
     /// Where the text and its groups go.
@@ -90,9 +88,9 @@ pub struct Regions {
     pub panel: Option<Rect>,
     /// The column the rule between side bar and editor sits in.
     ///
-    /// Separate from either rectangle because it belongs to neither: it is drawn
-    /// in the chrome's colour, and a tenant given a rectangle that included its
-    /// own border could paint over it.
+    /// Kept outside both rectangles because it is drawn in the chrome's colour.
+    /// If a region's rectangle included the rule, drawing the region could
+    /// overwrite it.
     pub side_bar_rule: Option<usize>,
     /// The row the rule between editor and panel sits in.
     pub panel_rule: Option<usize>,
@@ -101,9 +99,10 @@ pub struct Regions {
 /// Divides `width` x `height` between the editor and whichever regions are
 /// showing.
 ///
-/// The panel is taken off the bottom before the side bar is taken off the side,
-/// so the side bar runs the full height beside both — which is how VS Code lays
-/// them out, and the reason a terminal in the panel is as wide as the window.
+/// The panel is taken from the bottom before the side bar is taken from the
+/// side, so the side bar spans the full height beside both the editor and the
+/// panel. This matches VS Code's layout, and is why a terminal in the panel is
+/// as wide as the window.
 pub fn regions(
     width: usize,
     height: usize,
@@ -170,19 +169,19 @@ pub fn regions(
 
 /// How much of `total` a region gets, or `None` if it does not fit.
 ///
-/// It asks for `wanted`, gives way when the window is small, and takes nothing
-/// at all rather than come out below `min` or leave the editor under `keep`.
-/// The `+ 1` is the rule between them, which has to come out of somewhere.
+/// The region gets `wanted` if possible and less in a small window. It gets
+/// nothing if it would be smaller than `min` or would leave the editor with
+/// less than `keep`. The `+ 1` is the rule between the region and the editor.
 ///
-/// The half is what stops a small window from being mostly chrome. Without it a
-/// panel on a twelve-row terminal takes everything above the editor's three-row
-/// minimum and leaves a slot to read code through; with it, neither side of the
-/// split can take more than it leaves.
+/// The region is also capped at half of the space, so a small window is not
+/// mostly chrome. Without the cap, a panel in a twelve-row terminal would take
+/// every row above the editor's three-row minimum. With it, the region never
+/// takes more than it leaves.
 fn fits(total: usize, wanted: usize, min: usize, keep: usize) -> Option<usize> {
     let spare = total.checked_sub(keep + 1)?;
-    // Half of what is left *after* the rule, not half of the window: the rule
-    // comes out of the editor's share, so an even split of the whole would hand
-    // the region one more cell than the editor keeps.
+    // Half of the space *after* the rule, not half of the window. The rule is
+    // taken from the editor's share, so halving the whole window would give the
+    // region one more cell than the editor.
     let half = total.saturating_sub(1) / 2;
     let room = spare.min(wanted).min(half);
     (room >= min).then_some(room)
@@ -190,8 +189,8 @@ fn fits(total: usize, wanted: usize, min: usize, keep: usize) -> Option<usize> {
 
 /// Columns the line-number gutter needs for `document`.
 ///
-/// Per document rather than per session: two groups side by side can be showing
-/// files of very different lengths, and each gutter has to fit its own.
+/// Computed per document rather than per session, because groups side by side
+/// can show files of very different lengths.
 pub fn gutter_width(document: &Document) -> usize {
     if document.settings.line_numbers == LineNumbers::Off {
         return 0;
@@ -203,10 +202,9 @@ pub fn gutter_width(document: &Document) -> usize {
 
 /// How wide each editor group's column is, left to right.
 ///
-/// The remainder goes to the leftmost columns, a cell each, so the widths differ
-/// by at most one and no column is left a cell short of the others for no reason.
-/// One separator column sits between each pair, which is why the divisor counts
-/// them out first.
+/// The remainder goes to the leftmost columns, one cell each, so the widths
+/// differ by at most one. One separator column sits between each pair, so the
+/// separators are subtracted before dividing.
 pub fn column_widths(width: usize, groups: usize) -> Vec<usize> {
     if groups <= 1 {
         return vec![width];
@@ -243,8 +241,8 @@ mod tests {
 
     #[test]
     fn a_short_file_still_gets_two_digits_of_gutter() {
-        // Otherwise the text shifts left as the file grows past nine lines, which
-        // is a redraw of everything for no reason.
+        // Otherwise the text would shift when the file grows past nine lines and
+        // everything would be redrawn.
         assert_eq!(gutter_width(&document(1)), 4);
     }
 
@@ -333,8 +331,8 @@ mod tests {
 
     #[test]
     fn the_side_bar_runs_past_the_panel() {
-        // VS Code's arrangement, and the reason a terminal in the panel is as
-        // wide as the editor rather than as wide as the window.
+        // This matches VS Code. A terminal in the panel is as wide as the editor,
+        // not as wide as the window.
         let out = roomy(Some(SideBarLocation::Left), true);
         let bar = out.side_bar.expect("showing");
         let panel = out.panel.expect("showing");
@@ -369,8 +367,8 @@ mod tests {
 
     #[test]
     fn a_small_window_does_not_become_mostly_chrome() {
-        // The case the half-cap exists for. Without it the panel takes every row
-        // above the editor's minimum and leaves a slot to read code through.
+        // The half cap exists for this case. Without it, the panel would take
+        // every row above the editor's minimum.
         let out = regions(80, 12, None, true);
         let panel = out.panel.expect("it fits");
         assert!(
@@ -384,9 +382,9 @@ mod tests {
 
     #[test]
     fn a_window_with_no_room_shows_no_region_at_all() {
-        // `None` rather than a rectangle of nothing: it means "not in this
-        // window", and widening the window undoes it. Hidden is a different fact
-        // and belongs to the session.
+        // `None` rather than an empty rectangle. It means "no room in this
+        // window" and changes when the window grows. Hidden is a separate state
+        // held by the session.
         let out = regions(28, 24, Some(SideBarLocation::Left), false);
         assert_eq!(out.side_bar, None);
         assert_eq!(out.side_bar_rule, None);
@@ -402,9 +400,8 @@ mod tests {
         for (width, height) in [(0, 0), (1, 1), (2, 40), (40, 2), (200, 1), (1, 200)] {
             let out = regions(width, height, Some(SideBarLocation::Left), true);
 
-            // Whatever it decided, nothing may be bigger than the window or
-            // hang off its edges — which is what an underflowed subtraction
-            // would look like from here.
+            // No region may be larger than the window or extend past its edges.
+            // An underflowed subtraction would show up here.
             assert!(out.editor.width <= width, "{width}x{height}");
             assert!(out.editor.height <= height, "{width}x{height}");
             for region in [out.side_bar, out.panel].into_iter().flatten() {
@@ -423,8 +420,8 @@ mod tests {
 
     #[test]
     fn a_window_short_enough_to_refuse_the_panel_still_shows_the_side_bar() {
-        // The two are decided separately, against the axis each takes from.
-        // Height that rules out a panel says nothing about width.
+        // Each region is checked separately against the axis it takes space
+        // from. A height too small for the panel does not affect the side bar.
         let out = regions(40, 2, Some(SideBarLocation::Left), true);
         assert_eq!(out.panel, None, "two rows leaves the editor nothing");
         assert!(
@@ -460,8 +457,7 @@ mod tests {
 
     #[test]
     fn the_remainder_goes_to_the_left() {
-        // 80 less one separator is 79, so one column is a cell wider. Nobody is
-        // left a cell short of the others for no reason.
+        // 80 less one separator is 79, so one column is a cell wider.
         assert_eq!(column_widths(80, 2), [40, 39]);
         assert_eq!(column_widths(80, 3), [26, 26, 26]);
         assert_eq!(column_widths(81, 3), [27, 26, 26]);

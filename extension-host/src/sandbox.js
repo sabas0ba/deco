@@ -1,18 +1,17 @@
 'use strict';
 
 /**
- * Removes the ambient authority a Node process normally hands to whatever it
- * loads.
+ * Removes the access to built-in modules and network globals that a Node process
+ * normally gives to any code it loads.
  *
- * This is layer 2 of three (see crates/deco-ext/src/host.rs). Node's own
- * permission model is layer 1 and is the one an extension genuinely cannot talk
- * its way around; it does not cover the network, which is the main gap this
- * file closes. Layer 3 is deco's capability broker, which decides whether a
- * brokered request is actually allowed.
+ * This is layer 2 of three (see crates/deco-ext/src/host.rs). Layer 1 is Node's
+ * permission model, which an extension cannot bypass from JavaScript. It does
+ * not cover the network, and this file mainly fills that gap. Layer 3 is deco's
+ * capability broker, which decides whether a brokered request is allowed.
  *
- * The point of this layer is not to be the last line of defence. It is to turn
- * "the extension quietly opened a socket" into "the extension got a clear error
- * telling it to use the deco API", which is both safer and far easier to debug.
+ * This layer is not the last line of defence. Its purpose is that an extension
+ * trying to open a socket gets a clear error telling it to use the deco API,
+ * instead of succeeding unnoticed. This is safer and easier to debug.
  */
 
 /** Built-ins an extension must never reach directly. */
@@ -47,8 +46,8 @@ const BLOCKED_GLOBALS = [
 ];
 
 /**
- * The error an extension sees when it reaches for something it may not have.
- * It names the replacement so the failure is actionable rather than mysterious.
+ * The error an extension gets when it accesses a blocked module or global.
+ * It names the replacement API so the user knows what to use instead.
  */
 class CapabilityError extends Error {
   constructor(what, replacement) {
@@ -64,7 +63,7 @@ class CapabilityError extends Error {
   }
 }
 
-/** What to point an extension at when it reaches for a blocked built-in. */
+/** The replacement API to suggest for each blocked built-in. */
 const REPLACEMENTS = {
   fs: 'vscode.workspace.fs',
   'fs/promises': 'vscode.workspace.fs',
@@ -88,7 +87,7 @@ function normalizeSpecifier(specifier) {
  *
  * @param {object} options
  * @param {NodeRequire} options.moduleRequire - The `Module` class's require,
- *   which is what extension `require` calls end up in.
+ *   which extension `require` calls go through.
  * @param {object} options.globals - The global object to strip.
  * @returns {{restore: () => void}} A handle used only by the test suite; the
  *   real host never restores.
@@ -109,8 +108,8 @@ function install({ moduleRequire, globals }) {
   for (const name of BLOCKED_GLOBALS) {
     if (name in globals) {
       removedGlobals.set(name, globals[name]);
-      // Defined rather than deleted so that a lazily-installed global (Node
-      // installs `fetch` on first access) cannot reappear underneath us.
+      // Redefined instead of deleted, so a lazily installed global cannot
+      // reappear later (Node installs `fetch` on first access).
       Object.defineProperty(globals, name, {
         configurable: true,
         get() {

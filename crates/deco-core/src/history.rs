@@ -29,8 +29,7 @@ pub struct HistoryOptions {
 
 impl Default for HistoryOptions {
     fn default() -> Self {
-        // 500ms matches the feel of VS Code's typing groups closely enough that
-        // muscle memory transfers.
+        // 500ms approximates the grouping of typing in VS Code.
         Self {
             coalesce_window_ms: 500,
             max_entries: 1000,
@@ -40,12 +39,11 @@ impl Default for HistoryOptions {
 
 /// Names one edit that several buffers took part in.
 ///
-/// A buffer's history knows nothing about the others — it holds a number, and
-/// whoever handed out that number is the one who can find its counterparts. That
-/// keeps the cross-document logic in the layer that owns more than one document
-/// while still letting a single buffer say "the step on top of me was part of
-/// something larger", which is the fact an undo has to have before it can decide
-/// how much to undo.
+/// A buffer's history stores only this number and has no reference to other
+/// buffers. The caller that assigned the number finds the other buffers in the
+/// group. Cross-document logic therefore stays in the layer that owns several
+/// documents, while a single buffer can still report that its top step is part
+/// of a larger edit. Undo needs that information to decide how much to undo.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Group(pub u64);
 
@@ -129,8 +127,8 @@ impl History {
     /// Records an applied edit.
     ///
     /// `inverse` is what [`Buffer::apply`] returned, `now_ms` is a monotonic
-    /// timestamp supplied by the frontend — the core deliberately owns no clock
-    /// so that history behaviour is deterministic under test.
+    /// timestamp supplied by the frontend. The core has no clock so that history
+    /// behaviour is deterministic under test.
     pub fn record(
         &mut self,
         inverse: Transaction,
@@ -151,11 +149,11 @@ impl History {
 
     /// Records an applied edit as part of `group`.
     ///
-    /// The same as [`History::record`] except that the step is tagged, and that
-    /// it is always [`EditKind::Discrete`]: a step several buffers share cannot
-    /// coalesce with the typing around it, because the buffers would then
-    /// disagree about where the shared step begins and one undo would take a
-    /// different amount out of each of them.
+    /// The same as [`History::record`] except that the step is tagged and is
+    /// always [`EditKind::Discrete`]. A step shared by several buffers does not
+    /// coalesce with surrounding typing. Otherwise the buffers would disagree
+    /// about where the shared step begins, and one undo would remove a different
+    /// amount from each buffer.
     pub fn record_in_group(
         &mut self,
         inverse: Transaction,
@@ -176,9 +174,9 @@ impl History {
 
     /// The group the next [`History::undo`] would undo, if that step is shared.
     ///
-    /// `None` covers both "nothing to undo" and "the next step is this buffer's
-    /// alone", which are the same answer to the only question the caller is
-    /// asking: is there anyone else to undo alongside.
+    /// Returns `None` both when there is nothing to undo and when the next step
+    /// belongs only to this buffer. In both cases no other buffer needs to be
+    /// undone with it.
     pub fn undo_group(&self) -> Option<Group> {
         self.undo_stack.last()?.group
     }
@@ -268,9 +266,9 @@ impl History {
             selection_before_apply: entry.selection_after_apply,
             kind: EditKind::Discrete,
             last_ms: entry.last_ms,
-            // Carried across, so a shared step that has been undone is still a
-            // shared step to redo. Losing the tag here would undo several
-            // documents together and put only one of them back.
+            // Keep the group so that an undone shared step is redone as a shared
+            // step. Without it, several documents would be undone together but
+            // only one of them redone.
             group: entry.group,
         }
     }
@@ -330,8 +328,8 @@ mod tests {
         );
         assert_eq!(history.undo_group(), Some(Group(7)));
 
-        // An ordinary edit on top hides it: undoing now is this buffer's own
-        // business, and only once that step is gone is the shared one next.
+        // An ordinary edit on top hides the group. After that edit is undone,
+        // the shared step is next.
         type_text(&mut buffer, &mut history, Position::new(0, 1), "y", 1_000);
         assert_eq!(history.undo_group(), None);
         history.undo(&mut buffer);
@@ -340,8 +338,8 @@ mod tests {
 
     #[test]
     fn an_undone_group_is_still_a_group_to_redo() {
-        // Otherwise a rename would come out of every file together and go back
-        // into only the one the caret was in.
+        // Otherwise undoing a rename would revert every file, but redoing it
+        // would restore only the file containing the caret.
         let mut buffer = Buffer::from_text("");
         let mut history = History::default();
 
@@ -361,9 +359,9 @@ mod tests {
 
     #[test]
     fn typing_never_joins_a_shared_step() {
-        // The buffers sharing a group each got exactly one step. If typing could
-        // coalesce into this buffer's copy, one undo would take the typing out
-        // here and nothing out of the others.
+        // Each buffer in a group has exactly one step for it. If typing coalesced
+        // into this buffer's step, one undo would remove the typing here but
+        // nothing from the other buffers.
         let mut buffer = Buffer::from_text("");
         let mut history = History::default();
 

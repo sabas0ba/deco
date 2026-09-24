@@ -3,10 +3,10 @@
 /**
  * Line-delimited JSON RPC over a pair of streams.
  *
- * The host has no network and no filesystem, so this connection to deco is its
- * only way to affect anything. Every message is one line of JSON with an
- * explicit `type` tag — see crates/deco-ext/src/protocol.rs, which must agree
- * with this file.
+ * The host has no network and no filesystem access, so this connection to deco
+ * is its only channel to the outside. Every message is one line of JSON with an
+ * explicit `type` tag. crates/deco-ext/src/protocol.rs defines the same format
+ * and must stay consistent with this file.
  */
 
 const PROTOCOL_VERSION = '1';
@@ -28,10 +28,10 @@ class RpcConnection {
 
     input.setEncoding('utf8');
     input.on('data', (chunk) => this._onData(chunk));
-    // deco closing its end is the only signal that deco is gone. Without acting
-    // on it a host outlives the editor that started it, and in a container that
-    // means `--rm` never fires and the container is left running: an orphan that
-    // still holds whatever it had been granted.
+    // The input stream closing is the only signal that deco has exited. Without
+    // handling it, the host outlives the editor. In a container, `--rm` then never
+    // takes effect and the container keeps running with the access it was
+    // granted.
     input.on('end', () => this._onClosed());
     input.on('close', () => this._onClosed());
   }
@@ -53,8 +53,8 @@ class RpcConnection {
       try {
         message = JSON.parse(line);
       } catch {
-        // deco skips unparseable lines too; dropping the connection would let
-        // any stray write kill the host.
+        // deco also skips unparseable lines. Dropping the connection would let
+        // any stray write stop the host.
         continue;
       }
       this._dispatch(message);
@@ -106,7 +106,7 @@ class RpcConnection {
         return;
       }
       default:
-        // An unknown message type is ignored rather than guessed at.
+        // An unknown message type is ignored.
         return;
     }
   }

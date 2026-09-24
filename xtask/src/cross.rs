@@ -1,39 +1,38 @@
-//! Exercising the Windows and macOS targets from a Linux host.
+//! Testing the Windows and macOS targets from a Linux host.
 //!
-//! The premium runners are held back to a release tag and to a deliberate
-//! request (see the header of `.github/workflows/ci.yml`), which would leave
-//! every other push with no signal at all about the platforms most of deco's
-//! users are on. Two things a Linux runner can do give most of it back, and CI
-//! runs both of them once a day on main rather than on every push — what they
-//! catch is a dependency or a target moving, which happens on its own schedule
-//! and not on the repository's:
+//! The premium runners run only on a release tag or on explicit request (see
+//! the header of `.github/workflows/ci.yml`). Without another check, other
+//! pushes would give no information about the platforms most deco users use.
+//! A Linux runner can provide most of it with two checks. CI runs both once a
+//! day on main rather than on every push, because they detect changes in
+//! dependencies or targets, which happen independently of this repository:
 //!
-//! * **A type check per shipped triple.** `cargo check` stops before the link
-//!   step, so it needs no MSVC toolchain and no Apple SDK — only the target's
-//!   prebuilt `std`, which rustup hands out for all four. What it catches is
-//!   what a `#[cfg]` hides: the branch of `paths.rs` that picks `%APPDATA%`,
-//!   the branch of `binding.rs` that maps `cmd` instead of `ctrl`, and the
-//!   frontend's per-platform windowing code, none of which a Linux build
-//!   compiles at all.
+//! * **A type check per shipped triple.** `cargo check` stops before linking,
+//!   so it needs no MSVC toolchain and no Apple SDK, only the target's prebuilt
+//!   `std`, which rustup provides for all four. It checks code behind `#[cfg]`
+//!   that a Linux build does not compile: the branch of `paths.rs` that uses
+//!   `%APPDATA%`, the branch of `binding.rs` that maps `cmd` instead of `ctrl`,
+//!   and the frontend's per-platform windowing code.
 //!
 //! * **The tests, run under Wine.** Built for `x86_64-pc-windows-gnu` with
-//!   MinGW and executed through Wine by way of cargo's target runner. These
-//!   are real Windows binaries running Windows code paths — the tests that
-//!   spawn a child process included — bar the painting tests in
-//!   [`WINE_SKIPS`], which need a console Wine has not been given.
+//!   MinGW and run through Wine as cargo's target runner. These are real
+//!   Windows binaries running Windows code paths, including the tests that
+//!   spawn a child process. The painting tests in [`WINE_SKIPS`] are excluded
+//!   because they need a console, which Wine does not have here.
 //!
-//! What neither covers, and what the tagged run on real runners is therefore
-//! still for:
+//! Neither check covers the following, so the tagged run on real runners is
+//! still needed:
 //!
-//! * **macOS, at runtime.** There is no Wine for Darwin. The macOS half is a
-//!   compile check and nothing more.
-//! * **The MSVC ABI.** Wine runs the GNU target; a mismatch that is specific to
-//!   the linker or the C runtime MSVC uses will not show up here.
-//! * **Wine's own fidelity.** It reimplements Win32; where it differs from
-//!   Windows, a test can pass here and fail there — or the reverse.
+//! * **macOS at runtime.** There is no Wine for Darwin. The macOS check only
+//!   compiles.
+//! * **The MSVC ABI.** Wine runs the GNU target, so problems specific to the
+//!   MSVC linker or C runtime are not detected.
+//! * **Wine's accuracy.** Wine reimplements Win32. Where it differs from
+//!   Windows, a test can pass here and fail on Windows, or the reverse.
 //! * **The GPU frontend and the real console.** `deco-gui` is excluded because
-//!   wgpu and winit want an adapter and a compositor, neither of which a
-//!   headless Wine has; [`WINE_SKIPS`] is the same shortage one layer down.
+//!   wgpu and winit need a GPU adapter and a compositor, which a headless Wine
+//!   does not have. [`WINE_SKIPS`] excludes tests for the same reason at the
+//!   console level.
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -42,9 +41,8 @@ use anyhow::{bail, Context, Result};
 
 /// The triples the release matrix ships that no Linux runner can link.
 ///
-/// Kept in step with the matrices in `ci.yml` and `release.yml`: a target that
-/// is shipped without being checked here is a target whose only build is the
-/// one that runs when a tag is already pushed.
+/// Keep this in sync with the matrices in `ci.yml` and `release.yml`. A shipped
+/// target missing here is first built only after a tag is pushed.
 pub const CHECK_TARGETS: &[&str] = &[
     "x86_64-pc-windows-msvc",
     "aarch64-pc-windows-msvc",
@@ -54,10 +52,10 @@ pub const CHECK_TARGETS: &[&str] = &[
 
 /// The triple the Wine pass builds and runs.
 ///
-/// GNU rather than MSVC because that is the one a Linux host can link: MinGW is
-/// an apt package, whereas the MSVC target needs Microsoft's linker and import
-/// libraries. The ABI differs, but `#[cfg(windows)]` does not — which is the
-/// code this is here to run.
+/// GNU rather than MSVC, because a Linux host can link it: MinGW is an apt
+/// package, while the MSVC target needs Microsoft's linker and import
+/// libraries. The ABI differs, but the `#[cfg(windows)]` code, which this pass
+/// runs, is the same.
 pub const WINE_TARGET: &str = "x86_64-pc-windows-gnu";
 
 /// The linker MinGW installs for [`WINE_TARGET`].
@@ -65,10 +63,9 @@ pub const MINGW_LINKER: &str = "x86_64-w64-mingw32-gcc";
 
 /// Crates the Wine pass leaves out.
 ///
-/// `deco-gui` wants a GPU adapter and a compositor. `xtask` is host tooling
-/// that shells out to git and npm and asserts on this repository's layout;
-/// running it as a Windows binary under Wine would test the harness rather than
-/// the editor.
+/// `deco-gui` needs a GPU adapter and a compositor. `xtask` is host tooling
+/// that runs git and npm and asserts on this repository's layout. Running it as
+/// a Windows binary under Wine would test the tooling rather than the editor.
 pub const WINE_EXCLUDES: &[&str] = &["deco-gui", "xtask"];
 
 /// `CARGO_TARGET_<TRIPLE>_<SUFFIX>`, the per-target configuration environment
@@ -84,16 +81,14 @@ pub fn target_env_var(target: &str, suffix: &str) -> String {
 
 /// The entries of `wanted` that `rustup target list --installed` did not list.
 ///
-/// Reported all at once rather than one failed build at a time: the fix is a
-/// single `rustup target add` and there is no reason to make someone discover
-/// the arguments to it four builds in a row.
+/// All missing targets are reported at once rather than one per failed build,
+/// so a single `rustup target add` fixes them.
 pub fn missing_targets(installed: &str, wanted: &[&str]) -> Vec<String> {
     let present: Vec<&str> = installed
         .lines()
         .map(str::trim)
         // `rustup target list --installed` prints bare triples, but the
-        // unfiltered `list` marks them ` (installed)`; tolerate both rather
-        // than depending on which one the caller ran.
+        // unfiltered `list` appends ` (installed)`. Accept both formats.
         .map(|line| line.split_whitespace().next().unwrap_or_default())
         .filter(|line| !line.is_empty())
         .collect();
@@ -106,9 +101,9 @@ pub fn missing_targets(installed: &str, wanted: &[&str]) -> Vec<String> {
 
 /// The `cargo check` invocation for one target.
 ///
-/// `--all-features` so the GPU frontend is checked too: it is the code with the
-/// most per-platform surface, and it is behind a feature flag, so a default
-/// build would skip exactly the part worth checking.
+/// `--all-features` so the GPU frontend is also checked. It has the most
+/// platform-specific code and is behind a feature flag, so a default build
+/// would skip it.
 pub fn check_args(target: &str) -> Vec<String> {
     ["check", "--locked", "--workspace", "--all-features"]
         .iter()
@@ -120,27 +115,26 @@ pub fn check_args(target: &str) -> Vec<String> {
 /// Tests the Wine pass cannot run, matched as substrings the way libtest's
 /// `--skip` matches them.
 ///
-/// Every test that paints a frame through crossterm. On Windows crossterm decides
-/// once, at first use, whether the terminal understands ANSI; when it decides
-/// not, every command it is given goes to the console API instead of to the
-/// writer it was handed — so a test that paints into a `Vec<u8>` still needs
-/// the process to own a console. A CI runner gives Wine no terminal to make one
-/// out of, and the calls come back `Invalid handle`. A real Windows runner has
-/// one and passes them, which is where they stay covered.
+/// Every test that paints a frame through crossterm. On Windows, crossterm
+/// decides once, at first use, whether the terminal supports ANSI. If not, every
+/// command goes to the console API instead of to the given writer, so a test
+/// that paints into a `Vec<u8>` still needs the process to own a console. On a
+/// CI runner Wine has no terminal to create one from, and the calls fail with
+/// `Invalid handle`. A real Windows runner has a console and passes these
+/// tests, so they are still covered there.
 ///
-/// A **prefix** rather than the names, because the rule is structural: anything
-/// that calls `paint` fails here, so a list of names is a list that the next
-/// painting test silently falls off. `deco-tui`'s every other test compares
-/// rendered strings and never reaches crossterm, which is why the frontend's
-/// suite is otherwise portable — and why `painting_` is a narrow enough prefix
-/// to name the console-bound ones and nothing else.
+/// A **prefix** rather than test names, because every test that calls `paint`
+/// fails here. With a list of names, a new painting test would not be skipped.
+/// All other `deco-tui` tests compare rendered strings and never reach
+/// crossterm, so the rest of the frontend's suite runs under Wine, and
+/// `painting_` matches only the console-bound tests.
 pub const WINE_SKIPS: &[&str] = &["painting_"];
 
 /// The `cargo test` invocation the Wine pass runs.
 ///
-/// Default features, unlike the check above: `--all-features` would turn on
-/// `deco`'s `gui` feature and drag wgpu and winit into a build whose tests are
-/// excluded anyway.
+/// Default features, unlike the check above. `--all-features` would enable
+/// `deco`'s `gui` feature and add wgpu and winit to the build, although their
+/// tests are excluded.
 pub fn wine_test_args() -> Vec<String> {
     let mut args: Vec<String> = ["test", "--locked", "--workspace"]
         .iter()
@@ -165,11 +159,11 @@ pub fn wine_test_args() -> Vec<String> {
 
 /// The places Wine is looked for, in order.
 ///
-/// `$WINE` first, so a Wine that was built or unpacked somewhere unusual can be
-/// named without arguing with this list. `/usr/lib/wine/wine64` last because
-/// Ubuntu's `wine64` package installs the binary there and puts nothing on
-/// `PATH`: the `/usr/bin/wine` wrapper belongs to the `wine` package, which
-/// pulls in the 32-bit stack and a second architecture's worth of apt.
+/// `$WINE` first, so a Wine installed in a non-standard location can be
+/// specified directly. `/usr/lib/wine/wine64` last, because Ubuntu's `wine64`
+/// package installs the binary there and adds nothing to `PATH`. The
+/// `/usr/bin/wine` wrapper belongs to the `wine` package, which installs the
+/// 32-bit stack and requires a second apt architecture.
 pub fn wine_candidates(explicit: Option<&OsStr>) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     if let Some(path) = explicit {
@@ -201,9 +195,9 @@ fn which(program: &str) -> Option<PathBuf> {
 
 /// Runs the cross-platform checks.
 ///
-/// Ordered cheapest first, like `cargo xtask ci`: the type checks need nothing
-/// installed beyond rustup targets, so a failure that both passes would catch
-/// is reported before anyone waits on a Wine build.
+/// Runs the cheapest checks first, like `cargo xtask ci`. The type checks need
+/// only rustup targets, so a failure that both passes would detect is reported
+/// before the Wine build.
 pub fn run(root: &Path, check_only: bool, wine_only: bool) -> Result<()> {
     if !wine_only {
         check(root)?;
@@ -243,9 +237,9 @@ fn wine(root: &Path) -> Result<()> {
     )?;
     let wine = wine.to_str().context("the path to Wine is not UTF-8")?;
 
-    // Wine narrates every unimplemented stub it hits, which for a test binary
-    // is several screens of noise around the output that matters. Respect an
-    // explicit setting, so `WINEDEBUG=+file cargo xtask cross` still works.
+    // Wine logs every unimplemented stub it calls, which for a test binary is
+    // several screens of output. Keep an explicit setting, so
+    // `WINEDEBUG=+file cargo xtask cross` still works.
     let debug = std::env::var("WINEDEBUG").unwrap_or_else(|_| "-all".to_owned());
 
     let env = [
@@ -269,16 +263,14 @@ fn wine(root: &Path) -> Result<()> {
 
 /// Builds the Wine prefix before any test binary asks for one.
 ///
-/// The first `wine` in a fresh `$WINEPREFIX` spends about ten seconds creating
-/// it — registry, drive mappings, services — and cargo will happily start the
-/// next test binary in the middle of that. Tests then fail in ways that have
-/// nothing to do with the code: a directory that is not there yet, a console
-/// that does not exist. A CI runner is always the fresh-prefix case, which is
-/// why this is not something a laptop notices.
+/// The first `wine` in a new `$WINEPREFIX` takes about ten seconds to create it
+/// (registry, drive mappings, services), and cargo can start the next test
+/// binary during that time. Tests then fail for reasons unrelated to the code,
+/// such as a missing directory or console. A CI runner always starts with a new
+/// prefix, so this rarely happens on a developer machine.
 ///
-/// Advisory: if `wineboot` fails, the run continues and the tests report
-/// whatever is actually wrong, which is more useful than a failure here about
-/// the setup for them.
+/// Failure is not fatal: if `wineboot` fails, the run continues and the tests
+/// report the actual problem, which is more useful than a setup error here.
 fn boot_wine(root: &Path, wine: &str, env: &[(&str, &str)]) {
     if crate::run_with_env(root, wine, &["wineboot", "--init"], env).is_err() {
         eprintln!("warning: `wineboot --init` failed; continuing to the tests anyway");
@@ -292,9 +284,9 @@ fn ensure_targets(root: &Path, wanted: &[&str]) -> Result<()> {
         .args(["target", "list", "--installed"])
         .output();
 
-    // A missing rustup is not itself a failure: a distribution-packaged Rust
-    // may have the targets installed by other means, and the build that
-    // follows will say so plainly enough if it does not.
+    // A missing rustup is not a failure. A distribution-packaged Rust may have
+    // the targets installed by other means, and otherwise the following build
+    // reports the error.
     let Ok(output) = output else {
         return Ok(());
     };
@@ -362,9 +354,9 @@ mod tests {
 
     #[test]
     fn the_check_covers_every_shipped_apple_and_windows_triple() {
-        // The point of the job: what the release matrix builds on a premium
-        // runner is what a Linux runner type-checks. Adding a target to
-        // release.yml without adding it here is the mistake this catches.
+        // A Linux runner type-checks every target the release matrix builds on
+        // a premium runner. This detects a target added to release.yml but not
+        // here.
         for target in CHECK_TARGETS {
             assert!(
                 target.contains("windows") || target.contains("apple"),
@@ -421,9 +413,9 @@ mod tests {
 
     #[test]
     fn the_skip_is_a_rule_and_not_a_list_of_names() {
-        // The names of the console-bound tests as they stand. If somebody replaces the
-        // prefix with these, the next painting test falls off the list silently and
-        // fails on the Wine pass instead — which is how this test came to exist.
+        // The current console-bound test names. If the prefix were replaced with
+        // these names, a new painting test would not be skipped and would fail
+        // under Wine. This happened before and is why this test exists.
         for name in [
             "painting_writes_every_span_and_positions_the_cursor",
             "painting_a_frame_with_no_cursor_leaves_it_hidden",

@@ -1,40 +1,35 @@
-//! Driving deco the way it is used.
+//! End-to-end tests that drive deco as a user does.
 //!
-//! Every other test in this repository is a unit test: it builds the one struct
-//! it is about, calls the one function it is about, and asserts on the return
-//! value. That is where most of the confidence in this codebase comes from, and
-//! it is also what those tests cannot say — because the way an editor breaks in
-//! practice is rarely one function returning the wrong value. It is a
-//! `settings.json` that was read from the wrong directory, a keybinding that
-//! resolved but never reached the command, a file that saved to a path nobody
-//! meant, a screen that shows yesterday's status line. Each of the parts is
-//! right and the editor is wrong.
+//! The other tests in this repository are unit tests: each builds one struct,
+//! calls one function and asserts on the return value. They cover most of the
+//! codebase, but they do not detect failures in how the parts are connected.
+//! Examples are a `settings.json` read from the wrong directory, a keybinding
+//! that resolves but does not reach the command, a file saved to the wrong
+//! path, or a stale status line on screen. In these cases each part works but
+//! the editor does not.
 //!
-//! So a scenario here is deliberately built out of the things a user actually
-//! has:
+//! A scenario is therefore built from the same inputs a user has:
 //!
-//! - **A real configuration directory.** [`Scenario::user_settings`] and friends
-//!   write JSON to a temporary home in the layout the platform really uses, and
-//!   the session is built by [`deco::startup::session`] — the same call the
-//!   binary makes. Nothing is handed a pre-built [`deco_config::Settings`].
+//! - **A real configuration directory.** [`Scenario::user_settings`] and similar
+//!   methods write JSON to a temporary home in the platform's real layout, and
+//!   the session is built by [`deco::startup::session`], the same call the
+//!   binary makes. No test receives a pre-built [`deco_config::Settings`].
 //! - **A real workspace.** [`Scenario::file`] writes files to disk. Quick open
-//!   walks them, search-in-files greps them, and saving overwrites them.
+//!   lists them, search in files searches them, and saving overwrites them.
 //! - **Real keystrokes.** [`Editor::press`] builds a crossterm [`KeyEvent`] and
-//!   feeds it to [`deco_tui::keys::chord_from_event`] and then to
-//!   [`deco_tui::Driver`], which is the editor's event loop with the terminal
-//!   taken out of it. A scenario cannot reach a command except by pressing the
-//!   keys that are bound to it.
-//! - **A real screen.** [`Editor::screen`] renders a frame at the terminal size
-//!   the scenario asked for and asserts against the characters in it, so "the
-//!   editor did the right thing" has to be visible.
+//!   passes it to [`deco_tui::keys::chord_from_event`] and then to
+//!   [`deco_tui::Driver`], which is the editor's event loop without the
+//!   terminal. A scenario can run a command only by pressing its bound keys.
+//! - **A real screen.** [`Editor::screen`] renders a frame at the scenario's
+//!   terminal size, and assertions check the characters in it, so the result
+//!   must be visible on screen.
 //!
-//! What is left out is stated rather than hidden: there is no terminal, so
-//! nothing here proves that crossterm writes what it is queued; there is no
-//! language server unless a scenario provides one; and the process environment
-//! is never touched, because it is shared by every test thread. Everything that
-//! would otherwise come from the environment — home, the platform's
-//! configuration layout, which platform's keybindings win, the working directory
-//! — is data on [`Scenario`].
+//! Limitations: there is no terminal, so these tests do not verify that
+//! crossterm writes what is queued. There is no language server unless a
+//! scenario provides one. The process environment is never modified, because
+//! all test threads share it. Values that would otherwise come from the
+//! environment (home, the platform's configuration layout, which platform's
+//! keybindings apply, the working directory) are fields of [`Scenario`].
 //!
 //! ```no_run
 //! use deco_e2e::Scenario;

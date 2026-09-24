@@ -1,31 +1,30 @@
-//! What is installed, and which of it may start running.
+//! Installed extensions, and which of them may start running.
 //!
-//! Between "there are directories on disk" and "a host process is talking to
-//! deco" sits a decision: *which* extensions, and *when*. This module is that
-//! decision, and it is pure — the filesystem walk belongs to the frontend, the
-//! same way finding themes does, because the core has no filesystem.
+//! This module decides *which* installed extensions start a host process, and
+//! *when*. It performs no I/O. The frontend walks the filesystem, as it does
+//! for themes, because the core has no filesystem access.
 //!
 //! # Only code extensions activate
 //!
-//! An extension with no `main` never starts a process: themes and grammars are
-//! read as data, which is why one from the marketplace works in deco at all. They
-//! are in the catalogue because their commands and contributions still exist —
-//! but [`Catalogue::to_activate`] will never return one, and that is checked.
+//! An extension with no `main` never starts a process. Themes and grammars are
+//! read as data, which is why marketplace themes work in deco. They are in the
+//! catalogue because their commands and contributions still exist, but
+//! [`Catalogue::to_activate`] never returns one. A test checks this.
 //!
 //! # Activation is a security control
 //!
-//! An extension that has not activated has no process, so no capability request
-//! it could make exists. That makes narrow activation events the cheapest
-//! mitigation available, and it makes accidentally broadening them expensive.
-//! Anything deco does not understand in `activationEvents` therefore fires for
-//! nothing rather than being treated as `*` — see [`crate::activation`].
+//! An extension that has not activated has no process, so it cannot make any
+//! capability request. Narrow activation events are therefore a simple
+//! mitigation, and accidentally broadening them is costly. An event in
+//! `activationEvents` that deco does not recognise never fires, instead of
+//! being treated as `*`. See [`crate::activation`].
 
 use std::path::{Path, PathBuf};
 
 use crate::activation::{any_fires, parse_all, ActivationEvent, Trigger};
 use crate::manifest::Manifest;
 
-/// A command an extension says it has.
+/// A command an extension contributes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Contributed {
     /// The command id, as `commands.registerCommand` will name it.
@@ -37,7 +36,7 @@ pub struct Contributed {
 }
 
 impl Contributed {
-    /// How the command reads in a palette: `Category: Title`, or just the title.
+    /// The command's label in a palette: `Category: Title`, or just the title.
     pub fn label(&self) -> String {
         match &self.category {
             Some(category) if !category.is_empty() => format!("{category}: {}", self.title),
@@ -51,15 +50,15 @@ impl Contributed {
 pub struct Installed {
     /// `publisher.name`, or `local.name` for an unpublished one.
     pub id: String,
-    /// What to call it in UI.
+    /// The name shown in the UI.
     pub label: String,
     /// The directory it was found in.
     pub root: PathBuf,
-    /// What its manifest calls this version.
+    /// The version from its manifest.
     ///
-    /// Kept because a remembered permission is a decision about *this* code: a
-    /// new version is new code, and carrying a grant across an update would be
-    /// allowing something without having seen what it now does.
+    /// Kept because a remembered permission applies to *this* code. A new
+    /// version is new code, and a grant must not carry across an update that
+    /// the user has not reviewed.
     pub version: String,
     /// Its entry point, relative to `root`. `None` for a declarative extension,
     /// which never runs.
@@ -87,24 +86,24 @@ impl Installed {
 pub struct Catalogue {
     /// The extensions, in the order they were found.
     pub extensions: Vec<Installed>,
-    /// What was wrong with what was found, in the words the user will read.
+    /// Problems found while building the catalogue, as messages for the user.
     ///
-    /// Collected rather than logged, and never a reason to fail: one broken
-    /// extension directory must not stop the other nineteen from working. The
-    /// frontend shows these the way it shows settings problems.
+    /// Collected instead of logged, and never a reason to fail: one broken
+    /// extension directory must not stop the others from working. The frontend
+    /// shows these the same way it shows settings problems.
     pub problems: Vec<String>,
 }
 
 impl Catalogue {
     /// Builds a catalogue from manifests already parsed and paired with their
-    /// directories, in the order they should win ties.
+    /// directories. On a conflict, the earlier entry takes precedence.
     pub fn build(entries: impl IntoIterator<Item = (PathBuf, Manifest)>) -> Self {
         let mut catalogue = Self::default();
         for (root, manifest) in entries {
             let id = manifest.identifier();
             if let Some(first) = catalogue.by_id(&id) {
-                // The usual cause is the same extension installed under two
-                // versions. First wins, as it does for themes.
+                // The usual cause is the same extension installed at two
+                // versions. The first one is used, as for themes.
                 catalogue.problems.push(format!(
                     "extension {id} is installed twice; using {} and ignoring {}",
                     first.root.display(),
@@ -122,9 +121,9 @@ impl Catalogue {
                     continue;
                 }
                 if let Some(owner) = catalogue.owner_of(&contribution.command) {
-                    // Two extensions claiming one command id. Reported because
-                    // the loser looks broken from the outside and the reason is
-                    // not visible anywhere else.
+                    // Two extensions contribute the same command id. Reported
+                    // because the second extension appears broken, and the
+                    // reason is not shown anywhere else.
                     catalogue.problems.push(format!(
                         "command {} is contributed by both {} and {id}; {} keeps it",
                         contribution.command, owner.id, owner.id
@@ -158,8 +157,7 @@ impl Catalogue {
 
     /// The extension that contributes `command`, if any.
     ///
-    /// `None` for deco's own commands, which is most of them: the palette is
-    /// mostly not extensions.
+    /// `None` for deco's own commands, which are most of the palette.
     pub fn owner_of(&self, command: &str) -> Option<&Installed> {
         self.extensions.iter().find(|e| e.contributes(command))
     }
@@ -171,8 +169,8 @@ impl Catalogue {
 
     /// Every contributed command, with the extension that contributed it.
     ///
-    /// For the palette, which lists a command whether or not its extension has
-    /// started — invoking it is what starts it.
+    /// Used by the palette, which lists a command whether or not its extension
+    /// has started. Invoking the command starts the extension.
     pub fn contributed_commands(&self) -> Vec<(&Installed, &Contributed)> {
         self.extensions
             .iter()
@@ -182,11 +180,10 @@ impl Catalogue {
 
     /// Which extensions this trigger should start, in catalogue order.
     ///
-    /// Only ones with code: a theme has nothing to activate. A command the user
-    /// invoked activates the extension that contributes it even when no
-    /// `onCommand:` event says so, matching VS Code 1.74 and later — the
-    /// alternative is a palette entry that does nothing, and the trigger is the
-    /// user asking for it by name.
+    /// Only extensions with code are returned; a theme has nothing to activate.
+    /// An invoked command activates the extension that contributes it even
+    /// without an `onCommand:` event, as in VS Code 1.74 and later. Otherwise
+    /// the palette entry would do nothing.
     pub fn to_activate(&self, trigger: &Trigger<'_>) -> Vec<&Installed> {
         self.extensions
             .iter()
@@ -198,8 +195,8 @@ impl Catalogue {
             .collect()
     }
 
-    /// The paths of everything runnable, for the read-only mounts a container
-    /// gets. Nothing else on the machine needs to be visible to a host.
+    /// The directories of all runnable extensions, used for a container's
+    /// read-only mounts. A host needs no other paths on the machine.
     pub fn roots(&self) -> Vec<&Path> {
         self.code_extensions().map(|e| e.root.as_path()).collect()
     }
@@ -213,7 +210,7 @@ mod tests {
         Manifest::parse(source).expect("a manifest")
     }
 
-    /// An extension directory, in this platform's spelling of an absolute path.
+    /// An extension directory, as an absolute path for this platform.
     fn root(name: &str) -> PathBuf {
         if cfg!(windows) {
             PathBuf::from(format!("C:\\ext\\{name}"))
@@ -272,8 +269,8 @@ mod tests {
 
     #[test]
     fn a_declarative_extension_is_catalogued_and_never_activated() {
-        // `*` would fire at startup for anything with code. A theme has none, and
-        // starting a process for it would be the whole sandbox for nothing.
+        // `*` fires at startup for any extension with code. A theme has no code,
+        // so starting a sandboxed process for it would serve no purpose.
         let catalogue = Catalogue::build([theme_extension()]);
         let theme = catalogue.by_id("someone.theme").expect("by id");
         assert!(!theme.runnable());
@@ -306,9 +303,8 @@ mod tests {
 
     #[test]
     fn a_contributed_command_activates_its_extension_without_an_on_command_event() {
-        // VS Code stopped requiring the event in 1.74, and the reason to follow it
-        // is not compatibility: a palette entry that does nothing is worse than
-        // either alternative, and the trigger here is the user naming the command.
+        // VS Code stopped requiring the event in 1.74. deco does the same because
+        // otherwise the palette entry would do nothing when the user invokes it.
         let catalogue = Catalogue::build([(
             root("acme.quiet"),
             manifest(
@@ -325,7 +321,8 @@ mod tests {
         assert_eq!(started.len(), 1);
         assert_eq!(started[0].id, "acme.quiet");
 
-        // Still nothing else. An empty `activationEvents` is not a wildcard.
+        // No other trigger activates it. An empty `activationEvents` is not a
+        // wildcard.
         assert!(catalogue.to_activate(&Trigger::StartupFinished).is_empty());
         assert!(catalogue.to_activate(&Trigger::Language("rust")).is_empty());
     }
@@ -387,9 +384,9 @@ mod tests {
 
     #[test]
     fn two_extensions_cannot_both_own_one_command() {
-        // Whoever loses would otherwise look broken, with the reason visible
-        // nowhere: the command is in the palette, it activates the other
-        // extension, and nothing says why.
+        // Without a reported problem, the second extension would appear broken:
+        // the command is in the palette but activates the other extension, and
+        // no message explains why.
         let catalogue = Catalogue::build([
             code_extension(),
             (
@@ -438,8 +435,8 @@ mod tests {
 
     #[test]
     fn an_empty_main_is_the_same_as_none() {
-        // `"main": ""` would otherwise resolve to the extension directory itself
-        // and be asked to run as JavaScript.
+        // Otherwise `"main": ""` would resolve to the extension directory itself,
+        // and the host would try to run it as JavaScript.
         let catalogue = Catalogue::build([(
             root("acme.blank"),
             manifest(

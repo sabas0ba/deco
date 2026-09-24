@@ -1,8 +1,7 @@
 //! Core text model for the deco editor.
 //!
-//! The model is deliberately frontend-agnostic: neither the terminal nor the GPU
-//! frontend appears anywhere below this line. Everything a frontend needs to
-//! render is derivable from [`Buffer`] plus a [`SelectionSet`].
+//! The model does not depend on the terminal or GPU frontend. Everything a
+//! frontend needs to render is derivable from [`Buffer`] plus a [`SelectionSet`].
 //!
 //! # Position semantics
 //!
@@ -10,10 +9,10 @@
 //! Protocol: a [`Position`] is a zero-based line plus a zero-based offset in
 //! **UTF-16 code units**. Internally the text is a rope indexed by `char`
 //! (Unicode scalar values), so conversions happen at the boundary — see
-//! [`Buffer::position_to_char`] and [`Buffer::char_to_position`]. Getting this
-//! wrong is the classic source of off-by-one bugs with astral-plane characters
+//! [`Buffer::position_to_char`] and [`Buffer::char_to_position`]. Incorrect
+//! conversion is a common cause of off-by-one bugs with astral-plane characters
 //! (emoji, CJK extension B), so the conversion is centralised here and tested
-//! against those cases directly.
+//! against those cases.
 
 pub mod buffer;
 pub mod edit;

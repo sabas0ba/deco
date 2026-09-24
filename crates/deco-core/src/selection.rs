@@ -18,8 +18,8 @@ pub struct Selection {
     /// Column the caret "wants" when moving vertically.
     ///
     /// Moving down from column 40 through a 3-character line and back must
-    /// return to column 40; without a sticky goal column the caret would get
-    /// dragged left permanently.
+    /// return to column 40. Without a goal column the caret would stay at the
+    /// shorter line's column.
     pub goal_column: Option<u32>,
 }
 

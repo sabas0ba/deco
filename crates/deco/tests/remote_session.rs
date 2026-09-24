@@ -1,11 +1,10 @@
 //! A whole remote session: this binary as the client, and as the server.
 //!
-//! `deco-remote`'s own tests cover each half against a buffer. This is the two
-//! halves against each other, over pipes, through the real binary — the same
-//! substitution the transport makes, with `deco --server --stdio` standing in for
-//! `ssh host deco --server --stdio`. What the transport adds is an argument
-//! vector, which is tested next door without running anything, so nothing here
-//! needs a network or an SSH daemon.
+//! `deco-remote`'s own tests cover each half against a buffer. This file runs
+//! the two halves against each other, over pipes, through the real binary, with
+//! `deco --server --stdio` in place of `ssh host deco --server --stdio`. The
+//! transport only adds an argument vector, which is tested separately without
+//! running anything, so nothing here needs a network or an SSH daemon.
 
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
@@ -85,8 +84,8 @@ fn repository(name: &str) -> Option<PathBuf> {
 
 #[test]
 fn a_session_opens_a_file_edits_it_and_saves_it_back() {
-    // The whole point of the feature, end to end: the bytes that come back are
-    // the bytes that were sent, and they land in the file on the far end.
+    // The core behaviour, end to end: the bytes read back are the bytes that
+    // were sent, and they are written to the file on the remote side.
     let root = workspace("round-trip");
     let mut client = connect(&root);
 
@@ -106,8 +105,8 @@ fn a_session_opens_a_file_edits_it_and_saves_it_back() {
         std::fs::read_to_string(root.join("src/main.rs")).expect("the file"),
         "fn main() {\n    println!(\"hi\");\n}\n"
     );
-    // And read back through the connection, not just off the disk: a write that
-    // only looked right locally would still be a broken session.
+    // Also read back through the connection, not only from disk: a write that
+    // is correct only on disk would still be a broken session.
     assert_eq!(
         client.read("src/main.rs").expect("read"),
         "fn main() {\n    println!(\"hi\");\n}\n"
@@ -124,8 +123,8 @@ fn a_listing_is_what_a_picker_would_show() {
     client.handshake().expect("a handshake");
     let files = client.list().expect("a listing");
     assert_eq!(files, vec!["README.md", "src/main.rs"]);
-    // Every path in it can be read straight back, which is the property a picker
-    // depends on: what is listed is what can be opened.
+    // Every listed path can be read back. A picker depends on this: whatever is
+    // listed can be opened.
     for file in &files {
         client
             .read(file)
@@ -137,15 +136,15 @@ fn a_listing_is_what_a_picker_would_show() {
 
 #[test]
 fn a_refusal_reaches_the_client_as_an_error_and_leaves_the_session_usable() {
-    // The far end refusing must not look like the connection breaking: one bad
-    // request costs one request.
+    // A rejection by the remote side must not look like a broken connection:
+    // one bad request fails only that request.
     let root = workspace("refusal");
     let mut client = connect(&root);
     client.handshake().expect("a handshake");
 
-    // A file that really is there, one directory up: `../../etc/passwd` would be
-    // refused on Windows for *not existing* rather than for being outside, which
-    // would leave this test passing without checking the thing it names.
+    // A file that exists, one directory up. On Windows, `../../etc/passwd` would
+    // be rejected for *not existing* rather than for being outside, and the test
+    // would pass without checking what it names.
     let outside = root
         .parent()
         .expect("a parent")
@@ -168,9 +167,9 @@ fn a_refusal_reaches_the_client_as_an_error_and_leaves_the_session_usable() {
 
 #[test]
 fn a_transport_that_is_not_a_server_fails_with_something_a_person_can_act_on() {
-    // What happens when `deco` is not installed on the remote and the transport
-    // runs something else entirely. The client must not hang waiting for a frame
-    // that is never coming.
+    // Covers the case where `deco` is not installed on the remote and the
+    // transport runs something else. The client must not hang waiting for a
+    // frame that never arrives.
     let root = workspace("not-a-server");
     let mut client = Client::start(&Command {
         program: env!("CARGO_BIN_EXE_deco").to_owned(),
@@ -190,10 +189,9 @@ fn a_transport_that_is_not_a_server_fails_with_something_a_person_can_act_on() {
 
 #[test]
 fn a_search_crosses_the_connection_and_every_hit_can_be_opened() {
-    // The pair that matters: what the search reports has to be something the
-    // *same* connection will then read. A path spelled one way in a result and
-    // another way in `fs.read` is a search whose results cannot be opened, which
-    // is how this would break without either half being obviously wrong.
+    // Every path the search reports must be readable over the *same*
+    // connection. If a result and `fs.read` wrote paths differently, results
+    // could not be opened, and neither half would look wrong on its own.
     let root = workspace("search");
     std::fs::write(root.join("src/main.rs"), "fn main() {\n    let x = 1;\n}\n").expect("a file");
     std::fs::write(root.join("README.md"), "# hello\nlet x be x\n").expect("a file");
@@ -218,14 +216,14 @@ fn a_search_crosses_the_connection_and_every_hit_can_be_opened() {
         let text = client
             .read(&entry.path)
             .unwrap_or_else(|error| panic!("{} should be readable: {error}", entry.path));
-        // The line the match named is the line the file has there, so the editor
-        // lands where the result said it would.
+        // The line number in the match is correct for the file, so the editor
+        // opens at the reported position.
         let line = text
             .lines()
             .nth(entry.line as usize)
             .unwrap_or_else(|| panic!("{} has no line {}", entry.path, entry.line));
         assert!(line.contains("let"), "{line:?}");
-        // And the text shown is that line, trimmed.
+        // The displayed text is that line, trimmed.
         assert_eq!(entry.text, line.trim());
     }
 

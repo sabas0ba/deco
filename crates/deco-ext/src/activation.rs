@@ -1,9 +1,9 @@
 //! Activation events: when an extension's code is allowed to start running.
 //!
-//! Activation is a security control as much as a performance one. An extension
-//! that has not activated has no host process and therefore no capability
-//! requests at all, so narrow activation events are the cheapest possible
-//! mitigation for a compromised extension.
+//! Activation is a security control as well as a performance one. An extension
+//! that has not activated has no host process and makes no capability requests,
+//! so narrow activation events are a simple mitigation for a compromised
+//! extension.
 
 use deco_config::glob;
 
@@ -26,8 +26,8 @@ pub enum ActivationEvent {
     View(String),
     /// `onUri`.
     Uri,
-    /// Anything deco does not model. Never fires, which keeps an unknown event
-    /// from being treated as `*` by accident.
+    /// Anything deco does not model. Never fires, so an unknown event is never
+    /// treated as `*` by accident.
     Unknown(String),
 }
 
@@ -74,8 +74,8 @@ pub enum Trigger<'a> {
 /// Whether `event` fires for `trigger`.
 pub fn fires(event: &ActivationEvent, trigger: &Trigger<'_>) -> bool {
     match (event, trigger) {
-        // `*` activates on startup and nothing else; there is no separate
-        // "activate on everything forever" state to be in.
+        // `*` activates on startup and on nothing else. There is no separate
+        // "activate on every trigger" state.
         (ActivationEvent::Always, Trigger::StartupFinished) => true,
         (ActivationEvent::StartupFinished, Trigger::StartupFinished) => true,
         (ActivationEvent::Language(want), Trigger::Language(got)) => want == got,

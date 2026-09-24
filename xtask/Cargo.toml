@@ -10,17 +10,17 @@ publish = false
 
 [dependencies]
 # deco's own crates, so the documentation generator can drive the real editor and
-# the real renderer. Through the workspace, like every other crate here: a bare
-# `path` dependency carries no version, which cargo records as `*` and the
-# supply-chain policy refuses — a wildcard accepts whatever it is handed.
+# the real renderer. They are declared through the workspace, like every other
+# crate here. A bare `path` dependency has no version, which cargo records as
+# `*`, and the supply-chain policy rejects wildcards.
 #
-# No third-party crate enters the graph that was not already in it, and none of
-# this reaches the shipped binary.
+# These crates add no third-party crate that is not already in the graph, and
+# none of this is linked into the shipped binary.
 deco-config.workspace = true
 deco-core.workspace = true
 deco-editor.workspace = true
-# For the container runtime search, so that `host-test` looks for exactly the
-# runtimes deco itself would rather than a second list that can drift from it.
+# For the container runtime search, so that `host-test` looks for the same
+# runtimes as deco instead of keeping a separate list.
 deco-ext.workspace = true
 deco-keymap.workspace = true
 deco-lsp.workspace = true

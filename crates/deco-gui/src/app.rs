@@ -1,8 +1,8 @@
 //! The window, the GPU device, and the event loop.
 //!
 //! This is the only module that needs a display. Everything it draws comes from
-//! [`mod@crate::layout`], which is testable without one, so a change to how the
-//! editor looks is normally a change over there rather than in here.
+//! [`mod@crate::layout`], which is testable without one. Changes to how the
+//! editor looks are normally made in that module, not here.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -156,8 +156,8 @@ impl Gpu {
             ));
         }
 
-        // The chrome, in the gutter's colour so it reads as a border rather than
-        // as text somebody typed.
+        // The chrome uses the gutter colour so it is distinguishable from
+        // document text.
         for line in &laid_out.chrome {
             let mut buffer = TextBuffer::new(&mut self.font_system, text_metrics);
             buffer.borrow_with(&mut self.font_system).set_text(
@@ -212,15 +212,15 @@ impl Gpu {
             CurrentSurfaceTexture::Success(frame) | CurrentSurfaceTexture::Suboptimal(frame) => {
                 frame
             }
-            // A lost or outdated surface is routine — the window was resized,
-            // or the display changed. Reconfiguring and skipping one frame is
-            // the correct response, not an error.
+            // A surface becomes lost or outdated when the window is resized or
+            // the display changes. Reconfigure and skip one frame; this is not
+            // an error.
             CurrentSurfaceTexture::Lost | CurrentSurfaceTexture::Outdated => {
                 self.surface.configure(&self.device, &self.config);
                 return Ok(());
             }
-            // Occluded means nothing would be visible; a timeout means the
-            // compositor is behind. Both resolve themselves on the next frame.
+            // Occluded means nothing would be visible. A timeout means the
+            // compositor is behind. Both resolve on a later frame.
             CurrentSurfaceTexture::Occluded | CurrentSurfaceTexture::Timeout => return Ok(()),
             other => return Err(anyhow!("could not acquire a frame: {other:?}")),
         };
@@ -300,8 +300,8 @@ impl ApplicationHandler for App<'_> {
         {
             Ok(gpu) => self.gpu = Some(gpu),
             Err(error) => {
-                // Carrying the error out rather than panicking means the user
-                // sees "no GPU adapter was found" instead of a backtrace.
+                // Return the error instead of panicking, so the user sees
+                // "no GPU adapter was found" instead of a backtrace.
                 self.error = Some(error);
                 event_loop.exit();
             }
@@ -352,16 +352,16 @@ impl ApplicationHandler for App<'_> {
                         }
                     }
                     Outcome::SaveAll => {
-                        // The loop and the reporting are the core's; only the write
-                        // is this side's. Both frontends therefore say the same
-                        // thing about the same batch.
+                        // The core runs the loop and builds the report. This
+                        // frontend only performs the write, so both frontends
+                        // report the same batch identically.
                         if let Outcome::Message(report) = self.session.save_all(write_file) {
                             self.session.status = Some(report);
                         }
                     }
-                    // Named rather than ignored: quick open reaches the frontend
-                    // by design, and this one has nowhere to draw its list. A
-                    // key that silently does nothing is the thing to avoid.
+                    // Frontend commands such as quick open are passed to the
+                    // frontend by design. This frontend cannot draw their UI, so
+                    // it shows a status message instead of ignoring the key.
                     Outcome::Frontend(command) => {
                         self.session.status =
                             Some(format!("{command} is only in the terminal frontend so far"));
@@ -384,19 +384,18 @@ impl ApplicationHandler for App<'_> {
 
 /// Closes any bar or prompt a command opened.
 ///
-/// This frontend has nowhere to draw them — no status bar, no chrome of any kind
-/// yet — and a widget that is invisible while holding the keyboard would look
-/// exactly like an editor that had stopped responding. `ctrl+f`, `ctrl+g` and
-/// `ctrl+shift+p` therefore do nothing here rather than something the user cannot
-/// see, and say so.
+/// This frontend cannot draw them yet. It has no status bar or other chrome. An
+/// invisible widget that holds keyboard focus would make the editor appear
+/// unresponsive. `ctrl+f`, `ctrl+g` and `ctrl+shift+p` therefore close the
+/// widget and set a status message.
 fn refuse_overlays(session: &mut Session) {
     if session.find.visible() {
         session.find.close();
         session.status = Some("the find bar is only in the terminal frontend so far".to_owned());
     }
     if let Some(prompt) = session.prompt.take() {
-        // Named by kind: saying "the command palette" about a save-as prompt would
-        // be worse than saying nothing.
+        // Name the prompt by its kind so the message identifies the correct
+        // prompt, for example a save-as prompt rather than the command palette.
         session.status = Some(format!(
             "{} is only in the terminal frontend so far",
             prompt.kind().describe()
@@ -428,14 +427,16 @@ fn save(session: &mut Session) -> Result<()> {
 
 /// Opens a window and runs the editor in it.
 ///
-/// Takes no starting path. It used to, to fall back on when saving a document
-/// with none — which was a silent overwrite once tabs existed. This frontend has
-/// nothing else to do with it: no quick open to anchor and no workspace to walk.
+/// Takes no starting path. It previously took one as a save fallback for a
+/// document without a path, which silently overwrote the starting file once
+/// tabs existed. This frontend has no other use for it: it has no quick open and no
+/// workspace.
 pub fn run(session: &mut Session) -> Result<()> {
     // This frontend lays out one document line per row, so the session must not
-    // wrap: it would scroll and move the caret by rows nothing here draws. Said
-    // once, rather than by refusing `alt+z` — `editor.wordWrap` is a setting, and a
-    // setting has to be inert where it cannot be honoured.
+    // wrap. Otherwise it would scroll and move the caret by rows that are not
+    // drawn. This is set once here instead of rejecting `alt+z`, because
+    // `editor.wordWrap` is a setting and must have no effect where it is not
+    // supported.
     session.frontend_wraps = false;
 
     let event_loop = EventLoop::new().context("could not start the window event loop")?;

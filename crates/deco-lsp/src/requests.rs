@@ -1,10 +1,10 @@
 //! Building language-feature requests and reading their answers.
 //!
-//! The protocol's request *parameters* are dull — a URI and a position — but its
-//! *results* are among the most polymorphic shapes in the specification, because
-//! each one accumulated alternatives across versions and servers implement
-//! whichever they were written against. A client that handles only the newest
-//! spelling silently loses the feature against half the servers in use.
+//! The request *parameters* are simple, usually a URI and a position. The
+//! *results* are among the most polymorphic shapes in the specification. Each
+//! one gained alternative forms across protocol versions, and servers implement
+//! the form of the version they were written against. A client that handles
+//! only the newest form loses the feature with many servers.
 //!
 //! `textDocument/hover` can answer with any of:
 //!
@@ -17,10 +17,10 @@
 //! ```
 //!
 //! `textDocument/definition` can answer with a single `Location`, an array of
-//! them, an array of `LocationLink` (which spells its range `targetRange` and its
+//! them, an array of `LocationLink` (which names its range `targetRange` and its
 //! URI `targetUri`), or `null`.
 //!
-//! Every one of those is accepted here, and every one has a test. `null` is a
+//! All of these forms are accepted here, and each has a test. `null` is a
 //! successful answer meaning "nothing at this position", not an error.
 
 use deco_core::position::{Position, Range};
@@ -51,8 +51,8 @@ pub fn reference_params(
 pub struct Hover {
     /// The text to show, already flattened to plain lines.
     pub contents: String,
-    /// The range the hover describes, if the server said. Used to decide whether
-    /// a cached hover still applies after the cursor moves.
+    /// The range the hover describes, if the server provided one. Used to decide
+    /// whether a cached hover still applies after the cursor moves.
     pub range: Option<Range>,
 }
 
@@ -60,8 +60,7 @@ impl Hover {
     /// Reads a `textDocument/hover` result.
     ///
     /// `None` for `null`, for a missing `contents`, and for contents that
-    /// flatten to nothing — an empty hover box under the cursor is worse than
-    /// no hover at all.
+    /// flatten to empty text, so that no empty hover box is shown.
     pub fn from_json(value: &serde_json::Value) -> Option<Self> {
         let contents = flatten_contents(value.get("contents")?);
         if contents.trim().is_empty() {
@@ -79,7 +78,7 @@ impl Hover {
     }
 }
 
-/// Flattens every spelling of `contents` into plain text.
+/// Flattens every form of `contents` into plain text.
 fn flatten_contents(value: &serde_json::Value) -> String {
     match value {
         // A bare string is the oldest `MarkedString` form.
@@ -94,7 +93,7 @@ fn flatten_contents(value: &serde_json::Value) -> String {
         }
         serde_json::Value::Object(map) => {
             // `MarkupContent` and the object form of `MarkedString` both carry
-            // `value`; only the first has `kind`. Either way the text is there.
+            // `value`; only the first has `kind`. The text is in `value` for both.
             match map.get("value").and_then(|v| v.as_str()) {
                 Some(text) => strip_markup(text),
                 None => String::new(),
@@ -106,11 +105,12 @@ fn flatten_contents(value: &serde_json::Value) -> String {
 
 /// Reduces Markdown to something readable in a terminal.
 ///
-/// The client asks for `plaintext` in its capabilities, but servers send
-/// Markdown regardless — it is the only format several of them produce. Fenced
-/// code blocks are the common case and their fences are pure noise once the text
-/// is displayed unstyled, so they go; the rest is left alone rather than
-/// half-rendered, because a mangled signature is worse than a literal asterisk.
+/// The client requests `plaintext` in its capabilities, but some servers send
+/// Markdown anyway because it is the only format they produce. Fenced code
+/// blocks are the common case, and their fences are not useful in unstyled
+/// text, so they are removed. Other Markdown is left unchanged rather than
+/// partly rendered, because a corrupted signature is worse than a literal
+/// asterisk.
 fn strip_markup(text: &str) -> String {
     let mut out: Vec<&str> = Vec::new();
     for line in text.lines() {
@@ -119,7 +119,7 @@ fn strip_markup(text: &str) -> String {
             continue;
         }
         // A horizontal rule separates a signature from its documentation in
-        // rust-analyzer's output. It renders as a stray run of dashes.
+        // rust-analyzer's output. As plain text it is a line of dashes.
         if matches!(trimmed.trim(), "---" | "***" | "___") {
             continue;
         }
@@ -146,7 +146,7 @@ pub struct Location {
 }
 
 impl Location {
-    /// Reads every spelling of a location result into a flat list.
+    /// Reads every form of a location result into a flat list.
     ///
     /// Accepts a single `Location`, an array of them, an array of
     /// `LocationLink`, and `null`. An empty list means "nothing here", which is
@@ -155,8 +155,8 @@ impl Location {
         match value {
             serde_json::Value::Array(items) => items.iter().filter_map(Self::one).collect(),
             serde_json::Value::Object(_) => Self::one(value).into_iter().collect(),
-            // Including `null`, which is how a server says there is no
-            // definition at this position.
+            // Including `null`, which means there is no definition at this
+            // position.
             _ => Vec::new(),
         }
     }
@@ -167,9 +167,9 @@ impl Location {
         if let (Some(uri), Some(range)) = (
             value.get("targetUri").and_then(|v| v.as_str()),
             value
-                // `targetSelectionRange` is the identifier itself, which is
-                // where a user expects the cursor to land; `targetRange` is the
-                // whole definition, which would put it on the doc comment.
+                // `targetSelectionRange` is the identifier, where a user
+                // expects the cursor. `targetRange` is the whole definition,
+                // which would place the cursor on the doc comment.
                 .get("targetSelectionRange")
                 .or_else(|| value.get("targetRange"))
                 .and_then(read_range),
@@ -189,16 +189,17 @@ impl Location {
 
 /// [`read_range`], for the one caller outside this module.
 ///
-/// The supervisor filters raw diagnostics by range without parsing them into
-/// anything, and a second implementation of "where is this" would be a second
-/// answer to keep in step with this one.
+/// The supervisor filters raw diagnostics by range without parsing them. A
+/// second implementation of range reading would have to be kept consistent
+/// with this one.
 pub(crate) fn read_range_public(value: &serde_json::Value) -> Option<Range> {
     read_range(value)
 }
 
 /// Reads a `{ start, end }` range, clamping rather than rejecting.
 ///
-/// A server that miscounts should cost one misplaced jump, not the feature.
+/// A server that miscounts then causes one misplaced jump instead of disabling
+/// the feature.
 fn read_range(value: &serde_json::Value) -> Option<Range> {
     Some(Range::new(
         read_position(value.get("start")?),
@@ -217,25 +218,25 @@ fn read_position(value: &serde_json::Value) -> Position {
     Position::new(read("line"), read("character"))
 }
 
-/// Why a completion list was asked for.
+/// Why a completion list was requested.
 ///
-/// The server is told, because it changes what it offers: typing `.` should
-/// suggest members, while `ctrl+space` on an empty line should suggest
+/// This is sent to the server because it affects the suggestions: typing `.`
+/// should suggest members, while `ctrl+space` on an empty line should suggest
 /// everything in scope.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompletionTrigger {
-    /// The user asked, e.g. with `ctrl+space`.
+    /// The user requested it, e.g. with `ctrl+space`.
     Invoked,
-    /// A character the server nominated was typed.
+    /// One of the server's trigger characters was typed.
     Character(String),
 }
 
 impl CompletionTrigger {
     fn to_json(&self) -> serde_json::Value {
         match self {
-            // 1 and 2 are the protocol's `CompletionTriggerKind`. There is a 3
-            // — "for incomplete completions" — which deco does not use, because
-            // it re-requests from scratch rather than refining a partial list.
+            // 1 and 2 are the protocol's `CompletionTriggerKind`. deco does not
+            // use 3 ("for incomplete completions"), because it sends a new
+            // request rather than refining a partial list.
             Self::Invoked => serde_json::json!({ "triggerKind": 1 }),
             Self::Character(c) => serde_json::json!({
                 "triggerKind": 2,
@@ -256,10 +257,10 @@ pub fn completion_params(
     params
 }
 
-/// What kind of thing a completion item is, for the icon-shaped hint.
+/// The kind of a completion item, shown as a marker in place of an icon.
 ///
-/// Only the distinctions worth drawing in a terminal are kept: the protocol has
-/// 25 kinds and a single-character marker cannot honour them all.
+/// Only the distinctions useful in a terminal are kept. The protocol has 25
+/// kinds, and a single-character marker cannot represent them all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CompletionKind {
     /// A local, parameter, field or constant.
@@ -322,10 +323,10 @@ pub struct CompletionItem {
     pub insert: String,
     /// The range `insert` replaces, when the server specified one.
     ///
-    /// Authoritative when present: the server knows better than the editor
-    /// where a completion begins. `rust-analyzer` completing `HashMap` after
-    /// `Hash` replaces the typed prefix, and guessing that range from the
-    /// document is how a completion ends up as `HashHashMap`.
+    /// Takes precedence when present, because the server knows where a
+    /// completion begins. `rust-analyzer` completing `HashMap` after `Hash`
+    /// replaces the typed prefix. Guessing that range from the document can
+    /// produce `HashHashMap`.
     pub replace: Option<Range>,
     /// What to match the user's typing against, if it differs from the label.
     pub filter: String,
@@ -335,10 +336,10 @@ pub struct CompletionItem {
     pub preselect: bool,
     /// Whether the server supplied snippet syntax, declared or detected.
     ///
-    /// deco advertises `snippetSupport: false`, so a well-behaved server sends
-    /// plain text — but several send snippets regardless. Inserting
+    /// deco advertises `snippetSupport: false`, so a conforming server sends
+    /// plain text, but several servers send snippets anyway. Inserting
     /// `foo(${1:arg})` literally is worse than inserting nothing, so the
-    /// placeholders are stripped for the fallback. `snippet` separately carries
+    /// placeholders are stripped for the fallback. `snippet` separately holds
     /// the text and tab stops when no insertion context is needed. Variables
     /// in `snippet_source` are resolved when the completion is accepted.
     pub was_snippet: bool,
@@ -359,9 +360,10 @@ impl CompletionItem {
             return None;
         }
 
-        // `textEdit` wins over `insertText`, which wins over the label. That is
-        // the protocol's own precedence, and getting it backwards inserts the
-        // display text — which for a function is often `foo(…)` with an ellipsis.
+        // `textEdit` takes precedence over `insertText`, which takes precedence
+        // over the label. This is the protocol's precedence. Reversing it
+        // inserts the display text, which for a function is often `foo(…)`
+        // with an ellipsis.
         let text_edit = value.get("textEdit").filter(|v| v.is_object());
         let (edit_text, replace) = match text_edit {
             Some(edit) => {
@@ -439,8 +441,8 @@ impl CompletionItem {
     ///
     /// Accepts a `CompletionList` (`{ isIncomplete, items }`), a bare array of
     /// items, and `null`. Returns the items and whether the list was marked
-    /// incomplete — which deco reports but does not act on, since it re-requests
-    /// from scratch rather than refining.
+    /// incomplete. deco reports that flag but does not use it, because it sends
+    /// a new request rather than refining the list.
     pub fn list_from_json(value: &serde_json::Value) -> (Vec<Self>, bool) {
         let (items, incomplete) = match value {
             serde_json::Value::Array(items) => (items.as_slice(), false),
@@ -463,9 +465,8 @@ impl CompletionItem {
 
     /// The key to sort by: the server's `sortText` if it gave one, else the label.
     ///
-    /// Servers use `sortText` to put what you probably want first — a prefix
-    /// match ahead of a fuzzy one — and ignoring it makes a good server's
-    /// ordering look arbitrary.
+    /// Servers use `sortText` to put likely matches first, for example a prefix
+    /// match before a fuzzy match. Ignoring it makes the order look arbitrary.
     pub fn sort_key(&self) -> &str {
         self.sort.as_deref().unwrap_or(&self.label)
     }
@@ -473,8 +474,8 @@ impl CompletionItem {
 
 /// Removes snippet placeholders, returning the text and whether any were found.
 ///
-/// `${1:name}` becomes `name`, `${1}` and `$1` and `$0` vanish, `\$` becomes a
-/// literal `$`. This is the fallback for unsupported syntax; supported snippets
+/// `${1:name}` becomes `name`, `${1}`, `$1` and `$0` are removed, and `\$`
+/// becomes a literal `$`. This is the fallback for unsupported syntax; supported snippets
 /// are expanded separately when accepted.
 fn strip_snippet(text: &str) -> (String, bool) {
     if !text.contains('$') {
@@ -526,8 +527,9 @@ fn strip_snippet(text: &str) -> (String, bool) {
                         _ => body.push(inner),
                     }
                 }
-                // `${1:default}` keeps the default; `${1}` and choice syntax
-                // `${1|a,b|}` keep nothing, since picking one would be a guess.
+                // `${1:default}` keeps the default. `${1}` and choice syntax
+                // `${1|a,b|}` keep nothing, because choosing an option would be
+                // a guess.
                 if let Some((_, default)) = body.split_once(':') {
                     if !default.contains('|') {
                         out.push_str(default);
@@ -551,10 +553,9 @@ fn strip_snippet(text: &str) -> (String, bool) {
 
 /// How the user wants text laid out, as `textDocument/formatting` asks for it.
 ///
-/// The server formats to *these*, not to its own defaults — which is the whole
-/// reason to send them. A server told nothing will use four-space indentation
-/// against a project that uses two, and the result is a diff touching every
-/// line.
+/// These are sent so that the server formats with *these* settings instead of
+/// its own defaults. Otherwise a server may use four-space indentation in a
+/// project that uses two, and the result changes every line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FormattingOptions {
     /// `editor.tabSize`.
@@ -570,9 +571,9 @@ pub struct FormattingOptions {
 impl FormattingOptions {
     fn to_json(self) -> serde_json::Value {
         serde_json::json!({
-            // The two required members. The rest are optional and a server may
-            // ignore them, which is fine — sending them costs nothing and a
-            // server that honours them saves the user a fight with their linter.
+            // The two required members. The others are optional and a server
+            // may ignore them. A server that applies them produces output that
+            // matches the user's whitespace settings.
             "tabSize": self.tab_size,
             "insertSpaces": self.insert_spaces,
             "trimTrailingWhitespace": self.trim_trailing_whitespace,
@@ -620,13 +621,13 @@ impl TextEdit {
     ///
     /// # Ordering
     ///
-    /// Every range refers to the document *as the server saw it*, and the
-    /// specification says edits must not overlap but says nothing about the
-    /// order they arrive in. Applying them front to back therefore corrupts the
-    /// document: the first edit shifts every position after it. deco hands the
-    /// whole set to [`deco_core::Transaction`], which sorts them and applies
-    /// back to front — so this function preserves the server's order and leaves
-    /// the question to the one place that already answers it correctly.
+    /// Every range refers to the document *as the server saw it*. The
+    /// specification requires that edits do not overlap but does not define
+    /// their order. Applying them front to back therefore corrupts the
+    /// document, because the first edit shifts every later position. deco
+    /// passes the whole set to [`deco_core::Transaction`], which sorts them and
+    /// applies them back to front. This function therefore keeps the server's
+    /// order.
     pub fn list_from_json(value: &serde_json::Value) -> Vec<Self> {
         let Some(items) = value.as_array() else {
             return Vec::new();
@@ -637,8 +638,8 @@ impl TextEdit {
     fn one(value: &serde_json::Value) -> Option<Self> {
         Some(Self {
             range: read_range(value.get("range")?)?,
-            // An absent `newText` is a deletion. Distinct from a missing range,
-            // which cannot be placed and so cannot be applied.
+            // An absent `newText` is a deletion. A missing range is different:
+            // the edit has no position and cannot be applied.
             new_text: value
                 .get("newText")
                 .and_then(|v| v.as_str())
@@ -649,8 +650,8 @@ impl TextEdit {
 
     /// Whether this edit changes nothing.
     ///
-    /// Servers routinely return a no-op edit for an already-formatted document;
-    /// applying one would mark the file dirty and add an undo step for nothing.
+    /// Servers often return a no-op edit for an already formatted document.
+    /// Applying it would mark the file dirty and add an empty undo step.
     pub fn is_noop(&self) -> bool {
         self.range.is_empty() && self.new_text.is_empty()
     }
@@ -663,25 +664,25 @@ pub fn rename_params(uri: &Uri, position: Position, new_name: &str) -> serde_jso
     params
 }
 
-/// Every edit one document takes as part of a [`WorkspaceEdit`].
+/// All edits to one document within a [`WorkspaceEdit`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DocumentEdits {
     /// Which document.
     pub uri: Uri,
-    /// The version the server had when it computed these, when it said so.
+    /// The document version the server used to compute these, if provided.
     ///
-    /// Only `documentChanges` carries it. `None` means the server did not tell
-    /// us which text it was looking at, not that it was looking at the current
-    /// text — a distinction the applying end has to make, since it decides what
-    /// to do about an edit computed against text that has since changed.
+    /// Only `documentChanges` includes it. `None` means the server did not
+    /// state which version it used; it does not mean the current version. The
+    /// code that applies the edit must handle this, because it decides what to
+    /// do with an edit computed for text that has since changed.
     pub version: Option<i64>,
     /// What to change, in the coordinates of that version.
     pub edits: Vec<TextEdit>,
 }
 
-/// Everything a server wants changed, across however many documents.
+/// All changes a server requests, across any number of documents.
 ///
-/// The unit a rename, a code action and a replace-across-files all arrive as.
+/// Renames, code actions and replace-across-files all use this type.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct WorkspaceEdit {
     /// One entry per document, in the order the server listed them.
@@ -693,11 +694,11 @@ pub struct WorkspaceEdit {
 pub enum WorkspaceEditError {
     /// The server wants a file created, renamed or deleted as part of the edit.
     ///
-    /// Carries the `kind` it sent. Reported rather than skipped: these arrive
-    /// mixed in with text edits that only make sense together with them —
+    /// Contains the `kind` the server sent. Reported rather than skipped,
+    /// because these operations come with text edits that depend on them:
     /// renaming a Rust module renames its file *and* rewrites the paths that
-    /// name it — so dropping the half deco cannot do would leave a project that
-    /// no longer builds and an undo history that cannot put it back.
+    /// refer to it. Applying only the text edits would leave a project that no
+    /// longer builds and an undo history that cannot restore it.
     FileOperation(String),
 }
 
@@ -719,20 +720,18 @@ impl std::error::Error for WorkspaceEditError {}
 impl WorkspaceEdit {
     /// Reads a `WorkspaceEdit` result.
     ///
-    /// `null` — how a server declines a rename it cannot perform — reads as an
-    /// edit with nothing in it, which the caller reports as "nothing to do"
-    /// rather than as a failure.
+    /// `null`, which a server returns to decline a rename, is read as an empty
+    /// edit. The caller reports it as "nothing to do", not as a failure.
     ///
     /// # The two spellings
     ///
-    /// The protocol has carried the same information twice for years.
-    /// `documentChanges` is the newer one and the better one: it is ordered and
-    /// it carries the document version each edit was computed against.
-    /// `changes` is a bare `uri -> edits` map with neither. When a server sends
-    /// both — several do, for older clients — `documentChanges` wins, exactly as
-    /// the specification instructs, because throwing away the versions would
-    /// mean applying edits to text nobody checked was still the text they were
-    /// computed for.
+    /// The protocol has two fields for the same information.
+    /// `documentChanges` is newer and preferred: it is ordered and includes
+    /// the document version each edit was computed for. `changes` is a plain
+    /// `uri -> edits` map without either. When a server sends both, as several
+    /// do for older clients, `documentChanges` is used, as the specification
+    /// requires. Discarding the versions would mean applying edits without
+    /// checking that the text is still the text they were computed for.
     pub fn from_json(value: &serde_json::Value) -> Result<Self, WorkspaceEditError> {
         if let Some(changes) = value.get("documentChanges").and_then(|v| v.as_array()) {
             return Self::from_document_changes(changes);
@@ -756,8 +755,8 @@ impl WorkspaceEdit {
     fn from_document_changes(changes: &[serde_json::Value]) -> Result<Self, WorkspaceEditError> {
         let mut documents: Vec<DocumentEdits> = Vec::new();
         for change in changes {
-            // A file operation is the one member of this array that is not a
-            // `TextDocumentEdit`, and `kind` is how it says so.
+            // A file operation is the only member of this array that is not a
+            // `TextDocumentEdit`. It is identified by `kind`.
             if let Some(kind) = change.get("kind").and_then(|v| v.as_str()) {
                 return Err(WorkspaceEditError::FileOperation(kind.to_owned()));
             }
@@ -774,14 +773,14 @@ impl WorkspaceEdit {
             if edits.is_empty() {
                 continue;
             }
-            // `version` is nullable even here — that is the server saying it did
-            // not track one, which is not the same as it being absent.
+            // `version` can be null here too. Null means the server did not
+            // track a version, which differs from the field being absent.
             let version = document.get("version").and_then(|v| v.as_i64());
 
             // A document may appear more than once, and the entries are ordered.
-            // Concatenating in the order they arrived keeps that order; whether
-            // the result can be applied at all is the applying end's question,
-            // and it already refuses edits that overlap.
+            // Concatenating them in arrival order keeps that order. The code that
+            // applies the result decides whether it can be applied, and it
+            // already rejects overlapping edits.
             match documents.iter_mut().find(|seen| seen.uri.as_str() == uri) {
                 Some(seen) => seen.edits.extend(edits),
                 None => documents.push(DocumentEdits {
@@ -814,12 +813,11 @@ impl WorkspaceEdit {
 
 /// Parameters for `textDocument/codeAction`.
 ///
-/// `diagnostics` are the server's own, **as it sent them**. That is the whole
-/// point of the context: a quick fix is computed from the diagnostic it fixes,
-/// and a diagnostic carries fields a client has no business interpreting —
-/// `data` is opaque by specification and is where several servers keep what they
-/// need to build the fix. Handing back anything but the original object is
-/// handing back a diagnostic the server does not recognise.
+/// `diagnostics` are the server's own, **as it sent them**. A quick fix is
+/// computed from the diagnostic it fixes, and a diagnostic has fields a client
+/// must not interpret. `data` is opaque by specification, and several servers
+/// store the information needed to build the fix there. If anything other than
+/// the original object is sent, the server does not recognise the diagnostic.
 pub fn code_action_params(
     uri: &Uri,
     range: Range,
@@ -835,11 +833,11 @@ pub fn code_action_params(
     })
 }
 
-/// Something a server offers to do about a place in a document.
+/// An action a server offers for a location in a document.
 ///
-/// Covers both shapes the result array can hold. A bare `Command` — the older
-/// spelling, still sent by several servers — becomes one of these with no edit
-/// and a command named, which is exactly what deco cannot carry out and says so.
+/// Covers both shapes the result array can contain. A bare `Command`, the
+/// older form that several servers still send, becomes a value with no edit
+/// and a command name. deco cannot run such an action and reports that.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodeAction {
     /// What to show in the list.
@@ -849,42 +847,40 @@ pub struct CodeAction {
     /// A hierarchy of dot-separated segments, so `refactor` is the prefix of
     /// every refactoring. `None` for a bare `Command`, which has no kind.
     pub kind: Option<String>,
-    /// Why the server says this cannot be run right now, if it says so.
+    /// The server's reason why this cannot run now, if it provided one.
     ///
-    /// Kept rather than filtered out: VS Code lists a disabled action with its
-    /// reason, and "the action I wanted is missing" is a worse thing to leave
-    /// somebody with than "here is why it is not available".
+    /// Kept rather than filtered out. VS Code lists a disabled action with its
+    /// reason, which is more useful to the user than a missing action.
     pub disabled: Option<String>,
-    /// Whether the server marked this the obvious one.
+    /// Whether the server marked this as the preferred action.
     pub preferred: bool,
-    /// The command it would run, if it runs one.
+    /// The command it would run, if any.
     pub command: Option<String>,
     /// Whether this entry was a bare `Command` rather than a `CodeAction`.
     ///
-    /// The two are not interchangeable where it matters: `codeAction/resolve`
-    /// takes a `CodeAction`, so a `Command` with no edit is not an action
-    /// waiting to be filled in — it is the whole of what the server offered,
-    /// and running it is a different request entirely.
+    /// The two are not interchangeable: `codeAction/resolve` takes a
+    /// `CodeAction`. A `Command` without an edit is not waiting to be resolved.
+    /// It is the complete offer, and running it requires a different request.
     pub is_command: bool,
     /// The edit it would make, **unparsed**.
     ///
-    /// Left as JSON until the action is chosen. A `WorkspaceEdit` can be refused
-    /// — for a file operation deco cannot perform — and refusing it while
-    /// *listing* would take one broken entry and empty the whole menu, when the
-    /// other entries are fine and one of them is probably what was wanted.
+    /// Kept as JSON until the action is chosen. A `WorkspaceEdit` can be
+    /// rejected, for example for a file operation deco cannot perform.
+    /// Rejecting it while *listing* would let one invalid entry empty the whole
+    /// menu, although the other entries are valid.
     pub edit: Option<serde_json::Value>,
     /// The action exactly as the server sent it, for `codeAction/resolve`.
     ///
-    /// Resolve takes the action back and returns it with its edit filled in, so
-    /// what goes out has to be what came in, `data` included.
+    /// Resolve takes the action and returns it with its edit filled in, so the
+    /// request must contain the original action, including `data`.
     pub raw: serde_json::Value,
 }
 
 impl CodeAction {
     /// Reads a `(Command | CodeAction)[]` result.
     ///
-    /// `null` — how a server says there is nothing to offer here — reads as an
-    /// empty list, which is a successful answer.
+    /// `null`, which means the server has no actions here, is read as an empty
+    /// list. This is a successful answer.
     pub fn list_from_json(value: &serde_json::Value) -> Vec<Self> {
         let Some(items) = value.as_array() else {
             return Vec::new();
@@ -894,10 +890,10 @@ impl CodeAction {
 
     fn one(value: &serde_json::Value) -> Option<Self> {
         let title = value.get("title")?.as_str()?.to_owned();
-        // The two shapes are told apart by `command`'s *type*: on a `Command` it
-        // is the identifier itself, and on a `CodeAction` it is a nested object.
-        // Nothing else distinguishes them reliably — `kind` and `edit` are both
-        // optional on a `CodeAction`.
+        // The two shapes are distinguished by the *type* of `command`. On a
+        // `Command` it is the identifier, and on a `CodeAction` it is a nested
+        // object. No other field distinguishes them reliably, because `kind`
+        // and `edit` are both optional on a `CodeAction`.
         let (command, is_command) = match value.get("command") {
             Some(serde_json::Value::String(id)) => (Some(id.clone()), true),
             Some(nested) => (
@@ -915,7 +911,7 @@ impl CodeAction {
                 .get("kind")
                 .and_then(|v| v.as_str())
                 .map(str::to_owned),
-            // `disabled` is `{ reason }`, and the reason is the useful half.
+            // `disabled` is `{ reason }`; only the reason is kept.
             disabled: value
                 .get("disabled")
                 .and_then(|d| d.get("reason"))
@@ -934,19 +930,18 @@ impl CodeAction {
 
     /// Whether choosing this would need a `codeAction/resolve` first.
     ///
-    /// Not a bare `Command`: resolve takes a `CodeAction`, and one sent a
-    /// `Command` answers about something it was never given. Not a disabled
-    /// one either — there is nothing to go and fetch for an action the server
-    /// has already said cannot run.
+    /// False for a bare `Command`, because resolve takes a `CodeAction`. Also
+    /// false for a disabled action, because the server has already stated that
+    /// it cannot run.
     pub fn needs_resolving(&self) -> bool {
         self.edit.is_none() && self.disabled.is_none() && !self.is_command
     }
 
     /// The kind, in the form a list shows it.
     ///
-    /// The last segment, because the leading ones are the same down a whole
-    /// menu — every entry reading `refactor.extract` differs only after the dot,
-    /// and a column of identical prefixes is a column of nothing.
+    /// The last segment, because the leading segments are often the same for
+    /// the whole menu. Entries such as `refactor.extract` differ only after the
+    /// last dot, and a column of identical prefixes is not useful.
     pub fn short_kind(&self) -> Option<&str> {
         self.kind.as_deref().map(|kind| {
             kind.rsplit('.')
@@ -964,8 +959,8 @@ pub fn code_action_resolve_params(action: &CodeAction) -> serde_json::Value {
 
 /// One semantically classified run of text.
 ///
-/// Positions are already absolute and in the negotiated encoding, so a caller
-/// compares one against a cursor without knowing anything about the wire format.
+/// Positions are absolute and in the negotiated encoding, so a caller can
+/// compare them with a cursor without knowing the wire format.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SemanticSpan {
     /// Where the run is. A token never spans lines, per the specification.
@@ -987,16 +982,17 @@ pub fn semantic_tokens_params(uri: &crate::uri::Uri) -> serde_json::Value {
 /// # The encoding, and why this is worth testing carefully
 ///
 /// The wire format is one flat array of integers in groups of five:
-/// `deltaLine`, `deltaStart`, `length`, `tokenType`, `tokenModifiers`. Every
-/// number is relative to the token before it — `deltaStart` counts from the
-/// previous token's start *when they share a line*, and from the start of the
-/// line otherwise. Losing that distinction shifts every token after the first on
-/// each line, which colours the wrong words rather than failing visibly.
+/// `deltaLine`, `deltaStart`, `length`, `tokenType`, `tokenModifiers`. Each
+/// position is relative to the previous token. `deltaStart` counts from the
+/// previous token's start *when both are on the same line*, and from the start
+/// of the line otherwise. Ignoring that distinction shifts every token after
+/// the first on each line, which colours the wrong words without a visible
+/// error.
 ///
 /// `tokenModifiers` is a bitset over the legend's modifier list, not an index.
 ///
-/// A group whose type index is not in the legend is dropped: colouring by index
-/// would mean colouring by whatever position that server happened to use.
+/// A group whose type index is not in the legend is dropped. Colouring by
+/// index would depend on the server's arbitrary ordering.
 pub fn semantic_spans_from_json(
     value: &serde_json::Value,
     legend: &crate::capabilities::SemanticTokensOptions,
@@ -1008,8 +1004,8 @@ pub fn semantic_spans_from_json(
     let mut spans = Vec::new();
     let mut line = 0u32;
     let mut start = 0u32;
-    // `chunks_exact` rather than `chunks`: a trailing partial group is a broken
-    // response, and guessing at its missing fields would invent a token.
+    // `chunks_exact` rather than `chunks`. A trailing partial group is an
+    // invalid response, and filling in its missing fields would create a token.
     for group in data.chunks_exact(5) {
         let numbers: Vec<u32> = group
             .iter()
@@ -1028,8 +1024,8 @@ pub fn semantic_spans_from_json(
         let Some(token_type) = legend.token_types.get(kind as usize) else {
             continue;
         };
-        // A zero-length token has nothing to colour, and a range whose end equals
-        // its start would be dropped by the renderer anyway.
+        // A zero-length token has nothing to colour, and the renderer would drop
+        // a range whose end equals its start.
         if length == 0 {
             continue;
         }
@@ -1054,24 +1050,25 @@ pub fn semantic_spans_from_json(
 /// A name the server found in a document.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DocumentSymbol {
-    /// What it is called, as the server spelled it.
+    /// The name, exactly as the server sent it.
     pub name: String,
-    /// What kind of thing it is — `function`, `struct`, `field` — resolved from
-    /// the protocol's `SymbolKind` integer. `None` for a number outside the
-    /// enumeration, which is a server ahead of this client rather than an error.
+    /// The kind, such as `function`, `struct` or `field`, resolved from the
+    /// protocol's `SymbolKind` integer. `None` for a number outside the
+    /// enumeration, which means the server uses a newer protocol version. It is
+    /// not an error.
     pub kind: Option<&'static str>,
-    /// What encloses it: the class for a method, the parent path for a nested
-    /// symbol. `None` at the top level.
+    /// The enclosing symbol: the class for a method, or the parent path for a
+    /// nested symbol. `None` at the top level.
     pub container: Option<String>,
     /// Where the *name* is, not where the definition starts.
     pub position: Position,
 }
 
 impl DocumentSymbol {
-    /// How to refer to it: `Counter.bump` for a method, `bump` at the top level.
+    /// The display name: `Counter.bump` for a method, `bump` at the top level.
     ///
-    /// Qualified rather than bare so that filtering can find a method by its
-    /// class, and so two `new`s in one file are told apart in the list.
+    /// Qualified so that filtering can find a method by its class, and so that
+    /// two `new`s in one file can be distinguished in the list.
     pub fn qualified(&self) -> String {
         match &self.container {
             Some(container) => format!("{container}.{}", self.name),
@@ -1081,7 +1078,7 @@ impl DocumentSymbol {
 
     /// Reads a `textDocument/documentSymbol` result, in either of its shapes.
     ///
-    /// The protocol has two, and which one arrives depends on the server:
+    /// The protocol has two shapes, and the server chooses which one to send:
     ///
     /// ```jsonc
     /// // DocumentSymbol[]: a tree, with the nesting the file has
@@ -1093,13 +1090,13 @@ impl DocumentSymbol {
     ///    "location": { "uri": "file:///…", "range": {…} } }]
     /// ```
     ///
-    /// Both flatten to one list in document order — parent before its children —
-    /// because that is the order the picker shows and the order a reader of the
-    /// file expects.
+    /// Both are flattened to one list in document order, with each parent before
+    /// its children. The picker shows this order, and it matches the file.
     ///
-    /// `SymbolInformation`'s `location.uri` is ignored: the request named one
-    /// document, so a server answering about another is out of spec, and trusting
-    /// it would let a symbol list navigate somewhere unrelated.
+    /// `SymbolInformation`'s `location.uri` is ignored. The request named one
+    /// document, so a response about another document violates the
+    /// specification, and using it would let the symbol list navigate to an
+    /// unrelated file.
     pub fn list_from_json(value: &serde_json::Value) -> Vec<Self> {
         let mut out = Vec::new();
         if let Some(items) = value.as_array() {
@@ -1119,19 +1116,19 @@ fn collect_symbols(
         let Some(name) = item.get("name").and_then(|v| v.as_str()) else {
             continue;
         };
-        // A symbol with no name is nothing a user could pick out of a list.
+        // A symbol without a name cannot be selected from a list.
         if name.is_empty() {
             continue;
         }
 
-        // `SymbolInformation` first: it is the shape with a `location`, and its
-        // `containerName` is a plain string rather than the nesting a
-        // `DocumentSymbol` expresses with `children`.
+        // Check for `SymbolInformation` first. It is the shape with a
+        // `location`, and its `containerName` is a plain string, whereas a
+        // `DocumentSymbol` expresses nesting with `children`.
         let flat = item.get("location");
         let position = match flat {
             Some(location) => location.get("range").and_then(read_range).map(|r| r.start),
-            // `selectionRange` is the name itself; `range` covers the whole
-            // definition and would land the cursor on a doc comment.
+            // `selectionRange` is the name. `range` covers the whole definition
+            // and would place the cursor on a doc comment.
             None => item
                 .get("selectionRange")
                 .or_else(|| item.get("range"))
@@ -1139,8 +1136,8 @@ fn collect_symbols(
                 .map(|r| r.start),
         };
         let Some(position) = position else {
-            // Without a position there is nowhere to go, and listing it would be
-            // a row that does nothing.
+            // Without a position there is no navigation target, and the row
+            // would do nothing.
             continue;
         };
 
@@ -1163,8 +1160,8 @@ fn collect_symbols(
             position,
         });
 
-        // Children inherit the qualified name of the symbol just pushed, so a
-        // method three levels down reads as the path to it.
+        // Children use the qualified name of the symbol just added as their
+        // container, so a method three levels down shows its full path.
         if let Some(children) = item.get("children").and_then(|v| v.as_array()) {
             let qualified = out
                 .last()
@@ -1177,9 +1174,9 @@ fn collect_symbols(
 
 /// Names a `SymbolKind`.
 ///
-/// The protocol numbers them, and the numbers are stable and additive: an
-/// unrecognised one is a newer specification than this client, which is worth
-/// listing the symbol without a kind rather than dropping it.
+/// The protocol's numbers are stable, and new ones are only added. An
+/// unrecognised number comes from a newer specification, so the symbol is
+/// listed without a kind instead of being dropped.
 fn symbol_kind_name(kind: u64) -> Option<&'static str> {
     Some(match kind {
         1 => "file",
@@ -1234,9 +1231,9 @@ mod tests {
 
     #[test]
     fn code_action_params_echo_the_diagnostics_verbatim() {
-        // `data` is opaque to a client and is where servers keep what they need
-        // to build the fix. Anything that reshapes it hands back a diagnostic
-        // the server does not recognise.
+        // `data` is opaque to a client, and servers store the information
+        // needed to build the fix there. If it is changed, the server does not
+        // recognise the diagnostic.
         let diagnostic = json!({
             "range": range(1, 0, 1, 4),
             "message": "unused",
@@ -1254,8 +1251,8 @@ mod tests {
 
     #[test]
     fn a_code_action_and_a_bare_command_both_read() {
-        // Both shapes arrive in one array, and the older one is still what
-        // several servers send.
+        // Both shapes can appear in one array, and several servers still send
+        // the older one.
         let actions = CodeAction::list_from_json(&json!([
             {
                 "title": "Remove unused import",
@@ -1282,8 +1279,8 @@ mod tests {
 
     #[test]
     fn a_nested_command_is_read_off_the_object() {
-        // A `CodeAction` may carry a command *as well as* an edit, and its
-        // `command` is an object rather than the identifier itself.
+        // A `CodeAction` may have a command *as well as* an edit, and its
+        // `command` is an object rather than the identifier.
         let actions = CodeAction::list_from_json(&json!([{
             "title": "Extract into function",
             "kind": "refactor.extract",
@@ -1310,9 +1307,9 @@ mod tests {
         );
         assert_eq!(actions[2].disabled.as_deref(), Some("not in a function"));
 
-        // A bare `Command` has no edit either, and is still not resolvable:
-        // `codeAction/resolve` takes a `CodeAction`, and a server sent a
-        // `Command` is being asked about something it never offered.
+        // A bare `Command` also has no edit, but is not resolvable:
+        // `codeAction/resolve` takes a `CodeAction`, and the server did not
+        // offer one.
         let command = CodeAction::list_from_json(&json!([
             {"title": "Organize imports", "command": "example.organizeImports"},
         ]));
@@ -1322,7 +1319,7 @@ mod tests {
 
     #[test]
     fn resolving_sends_the_action_back_exactly_as_it_arrived() {
-        // Including `data`, which is what the server matches the action by.
+        // Including `data`, which the server uses to identify the action.
         let sent = json!({
             "title": "Expensive refactor",
             "kind": "refactor",
@@ -1338,7 +1335,7 @@ mod tests {
     fn nothing_to_offer_reads_as_an_empty_list() {
         assert!(CodeAction::list_from_json(&json!(null)).is_empty());
         assert!(CodeAction::list_from_json(&json!([])).is_empty());
-        // An entry with no title cannot be listed, and the rest still can.
+        // An entry without a title cannot be listed; the others still are.
         let actions = CodeAction::list_from_json(&json!([{"kind": "quickfix"}, {"title": "Fix"}]));
         assert_eq!(actions.len(), 1);
         assert_eq!(actions[0].title, "Fix");
@@ -1346,8 +1343,8 @@ mod tests {
 
     #[test]
     fn the_kind_shown_is_the_part_that_differs() {
-        // A menu of `refactor.extract`, `refactor.inline`, `refactor.rewrite`
-        // reads as one repeated word and one useful one.
+        // In a menu of `refactor.extract`, `refactor.inline` and
+        // `refactor.rewrite`, only the last segment differs.
         let actions = CodeAction::list_from_json(&json!([
             {"title": "a", "kind": "refactor.extract.function"},
             {"title": "b", "kind": "quickfix"},
@@ -1374,8 +1371,8 @@ mod tests {
 
     #[test]
     fn a_declined_rename_reads_as_nothing_to_do() {
-        // How a server says "there is nothing renameable here". Not a failure:
-        // the caller says so and changes nothing.
+        // `null` means there is nothing to rename here. This is not a failure:
+        // the caller reports it and changes nothing.
         let edit = WorkspaceEdit::from_json(&json!(null)).expect("null is not an error");
         assert!(edit.is_empty());
         assert_eq!(edit.documents(), 0);
@@ -1396,16 +1393,15 @@ mod tests {
 
         assert_eq!(edit.documents(), 2);
         assert_eq!(edit.edits(), 3);
-        // No versions in this spelling — which the applying end has to know, so
-        // that it does not mistake "unstated" for "current".
+        // This form has no versions. The code that applies the edit must know
+        // this, so that it does not treat "not stated" as "current".
         assert!(edit.changes.iter().all(|d| d.version.is_none()));
     }
 
     #[test]
     fn document_changes_win_over_changes() {
-        // Servers send both for older clients. Reading `changes` would throw the
-        // versions away, and the versions are the whole reason to prefer the
-        // other spelling.
+        // Servers send both for older clients. Reading `changes` would discard
+        // the versions, which are the reason to prefer `documentChanges`.
         let edit = WorkspaceEdit::from_json(&json!({
             "changes": {
                 "file:///w/stale.rs": [{"range": range(0, 0, 0, 1), "newText": "x"}],
@@ -1449,8 +1445,9 @@ mod tests {
 
     #[test]
     fn a_file_operation_refuses_the_whole_edit() {
-        // rust-analyzer renaming a module sends exactly this: the file rename and
-        // the text edits that point at it. Half of it is worse than none of it.
+        // rust-analyzer sends this when renaming a module: the file rename and
+        // the text edits that refer to it. Applying only part of it is worse
+        // than applying none of it.
         let error = WorkspaceEdit::from_json(&json!({
             "documentChanges": [
                 {
@@ -1524,8 +1521,8 @@ mod tests {
 
     #[test]
     fn hover_reads_an_array_of_mixed_forms() {
-        // Handling only the newest spelling loses hover against a large share of
-        // the servers people actually run.
+        // Handling only the newest form would lose hover with many servers in
+        // common use.
         let hover = Hover::from_json(&json!({
             "contents": [
                 "first",
@@ -1545,7 +1542,7 @@ mod tests {
 
     #[test]
     fn a_hover_that_flattens_to_nothing_is_not_shown() {
-        // An empty box under the cursor is worse than no box.
+        // No empty hover box is shown under the cursor.
         for contents in [json!(""), json!("   \n  "), json!([]), json!(["", "  "])] {
             assert_eq!(
                 Hover::from_json(&json!({"contents": contents.clone()})),
@@ -1557,8 +1554,8 @@ mod tests {
 
     #[test]
     fn code_fences_are_removed_but_the_code_is_kept() {
-        // Rendered unstyled, a fence is pure noise; the signature inside it is
-        // the entire point of the hover.
+        // In unstyled text a fence is not useful, but the signature inside it
+        // is the main content of the hover.
         let hover = Hover::from_json(&json!({
             "contents": {
                 "kind": "markdown",
@@ -1572,7 +1569,7 @@ mod tests {
 
     #[test]
     fn other_markdown_is_left_alone_rather_than_half_rendered() {
-        // A mangled signature is worse than a literal asterisk.
+        // A corrupted signature is worse than a literal asterisk.
         let hover = Hover::from_json(&json!({
             "contents": {"kind": "markdown", "value": "see *`Vec<T>`* for details"}
         }))
@@ -1621,8 +1618,8 @@ mod tests {
 
     #[test]
     fn a_definition_reads_location_links() {
-        // A different spelling entirely — `targetUri` and `targetRange` — and
-        // the one rust-analyzer and gopls both use.
+        // A different form, with `targetUri` and `targetRange`. rust-analyzer
+        // and gopls both use it.
         let locations = Location::list_from_json(&json!([{
             "originSelectionRange": {"start": {"line": 0, "character": 0},
                                      "end": {"line": 0, "character": 3}},
@@ -1684,8 +1681,8 @@ mod tests {
 
     #[test]
     fn a_non_file_uri_survives_being_read() {
-        // `jdt:` and friends. The editor cannot open one, but losing the answer
-        // here would make the failure look like the server said nothing.
+        // `jdt:` and similar schemes. The editor cannot open them, but dropping
+        // the answer here would make it look as if the server returned nothing.
         let locations = Location::list_from_json(&json!({
             "uri": "jdt://contents/rt.jar/java.lang/String.class",
             "range": {"start": {"line": 1, "character": 0},
@@ -1697,8 +1694,9 @@ mod tests {
 
     #[test]
     fn completion_params_carry_the_trigger() {
-        // The server changes what it offers: typing `.` should suggest members,
-        // ctrl+space on a blank line should suggest everything in scope.
+        // The trigger affects the suggestions: typing `.` should suggest
+        // members, and ctrl+space on a blank line should suggest everything in
+        // scope.
         let invoked = completion_params(&uri(), Position::new(1, 2), &CompletionTrigger::Invoked);
         assert_eq!(invoked["context"], json!({"triggerKind": 1}));
 
@@ -1739,7 +1737,7 @@ mod tests {
 
     #[test]
     fn an_unlabelled_item_is_dropped_and_its_siblings_survive() {
-        // It could be neither shown nor chosen.
+        // It can be neither shown nor chosen.
         let (items, _) = CompletionItem::list_from_json(&json!([
             {"detail": "no label"},
             {"label": "   "},
@@ -1751,8 +1749,8 @@ mod tests {
 
     #[test]
     fn text_edit_beats_insert_text_which_beats_the_label() {
-        // The protocol's own precedence. Backwards, it inserts the display text
-        // — which for a function is often `foo(…)`, ellipsis included.
+        // The protocol's precedence. Reversing it inserts the display text,
+        // which for a function is often `foo(…)` with the ellipsis.
         let from_label = CompletionItem::from_json(&json!({"label": "foo"})).unwrap();
         assert_eq!(from_label.insert, "foo");
 
@@ -1779,8 +1777,8 @@ mod tests {
 
     #[test]
     fn an_insert_replace_edit_prefers_the_replace_range() {
-        // Completing over an existing word should replace it, which is what a
-        // user expects and what `replace` is for.
+        // Completing over an existing word should replace it. Users expect
+        // this, and `replace` exists for it.
         let item = CompletionItem::from_json(&json!({
             "label": "HashMap",
             "textEdit": {
@@ -1801,8 +1799,9 @@ mod tests {
 
     #[test]
     fn snippet_placeholders_are_stripped_rather_than_inserted_literally() {
-        // deco advertises snippetSupport: false and several servers send them
-        // anyway. `foo(${1:arg})` inserted literally is worse than nothing.
+        // deco advertises snippetSupport: false, but several servers send
+        // snippets anyway. Inserting `foo(${1:arg})` literally is worse than
+        // inserting nothing.
         let item = CompletionItem::from_json(&json!({
             "label": "foo",
             "insertText": "foo(${1:arg}, ${2:other})$0",
@@ -1824,8 +1823,8 @@ mod tests {
 
     #[test]
     fn a_choice_placeholder_keeps_nothing_rather_than_guessing() {
-        // `${1|a,b,c|}` offers alternatives; picking one for the user would be
-        // an invention.
+        // `${1|a,b,c|}` offers alternatives, and choosing one for the user would
+        // be a guess.
         let item = CompletionItem::from_json(&json!({
             "label": "vis",
             "insertText": "${1|pub,pub(crate)|} fn",
@@ -1877,8 +1876,8 @@ mod tests {
 
     #[test]
     fn a_snippet_declared_by_format_alone_is_still_flagged() {
-        // No placeholders to strip, but the editor should still know it was one:
-        // the server may send tab stops in a sibling item.
+        // There are no placeholders to strip, but the item is still flagged as
+        // a snippet: the server may send tab stops in another item.
         let item = CompletionItem::from_json(&json!({
             "label": "foo",
             "insertText": "foo",
@@ -1891,8 +1890,8 @@ mod tests {
 
     #[test]
     fn filter_text_is_used_for_matching_when_it_differs_from_the_label() {
-        // rust-analyzer labels an item `foo(…)` and filters on `foo`; matching
-        // the label would fail the moment the user typed `f`.
+        // rust-analyzer labels an item `foo(…)` and filters on `foo`. Matching
+        // against the label would fail as soon as the user typed `f`.
         let item =
             CompletionItem::from_json(&json!({"label": "foo(…)", "filterText": "foo"})).unwrap();
         assert_eq!(item.filter, "foo");
@@ -1903,8 +1902,8 @@ mod tests {
 
     #[test]
     fn sort_text_orders_ahead_of_the_label() {
-        // Servers use it to put the likely answer first; ignoring it makes a
-        // good server's ordering look arbitrary.
+        // Servers use it to put likely matches first. Ignoring it makes the
+        // order look arbitrary.
         let with =
             CompletionItem::from_json(&json!({"label": "zebra", "sortText": "0000"})).unwrap();
         assert_eq!(with.sort_key(), "0000");
@@ -1954,8 +1953,8 @@ mod tests {
 
     #[test]
     fn formatting_params_carry_the_users_own_settings() {
-        // A server told nothing indents with four spaces against a two-space
-        // project, and the result is a diff touching every line.
+        // Without these settings a server may indent with four spaces in a
+        // two-space project, and the result changes every line.
         let options = FormattingOptions {
             tab_size: 2,
             insert_spaces: true,
@@ -1991,9 +1990,9 @@ mod tests {
 
     #[test]
     fn text_edits_are_read_in_the_order_the_server_sent_them() {
-        // Preserved rather than sorted here: `Transaction` already sorts and
-        // applies back to front, and doing it in two places invites the two from
-        // disagreeing.
+        // Preserved rather than sorted here. `Transaction` already sorts and
+        // applies back to front, and sorting in two places could produce
+        // inconsistent results.
         let edits = TextEdit::list_from_json(&json!([
             {"range": {"start": {"line": 5, "character": 0},
                        "end": {"line": 5, "character": 4}}, "newText": "  "},
@@ -2024,8 +2023,8 @@ mod tests {
 
     #[test]
     fn an_edit_without_a_range_is_skipped_and_its_siblings_survive() {
-        // It cannot be placed, so it cannot be applied — but dropping the whole
-        // set would lose a formatting run to one malformed entry.
+        // It has no position, so it cannot be applied. Dropping the whole set
+        // would discard a formatting result because of one malformed entry.
         let edits = TextEdit::list_from_json(&json!([
             {"newText": "nowhere"},
             {"range": {"start": {"line": 1, "character": 0},
@@ -2037,8 +2036,8 @@ mod tests {
 
     #[test]
     fn a_no_op_edit_is_recognisable() {
-        // Servers return these for an already-formatted document; applying one
-        // marks the file dirty and adds an undo step for nothing.
+        // Servers return these for an already formatted document. Applying one
+        // marks the file dirty and adds an empty undo step.
         let edits = TextEdit::list_from_json(&json!([{
             "range": {"start": {"line": 3, "character": 2},
                       "end": {"line": 3, "character": 2}},
@@ -2086,9 +2085,9 @@ mod tests {
 
     #[test]
     fn a_second_token_on_the_same_line_counts_from_the_first() {
-        // The distinction that matters: `deltaStart` is relative to the previous
-        // token when they share a line. Reading it as relative to the line start
-        // would put this token at column 3 instead of 8.
+        // `deltaStart` is relative to the previous token when both are on the
+        // same line. Reading it as relative to the line start would put this
+        // token at column 3 instead of 8.
         let spans = semantic_spans_from_json(
             &json!({ "data": [0, 5, 2, 2, 0, 0, 3, 4, 2, 0] }),
             &legend(),
@@ -2121,8 +2120,8 @@ mod tests {
 
     #[test]
     fn modifiers_are_read_as_a_bitset_not_an_index() {
-        // `5` is bits 0 and 2 — `declaration` and `static` — and emphatically not
-        // the legend's fifth entry, which does not exist.
+        // `5` is bits 0 and 2 (`declaration` and `static`), not the legend's
+        // fifth entry, which does not exist.
         let spans = semantic_spans_from_json(&json!({ "data": [0, 0, 3, 2, 5] }), &legend());
         assert_eq!(spans[0].modifiers, vec!["declaration", "static"]);
     }
@@ -2135,8 +2134,8 @@ mod tests {
 
     #[test]
     fn a_modifier_bit_with_no_name_is_ignored() {
-        // Bit 7 is beyond this legend. Inventing a name for it would be worse than
-        // dropping it, and the token itself is still usable.
+        // Bit 7 is outside this legend. It is dropped instead of being given a
+        // name, and the token itself is still usable.
         let spans = semantic_spans_from_json(&json!({ "data": [0, 0, 3, 2, 128] }), &legend());
         assert!(spans[0].modifiers.is_empty());
         assert_eq!(spans[0].token_type, "variable");
@@ -2168,7 +2167,8 @@ mod tests {
 
     #[test]
     fn a_trailing_partial_group_is_ignored() {
-        // A broken response. Guessing at the missing fields would invent a token.
+        // An invalid response. Filling in the missing fields would create a
+        // token.
         let spans = semantic_spans_from_json(&json!({ "data": [0, 0, 3, 2, 0, 0, 4] }), &legend());
         assert_eq!(spans.len(), 1);
     }
@@ -2245,7 +2245,7 @@ mod tests {
     #[test]
     fn a_symbol_is_positioned_on_its_name_not_its_definition() {
         // `range` covers the doc comment and the body; `selectionRange` is the
-        // identifier. Landing on the former puts the cursor on a comment.
+        // identifier. Using `range` would put the cursor on a comment.
         let symbols = DocumentSymbol::list_from_json(&json!([{
             "name": "scale",
             "kind": 12,
@@ -2257,8 +2257,8 @@ mod tests {
 
     #[test]
     fn a_symbol_with_only_a_range_uses_it() {
-        // `selectionRange` is required by the specification, so this is a server
-        // being loose. The whole range still points at the right file region.
+        // The specification requires `selectionRange`, so this server does not
+        // conform. The whole range still points to the correct region.
         let symbols = DocumentSymbol::list_from_json(&json!([{
             "name": "loose",
             "kind": 12,
@@ -2302,7 +2302,7 @@ mod tests {
 
     #[test]
     fn a_symbol_with_no_position_is_dropped() {
-        // There would be nowhere to go, so the row would do nothing.
+        // There is no navigation target, so the row would do nothing.
         let symbols = DocumentSymbol::list_from_json(&json!([
             { "name": "nowhere", "kind": 12 },
             { "name": "somewhere", "kind": 12, "selectionRange": range(1, 0, 1, 9) },
@@ -2322,7 +2322,8 @@ mod tests {
 
     #[test]
     fn an_unknown_kind_still_lists_the_symbol() {
-        // A newer specification than this client. The name is the useful part.
+        // The server uses a newer specification than this client. The name is
+        // still useful.
         let symbols = DocumentSymbol::list_from_json(&json!([
             { "name": "novel", "kind": 99, "selectionRange": range(0, 0, 0, 5) },
             { "name": "kindless", "selectionRange": range(1, 0, 1, 8) },

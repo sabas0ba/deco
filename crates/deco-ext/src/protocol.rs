@@ -1,15 +1,14 @@
 //! The wire protocol between deco and the Node extension host.
 //!
 //! Newline-delimited JSON over the host process's stdin and stdout. The host is
-//! started with no filesystem, network or process access of its own, so every
-//! privileged operation an extension performs arrives here as a request that
-//! deco either brokers or refuses.
+//! started with no filesystem, network or process access, so every privileged
+//! operation an extension performs arrives here as a request that deco either
+//! brokers or rejects.
 //!
-//! The single most important function in this module is
-//! [`required_capability`]: it maps a method name to the capability it needs.
-//! It fails closed — an unrecognised method is refused rather than allowed —
-//! so adding a privileged method to the host without adding it here makes that
-//! method unusable rather than unguarded.
+//! The most important function in this module is [`required_capability`]. It
+//! maps a method name to the capability it needs. An unrecognised method is
+//! rejected, so a privileged method added to the host but not here is unusable
+//! instead of unguarded.
 
 use std::path::PathBuf;
 
@@ -103,10 +102,10 @@ pub enum ErrorCode {
 
 /// Anything that can travel over the connection.
 ///
-/// Tagged explicitly with a `type` field rather than relying on shape. An
-/// untagged enum cannot tell a request from a response here: both carry an
-/// `id`, every field of `Response` has a default, and serde ignores the extra
-/// `method`, so a request silently decodes as an empty response.
+/// Tagged explicitly with a `type` field instead of relying on shape. An
+/// untagged enum cannot distinguish a request from a response here: both carry
+/// an `id`, every field of `Response` has a default, and serde ignores the extra
+/// `method`, so a request would decode as an empty response without an error.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum Message {
@@ -122,8 +121,8 @@ impl Message {
     /// Encodes as a single line of JSON, newline included.
     pub fn encode(&self) -> String {
         let mut line = serde_json::to_string(self).unwrap_or_else(|_| {
-            // Serialising these types cannot fail in practice; a malformed line
-            // is still better than a panic inside the editor's event loop.
+            // Serialising these types cannot fail in practice. A malformed line
+            // is preferable to a panic inside the editor's event loop.
             String::from(r#"{"method":"$/encodeError","params":{}}"#)
         });
         line.push('\n');
@@ -159,14 +158,14 @@ pub fn required_capability(method: &str, params: &Value) -> Result<Option<Capabi
         // --- Filesystem, brokered -----------------------------------------
         "fs.readFile" | "fs.stat" | "fs.readDirectory" => read_path("path"),
         "fs.writeFile" | "fs.delete" | "fs.createDirectory" => write_path("path"),
-        // A rename touches two places; the destination is the stricter of the
-        // two, and the source is checked by the caller as a second request.
+        // A rename affects two paths. The destination is the stricter check
+        // here, and the caller checks the source as a second request.
         "fs.rename" | "fs.copy" => write_path("target"),
 
         // --- Editor edits --------------------------------------------------
-        // Applying an edit to a file writes it, even though it goes through the
-        // editor. Treating it as an editor operation would leave a hole wide
-        // enough to drive an extension through.
+        // Applying an edit writes the file, even though it goes through the
+        // editor. Treating it as an editor operation would let an extension
+        // write files without the write capability.
         "workspace.applyEdit" => write_path("path"),
 
         // --- Network -------------------------------------------------------
@@ -200,7 +199,7 @@ pub fn required_capability(method: &str, params: &Value) -> Result<Option<Capabi
         "secrets.get" | "secrets.store" | "secrets.delete" => Some(Capability::Secrets),
 
         // --- Mediated editor surface, no extra privilege --------------------
-        // These only touch state deco already owns and shows to the user.
+        // These only affect state that deco owns and shows to the user.
         "window.showInformationMessage"
         | "window.showWarningMessage"
         | "window.showErrorMessage"
@@ -222,12 +221,12 @@ pub fn required_capability(method: &str, params: &Value) -> Result<Option<Capabi
         | "$/activated"
         | "$/heartbeat" => None,
 
-        // Fail closed.
+        // Reject unknown methods.
         _ => return Err(()),
     };
 
-    // A known privileged method whose parameters did not carry what the check
-    // needs is a malformed request, not a free pass.
+    // A known privileged method without the parameters the check needs is a
+    // malformed request and is rejected, not allowed.
     match method {
         "window.showInformationMessage"
         | "window.showWarningMessage"
@@ -258,8 +257,8 @@ pub fn required_capability(method: &str, params: &Value) -> Result<Option<Capabi
 
 /// Extracts the host from a URL without pulling in a URL parser.
 ///
-/// Only the authority component is needed, and getting it wrong fails closed:
-/// an unparseable URL yields `None`, which the caller turns into a refusal.
+/// Only the authority component is needed. An unparseable URL yields `None`,
+/// which the caller turns into a rejection.
 pub fn host_of(url: &str) -> Option<String> {
     let rest = url.split_once("://")?.1;
     let authority = rest.split(['/', '?', '#']).next()?;
@@ -433,8 +432,8 @@ mod tests {
 
     #[test]
     fn a_privileged_method_with_missing_params_is_refused() {
-        // No path, so there is nothing to scope the check to. Returning "no
-        // capability required" here would be an unguarded write.
+        // Without a path there is nothing to scope the check to. Returning "no
+        // capability required" here would allow an unguarded write.
         assert!(required_capability("fs.writeFile", &json!({})).is_err());
         assert!(required_capability("net.fetch", &json!({})).is_err());
         assert!(required_capability("process.spawn", &json!({})).is_err());

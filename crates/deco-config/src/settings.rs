@@ -9,10 +9,10 @@ use crate::jsonc;
 /// Where a settings value came from. Ordering is precedence: a value in a later
 /// variant wins over the same key in an earlier one.
 ///
-/// This mirrors VS Code's scope chain. `Remote` sits between user and workspace
-/// so that machine-specific settings pushed by a remote (`ssh-remote`, a dev
-/// container) beat the user's local preferences but never override what the
-/// project itself pins.
+/// This mirrors VS Code's scope chain. `Remote` sits between user and workspace,
+/// so machine-specific settings supplied by a remote (`ssh-remote`, a dev
+/// container) override the user's local preferences but never override the
+/// project's own settings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Scope {
     /// Built-in defaults shipped with deco.
@@ -65,9 +65,9 @@ fn language_override_ids(key: &str) -> Option<Vec<&str>> {
 /// The full settings state: one value map per scope.
 ///
 /// Values are never deep-merged across scopes. VS Code replaces object-valued
-/// settings wholesale (only a short list of registered settings merge), and
-/// silently merging would make it impossible for a workspace to *remove* an
-/// entry the user set globally.
+/// settings entirely (only a short list of registered settings merge). Merging
+/// would make it impossible for a workspace to *remove* an entry the user set
+/// globally.
 #[derive(Debug, Clone, Default)]
 pub struct Settings {
     layers: BTreeMap<Scope, Map<String, Value>>,
@@ -93,8 +93,8 @@ impl Settings {
 
     /// Parses `source` as JSONC and installs it as `scope`.
     ///
-    /// A non-object document is rejected: a `settings.json` containing an array
-    /// is a mistake worth surfacing, not something to silently ignore.
+    /// A non-object document is rejected so that the error is reported. For
+    /// example, a `settings.json` containing an array is a mistake.
     pub fn load_layer(&mut self, scope: Scope, source: &str) -> Result<(), SettingsError> {
         match jsonc::parse(source)? {
             Value::Object(map) => {
@@ -132,10 +132,10 @@ impl Settings {
 
     /// Resolves `key` for `language`, applying VS Code's full precedence chain.
     ///
-    /// Within each scope a `[language]` section wins over the plain key, and
-    /// scopes are consulted from highest precedence down — so a workspace's
-    /// plain `editor.tabSize` still loses to a folder's `[rust]` override, and
-    /// beats the user's `[rust]` override.
+    /// Within each scope a `[language]` section takes precedence over the plain
+    /// key. Scopes are checked from highest precedence down. A workspace's plain
+    /// `editor.tabSize` therefore loses to a folder's `[rust]` override and wins
+    /// over the user's `[rust]` override.
     pub fn get_for_language(&self, key: &str, language: Option<&str>) -> Option<&Value> {
         for scope in Scope::ALL.iter().rev() {
             let Some(layer) = self.layers.get(scope) else {

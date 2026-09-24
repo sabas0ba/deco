@@ -1,10 +1,11 @@
-//! Extensions for deco: manifests, activation, and a capability model that
-//! replaces VS Code's ambient authority.
+//! Extensions for deco: manifests, activation, and a capability model. In VS
+//! Code, an extension has every permission of the extension host process; in
+//! deco, each privileged operation needs a capability.
 //!
-//! VS Code extensions are JavaScript, so deco runs them in a Node process — but
-//! not a privileged one. The host starts with no filesystem, network or
-//! process access; every privileged operation is an RPC that deco checks
-//! against what the extension's manifest declared and what the user agreed to.
+//! VS Code extensions are JavaScript, so deco runs them in an unprivileged Node
+//! process. The host starts with no filesystem, network or process access. Every
+//! privileged operation is an RPC that deco checks against the extension's
+//! manifest declarations and the user's grants.
 //!
 //! ```
 //! use deco_ext::capability::{Broker, Capability, CheckResult, DefaultPolicy,
@@ -38,14 +39,14 @@
 //!
 //! - [`capability`] — the model itself: deny by default, manifest declaration
 //!   as a ceiling, scopes checked on resolved paths.
-//! - [`protocol`] — the host wire format, and the method-to-capability table
-//!   that fails closed on anything it does not recognise.
+//! - [`protocol`] — the host wire format, and the method-to-capability table.
+//!   Unrecognised methods are denied.
 //! - [`manifest`] — `package.json` and its contribution points.
-//! - [`activation`] — when an extension is allowed to start at all.
+//! - [`activation`] — when an extension is allowed to start.
 //! - [`host`] — the Node command line, built with a scrubbed environment and
-//!   Node's own permission model.
-//! - [`connection`] — starting that command line and talking to it, with
-//!   [`connection::dispatch`] as the one way an inbound request reaches the editor.
+//!   Node's permission model.
+//! - [`connection`] — starting that command line and exchanging messages with it.
+//!   [`connection::dispatch`] is the only path from an inbound request to the editor.
 
 pub mod activation;
 pub mod capability;

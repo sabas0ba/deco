@@ -1,40 +1,39 @@
 //! Where the extension host runs: inside a container, or as a bare process.
 //!
-//! The three layers in [`crate::host`] all live *inside* the Node process. That
-//! leaves one unpinned assumption: the runtime itself. deco borrows `node` from
-//! the machine it is installed on, which means the version, the build and
-//! everything linked into it are outside deco's control — and the flag that
-//! carries layer 1 is a property of that borrowed runtime.
+//! The three layers in [`crate::host`] all run *inside* the Node process. They
+//! depend on the runtime itself, which is not pinned. deco uses the `node`
+//! installed on the machine, so its version, build and linked libraries are
+//! outside deco's control. The flag that implements layer 1 is also a property
+//! of that runtime.
 //!
-//! A container closes that gap. The image is named by digest, so the runtime an
-//! extension lands on is pinned the same way this project pins its CI actions;
-//! the network is severed by the kernel rather than by deleting JavaScript
-//! globals; and the filesystem an extension can see is decided by what is
-//! mounted rather than by a flag it might out-live.
+//! A container addresses this. The image is named by digest, so the runtime is
+//! pinned the same way this project pins its CI actions. The kernel blocks the
+//! network, instead of the bootstrap deleting JavaScript globals. The mounts
+//! define which files an extension can see, instead of a runtime flag.
 //!
 //! # What a container does not do
 //!
-//! It is worth being precise, because "containerised" is often read as "safe".
+//! "Containerised" does not automatically mean "safe", so the limits are listed
+//! here.
 //!
 //! The workspace is **not mounted**. Extensions read and write files through
-//! brokered requests that deco performs on their behalf, so the container needs
-//! no view of the project at all — which is what makes this worth doing. Had the
-//! workspace been mounted, the container would add very little: the files an
-//! extension actually wants are in there, and a bind mount hands them over
-//! wholesale.
+//! brokered requests that deco performs for them, so the container needs no
+//! access to the project. This is what gives the container its value. If the
+//! workspace were mounted, the container would add little, because a bind mount
+//! would expose all the files an extension is likely to target.
 //!
-//! Two directories are mounted read-only: deco's own host code, and the one
-//! extension being run. Nothing else, and nothing writable except a small
-//! `tmpfs`.
+//! Two directories are mounted read-only: deco's own host code, and the
+//! extension being run. Nothing else is mounted, and nothing is writable except
+//! a small `tmpfs`.
 //!
 //! # Turning it off
 //!
-//! [`Sandbox::Process`] runs the host directly, as before. It exists for
-//! telling a container problem apart from an extension problem, and it has to
-//! be asked for: if a container runtime cannot be found, deco refuses to start
-//! the host rather than quietly running it with one layer fewer. A sandbox that
-//! silently degrades is worse than no sandbox, because nobody knows which one
-//! they have.
+//! [`Sandbox::Process`] runs the host directly as a child process. It exists to
+//! distinguish a container problem from an extension problem, and it must be
+//! selected explicitly. If no container runtime is found, deco does not start
+//! the host, instead of running it with one layer fewer. A sandbox that degrades
+//! without notice is worse than no sandbox, because the user cannot tell which
+//! one is in effect.
 //!
 //! For the same reason the policy is read from **deco's defaults and the user's
 //! own settings only**. Workspace configuration must not be able to disable
@@ -59,30 +58,31 @@ pub const IMAGE_KEY: &str = "deco.extensions.containerImage";
 
 /// The image the host runs in unless the user names another.
 ///
-/// Pinned by digest, not by tag: a tag is a mutable pointer, and "the runtime
-/// extensions execute on" is exactly the kind of thing this project pins. This
-/// digest is the multi-architecture index for `node:22-bookworm-slim`
-/// (amd64, arm64, armv7, ppc64le) and carries Node 22.23.2 — comfortably past
-/// the 22.13 that `--permission` needs. `bookworm-slim` rather than `alpine`
-/// because extensions ship prebuilt native modules linked against glibc.
+/// Pinned by digest, not by tag, because a tag can be moved and this project
+/// pins the runtime that extensions execute on. This digest is the
+/// multi-architecture index for `node:22-bookworm-slim` (amd64, arm64, armv7,
+/// ppc64le) and contains Node 22.23.2, newer than the 22.13 that `--permission`
+/// needs. `bookworm-slim` is used instead of `alpine` because extensions ship
+/// prebuilt native modules linked against glibc.
 pub const DEFAULT_IMAGE: &str = "docker.io/library/node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436";
 
 /// Runtimes tried, in order, when the user has not named one.
 ///
-/// Podman first: it is rootless by default, so the daemon that starts the
-/// container is not itself running as root.
+/// Podman first, because it is rootless by default: the process that starts the
+/// container does not run as root.
 pub const RUNTIMES: [&str; 2] = ["podman", "docker"];
 
 /// Where mounts are placed inside the container.
 const MOUNT_ROOT: &str = "/deco/mnt";
 
-/// The writable `tmpfs`, in megabytes. Node wants somewhere to put a temporary
-/// file; the rest of the filesystem is read-only.
+/// The size of the writable `tmpfs`, in megabytes. Node needs a location for
+/// temporary files; the rest of the filesystem is read-only.
 const TMPFS_MB: u64 = 16;
 
 /// Added to the V8 heap cap to get the container's memory limit. A Node process
-/// is its heap plus its own code, stacks and buffers, and a container killed for
-/// being 20MB over its heap would look like a mysterious crash.
+/// uses its heap plus its own code, stacks and buffers. Without the margin, a
+/// container killed for exceeding its heap by a small amount would look like an
+/// unexplained crash.
 const MEMORY_MARGIN_MB: u64 = 256;
 
 /// How many processes the container may hold.
@@ -90,39 +90,37 @@ const PIDS_LIMIT: u64 = 256;
 
 /// The container's hostname.
 ///
-/// Fixed rather than left to the runtime, which uses the container id: the point
-/// of building the environment by hand is that what an extension can read is
-/// decided, and an id that changes every run is neither decided nor useful.
+/// Fixed instead of left to the runtime, which uses the container id. deco builds
+/// the environment explicitly so that what an extension can read is known in
+/// advance. An id that changes on every run is neither predictable nor useful.
 const HOSTNAME: &str = "deco-host";
 
-/// The variables an extension sees inside the container that deco did not put
-/// there: the image's own.
+/// The variables an extension sees inside the container that deco did not set:
+/// the image's own.
 ///
-/// Documented rather than fought: `PATH` is how the runtime finds `node` at all,
-/// and the rest is metadata the Node image sets in its own layers. What matters
-/// is that none of it comes from deco's environment, and that this list is short
-/// enough to state — a name appearing here that is not in it means the image
-/// changed under us.
+/// These are documented, not removed. The runtime needs `PATH` to find `node`,
+/// and the rest is metadata the Node image sets in its own layers. None of them
+/// come from deco's environment. The list is short enough to state in full; an
+/// unlisted name in the container means the image has changed.
 pub const IMAGE_ENVIRONMENT: [&str; 5] =
     ["HOME", "HOSTNAME", "NODE_VERSION", "PATH", "YARN_VERSION"];
 
-/// Variables a container runtime adds on its own account.
+/// Variables a container runtime adds itself.
 ///
-/// Podman sets `container=podman` so that software inside can tell it is
-/// containerised, which is an OCI convention; Docker sets nothing. Neither comes
-/// from deco, and neither carries anything about the machine — but they are named
-/// here so that the test asserting what an extension can see can be specific
-/// about what it tolerates instead of tolerating whatever it finds.
+/// Podman sets `container=podman`, an OCI convention that lets software detect a
+/// container; Docker sets nothing. Neither comes from deco or carries information
+/// about the machine. They are listed so the test of what an extension can see
+/// accepts exactly these names and nothing else.
 pub const RUNTIME_INJECTED: [&str; 1] = ["container"];
 
 /// The variables the **container runtime** keeps from deco's environment.
 ///
-/// An inversion worth stating: everywhere else in this crate the environment is
-/// built from nothing, because the process being started is the untrusted one.
-/// Here the process being started is `docker` or `podman`, which has to find its
-/// daemon — and the untrusted code is on the far side of the container, where it
-/// sees only what `--env` passes it. So the CLI keeps the few variables that
-/// tell it where to connect, and nothing that looks like a credential.
+/// This differs from the rest of the crate. Elsewhere the environment is built
+/// from scratch, because the process being started is untrusted. Here the
+/// process is `docker` or `podman`, which must find its daemon. The untrusted
+/// code runs inside the container and sees only what `--env` passes to it. The
+/// CLI therefore keeps the few variables that tell it where to connect, and
+/// nothing that looks like a credential.
 pub const RUNTIME_ENVIRONMENT: [&str; 7] = [
     // Finding the daemon. Podman rootless keeps its socket under the runtime
     // directory; Docker takes an explicit host or a named context.
@@ -133,7 +131,7 @@ pub const RUNTIME_ENVIRONMENT: [&str; 7] = [
     // Finding its own configuration.
     "HOME",
     "PATH",
-    // Windows needs this to start anything at all.
+    // Windows needs this to start any process.
     "SystemRoot",
 ];
 
@@ -148,7 +146,7 @@ pub enum Sandbox {
 }
 
 impl Sandbox {
-    /// Reads the setting's spelling.
+    /// Parses the setting value.
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "container" => Some(Self::Container),
@@ -157,7 +155,7 @@ impl Sandbox {
         }
     }
 
-    /// The spelling used in settings.
+    /// The value used in settings.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Container => "container",
@@ -198,7 +196,7 @@ pub enum SandboxError {
         /// What was named.
         image: String,
     },
-    /// A value would have been read as an option rather than as itself.
+    /// A value would be parsed as a command-line option.
     #[error("`{value}` starts with `-`, which the container runtime would read as an option")]
     LooksLikeAnOption {
         /// What was named.
@@ -225,8 +223,8 @@ pub enum SandboxError {
 
 /// The isolation policy, read from the layers that are allowed to set it.
 ///
-/// Unreadable or unknown values fall back to the default rather than to
-/// [`Sandbox::Process`]: a typo must not be a way to lose a layer.
+/// Unreadable or unknown values fall back to the default, not to
+/// [`Sandbox::Process`], so a typo cannot remove a layer.
 pub fn policy(settings: &Settings) -> Sandbox {
     trusted(settings, SANDBOX_KEY)
         .and_then(|value| value.as_str())
@@ -236,9 +234,8 @@ pub fn policy(settings: &Settings) -> Sandbox {
 
 /// The scopes that set `key` but are not allowed to.
 ///
-/// Returned so a caller can *say* that a workspace tried to change the sandbox.
-/// Ignoring it silently would leave the user believing whichever answer they
-/// last read about.
+/// Returned so a caller can *report* that a workspace tried to change the
+/// sandbox. Otherwise the user could believe the workspace setting is in effect.
 pub fn overridden_by(settings: &Settings, key: &str) -> Vec<Scope> {
     [Scope::Workspace, Scope::Folder, Scope::Remote]
         .into_iter()
@@ -265,16 +262,16 @@ pub struct ContainerConfig {
     /// The image, pinned by digest.
     pub image: String,
     /// The Node program **inside the image**. Passed as `--entrypoint`, so the
-    /// image's own entrypoint script never runs: the argv the container starts
-    /// with is the one deco built, not one a layer chose.
+    /// image's own entrypoint script never runs. The container starts with the
+    /// argv that deco built, not one defined by an image layer.
     pub node: String,
 }
 
 impl ContainerConfig {
     /// Reads the container configuration out of settings and the environment.
     ///
-    /// `path` is the `PATH` to search for a runtime — a parameter rather than a
-    /// read of the process environment so that the search is testable.
+    /// `path` is the `PATH` to search for a runtime. It is a parameter instead of
+    /// being read from the process environment, so the search is testable.
     pub fn resolve(
         settings: &Settings,
         path: Option<&std::ffi::OsStr>,
@@ -322,7 +319,7 @@ impl ContainerConfig {
 
 /// Finds the first of `names` on `path`, as an absolute path.
 ///
-/// Absolute because [`crate::connection::Host::spawn`] refuses a bare name — the
+/// Absolute because [`crate::connection::Host::spawn`] rejects a bare name. The
 /// environment it starts a process with has no `PATH` for the operating system
 /// to search.
 pub fn find_runtime(names: &[&str], path: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
@@ -343,7 +340,7 @@ pub fn find_runtime(names: &[&str], path: Option<&std::ffi::OsStr>) -> Option<Pa
     None
 }
 
-/// Refuses an image that is not pinned to a digest.
+/// Rejects an image that is not pinned to a digest.
 fn check_pinned(image: &str) -> Result<(), SandboxError> {
     let unpinned = || SandboxError::UnpinnedImage {
         image: image.to_owned(),
@@ -355,7 +352,7 @@ fn check_pinned(image: &str) -> Result<(), SandboxError> {
     Ok(())
 }
 
-/// Refuses a value the runtime would read as an option.
+/// Rejects a value the runtime would parse as an option.
 fn not_an_option(value: &str) -> Result<(), SandboxError> {
     if value.starts_with('-') {
         return Err(SandboxError::LooksLikeAnOption {
@@ -374,9 +371,9 @@ pub struct Mounts {
 impl Mounts {
     /// Places each root at `/deco/mnt/<n>`, in the order given.
     ///
-    /// Numbered rather than named after the directory, because a host path
-    /// becomes part of the container's filesystem layout and the extension has
-    /// no business learning where deco keeps things on this machine.
+    /// Numbered instead of named after the directory. A directory name would
+    /// become part of the container's filesystem layout, and the extension must
+    /// not learn where deco stores files on this machine.
     pub fn new(roots: &[PathBuf]) -> Result<Self, SandboxError> {
         let mut entries = Vec::with_capacity(roots.len());
         for (index, root) in roots.iter().enumerate() {
@@ -388,8 +385,8 @@ impl Mounts {
                 });
             }
             // `--mount` takes comma-separated options, so a comma in the source
-            // would end the source and start something else. Refused rather
-            // than escaped: there is no escape the option parser respects.
+            // would end the source and start another option. Rejected instead of
+            // escaped, because the option parser supports no escape.
             if shown.contains(',') {
                 return Err(SandboxError::Unmountable {
                     path: shown,
@@ -410,10 +407,9 @@ impl Mounts {
             if !crate::capability::is_within(path, root) {
                 continue;
             }
-            // `is_within` compares normalised paths and this does not, so the two
-            // can disagree — a root written with a `.` in it, say. Then this root
-            // is not the answer, but another one still might be, which is why this
-            // keeps looking instead of returning.
+            // `is_within` compares normalised paths and `strip_prefix` does not,
+            // so the two can disagree, for example for a root containing `.`.
+            // In that case, continue with the next root instead of returning.
             let Ok(suffix) = path.strip_prefix(root) else {
                 continue;
             };
@@ -452,7 +448,7 @@ impl Mounts {
     }
 }
 
-/// A host command line that runs inside a container, and where things ended up.
+/// A host command line that runs inside a container, and its mount layout.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Containerised {
     /// The command to run: the container runtime, with the host's own command
@@ -465,25 +461,24 @@ pub struct Containerised {
 
 /// Builds the command line that starts the host inside a container.
 ///
-/// The Node flags are not restated here: the translated configuration goes
-/// through [`build_spec`], which stays the one place that knows what the host's
-/// command line looks like. Only the container's own options are added, and they
-/// are the whole reason for this module:
+/// The Node flags are not repeated here. The translated configuration goes
+/// through [`build_spec`], which remains the only place that defines the host's
+/// command line. This function adds only the container's own options:
 ///
-/// - `--network=none` severs the network in the kernel. Layer 2 deletes
-///   `fetch` and refuses `net`, which is a clear error rather than a barrier; a
-///   native module has no such manners.
-/// - `--read-only`, plus a small `tmpfs` and two read-only mounts, means there
-///   is nowhere to write and nothing to read that deco did not offer.
-/// - `--cap-drop=ALL` and `--security-opt=no-new-privileges` leave nothing to
-///   escalate with.
-/// - `--memory` and `--pids-limit` make a runaway extension the container's
-///   problem instead of the machine's.
+/// - `--network=none` blocks the network in the kernel. Layer 2 deletes
+///   `fetch` and rejects `net`, which gives a clear error but is not a barrier;
+///   a native module can bypass it.
+/// - `--read-only`, plus a small `tmpfs` and two read-only mounts, leaves no
+///   writable location and nothing readable that deco did not provide.
+/// - `--cap-drop=ALL` and `--security-opt=no-new-privileges` remove the means
+///   of privilege escalation.
+/// - `--memory` and `--pids-limit` confine a runaway extension to the
+///   container instead of affecting the machine.
 ///
 /// deco does not pass `--user`. Under rootless Podman the container's root is
-/// already the user's own unprivileged uid, and naming a uid there maps it into
-/// a subordinate range that cannot read the bind mounts — so the flag would
-/// break the common case while adding nothing to it.
+/// already the user's own unprivileged uid. Specifying a uid maps it into a
+/// subordinate range that cannot read the bind mounts, so the flag would break
+/// the common case without improving it.
 pub fn containerise(
     config: &HostConfig,
     container: &ContainerConfig,
@@ -501,14 +496,14 @@ pub fn containerise(
                 bootstrap: config.bootstrap.display().to_string(),
             })?;
 
-    // The same configuration seen from inside the container: every path is one
-    // the container has, and `node` is whatever the image calls it.
+    // The same configuration as seen from inside the container: every path
+    // exists in the container, and `node` is the image's program name.
     let inside = HostConfig {
         node: PathBuf::from(&container.node),
         bootstrap: PathBuf::from(&bootstrap),
         readable_roots: mounts.targets().into_iter().map(PathBuf::from).collect(),
-        // Nothing to write, so the working directory is the first mount, which
-        // is deco's own host code.
+        // Nothing is writable, so the working directory is the first mount,
+        // which is deco's own host code.
         cwd: PathBuf::from(mounts.targets().first().copied().unwrap_or(MOUNT_ROOT)),
         limits: config.limits,
         node_permission_model: config.node_permission_model,
@@ -524,10 +519,9 @@ pub fn containerise(
         "--read-only".to_owned(),
         "--cap-drop=ALL".to_owned(),
         "--security-opt=no-new-privileges".to_owned(),
-        // Otherwise the runtime sets `HOSTNAME` to the container's id, which is
-        // one more thing an extension can see that differs run to run. Fixed, so
-        // that what reaches the extension is the same every time and can
-        // therefore be asserted exactly.
+        // Otherwise the runtime sets `HOSTNAME` to the container's id, which
+        // changes on every run. A fixed value keeps the extension's environment
+        // identical across runs, so tests can assert it exactly.
         format!("--hostname={HOSTNAME}"),
         format!("--pids-limit={PIDS_LIMIT}"),
         format!("--memory={}m", ContainerConfig::memory_mb(&config.limits)),
@@ -536,12 +530,11 @@ pub fn containerise(
     args.extend(mounts.arguments());
     args.push("--workdir".to_owned());
     args.push(inside.cwd.display().to_string());
-    // The two variables the host is given. `--env NAME=value` rather than
-    // `--env NAME`, which would copy deco's own value of it through.
+    // The two variables the host receives. `--env NAME=value` is used instead
+    // of `--env NAME`, which would copy deco's own value.
     for (key, value) in &host.env {
-        // A Windows-only variable means nothing to a Linux container, and
-        // `SystemRoot` is added by `build_spec` for the sake of starting Node on
-        // Windows itself.
+        // A Windows-only variable has no meaning in a Linux container.
+        // `build_spec` adds `SystemRoot` only to start Node directly on Windows.
         if !key.starts_with("DECO_") {
             continue;
         }
@@ -559,16 +552,15 @@ pub fn containerise(
             program: container.runtime.clone(),
             args,
             env: runtime_environment(std::env::vars_os()),
-            // Where the *client* runs. It does not reach the container — the
-            // working directory inside is `--workdir` above — so this is only
-            // somewhere that exists.
+            // The working directory of the runtime CLI. It does not apply inside
+            // the container, which uses `--workdir` above; it only needs to exist.
             cwd: config.cwd.clone(),
         },
         mounts,
     })
 }
 
-/// A host that is ready to start, and what was decided along the way.
+/// A host that is ready to start, with the decisions made while preparing it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Prepared {
     /// The command line to run.
@@ -580,18 +572,17 @@ pub struct Prepared {
     pub mounts: Option<Mounts>,
     /// Settings layers that tried to choose the sandbox and were not allowed to.
     ///
-    /// Carried out rather than logged in here, because whether this is a warning
-    /// in the status bar or a line in a log is the frontend's business — but it
-    /// must not be nobody's.
+    /// Returned instead of logged here. The frontend decides whether to show a
+    /// status bar warning or a log line, but it must report it somehow.
     pub ignored: Vec<Scope>,
 }
 
 impl Prepared {
-    /// The path the host will know a host path by.
+    /// The path the host uses for a given host path.
     ///
-    /// The one function callers need for the container to be invisible to them:
-    /// an `extensionPath` on the wire has to be a path the *host* can open, and
-    /// which that is depends on the policy.
+    /// With this function, callers do not need to know whether a container is
+    /// used. An `extensionPath` on the wire must be a path the *host* can open,
+    /// and that path depends on the policy.
     pub fn seen_by_host(&self, path: &Path) -> Option<String> {
         match &self.mounts {
             Some(mounts) => mounts.inside(path),
@@ -602,11 +593,10 @@ impl Prepared {
 
 /// Decides how to start the host, and builds the command line for it.
 ///
-/// This is the whole decision in one place: read the policy from the layers
-/// allowed to set it, and either containerise or don't. There is deliberately no
-/// path that falls back from one to the other — a caller that cannot get a
-/// container gets an error naming the setting, and a user who wants the process
-/// says so.
+/// The whole decision is made here: read the policy from the layers allowed to
+/// set it, then either containerise or not. There is intentionally no fallback
+/// from one to the other. A caller that cannot get a container receives an error
+/// naming the setting, and a user who wants a bare process must set it.
 pub fn prepare(
     settings: &Settings,
     config: &HostConfig,
@@ -670,14 +660,14 @@ mod tests {
         settings
     }
 
-    /// A path this platform calls absolute, from Unix-shaped parts.
+    /// An absolute path for this platform, built from Unix-style parts.
     ///
-    /// Every path in these tests goes through here, and the reason is a real
-    /// failure: written as the literal `/opt/deco/host`, twelve tests below
-    /// silently changed what they were testing on Windows. `/opt/deco/host` has
-    /// no drive letter, so `Mounts::new` refused it as relative — and each test
-    /// asserting a *successful* spec was really asserting the refusal path, while
-    /// looking exactly as green on Linux as before.
+    /// Every path in these tests goes through this function because of an actual
+    /// failure. With the literal `/opt/deco/host`, twelve tests below tested
+    /// something different on Windows. `/opt/deco/host` has no drive letter, so
+    /// `Mounts::new` rejected it as relative. Each test that expected a
+    /// *successful* spec was actually testing the rejection path, while still
+    /// passing on Linux.
     fn absolute(parts: &str) -> PathBuf {
         let parts = parts.trim_start_matches('/');
         if cfg!(windows) {
@@ -717,9 +707,9 @@ mod tests {
 
     #[test]
     fn the_fixtures_use_paths_this_platform_calls_absolute() {
-        // The guard for the failure described on `absolute`. Without it the suite
-        // can only be trusted on the platform it was written on, and the way it
-        // fails is by passing.
+        // Guards against the failure described on `absolute`. Without it, the
+        // suite is reliable only on the platform it was written on, and on other
+        // platforms it fails by passing.
         let config = config();
         let mut paths = vec![config.bootstrap, config.cwd, container().runtime];
         paths.extend(config.readable_roots);
@@ -744,9 +734,8 @@ mod tests {
         let user = settings(Scope::User, SANDBOX_KEY, json!("process"));
         assert_eq!(policy(&user), Sandbox::Process);
 
-        // The case this rule exists for: a repository that arrives with a
-        // `.vscode/settings.json` turning off the sandbox that would have
-        // contained its own extensions.
+        // The case this rule exists for: a cloned repository whose
+        // `.vscode/settings.json` turns off the sandbox for its own extensions.
         for scope in [Scope::Workspace, Scope::Folder, Scope::Remote] {
             let sneaky = settings(scope, SANDBOX_KEY, json!("process"));
             assert_eq!(
@@ -795,8 +784,8 @@ mod tests {
 
     #[test]
     fn the_shipped_image_is_pinned_to_a_digest() {
-        // The whole point of naming a default: if this ever becomes a tag, every
-        // guarantee about the runtime becomes "whatever was pushed last".
+        // If the default became a tag, the runtime would be whatever image was
+        // pushed last, and no guarantee about it would hold.
         assert!(check_pinned(DEFAULT_IMAGE).is_ok(), "{DEFAULT_IMAGE}");
         assert!(DEFAULT_IMAGE.contains("@sha256:"));
     }
@@ -822,9 +811,9 @@ mod tests {
 
     #[test]
     fn a_value_the_runtime_would_read_as_an_option_is_refused() {
-        // `docker run … --privileged` reads as an option wherever it appears, so
-        // an image or entrypoint starting with a dash is an argument-injection
-        // hole and not merely an odd name.
+        // `docker run … --privileged` is parsed as an option wherever it appears,
+        // so an image or entrypoint starting with a dash is an argument injection,
+        // not just an unusual name.
         let mut config = container();
         config.image = format!("--privileged {DEFAULT_IMAGE}");
         assert!(matches!(
@@ -858,15 +847,15 @@ mod tests {
         }
         assert!(!args.contains("--privileged"));
         assert!(!args.contains("--network=host"));
-        // The only writable thing, and it cannot hold a program.
+        // The only writable location, and programs in it cannot be executed.
         assert!(args.contains("--tmpfs=/tmp:rw,noexec,nosuid,size=16m"));
     }
 
     #[test]
     fn the_workspace_is_not_mounted() {
-        // The reason a container is worth its cost here. `cwd` is the project;
-        // it must not appear as a mount, and nothing outside the two readable
-        // roots may either.
+        // This is what makes the container worth its cost. `cwd` is the project
+        // and must not appear as a mount. Nothing outside the two readable roots
+        // may appear either.
         let config = config();
         let made = containerise(&config, &container(), "acme.ext").expect("a spec");
         let mounts: Vec<&String> = made
@@ -890,7 +879,7 @@ mod tests {
     fn the_host_command_line_is_the_same_one_only_with_container_paths() {
         let made = containerise(&config(), &container(), "acme.ext").expect("a spec");
         let args = made.spec.args.join(" ");
-        // Layer 1 is not dropped because layer 0 arrived: they are independent.
+        // Layer 1 is kept when layer 0 is added: they are independent.
         assert!(args.contains("--permission"));
         assert!(args.contains("--disallow-code-generation-from-strings"));
         assert!(args.contains("--max-old-space-size=512"));
@@ -903,11 +892,10 @@ mod tests {
             absolute_str("opt/deco/host")
         )));
 
-        // A host path appears exactly once, as the source of its own mount —
-        // the runtime is the one thing that has to know where deco keeps
-        // things. Nothing the *extension* is handed mentions this machine's
-        // layout, which is the part that matters: it is the argv after the
-        // image that Node, and therefore the extension, can read.
+        // A host path appears exactly once, as the source of its own mount. Only
+        // the runtime needs to know where deco stores files. The argv after the
+        // image is what Node, and therefore the extension, can read, and it must
+        // not reveal this machine's directory layout.
         let image = made
             .spec
             .args
@@ -936,8 +924,8 @@ mod tests {
             .iter()
             .position(|arg| arg == DEFAULT_IMAGE)
             .expect("the image should be in the argv");
-        // Everything after it is Node's, so a container option cannot be
-        // smuggled in by anything that only appends.
+        // Everything after the image belongs to Node, so code that only appends
+        // arguments cannot add a container option.
         assert_eq!(made.spec.args[image - 2], "--entrypoint");
         assert_eq!(made.spec.args[image - 1], "node");
         assert!(made.spec.args[image + 1..].iter().all(|arg| arg
@@ -966,8 +954,8 @@ mod tests {
                 &format!("DECO_HOST_PROTOCOL={}", crate::host::PROTOCOL_VERSION),
             ]
         );
-        // `--env NAME` with no value copies the parent's, which is exactly the
-        // leak the whole environment design exists to prevent.
+        // `--env NAME` without a value copies the parent's value. The environment
+        // design exists to prevent that leak.
         assert!(!made.spec.args.iter().any(|arg| arg == "--env-file"));
     }
 
@@ -988,8 +976,8 @@ mod tests {
             env.keys().collect::<Vec<_>>(),
             vec!["DOCKER_HOST", "HOME", "PATH"]
         );
-        // `NODE_OPTIONS` would inject a `--require` into the runtime's own Node
-        // if it had one, and is not needed to find a daemon either way.
+        // `NODE_OPTIONS` would inject a `--require` into the runtime CLI if it
+        // were a Node program, and it is not needed to find a daemon.
         assert!(!env.contains_key("NODE_OPTIONS"));
     }
 
@@ -1018,8 +1006,8 @@ mod tests {
     #[test]
     fn a_comma_in_a_path_is_refused_rather_than_escaped() {
         // `--mount type=bind,source=/a,b,target=/x` parses as a source of `/a`
-        // and an unknown option `b`. There is no quoting the option parser
-        // honours, so the only safe answer is no.
+        // and an unknown option `b`. The option parser supports no quoting, so
+        // rejecting the path is the only safe choice.
         let mut config = config();
         config.readable_roots = vec![absolute("opt/deco,host")];
         assert_eq!(
@@ -1058,8 +1046,8 @@ mod tests {
             mounts.inside(&absolute("home/u/.deco/extensions/acme.ext/out/main.js")),
             Some("/deco/mnt/1/out/main.js".to_owned())
         );
-        // Not mounted, so there is no container path for it — including the
-        // sibling extension next door.
+        // Paths that are not mounted have no container path. This includes a
+        // sibling extension directory.
         assert_eq!(mounts.inside(&absolute("home/u/project/src/lib.rs")), None);
         assert_eq!(
             mounts.inside(&absolute("home/u/.deco/extensions/other.ext")),
@@ -1081,9 +1069,8 @@ mod tests {
 
     #[test]
     fn a_missing_runtime_names_the_way_out_rather_than_taking_it() {
-        // The instruction this implements: no runtime means no extensions, not
-        // extensions with one layer fewer. The message has to name the setting,
-        // because refusing without saying how to proceed is its own failure.
+        // No runtime means no extensions, not extensions with one layer fewer.
+        // The message must name the setting so the user knows how to proceed.
         let error = ContainerConfig::resolve(&Settings::empty(), None)
             .expect_err("nothing should be found on an empty PATH");
         let said = error.to_string();
@@ -1115,7 +1102,7 @@ mod tests {
         );
         layer.insert(IMAGE_KEY.to_owned(), json!(DEFAULT_IMAGE));
         settings.set_layer(Scope::Workspace, layer);
-        // Nothing found, because the workspace's runtime was never considered.
+        // No runtime is found, because the workspace's runtime is ignored.
         assert!(matches!(
             ContainerConfig::resolve(&settings, None),
             Err(SandboxError::NoRuntime { .. })
@@ -1124,9 +1111,8 @@ mod tests {
 
     #[test]
     fn an_unpinned_image_from_the_user_is_still_refused() {
-        // Trusted enough to be read is not the same as trusted enough to skip
-        // the rule: a digest is the only reason to believe an image is what it
-        // was when it was reviewed.
+        // User settings are read, but they do not bypass the digest rule. Only a
+        // digest ensures that an image is the same one that was reviewed.
         let mut settings = settings(
             Scope::User,
             RUNTIME_KEY,
@@ -1143,9 +1129,8 @@ mod tests {
 
     #[test]
     fn preparing_a_host_without_a_runtime_fails_instead_of_running_it_bare() {
-        // The instruction, as a test: no container runtime is a refusal, not a
-        // downgrade. Nothing about `prepare` may produce a bare process unless
-        // the policy asked for one.
+        // Without a container runtime, `prepare` fails instead of downgrading.
+        // It must not produce a bare process unless the policy selects one.
         let error = prepare(&Settings::with_defaults(), &config(), "acme.ext", None)
             .expect_err("no runtime, so no host");
         assert!(matches!(error, SandboxError::NoRuntime { .. }));
@@ -1157,10 +1142,10 @@ mod tests {
         let made = prepare(&settings, &config(), "acme.ext", None).expect("no runtime needed");
         assert_eq!(made.sandbox, Sandbox::Process);
         assert_eq!(made.mounts, None);
-        // The host's own command line, unwrapped: the program is Node itself.
+        // The host's own command line, without a container: the program is Node.
         assert_eq!(made.spec.program, absolute("usr/bin/node"));
         assert!(made.spec.args.iter().any(|arg| arg == "--permission"));
-        // And paths are this machine's, because that is what the host will open.
+        // Paths are this machine's, because the host opens them directly.
         assert_eq!(
             made.seen_by_host(&absolute("opt/deco/host/src/bootstrap.js")),
             Some(absolute_str("opt/deco/host/src/bootstrap.js"))
@@ -1174,8 +1159,8 @@ mod tests {
             RUNTIME_KEY,
             json!(absolute_str("usr/bin/podman")),
         );
-        // Something a repository might have tried, to check it is carried out
-        // rather than dropped on the floor.
+        // A workspace override, to check that it is reported instead of
+        // discarded.
         let mut workspace = serde_json::Map::new();
         workspace.insert(SANDBOX_KEY.to_owned(), json!("process"));
         settings.set_layer(Scope::Workspace, workspace);
@@ -1188,8 +1173,8 @@ mod tests {
             made.seen_by_host(&absolute("home/u/.deco/extensions/acme.ext")),
             Some("/deco/mnt/1".to_owned())
         );
-        // Not mounted, so there is no answer — better than a path that would
-        // fail to open inside the container for reasons nobody could see.
+        // Not mounted, so there is no container path. This is better than a path
+        // that would fail to open inside the container with no visible reason.
         assert_eq!(made.seen_by_host(&absolute("home/u/project/a.rs")), None);
     }
 
@@ -1208,12 +1193,12 @@ mod tests {
         std::fs::write(dir.join(name("docker")), "").expect("a file");
         let path = std::ffi::OsString::from(dir.display().to_string());
 
-        // Only docker present: docker it is.
+        // Only docker is present, so docker is found.
         let found = find_runtime(&RUNTIMES, Some(&path)).expect("docker");
         assert_eq!(found, dir.join(name("docker")));
         assert!(found.is_absolute());
 
-        // Both present: podman, because rootless is the better default.
+        // Both are present: podman is preferred because it is rootless.
         std::fs::write(dir.join(name("podman")), "").expect("a file");
         assert_eq!(
             find_runtime(&RUNTIMES, Some(&path)),

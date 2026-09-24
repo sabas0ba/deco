@@ -32,8 +32,8 @@ impl FontStyle {
 
     /// Parses a space-separated `fontStyle` value.
     ///
-    /// Unknown words are ignored: themes in the wild contain typos, and losing
-    /// the whole rule over one would be worse than losing one decoration.
+    /// Unknown words are ignored. Published themes contain typos, and dropping
+    /// one decoration is better than dropping the whole rule.
     pub fn parse(text: &str) -> Self {
         let mut style = FontStyle::NONE;
         for word in text.split_whitespace() {
@@ -66,13 +66,13 @@ pub struct TokenStyle {
 }
 
 impl TokenStyle {
-    /// Whether the style says nothing at all.
+    /// Whether the style sets no field.
     pub fn is_empty(&self) -> bool {
         self.foreground.is_none() && self.background.is_none() && self.font_style.is_none()
     }
 
-    /// Overlays `other` on top of `self`, with `other` winning where it has an
-    /// opinion.
+    /// Overlays `other` on top of `self`. Fields that `other` sets replace those
+    /// in `self`.
     pub fn apply(&mut self, other: &TokenStyle) {
         if other.foreground.is_some() {
             self.foreground = other.foreground;
@@ -454,7 +454,7 @@ mod tests {
             ..TokenStyle::default()
         });
         assert_eq!(base.foreground, Some(Rgba::BLACK));
-        // The font style had no opinion in the overlay, so it survives.
+        // The overlay does not set a font style, so the base value is kept.
         assert_eq!(
             base.font_style,
             Some(FontStyle {

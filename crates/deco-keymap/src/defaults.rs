@@ -1,10 +1,10 @@
 //! deco's built-in keymap.
 //!
-//! Command identifiers are VS Code's, verbatim. That is the whole point: a
-//! user's `keybindings.json` refers to commands like
-//! `editor.action.commentLine`, and rebinding one has to reach the same command
-//! deco runs by default. Where VS Code's own default differs per platform the
-//! entry carries a `mac` field, exactly as `keybindings.json` allows.
+//! Command identifiers are identical to VS Code's. A user's `keybindings.json`
+//! refers to commands like `editor.action.commentLine`, and rebinding one must
+//! reach the same command deco runs by default. Where VS Code's own default
+//! differs per platform, the entry has a `mac` field, as `keybindings.json`
+//! allows.
 
 use crate::binding::{parse, Platform, Rule, Source};
 
@@ -241,9 +241,9 @@ pub const DEFAULT_KEYBINDINGS_JSONC: &str = r#"[
 
 /// Parses the built-in keymap for `platform`.
 ///
-/// Any entry that fails to parse is dropped silently here — the constant is
-/// covered by a test that asserts it parses cleanly, so a failure at runtime
-/// would be a deco bug rather than something the user can act on.
+/// Entries that fail to parse are dropped without a report. A test asserts
+/// that the constant parses without problems, so a runtime failure would be a
+/// deco bug that the user cannot fix.
 pub fn default_rules(platform: Platform) -> Vec<Rule> {
     parse(DEFAULT_KEYBINDINGS_JSONC, platform, Source::Default)
         .map(|parsed| parsed.rules)
@@ -351,9 +351,9 @@ mod tests {
 
     #[test]
     fn go_to_symbol_needs_a_server_that_offers_symbols() {
-        // Ungated, `ctrl+shift+o` would resolve to a command that can only report
-        // that the server cannot answer — a key that looks broken rather than
-        // one that is simply not available here.
+        // Without the gate, `ctrl+shift+o` would resolve to a command that can
+        // only report that the server does not support it. The key would appear
+        // broken instead of unavailable.
         let km = Keymap::from_rules(default_rules(Platform::Linux));
         let mut ctx = ContextKeys::with_platform_defaults();
         ctx.set("textInputFocus", true);
@@ -445,8 +445,8 @@ mod tests {
 
     #[test]
     fn no_two_defaults_share_a_key_and_when_clause() {
-        // An exact duplicate means one of them can never fire, which is always
-        // a mistake in the defaults rather than a deliberate override.
+        // With an exact duplicate, one of the bindings can never fire. In the
+        // defaults this is always a mistake, not an intended override.
         let rules = default_rules(Platform::Linux);
         let mut seen: Vec<(String, Option<String>)> = Vec::new();
         for rule in &rules {

@@ -1,9 +1,8 @@
 //! Where deco looks for configuration, and where VS Code keeps its own.
 //!
-//! deco reads its own directory first and falls back to VS Code's, so a user
-//! who already has `settings.json` and `keybindings.json` gets their editor
-//! behaviour without copying anything. Nothing is ever written to VS Code's
-//! directory — importing is one-way on purpose.
+//! deco reads its own directory first and falls back to VS Code's, so a user's
+//! existing `settings.json` and `keybindings.json` apply without copying them.
+//! deco never writes to VS Code's directory; importing is one-way.
 
 use std::path::{Path, PathBuf};
 
@@ -33,8 +32,8 @@ impl Layout {
 
 /// The environment inputs the path rules depend on.
 ///
-/// Taking these as data rather than reading the process environment directly is
-/// what makes the rules for all three platforms testable from any one of them.
+/// These are passed as data instead of being read from the process environment,
+/// so the rules for all three platforms can be tested on any one of them.
 #[derive(Debug, Clone, Default)]
 pub struct Env {
     /// The user's home directory.
@@ -101,24 +100,24 @@ pub struct ConfigPaths {
     pub extensions: PathBuf,
     /// User snippets.
     pub snippets: PathBuf,
-    /// `permissions.json`: what extensions have been allowed and refused.
+    /// `permissions.json`: the capabilities extensions have been allowed and denied.
     ///
-    /// deco's own, with no VS Code equivalent — there a capability decision does
-    /// not exist, because an extension has whatever Node has.
+    /// Specific to deco. VS Code has no equivalent because it has no capability
+    /// decisions: an extension has every permission the Node process has.
     pub permissions: PathBuf,
     /// `machine-settings.json`: settings that belong to *this machine*.
     ///
-    /// Read by a client connected to this machine as its [`Scope::Remote`]
-    /// layer, and by nothing else — deco running here reads `settings`, not
-    /// this. VS Code has the same split, and for the same reason: a remote's
-    /// interpreter paths and toolchain locations are facts about the machine,
-    /// while the colour theme is a fact about the person.
+    /// Only a client connected to this machine reads it, as its
+    /// [`Scope::Remote`] layer. deco running locally on this machine reads
+    /// `settings` instead. VS Code uses the same split: interpreter paths and
+    /// toolchain locations depend on the machine, while the colour theme depends
+    /// on the user.
     ///
-    /// Separate from `settings` deliberately. Serving that file instead would
-    /// mean connecting to a machine quietly adopted whatever the account there
-    /// had set for its own editing — a theme, a font, a keybinding — and would
-    /// make an ordinary local configuration into something a visitor's session
-    /// has to treat as untrusted.
+    /// It is separate from `settings` on purpose. Serving `settings` instead
+    /// would make a connecting client apply the remote account's own editing
+    /// preferences (theme, font, keybindings) without notice. It would also turn
+    /// an ordinary local configuration into input that a remote session must
+    /// treat as untrusted.
     ///
     /// [`Scope::Remote`]: crate::Scope::Remote
     pub machine_settings: PathBuf,
@@ -127,8 +126,8 @@ pub struct ConfigPaths {
 impl ConfigPaths {
     /// Derives the standard file layout under `root`.
     ///
-    /// VS Code splits these between `Code/User/*.json` and `~/.vscode/extensions`;
-    /// [`ConfigPaths::vscode`] applies that quirk, while deco keeps everything under one root.
+    /// VS Code splits these between `Code/User/*.json` and `~/.vscode/extensions`.
+    /// [`ConfigPaths::vscode`] handles that layout. deco keeps everything under one root.
     pub fn under(root: PathBuf) -> Self {
         Self {
             settings: root.join("settings.json"),
@@ -149,8 +148,8 @@ impl ConfigPaths {
     /// VS Code's configuration paths, for one-way import.
     ///
     /// VS Code stores user JSON under `<config>/Code/User` but extensions in
-    /// `~/.vscode/extensions` on every platform, which is why this cannot just
-    /// call [`ConfigPaths::under`].
+    /// `~/.vscode/extensions` on every platform, so this cannot use
+    /// [`ConfigPaths::under`].
     pub fn vscode(env: &Env, layout: Layout) -> Option<Self> {
         let user = config_dir_for(env, layout, "Code")?.join("User");
         let extensions = env.home.as_ref()?.join(".vscode").join("extensions");
@@ -158,11 +157,10 @@ impl ConfigPaths {
             settings: user.join("settings.json"),
             keybindings: user.join("keybindings.json"),
             snippets: user.join("snippets"),
-            // Neither has a VS Code equivalent *here*: capability decisions do
-            // not exist there at all, and its machine settings live under
-            // `~/.vscode-server` on the remote rather than beside the user's.
-            // Both paths exist on the struct and are never read for a VS Code
-            // layout.
+            // Neither has a VS Code equivalent in this directory. VS Code has no
+            // capability decisions, and it keeps machine settings under
+            // `~/.vscode-server` on the remote machine. Both fields are set but
+            // never read for a VS Code layout.
             permissions: user.join("permissions.json"),
             machine_settings: user.join("machine-settings.json"),
             extensions,
@@ -173,8 +171,8 @@ impl ConfigPaths {
 
 /// Workspace-level settings files, in the order deco prefers them.
 ///
-/// `.deco` wins so a project can hold deco-specific settings, but a project
-/// that only has `.vscode` still works untouched.
+/// `.deco` takes precedence so a project can hold deco-specific settings. A
+/// project that only has `.vscode` works without changes.
 pub fn workspace_settings_candidates(root: &Path) -> Vec<PathBuf> {
     vec![
         root.join(".deco").join("settings.json"),

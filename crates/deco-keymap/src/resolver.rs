@@ -148,8 +148,8 @@ impl Keymap {
     }
 
     fn resolve_first(&self, chord: Chord, ctx: &ContextKeys) -> Resolution {
-        // Scanning backwards means the highest-precedence binding is found
-        // first, which is exactly "later definitions win".
+        // Scanning backwards finds the highest-precedence binding first, so
+        // later definitions win.
         let winner = self
             .bindings
             .iter()

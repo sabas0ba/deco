@@ -1,13 +1,11 @@
-//! Finding your way around: quick open, go to line, find, replace, and search
-//! in files.
+//! Navigation: quick open, go to line, find, replace, and search in files.
 //!
-//! Every one of these walks a real directory or a real document and then shows a
-//! list. The list is on the screen rather than in a struct, so that is where
-//! these scenarios look.
+//! Each of these reads a real directory or document and then shows a list. The
+//! scenarios check the list on the screen rather than in a struct.
 
 use deco_e2e::Scenario;
 
-/// A workspace with enough in it for a picker to have to choose.
+/// A workspace with several files, so a picker has more than one candidate.
 fn workspace(name: &str) -> Scenario {
     Scenario::new(name)
         .file("src/main.rs", "fn main() {\n    greet();\n}\n")
@@ -50,14 +48,14 @@ fn quick_open_can_be_cancelled_and_leaves_the_document_alone() {
     editor.press("escape");
 
     assert!(editor.path().is_some_and(|p| p.ends_with("main.rs")));
-    // And the text that was typed into the picker did not land in the file.
+    // The text typed into the picker was not inserted into the file.
     assert_eq!(editor.text(), "fn main() {\n    greet();\n}\n");
 }
 
 #[test]
 fn quick_open_does_not_offer_files_the_settings_exclude() {
-    // `files.exclude` is how a repository keeps `target/` out of every picker,
-    // and a picker that lists 40,000 build artefacts is no picker at all.
+    // A repository uses `files.exclude` to keep directories such as `target/` out
+    // of every picker. A picker that lists 40,000 build artefacts is unusable.
     let scenario = workspace("excluded")
         .user_settings(r#"{ "files.exclude": { "**/notes": true } }"#)
         .file("notes/secret.txt", "hidden\n");
@@ -86,9 +84,9 @@ fn go_to_line_moves_the_caret_and_says_where_it_is() {
 
 #[test]
 fn go_to_a_line_past_the_end_says_so_instead_of_moving_somewhere_arbitrary() {
-    // deco refuses and names the range. VS Code clamps to the last line instead;
-    // this pins which of the two deco does, so that a change to it is a decision
-    // rather than a surprise.
+    // deco rejects the line number and shows the valid range. VS Code moves to
+    // the last line instead. This test records deco's behaviour so that a change
+    // to it is intentional.
     let scenario = Scenario::new("go-to-line-past").file("a.txt", "one\ntwo\n");
     let mut editor = scenario.launch(&["a.txt"]);
 
@@ -112,7 +110,7 @@ fn find_shows_the_bar_and_moves_between_matches() {
 
     let screen = editor.screen();
     screen.assert_fits();
-    // The bar counts them, which is the whole reason to look at it.
+    // The bar shows the match count.
     screen.assert_shows("1 of 2");
 
     editor.press("enter");
@@ -122,8 +120,7 @@ fn find_shows_the_bar_and_moves_between_matches() {
 
 #[test]
 fn find_leaves_the_document_untouched() {
-    // Typing into the find bar must not type into the file, which is the failure
-    // that makes a find bar terrifying.
+    // Text typed into the find bar must not be inserted into the file.
     let scenario = Scenario::new("find-safe").file("a.txt", "alpha\nbeta\n");
     let mut editor = scenario.launch(&["a.txt"]);
 
@@ -141,8 +138,8 @@ fn replace_all_changes_every_match_and_saves_what_it_changed() {
     let mut editor = scenario.launch(&["a.txt"]);
 
     editor.press("ctrl+h");
-    // Nothing was selected, so `ctrl+h` opens with an empty query and the
-    // keyboard on it; `tab` moves to the replacement.
+    // Nothing was selected, so `ctrl+h` opens with an empty, focused query;
+    // `tab` moves to the replacement.
     editor.type_text("cat");
     editor.press("tab");
     editor.type_text("bird");
@@ -155,10 +152,10 @@ fn replace_all_changes_every_match_and_saves_what_it_changed() {
 
 #[test]
 fn ctrl_h_focuses_the_query_when_there_is_nothing_to_replace_yet() {
-    // `ctrl+h` seeds the query only from a selection, so reaching it with nothing
-    // selected and nothing searched for yet leaves nothing to replace. The first
-    // thing typed is the word being searched for, and it has to land in the
-    // query — the field VS Code focuses in the same situation.
+    // `ctrl+h` fills the query only from a selection. With no selection and no
+    // previous search there is nothing to replace, so the first text typed is
+    // the search term and must go into the query. VS Code focuses the same
+    // field in this situation.
     let scenario = Scenario::new("replace-focus").file("a.txt", "cat\ndog\n");
     let mut editor = scenario.launch(&["a.txt"]);
 
@@ -175,8 +172,8 @@ fn ctrl_h_focuses_the_query_when_there_is_nothing_to_replace_yet() {
         "",
         "the replacement is not what the user came here to write first"
     );
-    // And the screen shows the query filled in with the replacement row still
-    // open and empty, ready for `tab`.
+    // The screen shows the filled query and the empty replacement row, which
+    // `tab` moves to.
     let screen = editor.screen();
     screen.assert_shows("With:");
     assert!(
@@ -188,9 +185,8 @@ fn ctrl_h_focuses_the_query_when_there_is_nothing_to_replace_yet() {
 
 #[test]
 fn ctrl_h_focuses_the_replacement_when_the_query_is_seeded() {
-    // The premise the replacement-first focus rests on: with a word selected the
-    // query arrives already filled in, so the replacement is the only thing left
-    // to type and the keyboard belongs there.
+    // With a word selected, the query is filled from the selection, so only the
+    // replacement remains to be typed and it receives focus.
     let scenario = Scenario::new("replace-focus-seeded").file("a.txt", "cat\ndog\n");
     let mut editor = scenario.launch(&["a.txt"]);
 
@@ -258,7 +254,7 @@ fn replace_in_files_changes_every_file_and_one_undo_takes_it_back() {
     editor.press("ctrl+shift+h");
     editor.type_text("greet");
     editor.press("enter");
-    // The second prompt: what to put there.
+    // The second prompt: the replacement text.
     assert_eq!(
         editor.session().prompt.as_ref().map(|p| p.kind()),
         Some(deco_editor::PromptKind::ReplaceQuery),
@@ -273,7 +269,7 @@ fn replace_in_files_changes_every_file_and_one_undo_takes_it_back() {
         "the status should report what was replaced: {status}"
     );
 
-    // The file on screen, and one that was opened to be changed.
+    // The open file, and a file that was opened to apply the change.
     assert_eq!(editor.text(), "fn main() {\n    welcome();\n}\n");
     let unsaved = editor.session().unsaved();
     let greet = unsaved
@@ -307,13 +303,13 @@ fn replace_in_files_changes_every_file_and_one_undo_takes_it_back() {
 
 #[test]
 fn replace_in_files_acts_on_the_buffer_rather_than_the_file_on_disk() {
-    // The search reads the disk; this tab has unsaved changes. Replacing against
-    // what the search read would edit positions in a document that no longer
-    // exists, and then save the result over the real one.
+    // The search reads the disk, but this tab has unsaved changes. Replacing at
+    // the positions found on disk would edit an outdated version of the
+    // document, and saving the result would overwrite the current one.
     let scenario = workspace("replace-files-dirty");
     let mut editor = scenario.launch(&["src/main.rs"]);
 
-    // A second `greet` in the open buffer that the file on disk does not have.
+    // A second `greet` that exists in the open buffer but not on disk.
     editor.press("ctrl+end");
     editor.type_text("// greet again\n");
 
@@ -402,8 +398,8 @@ fn the_command_palette_runs_a_command_that_has_no_key_bound_to_it() {
 
 #[test]
 fn the_palette_finds_a_command_by_its_vs_code_identifier() {
-    // Somebody who knows the identifier from `keybindings.json` should be able to
-    // type it, which is a promise the palette's ranking makes.
+    // A user who knows the identifier from `keybindings.json` can type it, and
+    // the palette's ranking matches it.
     let scenario = Scenario::new("palette-id").file("a.rs", "let x = 1;\n");
     let mut editor = scenario.launch(&["a.rs"]);
 
@@ -414,7 +410,7 @@ fn the_palette_finds_a_command_by_its_vs_code_identifier() {
 
 #[test]
 fn a_palette_query_matching_nothing_says_so_instead_of_running_something_else() {
-    // The dangerous failure: the palette closes and *some* command runs.
+    // The failure to prevent: the palette closes and runs a different command.
     let scenario = Scenario::new("palette-miss").file("a.txt", "one\n");
     let mut editor = scenario.launch(&["a.txt"]);
 
@@ -431,9 +427,8 @@ fn a_palette_query_matching_nothing_says_so_instead_of_running_something_else() 
 
 #[test]
 fn a_search_result_from_a_file_that_has_since_changed_still_opens_safely() {
-    // A result carries a position, and the file may have been rewritten between
-    // the search and the choosing. Landing past the end of the file is a panic
-    // waiting to happen.
+    // A result stores a position, and the file may change between the search
+    // and the selection. Moving past the end of the file could cause a panic.
     let scenario = workspace("stale-result");
     let mut editor = scenario.launch(&["src/main.rs"]);
 
@@ -450,11 +445,11 @@ fn a_search_result_from_a_file_that_has_since_changed_still_opens_safely() {
 
 #[test]
 fn typing_over_a_seeded_prompt_replaces_the_seed() {
-    // Save As and Find in Files open with text already in them — the current
-    // path, the word under the cursor. VS Code selects that text so the next key
-    // replaces it; deco used to leave the caret at the end with no selection, so
-    // the next key *appended*: `ctrl+shift+f` on the word `fn` and then typing
-    // `println` searched for `fnprintln`, which is in no file anywhere.
+    // Save As and Find in Files open with initial text: the current path, or the
+    // word under the cursor. VS Code selects that text so the next key replaces
+    // it. deco previously left the caret at the end with no selection, so the
+    // next key appended: `ctrl+shift+f` on the word `fn` followed by `println`
+    // searched for `fnprintln`.
     let scenario = Scenario::new("prompt-seed").file("a.txt", "cat\ndog\n");
     let mut editor = scenario.launch(&["a.txt"]);
 
@@ -477,9 +472,8 @@ fn typing_over_a_seeded_prompt_replaces_the_seed() {
 
 #[test]
 fn select_all_in_a_prompt_makes_the_next_key_replace_it() {
-    // `ctrl+a` used to be swallowed as a no-op, so a field the user wanted to
-    // empty could only be cleared by `ctrl+x` — a way out nobody would guess and
-    // nothing on screen mentioned.
+    // `ctrl+a` previously did nothing in a prompt, so a field could only be
+    // cleared with `ctrl+x`, which was not documented on screen.
     let scenario = Scenario::new("prompt-select-all").file("a.txt", "cat\ndog\n");
     let mut editor = scenario.launch(&["a.txt"]);
 
@@ -496,8 +490,9 @@ fn select_all_in_a_prompt_makes_the_next_key_replace_it() {
 
 #[test]
 fn a_seeded_prompt_can_still_be_edited_rather_than_replaced() {
-    // The other half of a selection: a path you meant to *edit* survives the
-    // moment you move into it, which is what makes seeding save-as worth doing.
+    // Moving the caret into the selected initial text keeps it, so a path can be
+    // edited instead of replaced. This is the purpose of filling Save As with
+    // the current path.
     let scenario = Scenario::new("prompt-edit-seed").file("a.txt", "hello\n");
     let mut editor = scenario.launch(&["a.txt"]);
 
@@ -521,8 +516,8 @@ fn a_seeded_prompt_can_still_be_edited_rather_than_replaced() {
 
 #[test]
 fn a_selected_seed_is_drawn_as_selected() {
-    // Or the difference between replacing and appending is something the user
-    // only discovers by losing what they typed.
+    // Otherwise the user cannot see whether typing will replace or append to the
+    // text.
     let scenario = Scenario::new("prompt-seed-drawn").file("a.txt", "cat\ndog\n");
     let mut editor = scenario.launch(&["a.txt"]);
 
@@ -544,7 +539,8 @@ fn a_selected_seed_is_drawn_as_selected() {
         "the selected seed should not look like the label beside it{}",
         screen.dump()
     );
-    // And once it is no longer selected, it looks like the rest of the row again.
+    // Once it is no longer selected, it has the same colours as the rest of the
+    // row.
     editor.press("end");
     let screen = editor.screen();
     assert_eq!(
@@ -566,8 +562,8 @@ fn the_find_bar_seeds_from_a_selection_and_selects_what_it_seeded() {
     assert!(!editor.session().find.text_selected());
     editor.press("escape");
 
-    // A word selected: it is seeded, and typing replaces it rather than
-    // appending — the same rule the prompts follow.
+    // A word selected: the query is filled from it, and typing replaces it
+    // rather than appending, as in the prompts.
     editor.press("ctrl+shift+right");
     editor.press("ctrl+f");
     assert_eq!(editor.session().find.query(), "cat");

@@ -1,9 +1,9 @@
 //! The session state machine: lifecycle, request routing and cancellation.
 //!
-//! This is a pure state machine. It never spawns a process, never blocks and
-//! never touches a socket: messages go in, messages and events come out, and
-//! whoever owns the child process is responsible for moving bytes. That is what
-//! makes the ordering rules below testable without a language server installed.
+//! This is a pure state machine. It does not spawn processes, block, or use
+//! sockets. It accepts messages and returns messages and events, and the owner
+//! of the child process transfers the bytes. This allows the ordering rules
+//! below to be tested without an installed language server.
 //!
 //! # The lifecycle, and why it is enforced
 //!
@@ -19,22 +19,22 @@
 //!                                                          Exited
 //! ```
 //!
-//! Servers enforce this and respond badly when it is broken: a request before
-//! the `initialize` response is answered with `ServerNotInitialized` at best,
-//! and several implementations simply hang. So requests raised early are
-//! **queued**, not sent and not rejected — the editor should not have to know
-//! whether the server has finished starting before it can ask for a hover.
+//! Servers enforce this order and fail when it is violated. A request sent
+//! before the `initialize` response gets `ServerNotInitialized` at best, and
+//! several implementations hang. Requests made early are therefore **queued**,
+//! neither sent nor rejected, so the editor does not need to know whether the
+//! server has finished starting before it requests a hover.
 //!
-//! `exit` without a preceding `shutdown` is the one that leaks: it tells the
-//! server to die immediately, and a server that has not been asked to shut down
-//! may not flush or clean up. [`Client::exit`] refuses it.
+//! `exit` without a preceding `shutdown` leaks resources. It tells the server
+//! to terminate immediately, and a server that has not received `shutdown` may
+//! not flush or clean up. [`Client::exit`] rejects it.
 //!
 //! # Server-to-client requests
 //!
-//! Traffic is bidirectional. A server request that never receives a response
-//! blocks that server — many wait synchronously — so every inbound request is
-//! answered, including the ones deco does not implement, which get an explicit
-//! `MethodNotFound` rather than silence.
+//! Messages flow in both directions. A server request that never receives a
+//! response blocks that server, because many servers wait synchronously. Every
+//! inbound request is therefore answered. Methods deco does not implement get
+//! an explicit `MethodNotFound` response.
 
 use std::collections::HashMap;
 
@@ -70,9 +70,9 @@ pub enum ClientEvent {
     },
     /// A reply to a request the editor made.
     Response {
-        /// The method that was called, recovered from the pending table — a
-        /// bare response carries only an id, so without this the editor cannot
-        /// tell what it is looking at.
+        /// The method that was called, taken from the pending table. A response
+        /// contains only an id, so without this the editor cannot identify the
+        /// request it answers.
         method: String,
         /// The id that was answered.
         id: RequestId,
@@ -91,17 +91,17 @@ pub enum ClientEvent {
         /// The text.
         message: String,
     },
-    /// The server logged something. Usually only interesting when debugging.
+    /// The server logged a message. Usually only useful for debugging.
     LogMessage {
         /// 1 error, 2 warning, 3 info, 4 log.
         kind: i64,
         /// The text.
         message: String,
     },
-    /// Something arrived that the client could not use, described for a log.
+    /// A message the client could not use, described for a log.
     ///
-    /// An event rather than an error: a misbehaving server should be visible
-    /// without taking the editor down with it.
+    /// An event rather than an error, so a misbehaving server is visible
+    /// without causing the editor to fail.
     Ignored {
         /// Why it was ignored.
         reason: String,
@@ -131,8 +131,8 @@ pub enum LspError {
 #[derive(Debug, Clone, PartialEq)]
 struct Pending {
     method: String,
-    /// Whether the editor has already asked for this to be cancelled. The
-    /// response still arrives — cancellation is advisory — and is dropped.
+    /// Whether the editor has already requested cancellation. Cancellation is
+    /// advisory, so the response still arrives and is dropped.
     cancelled: bool,
 }
 
@@ -198,8 +198,8 @@ impl Client {
 
     fn allocate_id(&mut self) -> RequestId {
         let id = RequestId::Number(self.next_id);
-        // Saturating rather than wrapping: reusing an id would route a reply to
-        // the wrong request, which is worse than never issuing another. In
+        // Saturating rather than wrapping. Reusing an id would route a reply to
+        // the wrong request, which is worse than issuing no new ids. In
         // practice a session ends long before 2^63 requests.
         self.next_id = self.next_id.saturating_add(1);
         id
@@ -207,8 +207,8 @@ impl Client {
 
     /// Builds the `initialize` request.
     ///
-    /// `root_uri` is the workspace root, or `None` for a single loose file —
-    /// which is a legitimate configuration, not an error.
+    /// `root_uri` is the workspace root, or `None` for a single file outside a
+    /// workspace. `None` is a valid configuration, not an error.
     pub fn initialize(
         &mut self,
         root_uri: Option<&crate::uri::Uri>,
@@ -223,9 +223,9 @@ impl Client {
 
         let id = self.allocate_id();
         let mut params = serde_json::json!({
-            // Null rather than the real pid: it is only used so a server can
-            // notice the editor died, and handing out a process id to a
-            // subprocess that did not need one is a habit worth not having.
+            // Null rather than the real pid. Servers use it only to detect that
+            // the editor has exited, and deco does not give its process id to a
+            // subprocess that does not need it.
             "processId": serde_json::Value::Null,
             "clientInfo": { "name": "deco", "version": env!("CARGO_PKG_VERSION") },
             "capabilities": capabilities::client_capabilities(),
@@ -256,8 +256,8 @@ impl Client {
     /// Raises a request.
     ///
     /// Before the handshake finishes the request is queued rather than sent,
-    /// and the returned `Outgoing` is `None`. Callers get the id either way, so
-    /// a queued request can still be cancelled by the time it is flushed.
+    /// and the returned `Outgoing` is `None`. Callers get the id in both cases,
+    /// so a queued request can be cancelled before it is flushed.
     pub fn request(
         &mut self,
         method: impl Into<String>,
@@ -298,10 +298,10 @@ impl Client {
 
     /// Builds a notification.
     ///
-    /// Unlike a request, a notification raised before the handshake is refused
-    /// rather than queued: notifications are almost always document
-    /// synchronisation, and replaying `didChange` for a document the server was
-    /// never told about is a protocol violation on arrival.
+    /// Unlike a request, a notification made before the handshake is rejected
+    /// rather than queued. Notifications are almost always document
+    /// synchronisation, and replaying `didChange` for a document the server
+    /// has not opened is a protocol violation.
     pub fn notify(
         &mut self,
         method: impl Into<String>,
@@ -321,12 +321,12 @@ impl Client {
 
     /// Asks the server to abandon a request.
     ///
-    /// Advisory by design: the server may already have answered. The pending
-    /// entry stays so the eventual response can be recognised and dropped
-    /// rather than delivered as an answer nobody is waiting for.
+    /// Cancellation is advisory because the server may already have answered.
+    /// The pending entry is kept so that the response can be recognised and
+    /// dropped instead of being delivered when nothing is waiting for it.
     pub fn cancel(&mut self, id: &RequestId) -> Option<Outgoing> {
-        // A queued request has not been sent, so there is nothing for the
-        // server to cancel; drop it here instead.
+        // A queued request has not been sent, so the server has nothing to
+        // cancel. Remove it here instead.
         if let Some(index) = self.queued.iter().position(|r| &r.id == id) {
             self.queued.remove(index);
             self.pending.remove(id);
@@ -371,8 +371,9 @@ impl Client {
 
     /// Builds the `exit` notification.
     ///
-    /// Only valid after `shutdown`. Sending it first tells a server to die
-    /// before it has been asked to stop, so anything it was flushing is lost.
+    /// Only valid after `shutdown`. Sending it first tells a server to
+    /// terminate before it has been asked to stop, so data it was flushing is
+    /// lost.
     pub fn exit(&mut self) -> Result<Outgoing, LspError> {
         if self.state != State::ShuttingDown {
             return Err(LspError::ExitWithoutShutdown);
@@ -408,8 +409,8 @@ impl Client {
         response: Response,
     ) -> Result<(Vec<Outgoing>, Vec<ClientEvent>), LspError> {
         let Some(pending) = self.pending.remove(&response.id) else {
-            // A reply to something never asked, or asked twice. Not fatal: a
-            // confused server should not be able to stop the editor.
+            // A reply to an unknown request, or a second reply to one request.
+            // Not fatal, so a faulty server cannot stop the editor.
             return Ok((
                 Vec::new(),
                 vec![ClientEvent::Ignored {
@@ -423,14 +424,14 @@ impl Client {
         }
 
         if Some(&response.id) == self.shutdown_id.as_ref() {
-            // The server has agreed to stop. `exit` is the caller's to send,
+            // The server has accepted the shutdown. The caller sends `exit`,
             // so that it can decide how long to wait.
             return Ok((Vec::new(), Vec::new()));
         }
 
         if pending.cancelled {
-            // The answer arrived anyway, which is normal — cancellation races
-            // the reply. Delivering it would repopulate a UI the user closed.
+            // The response arrived anyway. This is normal because cancellation
+            // races the reply. Delivering it would refill a UI the user closed.
             return Ok((
                 Vec::new(),
                 vec![ClientEvent::Ignored {
@@ -470,9 +471,9 @@ impl Client {
             .cloned()
             .unwrap_or(serde_json::Value::Null);
 
-        // Checked before anything else is believed: an encoding mismatch makes
-        // every position in both directions wrong, so the session must not
-        // start rather than start subtly broken.
+        // Checked before any other capability is used. An encoding mismatch
+        // makes every position in both directions wrong, so the session must
+        // not start.
         self.encoding = capabilities::negotiate_encoding(
             server_caps.get("positionEncoding").and_then(|v| v.as_str()),
         )?;
@@ -483,8 +484,8 @@ impl Client {
             method: "initialized".into(),
             params: Some(serde_json::json!({})),
         }))];
-        // Anything raised while the handshake was in flight goes out now, in
-        // the order it was raised.
+        // Requests made during the handshake are sent now, in the order they
+        // were made.
         for request in std::mem::take(&mut self.queued) {
             outgoing.push(Outgoing(Message::Request(request)));
         }
@@ -522,30 +523,26 @@ impl Client {
 
     /// Answers a request from the server.
     ///
-    /// Every one is answered. A server waiting on a reply that never comes is
-    /// stuck, and several implementations wait synchronously — so an
-    /// unimplemented method gets an explicit `MethodNotFound` rather than
-    /// silence.
+    /// Every request is answered. A server waiting for a reply that never
+    /// arrives is blocked, and several implementations wait synchronously. An
+    /// unimplemented method therefore gets an explicit `MethodNotFound`.
     fn handle_server_request(&mut self, request: Request) -> (Vec<Outgoing>, Vec<ClientEvent>) {
         let response = match request.method.as_str() {
-            // Accepted with a null result: deco does not draw progress, but
-            // refusing the token makes some servers skip work entirely.
+            // Accepted with a null result. deco does not display progress, but
+            // rejecting the token makes some servers skip work entirely.
             "window/workDoneProgress/create" => Response::ok(request.id, serde_json::Value::Null),
-            // Dynamic registration is declined everywhere in the client
-            // capabilities, so a server asking anyway gets a success it can
-            // proceed from rather than an error it may treat as fatal.
+            // The client capabilities decline dynamic registration everywhere.
+            // A server that requests it anyway gets a success, instead of an
+            // error it may treat as fatal.
             "client/registerCapability" | "client/unregisterCapability" => {
                 Response::ok(request.id, serde_json::Value::Null)
             }
-            // Declined, and no longer for want of a way to apply one: an edit
-            // the *editor* asked for — a rename, a chosen code action — goes
-            // through `deco_editor::workspace`. This is the other direction. A
-            // server pushing an edit unprompted is asking to change files
-            // nobody pressed a key about, which is a different thing to be
-            // allowed to do, and giving it the same answer as the asked-for
-            // case because the machinery happens to exist is not the way that
-            // decision should get made. `applied: false` is the protocol's own
-            // word for it, and honest.
+            // Declined. Edits requested by the *editor*, such as a rename or a
+            // chosen code action, are applied through `deco_editor::workspace`.
+            // This request is the other direction: the server asks to change
+            // files without a user action. That requires a separate permission
+            // decision, and the existence of the edit code does not make that
+            // decision. `applied: false` is the protocol's response for this.
             "workspace/applyEdit" => Response::ok(
                 request.id,
                 serde_json::json!({
@@ -554,8 +551,8 @@ impl Client {
                 }),
             ),
             "workspace/configuration" => {
-                // One null per requested item; the shape matters more than the
-                // content, since a mismatched array length confuses servers.
+                // One null per requested item. The array length matters more
+                // than the values, because a mismatched length confuses servers.
                 let count = request
                     .params
                     .as_ref()
@@ -673,8 +670,8 @@ mod tests {
 
     #[test]
     fn a_request_raised_during_the_handshake_is_queued_and_then_flushed() {
-        // The editor should not have to know whether the server has finished
-        // starting before it can ask for a hover.
+        // The editor does not need to know whether the server has finished
+        // starting before it requests a hover.
         let mut client = Client::new();
         let Outgoing(Message::Request(init)) = client.initialize(None, None).unwrap() else {
             panic!("initialize is a request");
@@ -737,8 +734,8 @@ mod tests {
 
     #[test]
     fn a_notification_before_the_handshake_is_refused_rather_than_queued() {
-        // Replaying `didChange` for a document the server was never told about
-        // is a protocol violation the moment it lands.
+        // Replaying `didChange` for a document the server has not opened is a
+        // protocol violation.
         let mut client = Client::new();
         client.initialize(None, None).unwrap();
         assert!(matches!(
@@ -749,8 +746,8 @@ mod tests {
 
     #[test]
     fn a_response_is_delivered_with_the_method_that_asked() {
-        // A bare response carries only an id, so without the pending table the
-        // editor cannot tell a hover from a completion.
+        // A response contains only an id, so without the pending table the
+        // editor cannot distinguish a hover from a completion.
         let (mut client, _) = ready(json!({}));
         let (id, sent) = client.request("textDocument/hover", json!({})).unwrap();
         assert!(sent.is_some());
@@ -802,7 +799,7 @@ mod tests {
 
     #[test]
     fn a_cancelled_requests_reply_is_dropped_rather_than_delivered() {
-        // Cancellation races the answer; delivering it repopulates a UI the
+        // Cancellation races the response. Delivering it would refill a UI the
         // user already dismissed.
         let (mut client, _) = ready(json!({}));
         let (id, _) = client
@@ -830,8 +827,8 @@ mod tests {
 
     #[test]
     fn cancelling_a_queued_request_sends_nothing_and_drops_it() {
-        // The server was never told about it, so there is nothing to cancel —
-        // and flushing it after the user moved on would be pure waste.
+        // The request was never sent, so the server has nothing to cancel.
+        // Sending it after the user moved on would be wasted work.
         let mut client = Client::new();
         let Outgoing(Message::Request(init)) = client.initialize(None, None).unwrap() else {
             panic!("initialize is a request");
@@ -859,7 +856,8 @@ mod tests {
     fn shutdown_then_exit_is_the_only_accepted_order() {
         let (mut client, _) = ready(json!({}));
 
-        // exit first is refused: the server would die before it can clean up.
+        // exit first is rejected: the server would terminate before it can
+        // clean up.
         assert_eq!(client.exit(), Err(LspError::ExitWithoutShutdown));
 
         let shutdown = client.shutdown().unwrap();
@@ -882,8 +880,8 @@ mod tests {
 
     #[test]
     fn the_shutdown_reply_does_not_send_exit_by_itself() {
-        // Leaving `exit` to the caller is what lets it decide how long to wait
-        // for the server to finish flushing.
+        // The caller sends `exit`, so it can decide how long to wait for the
+        // server to finish flushing.
         let (mut client, _) = ready(json!({}));
         let Outgoing(Message::Request(request)) = client.shutdown().unwrap() else {
             panic!("shutdown is a request");
@@ -932,8 +930,8 @@ mod tests {
 
     #[test]
     fn every_server_request_is_answered() {
-        // A server waiting on a reply that never comes is stuck, and several
-        // wait synchronously.
+        // A server waiting for a reply that never arrives is blocked, and
+        // several servers wait synchronously.
         let (mut client, _) = ready(json!({}));
         for method in [
             "window/workDoneProgress/create",
@@ -981,8 +979,8 @@ mod tests {
 
     #[test]
     fn an_edit_the_editor_cannot_apply_is_reported_as_not_applied() {
-        // "applied: true" for a refactoring that never happened would leave the
-        // server believing the file changed.
+        // "applied: true" for a refactoring that was not applied would make the
+        // server assume the file changed.
         let (mut client, _) = ready(json!({}));
         let (outgoing, _) = client
             .handle(Message::Request(Request {
@@ -1000,8 +998,7 @@ mod tests {
 
     #[test]
     fn a_configuration_request_is_answered_with_one_entry_per_item() {
-        // A mismatched array length is what confuses servers here, more than
-        // the values themselves.
+        // A mismatched array length confuses servers more than the values do.
         let (mut client, _) = ready(json!({}));
         let (outgoing, _) = client
             .handle(Message::Request(Request {

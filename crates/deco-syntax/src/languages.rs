@@ -1,9 +1,9 @@
 //! The per-language rules, as data.
 //!
-//! Adding a language is a table here and nothing else. The identifiers are the
-//! ones `deco_editor::document::language_for_path` produces, which are VS Code's
-//! language ids — so a file deco calls `typescriptreact` finds the rules under
-//! that name rather than under a second naming scheme invented here.
+//! Adding a language only requires a table here. The identifiers are the ones
+//! `deco_editor::document::language_for_path` produces, which are VS Code's
+//! language ids. A file deco identifies as `typescriptreact` therefore finds its
+//! rules under that name, without a separate naming scheme.
 //!
 //! Markdown, HTML and XML have no lexer here. These keyword-based tables cannot
 //! represent their markup structure and embedded languages, so those documents
@@ -30,10 +30,9 @@ pub struct Language {
     pub strings: &'static [StringKind],
     /// Whether a capitalised word with no other classification is a type.
     ///
-    /// True where the language has a naming convention strong enough to rely on,
-    /// false for languages like Python where module-level constants are also
-    /// capitalised and shouting `MAX_SIZE` as a type would be wrong more often
-    /// than right.
+    /// True where the language has a reliable naming convention. False for
+    /// languages like Python, where module-level constants are also capitalised
+    /// and colouring `MAX_SIZE` as a type would be wrong more often than right.
     pub capitals_are_types: bool,
 }
 
@@ -155,7 +154,7 @@ static RUST: Language = Language {
     }),
     // `'` is a lifetime far more often than a character literal, and a lifetime
     // lexed as an unterminated string would colour the rest of the line. Only
-    // double quotes, deliberately.
+    // double quotes are treated as strings.
     strings: &[DOUBLE],
     capitals_are_types: true,
 };
@@ -780,7 +779,7 @@ mod tests {
     #[test]
     fn no_language_lists_a_word_in_two_categories() {
         // A word in both `keywords` and `types` would be classified by whichever
-        // check ran first, which is a coin toss dressed up as a rule.
+        // check runs first, which is arbitrary.
         for language in SUPPORTED {
             let rules = rules_for(language).unwrap();
             for word in rules.keywords {
@@ -809,8 +808,8 @@ mod tests {
     #[test]
     fn the_languages_deco_detects_are_either_covered_or_deliberately_not() {
         // Everything `language_for_path` can return, and why it is or is not here.
-        // A new language added to the detector should be a deliberate decision
-        // about highlighting rather than a silent omission.
+        // Adding a language to the detector should include an explicit decision
+        // about highlighting.
         let structural = ["markdown", "html", "xml"];
         for language in structural {
             assert!(

@@ -1,36 +1,34 @@
 //! The find widget: a query, a caret in it, and the matches it found.
 //!
-//! State only. Where the bar is drawn and which colours it uses are the
-//! frontend's business; what the query is, which matches exist and which of them
-//! the editor is sitting on are the same in a terminal and in a window, so they
-//! live here and are tested here.
+//! This module holds state only. The frontend decides where the bar is drawn and
+//! which colours it uses. The query, the matches and the current match are the
+//! same in a terminal and in a window, so they are kept and tested here.
 //!
 //! # The find input is a text input
 //!
-//! VS Code's find box is a DOM input inside the editor. That has a consequence
-//! worth copying deliberately rather than by accident: while it has focus,
+//! VS Code's find box is a DOM input inside the editor. While it has focus,
 //! `editorTextFocus` is false but `textInputFocus` is true, so every editing
-//! command bound to `textInputFocus` — `left`, `backspace`, `ctrl+v` — resolves,
-//! and the input handles it. deco has no DOM to do that layering, so
-//! [`Find::consume`] does it explicitly: it claims the text-editing commands
-//! while the input has the keyboard, and lets everything else through.
+//! command bound to `textInputFocus` (`left`, `backspace`, `ctrl+v`) resolves
+//! and the input handles it. deco has no DOM, so [`Find::consume`] implements
+//! this explicitly: it takes the text-editing commands while the input has the
+//! keyboard and passes everything else through.
 //!
-//! That is why `ctrl+v` with the find bar open pastes into the query and not into
-//! the document, and why `ctrl+z` cannot silently rewrite the file behind an open
-//! find bar.
+//! As a result, `ctrl+v` with the find bar open pastes into the query and not
+//! into the document, and `ctrl+z` cannot change the file behind an open find
+//! bar.
 //!
 //! # No selection model
 //!
 //! The query has a caret but no selection. `ctrl+a`, `ctrl+c` and `ctrl+x`
-//! therefore act on the whole query, because there is no selection for them to
-//! act on instead — and they are swallowed rather than passed through, since a
-//! `ctrl+x` that cut a line out of the document while the user was editing a
-//! search term would be a genuine loss.
+//! therefore act on the whole query. They are consumed rather than passed
+//! through, so that `ctrl+x` does not cut a line from the document while the
+//! user is editing a search term.
 //!
 //! # No regular expressions
 //!
 //! [`deco_core::search`] is literal. `toggleFindRegex` is recognised so that the
-//! key says the feature is missing instead of reporting an unknown command.
+//! key reports the feature as unsupported instead of reporting an unknown
+//! command.
 
 use deco_core::position::{Position, Range};
 use deco_core::search::{self, SearchOptions};
@@ -57,20 +55,21 @@ pub struct Find {
     /// Whether the replace input is shown as well.
     ///
     /// Separate from `visible` because `ctrl+f` and `ctrl+h` open the same
-    /// widget: one row or two, and the row costs the file a line of text.
+    /// widget with one or two rows. The second row takes one line from the
+    /// text area.
     replacing: bool,
     field: Field,
     query: Input,
     replace: Input,
-    /// Case-insensitive and matching anywhere until the user says otherwise,
-    /// which is what VS Code's find widget defaults to — and the opposite of
-    /// `ctrl+d`, where the user selected exactly the text they meant.
+    /// Case-insensitive and not whole-word by default, as in VS Code's find
+    /// widget. `ctrl+d` uses the opposite defaults because the user selected
+    /// the exact text.
     options: SearchOptions,
     /// Where the search started.
     ///
-    /// Typing narrows the query, and each narrowing re-selects the first match
-    /// *from here* rather than from wherever the last one landed. Without an
-    /// anchor, typing `f`, `o`, `o` would walk the cursor down the file.
+    /// Each change to the query re-selects the first match *from here* rather
+    /// than from the previous match. Without this anchor, typing `f`, `o`, `o`
+    /// would move the cursor down the file.
     origin: Position,
     /// Matches for `query`, recomputed by [`Find::refresh`].
     matches: Vec<Range>,
@@ -118,9 +117,8 @@ impl Find {
     /// Moves the keyboard to the other input, showing the replacement if it was
     /// hidden.
     ///
-    /// `tab` and `shift+tab` both land here: with two inputs there is only one
-    /// other place to be, and a `shift+tab` that did nothing on the first field
-    /// would just feel broken.
+    /// `tab` and `shift+tab` both call this. With two inputs there is only one
+    /// other input, so `shift+tab` on the first field also moves focus.
     pub fn toggle_field(&mut self) {
         self.replacing = true;
         self.field = match self.field {
@@ -141,8 +139,8 @@ impl Find {
 
     /// Whether all of the focused field's text is selected.
     ///
-    /// For the renderer, which has to show a field whose next keystroke replaces
-    /// everything differently from one that appends.
+    /// Used by the renderer to distinguish a field whose next keystroke
+    /// replaces all text from one whose next keystroke inserts.
     pub fn text_selected(&self) -> bool {
         match self.field {
             Field::Query => self.query.selected(),
@@ -157,21 +155,20 @@ impl Find {
 
     /// Opens the bar, seeding the query from `seed` when there is one.
     ///
-    /// An empty seed is ignored rather than clearing a query the user already
-    /// has: pressing `ctrl+f` twice should not wipe what was typed the first
-    /// time.
+    /// An empty seed is ignored rather than clearing the existing query, so
+    /// pressing `ctrl+f` twice keeps what was typed the first time.
     pub fn open(&mut self, seed: Option<String>, origin: Position) {
         self.visible = true;
         self.origin = origin;
-        // `ctrl+f` after `ctrl+h` puts the keyboard back on the query, but the
-        // replacement stays typed and its row stays open: hiding text the user
-        // entered would be worse than a row they can close with Escape.
+        // `ctrl+f` after `ctrl+h` moves the keyboard back to the query. The
+        // replacement text and its row stay, so typed text is not hidden; the
+        // user can close the row with Escape.
         self.field = Field::Query;
         if let Some(seed) = seed {
             if !seed.is_empty() {
-                // Selected, not appended to: the seed is the word the user chose
-                // by selecting it, so the next thing typed is either a different
-                // query or an edit to this one — never a suffix.
+                // The seed is selected, not appended to. It is the text the
+                // user selected, so the next input either replaces it or edits
+                // it, and is never a suffix.
                 self.query.seed(seed);
             }
         }
@@ -180,15 +177,14 @@ impl Find {
     /// Opens the bar with the replacement shown, focusing the replacement only
     /// when there is a query to replace.
     ///
-    /// `ctrl+h`. The query is seeded exactly as `ctrl+f` seeds it, so selecting a
-    /// word and pressing `ctrl+h` is one step rather than two — and when it was
-    /// seeded, or was already typed the last time, the replacement is what the
-    /// user has come here to write.
+    /// Bound to `ctrl+h`. The query is seeded in the same way as for `ctrl+f`,
+    /// so selecting a word and pressing `ctrl+h` sets the query in one step.
+    /// When the query was seeded or kept from the previous search, the
+    /// replacement input receives focus.
     ///
-    /// With neither — nothing selected and nothing searched for yet, which is the
-    /// ordinary way `ctrl+h` is reached — there is nothing to replace, so the
-    /// first thing typed belongs in the query. VS Code focuses the search field
-    /// in that case too.
+    /// When nothing is selected and there is no previous query, which is the
+    /// common case, the query receives focus because there is nothing to
+    /// replace yet. VS Code does the same.
     pub fn open_replace(&mut self, seed: Option<String>, origin: Position) {
         self.open(seed, origin);
         self.replacing = true;
@@ -202,9 +198,8 @@ impl Find {
     /// Closes the bar, keeping the query so that `F3` still has something to
     /// search for.
     ///
-    /// The match list is dropped: it describes text that may be edited the
-    /// moment the editor has the keyboard back, and a stale highlight is worse
-    /// than none.
+    /// The match list is cleared because the text can change as soon as the
+    /// editor has the keyboard again, and stale highlights would be misleading.
     pub fn close(&mut self) {
         self.visible = false;
         self.replacing = false;
@@ -219,9 +214,9 @@ impl Find {
 
     /// Recomputes the match list.
     ///
-    /// The caller decides when: the query changed, an option was toggled, or the
-    /// document was edited. Nothing here caches across calls, because a cache
-    /// keyed on nothing is a stale highlight waiting to happen.
+    /// The caller calls this when the query changes, an option is toggled, or
+    /// the document is edited. Nothing is cached across calls, because this type
+    /// cannot detect when a cached result becomes stale.
     pub fn refresh(&mut self, buffer: &Buffer) {
         self.matches = search::find_all(buffer, self.query.text(), self.options);
     }
@@ -274,8 +269,8 @@ impl Find {
     /// Applies a command to the focused input, if it is one the input owns.
     ///
     /// Returns whether the command was consumed. The mapping from commands to
-    /// edits lives in [`Input`], because the go-to-line box and the command
-    /// palette need exactly the same one.
+    /// edits is in [`Input`] because the go-to-line box and the command palette
+    /// use the same mapping.
     pub fn consume(
         &mut self,
         command: &str,
@@ -295,10 +290,10 @@ mod tests {
     use crate::commands::MemoryClipboard;
 
     /// An open bar holding `query`, with the caret at its end and nothing
-    /// selected — the state a bar is in once the query has been typed.
+    /// selected, as after typing the query.
     ///
-    /// Not `open(Some(query))`: a *seeded* query opens selected, so the next key
-    /// would replace it rather than edit it. That is what `seeded` below is for.
+    /// This differs from `open(Some(query))`, which opens with the query
+    /// selected so the next key replaces it. Use `seeded` below for that state.
     fn find(query: &str) -> Find {
         let mut find = seeded(query);
         // Collapses the selection without changing the text or the caret, the
@@ -349,8 +344,8 @@ mod tests {
 
     #[test]
     fn typing_over_a_seeded_query_replaces_it() {
-        // The bug this guards: `ctrl+f` on a selected `fn` and typing `println`
-        // searched for `fnprintln`, which is in no file anywhere.
+        // Regression: `ctrl+f` on a selected `fn` followed by typing `println`
+        // searched for `fnprintln`.
         let mut find = seeded("fn");
         typed(&mut find, "println");
         assert_eq!(find.query(), "println");
@@ -367,8 +362,7 @@ mod tests {
 
     #[test]
     fn moving_the_caret_in_a_seeded_query_keeps_it_and_edits_from_there() {
-        // The other half of a selection: a seed you meant to *edit* survives the
-        // moment you move into it.
+        // Moving the caret clears the selection and keeps the seed for editing.
         let mut find = seeded("foo.txt");
         consume(&mut find, "cursorHome");
         assert!(!find.text_selected());
@@ -441,8 +435,8 @@ mod tests {
     fn backspace_at_the_start_does_nothing_but_is_still_consumed() {
         let mut find = find("foo");
         consume(&mut find, "cursorHome");
-        // Consumed even though it changes nothing: passing it through would
-        // delete a character out of the document instead.
+        // Consumed even though it changes nothing. Passing it through would
+        // delete a character from the document.
         assert!(consume(&mut find, "deleteLeft"));
         assert_eq!(find.query(), "foo");
     }
@@ -621,9 +615,8 @@ mod tests {
         let mut find = find("foo");
         let buffer = Buffer::from_text("foo FOO");
         find.refresh(&buffer);
-        // Case-insensitive until asked otherwise, which is what VS Code's find
-        // widget does — and the opposite of what `ctrl+d` does, because there the
-        // user selected exactly this text.
+        // Case-insensitive by default, as in VS Code's find widget. `ctrl+d` is
+        // case-sensitive because the user selected the exact text.
         assert_eq!(find.matches().len(), 2);
         find.toggle_case_sensitive();
         find.refresh(&buffer);

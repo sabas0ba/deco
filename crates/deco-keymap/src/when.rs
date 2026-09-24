@@ -1,8 +1,8 @@
 //! VS Code `when` clauses: parsing and evaluation.
 //!
 //! A `when` clause decides whether a keybinding, menu item or view is active.
-//! The language is small but has real semantics that matter for compatibility:
-//! `&&` binds tighter than `||`, comparisons are JavaScript's loose equality,
+//! The language is small, but these semantics are required for compatibility:
+//! `&&` binds tighter than `||`, comparisons use JavaScript's loose equality,
 //! and a bare key is a truthiness test rather than an existence test.
 //!
 //! ```
@@ -45,12 +45,12 @@ impl ContextKeys {
 
     /// A context seeded with the platform keys for `platform`.
     ///
-    /// Taking the platform as an argument rather than reading `cfg!` keeps
-    /// these keys agreeing with the keymap, which is built for a platform too.
-    /// The two diverging would mean a binding whose `when` is `!isMac` never
-    /// firing even though the keymap chose its non-mac spelling — and it is
-    /// what a remote session needs, where the keymap belongs to the remote
-    /// rather than to the machine the frontend runs on.
+    /// The platform is an argument rather than read from `cfg!` so that these
+    /// keys match the keymap, which is also built for a platform. If they
+    /// differed, a binding whose `when` is `!isMac` could fail to fire even
+    /// though the keymap chose its non-mac spelling. A remote session also
+    /// needs this, because its keymap belongs to the remote environment rather
+    /// than to the machine the frontend runs on.
     pub fn for_platform(platform: crate::binding::Platform) -> Self {
         use crate::binding::Platform;
         let mut ctx = Self::new();
@@ -1130,8 +1130,8 @@ mod tests {
 
     #[test]
     fn the_platform_keys_follow_the_argument_not_the_host() {
-        // The point of taking a platform: a test, or a remote session, can ask
-        // for a platform that is not the one this binary is running on.
+        // A test or a remote session can request a platform other than the one
+        // this binary is running on.
         let ctx = ContextKeys::for_platform(crate::binding::Platform::Mac);
         assert_eq!(ctx.get("isMac"), Some(&Value::Bool(true)));
         assert_eq!(ctx.get("isLinux"), Some(&Value::Bool(false)));

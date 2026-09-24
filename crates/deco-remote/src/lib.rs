@@ -16,30 +16,31 @@
 //! assert_eq!(command.program, "ssh");
 //! ```
 //!
-//! The shape is VS Code's: a headless server runs on the remote and the
-//! frontend runs locally, with the editor's state living wherever the files do.
+//! The architecture follows VS Code: a headless server runs on the remote and
+//! the frontend runs locally. Editor state is kept where the files are.
 //!
 //! - [`authority`] parses `ssh-remote+host`, `wsl+Distro` and
 //!   `dev-container+id`, plus the `vscode-remote://` URIs they appear in.
-//! - [`transport`] turns an authority into a command. Every one is an argument
-//!   vector, never a shell string: a hostname can come from a URI someone else
-//!   wrote, and a host of `-oProxyCommand=…` is rejected rather than escaped.
-//! - [`frame`] is the length-prefixed JSON framing the two ends speak, with a
-//!   size ceiling so a hostile peer cannot ask the local machine for 900GB.
+//! - [`transport`] turns an authority into a command. Commands are argument
+//!   vectors, never shell strings. A hostname can come from an untrusted URI, so
+//!   a host such as `-oProxyCommand=…` is rejected rather than escaped.
+//! - [`frame`] is the length-prefixed JSON framing used by client and server. A
+//!   size limit prevents a hostile peer from requesting a 900GB allocation on
+//!   the local machine.
 //!
-//! - [`forward`] reaches a port on the remote, using the remote's own deco as
-//!   the tunnel so that it works over every transport rather than only SSH.
-//! - [`install`] is what puts a deco on a remote that has none — only when
-//!   asked, only when it can run there, and never over something that is not
-//!   deco.
-//! - [`server`] is the far end: `deco --server --stdio`, answering those frames
-//!   against one directory it cannot be talked out of.
-//! - [`client`] is the near end: it starts the transport's command and calls the
-//!   server's methods.
+//! - [`forward`] reaches a port on the remote. It tunnels through the remote
+//!   deco, so it works over every transport, not only SSH.
+//! - [`install`] installs deco on a remote that has none. It runs only when
+//!   requested, only when the binary can run there, and never replaces a file
+//!   that is not deco.
+//! - [`server`] is the remote side: `deco --server --stdio`, which answers those
+//!   frames and confines all paths to one root directory.
+//! - [`client`] is the local side: it starts the transport's command and calls
+//!   the server's methods.
 //!
 //! Git status and writes also run through the server. Language servers use the
-//! same transport directly; what is not here yet is running extension hosts
-//! over there.
+//! same transport directly. Running extension hosts on the remote is not
+//! implemented yet.
 
 pub mod authority;
 pub mod client;

@@ -1,26 +1,27 @@
-//! Starting the extensions that are installed, and answering them.
+//! Starting installed extensions and handling their requests.
 //!
-//! Here rather than in `deco-editor` for the reason the theme list and the file
-//! walk are: the core has no filesystem and starts no processes. This module
-//! walks the extension directories, decides nothing (that is
-//! [`deco_ext::catalogue`]), and owns the host processes that result.
+//! This module is in this crate rather than in `deco-editor` for the same reason
+//! as the theme list and the file walk: the core has no filesystem access and
+//! starts no processes. This module walks the extension directories, makes no
+//! decisions (those are in [`deco_ext::catalogue`]), and owns the resulting host
+//! processes.
 //!
 //! # Nothing starts on its own
 //!
-//! A host is started when a command belonging to its extension is invoked, and at
-//! no other time. `onLanguage:` and `onStartupFinished` are understood by the
-//! catalogue and deliberately not acted on yet: the first version of this should
-//! start a process only when the user asked for something, because that is the
-//! version where a mistake costs the least. Opening a Rust file should not start
-//! three extensions before that path has been used in anger.
+//! A host is started only when a command belonging to its extension is invoked.
+//! The catalogue parses `onLanguage:` and `onStartupFinished`, but they are
+//! intentionally not acted on yet. The first version starts a process only when
+//! the user requests something, because that limits the impact of mistakes.
+//! Opening a Rust file should not start three extensions before this path has
+//! been tested in real use.
 //!
 //! # Starting does not block the editor
 //!
-//! The first container start on a machine pulls an image, which takes as long as
-//! it takes. Waiting for `$/ready` inline would freeze the editor for minutes, so
-//! a host is started, the invoked command is remembered, and both are advanced by
-//! [`Hosts::poll`] from the event loop — the same shape as the language-server
-//! client next door.
+//! The first container start on a machine pulls an image, which can take a long
+//! time. Waiting for `$/ready` inline would freeze the editor for minutes. A host
+//! is therefore started, the invoked command is stored, and both are advanced by
+//! [`Hosts::poll`] from the event loop, in the same way as the language-server
+//! client.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -35,17 +36,18 @@ use deco_ext::host::{HostConfig, HostLimits};
 use deco_ext::protocol::{ErrorCode, Message, Response};
 use deco_ext::sandbox::{self, Prepared, Sandbox};
 
-/// How many extension directories are examined before the walk gives up.
+/// How many extension directories are examined before the walk stops.
 ///
-/// The same bound the theme walk uses, and for the same reason: a
-/// marketplace-managed directory holds tens of extensions, and a number this size
-/// only ever stops something pathological.
+/// The same limit as the theme walk, for the same reason: a marketplace-managed
+/// directory holds tens of extensions, so the limit only applies to abnormal
+/// directories.
 pub const MAX_EXTENSIONS: usize = 2_000;
 
-/// How long a host may take to say `$/ready` in each mode.
+/// How long a host may take to send `$/ready` in each mode.
 ///
-/// Generous for a container because the first start on a machine pulls an image,
-/// and a pull is not a hang. The status bar says what is happening either way.
+/// Long for a container because the first start on a machine pulls an image,
+/// which is slow but not stuck. The status bar shows the current state in both
+/// modes.
 const READY_TIMEOUT: Duration = Duration::from_secs(20);
 const READY_TIMEOUT_CONTAINER: Duration = Duration::from_secs(600);
 
@@ -54,10 +56,10 @@ const LOG_LINES: usize = 200;
 
 /// Everything found under `roots`, in the order the roots were given.
 ///
-/// A directory that is not an extension is skipped in silence: an extensions
-/// directory routinely holds `.obsolete` and other bookkeeping. A manifest that
-/// *is* there and does not parse is a problem worth reporting, because the
-/// extension will appear not to exist and the reason is invisible.
+/// A directory that is not an extension is skipped without a message, because
+/// an extensions directory usually contains `.obsolete` and other metadata. A
+/// manifest that exists but does not parse is reported, because otherwise the
+/// extension would appear to be missing with no visible reason.
 pub fn discover(roots: &[PathBuf]) -> Catalogue {
     let mut found: Vec<(PathBuf, deco_ext::Manifest)> = Vec::new();
     let mut unreadable: Vec<String> = Vec::new();
@@ -67,8 +69,8 @@ pub fn discover(roots: &[PathBuf]) -> Catalogue {
         let Ok(entries) = std::fs::read_dir(root) else {
             continue;
         };
-        // Sorted, so what wins a collision does not depend on the order the
-        // filesystem happens to hand directories back in.
+        // Sorted, so the entry chosen on a collision does not depend on the
+        // order in which the filesystem returns directories.
         let mut directories: Vec<PathBuf> = entries
             .flatten()
             .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
@@ -101,11 +103,11 @@ pub fn discover(roots: &[PathBuf]) -> Catalogue {
 
 /// Palette rows for every command an extension contributes.
 ///
-/// Listed whether or not the extension has started, because invoking one is what
-/// starts it. The detail column is the extension's name rather than the command
-/// identifier the core uses there: for an extension command, "which extension is
-/// this" is the thing the title does not tell you and that decides whether you
-/// want it.
+/// Listed whether or not the extension has started, because invoking a command
+/// starts the extension. The detail column shows the extension's name rather
+/// than the command identifier the core shows there. The title does not show
+/// which extension a command belongs to, and that is often what the user needs
+/// to choose.
 pub fn rows(catalogue: &Catalogue) -> Vec<PaletteEntry> {
     catalogue
         .contributed_commands()
@@ -121,9 +123,9 @@ pub fn rows(catalogue: &Catalogue) -> Vec<PaletteEntry> {
 
 /// Where deco's own host code might be, given the running executable.
 ///
-/// Tried in order. A development checkout finds the first; an installed tree
-/// finds one of the others. `DECO_HOST_BOOTSTRAP` overrides all of them, which is
-/// what a packager or a test uses.
+/// Tried in order. A development checkout matches the first; an installed tree
+/// matches one of the others. `DECO_HOST_BOOTSTRAP` overrides all of them and is
+/// intended for packagers and tests.
 pub fn bootstrap_candidates(exe: &Path) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     let host = Path::new("extension-host").join("src").join("bootstrap.js");
@@ -155,9 +157,9 @@ pub fn find_bootstrap() -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
-/// An absolute path to `node`, for the modes that need the machine's own.
+/// An absolute path to `node`, for the modes that use the local installation.
 ///
-/// Absolute because the host's environment carries no `PATH` to search — see
+/// Absolute because the host's environment has no `PATH` to search; see
 /// `Host::spawn`. Not needed in a container, where the image supplies Node.
 fn find_node(path: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
     let file = if cfg!(windows) { "node.exe" } else { "node" };
@@ -183,45 +185,45 @@ struct Running {
     state: State,
     started: Instant,
     timeout: Duration,
-    /// Where the extension is mounted, for translating the paths on the wire.
+    /// Where the extension is mounted, for translating paths in messages.
     prepared: Prepared,
-    /// The capability broker for *this* extension: its own declaration is the
-    /// ceiling, so one per host rather than one shared.
+    /// The capability broker for *this* extension. The extension's own
+    /// declaration is the upper limit, so there is one broker per host.
     broker: Broker,
-    /// What it registered, which is how deco knows a command can be run yet.
+    /// The commands the extension registered, used to check whether a command
+    /// can be run yet.
     registered: BTreeSet<String>,
-    /// Commands invoked before it was ready, in the order they were asked for.
+    /// Commands invoked before the host was ready, in invocation order.
     queued: Vec<String>,
-    /// Requests deco is waiting on, so a reply can be reported against its cause.
+    /// Requests deco is waiting on, so a reply can be reported with its cause.
     asked: BTreeMap<u64, String>,
 }
 
 /// The extensions that are installed, and the hosts running some of them.
-/// Where an extension's file requests are actually served from.
+/// Where an extension's file requests are served from.
 ///
-/// A remote session's files are on the other machine, so an extension reading
-/// one has to read it through the same connection the editor does. The
-/// alternative — reading whatever happens to be at that path on this machine —
-/// is the failure mode this whole enum exists to make impossible: it would
-/// silently answer from a checkout that is not the one being edited.
+/// A remote session's files are on the remote machine, so an extension must
+/// read them through the same connection as the editor. This enum prevents
+/// reading the same path on the local machine, which would return data from a
+/// different checkout without any error.
 pub enum Files<'a> {
-    /// This machine's filesystem.
+    /// The local filesystem.
     Here,
-    /// The far end of a remote session.
+    /// The remote side of a remote session.
     Remote(&'a mut deco_remote::Client),
 }
 
 impl Files<'_> {
     /// Reads `path`, as text.
     ///
-    /// Text rather than bytes, and a file that is not UTF-8 is refused: deco's
-    /// own editor refuses one for the same reason, and an extension handed
+    /// Returns text rather than bytes, and rejects a file that is not UTF-8.
+    /// deco's editor rejects such files for the same reason: an extension given
     /// replacement characters would write them back.
     ///
-    /// Visible to the crate because the editor's own multi-file edits need the
-    /// same answer to the same question: a rename that reaches a file no tab
-    /// holds must read it from wherever the files are, which in a remote session
-    /// is not this machine.
+    /// Visible to the crate because the editor's multi-file edits have the same
+    /// requirement. A rename that affects a file not open in any tab must read it
+    /// from where the files are, which in a remote session is the remote
+    /// machine.
     pub(crate) fn read(&mut self, path: &str) -> Result<String, String> {
         match self {
             Self::Here => std::fs::read_to_string(path).map_err(|error| error.to_string()),
@@ -239,15 +241,15 @@ impl Files<'_> {
         }
     }
 
-    /// Removes a path, recursively only when the caller said so.
+    /// Removes a path, recursively only when the caller requests it.
     fn delete(&mut self, path: &str, recursive: bool) -> Result<(), String> {
         match self {
             Self::Here => {
                 let metadata =
                     std::fs::symlink_metadata(path).map_err(|error| error.to_string())?;
-                // A link is removed as a link. Following one would delete
-                // something the extension was never granted, which is the same
-                // reason a listing reports links as links.
+                // A link is removed as a link. Following it could delete a
+                // target the extension was never granted. Listings report links
+                // as links for the same reason.
                 if metadata.is_dir() && !metadata.is_symlink() {
                     if recursive {
                         std::fs::remove_dir_all(path)
@@ -280,13 +282,13 @@ impl Files<'_> {
         }
     }
 
-    /// What is known about `path` without reading it, in VS Code's `FileStat`
+    /// Metadata for `path` without reading its contents, in VS Code's `FileStat`
     /// shape.
     fn stat(&mut self, path: &str) -> Result<serde_json::Value, String> {
         match self {
             Self::Here => {
-                // `symlink_metadata`, so a link is reported as a link. Following
-                // it here would report on a file that may be somewhere the
+                // Uses `symlink_metadata`, so a link is reported as a link.
+                // Following it could report on a file in a location the
                 // extension was never granted.
                 let metadata =
                     std::fs::symlink_metadata(path).map_err(|error| error.to_string())?;
@@ -296,7 +298,7 @@ impl Files<'_> {
         }
     }
 
-    /// What is directly inside the directory at `path`, as VS Code returns it:
+    /// The direct entries of the directory at `path`, in VS Code's format:
     /// pairs of name and kind.
     fn read_directory(&mut self, path: &str) -> Result<Vec<(String, u32)>, String> {
         match self {
@@ -312,9 +314,9 @@ impl Files<'_> {
                         kind_of(&metadata),
                     ));
                 }
-                // Sorted for the same reason the server sorts: `read_dir` promises
-                // no order, and a list that reshuffles between calls is one
-                // nothing can be compared against.
+                // Sorted for the same reason as on the server: `read_dir` does not
+                // guarantee an order, and results that change order between calls
+                // cannot be compared.
                 listed.sort();
                 Ok(listed)
             }
@@ -333,15 +335,15 @@ impl Files<'_> {
     }
 }
 
-/// What an extension is asking for, in the words a person has to decide about.
+/// A user-facing description of what an extension is requesting.
 ///
-/// `method` sharpens a capability that covers several operations: a stored
-/// decision is described with an empty one, and gets the capability's full
-/// breadth — which is right, because that is what was remembered.
+/// `method` narrows a capability that covers several operations. A stored
+/// decision is described with an empty `method` and gets the capability's full
+/// description, because the stored decision covers the whole capability.
 ///
-/// The capability's own `Debug` names its variant and its bound, which is exactly
-/// the wrong register for a prompt: `ReadFile { scope: Workspace }` is a Rust
-/// value, not a question.
+/// The capability's `Debug` output shows its variant and bound, which is not
+/// suitable for a prompt: `ReadFile { scope: Workspace }` is a Rust value, not a
+/// question.
 fn describe(capability: &deco_ext::capability::Capability, method: &str) -> String {
     use deco_ext::capability::{Capability, PathScope};
     let where_ = |scope: &PathScope| match scope {
@@ -352,10 +354,10 @@ fn describe(capability: &deco_ext::capability::Capability, method: &str) -> Stri
     };
     match capability {
         Capability::ReadFile { scope } => format!("read files {}", where_(scope)),
-        // The method, not just the capability: `WriteFile` covers writing,
-        // creating, deleting and moving, and "change files under X" is a fair
-        // description of a save and an understatement of a delete. What a person
-        // is being asked to allow is the thing that is about to happen.
+        // Use the method, not only the capability. `WriteFile` covers writing,
+        // creating, deleting and moving. "change files under X" describes a save
+        // accurately but understates a delete. The prompt should describe the
+        // operation that is about to happen.
         Capability::WriteFile { scope } => match method {
             "fs.delete" => format!("delete files {}", where_(scope)),
             "fs.rename" => format!("move files {}", where_(scope)),
@@ -369,18 +371,18 @@ fn describe(capability: &deco_ext::capability::Capability, method: &str) -> Stri
         Capability::Clipboard => "use the clipboard".to_owned(),
         Capability::Secrets => "store and read secrets".to_owned(),
         Capability::OpenExternal => "open a link in your browser".to_owned(),
-        // Unreachable while every variant is listed, and a description that names
-        // the method beats one that says nothing if a variant is ever added.
+        // Unreachable while every variant is listed. If a variant is added, a
+        // description that names the method is better than none.
         #[allow(unreachable_patterns)]
         _ => format!("do {method}"),
     }
 }
 
-/// What kind of thing something is, in VS Code's numbering.
+/// The file type in VS Code's numbering.
 ///
-/// `File = 1`, `Directory = 2`, and `SymbolicLink = 64` added to whichever it
-/// points at. The same numbering the remote server uses, and for the same reason:
-/// the API these reach is VS Code's.
+/// `File = 1`, `Directory = 2`, and `SymbolicLink = 64` added to the type of
+/// the link target. The remote server uses the same numbering, for the same
+/// reason: these values are passed to VS Code's API.
 fn kind_of(metadata: &std::fs::Metadata) -> u32 {
     let mut kind = if metadata.is_dir() { 2 } else { 1 };
     if metadata.is_symlink() {
@@ -391,8 +393,8 @@ fn kind_of(metadata: &std::fs::Metadata) -> u32 {
 
 /// A local file's stat in the shape VS Code's `FileStat` has.
 ///
-/// Milliseconds since the epoch, which is what JavaScript counts in. A time the
-/// platform will not give up is 0 rather than a guess.
+/// Times are milliseconds since the epoch, the unit JavaScript uses. A time the
+/// platform does not provide is reported as 0.
 fn stat_of(metadata: &std::fs::Metadata) -> serde_json::Value {
     let millis = |time: std::io::Result<std::time::SystemTime>| -> u64 {
         time.ok()
@@ -408,71 +410,68 @@ fn stat_of(metadata: &std::fs::Metadata) -> serde_json::Value {
     })
 }
 
-/// What one poll has to say, collected rather than written as it goes.
+/// Messages produced by one poll, collected and applied afterwards.
 ///
-/// One struct because the two travel together everywhere and a function taking
-/// both plus everything else has more arguments than anyone can read.
+/// One struct because the two lists are always passed together, and passing
+/// them separately would make function signatures too long.
 #[derive(Default)]
 struct Said {
-    /// For deco's own record of what extensions did.
+    /// For deco's own record of extension activity.
     notes: Vec<String>,
-    /// For the status bar; the last one wins.
+    /// For the status bar; the last one is shown.
     statuses: Vec<String>,
 }
 
 /// A request held while the user is asked about it.
 struct Asking {
-    /// Which extension asked.
+    /// The extension that made the request.
     extension: String,
-    /// The request itself, to answer once there is a decision.
+    /// The request, answered once there is a decision.
     request: deco_ext::protocol::Request,
-    /// What the broker wants a decision about.
+    /// The capability the broker needs a decision about.
     capability: deco_ext::capability::Capability,
 }
 
 pub struct Hosts {
     catalogue: Catalogue,
     running: BTreeMap<String, Running>,
-    /// The host's own output and deco's refusals, newest last.
+    /// The host's output and deco's refusals, newest last.
     log: VecDeque<String>,
-    /// Everything worth telling the user once, in the words they will read.
+    /// Messages to show the user once.
     problems: Vec<String>,
     bootstrap: Option<PathBuf>,
     node: Option<PathBuf>,
-    /// Where decisions are written down, and what is written there.
+    /// The file where decisions are stored.
     ///
-    /// `None` means this session remembers nothing past its own end — which is
-    /// what a test wants, and what deco does when it cannot work out where its
-    /// configuration lives.
+    /// `None` means decisions are not kept after this session ends. Tests use
+    /// this, and deco uses it when it cannot determine its configuration
+    /// directory.
     permissions_file: Option<PathBuf>,
     permissions: deco_ext::permissions::Permissions,
-    /// What the last-offered list of decisions stood for, in the order it was
-    /// offered.
+    /// The decisions in the most recently offered list, in list order.
     ///
-    /// The choice carries an index into this rather than a spelling of the
-    /// extension and capability: encoding them into a string would mean parsing
-    /// one back out, and a capability's `Debug` is not a format anything should
-    /// have to read.
+    /// The selected entry is an index into this list rather than a string
+    /// encoding of the extension and capability. A string would have to be
+    /// parsed back, and a capability's `Debug` output is not meant to be parsed.
     decisions: Vec<(String, deco_ext::capability::Capability)>,
-    /// The one permission question that is open, if any.
+    /// The open permission question, if any.
     ///
-    /// One at a time, deliberately: two prompts cannot be on screen at once, and
-    /// a queue of them would mean answering a question about an extension whose
-    /// request has long since been abandoned. A second extension asking while
-    /// one is open is refused with that as the reason.
+    /// Only one at a time, intentionally. Two prompts cannot be on screen at
+    /// once, and a queue would ask about requests the extension may have
+    /// abandoned long ago. A request from a second extension while one is open
+    /// is refused with that reason.
     asking: Option<Asking>,
-    /// The workspace folders a `workspace`-scoped capability stands for.
+    /// The workspace folders that a `workspace`-scoped capability refers to.
     ///
-    /// Without them a grant of `readFile: workspace` covers no concrete path at
-    /// all, because a scope resolves to the roots it is given and an empty list
-    /// contains nothing. In a remote session these are the *far end's*
-    /// directories, which is what makes an extension's path requests mean the
-    /// same thing as the session's.
+    /// Without them a grant of `readFile: workspace` covers no path, because a
+    /// scope resolves to the roots it is given and an empty list contains
+    /// nothing. In a remote session these are the *remote* directories, so an
+    /// extension's paths refer to the same locations as the session's.
     workspace_roots: Vec<PathBuf>,
 }
 
 impl Hosts {
-    /// Takes a catalogue and finds what starting one of its extensions needs.
+    /// Takes a catalogue and locates what is needed to start its extensions.
     pub fn new(catalogue: Catalogue) -> Self {
         Self::rooted(catalogue, Vec::new())
     }
@@ -495,11 +494,11 @@ impl Hosts {
         }
     }
 
-    /// Remembers decisions in `path`, and starts from what is already there.
+    /// Stores decisions in `path`, starting from the decisions already there.
     ///
-    /// A file that cannot be read is reported and treated as empty: refusing to
-    /// start an editor because a permissions file is damaged would be the worse
-    /// failure, and asking again is a recoverable one.
+    /// A file that cannot be read is reported and treated as empty. Refusing to
+    /// start the editor because of a damaged permissions file would be worse,
+    /// and asking again can be recovered from.
     pub fn remembering(mut self, path: PathBuf) -> Self {
         match deco_ext::permissions::Permissions::load(&path) {
             Ok(permissions) => self.permissions = permissions,
@@ -521,8 +520,8 @@ impl Hosts {
         &self.catalogue
     }
 
-    /// Problems found while looking, for the frontend to show as it shows the
-    /// settings ones.
+    /// Problems found during discovery, for the frontend to show in the same way
+    /// as settings problems.
     pub fn problems(&self) -> &[String] {
         &self.problems
     }
@@ -539,9 +538,9 @@ impl Hosts {
 
     /// Runs `command` if an extension contributes it.
     ///
-    /// `false` when nothing here owns the identifier, which leaves the caller to
-    /// report it as unknown — a mistyped keybinding must not be swallowed by the
-    /// extension machinery.
+    /// Returns `false` when no extension owns the identifier, so the caller can
+    /// report it as unknown. A mistyped keybinding must not be ignored by the
+    /// extension code.
     pub fn run_command(&mut self, session: &mut Session, command: &str) -> bool {
         let Some(owner) = self.catalogue.owner_of(command) else {
             return false;
@@ -553,8 +552,8 @@ impl Hosts {
             if running.state == State::Active {
                 Self::execute(running, session, command, &label);
             } else {
-                // Still starting. Remembered rather than refused: the user asked
-                // once and should not have to ask again when it is ready.
+                // Still starting. The command is queued rather than refused, so
+                // the user does not have to invoke it again when the host is ready.
                 running.queued.push(command.to_owned());
                 session.status = Some(format!("{label} is still starting…"));
             }
@@ -583,8 +582,8 @@ impl Hosts {
             .by_id(id)
             .ok_or_else(|| format!("{id} is not installed"))?;
         if extension.main.is_none() {
-            // A theme reaching here would mean the catalogue and this disagree
-            // about what can run, which is worth saying rather than papering over.
+            // A theme reaching this point means the catalogue and this module
+            // disagree about what can run. Report it instead of hiding it.
             return Err(format!("{} has no code to run", extension.label));
         }
         let bootstrap = self.bootstrap.clone().ok_or_else(|| {
@@ -594,8 +593,8 @@ impl Hosts {
         })?;
 
         let policy = sandbox::policy(&session.settings);
-        // In a container the image supplies Node, so a machine without one can
-        // still run extensions — which is the point of pinning the runtime.
+        // In a container the image supplies Node, so a machine without Node can
+        // still run extensions. This is the purpose of pinning the runtime.
         let node = match policy {
             Sandbox::Container => self.node.clone().unwrap_or_else(|| PathBuf::from("node")),
             Sandbox::Process => self.node.clone().ok_or_else(|| {
@@ -615,9 +614,9 @@ impl Hosts {
         let config = HostConfig {
             node,
             bootstrap,
-            // The host's own code and this one extension. Not the workspace: an
-            // extension reads files through the broker, so it needs no view of
-            // the project — and not the other extensions either.
+            // The host's code and this extension only. The workspace is not
+            // included, because an extension reads files through the broker.
+            // Other extensions are not included either.
             readable_roots: vec![host_root, extension.root.clone()],
             cwd: extension.root.clone(),
             limits: HostLimits::default(),
@@ -643,16 +642,16 @@ impl Hosts {
             Sandbox::Container => READY_TIMEOUT_CONTAINER,
             Sandbox::Process => READY_TIMEOUT,
         };
-        // The user's setting, not a constant: `prompt` asks, `allow` serves a
-        // declared capability without asking, and `deny` refuses without asking.
+        // Read from the user's setting: `prompt` asks, `allow` grants a declared
+        // capability without asking, and `deny` refuses without asking.
         let policy = session
             .settings
             .get(deco_ext::capability::DEFAULT_POLICY_KEY)
             .and_then(|value| value.as_str())
             .and_then(DefaultPolicy::parse)
             .unwrap_or(DefaultPolicy::Prompt);
-        // What was decided before, if it was decided about this same version. An
-        // update deliberately means asking again — see `deco_ext::permissions`.
+        // Earlier decisions, if they were made for this version. After an update
+        // the user is intentionally asked again; see `deco_ext::permissions`.
         let version = self
             .catalogue
             .by_id(id)
@@ -664,8 +663,8 @@ impl Hosts {
             .cloned()
             .unwrap_or_default();
         if let Some(older) = self.permissions.stale_for(id, &version) {
-            // Said out loud, because "deco forgot my answer" and "this extension
-            // changed since you answered" look identical from a prompt.
+            // Reported explicitly, because from the prompt alone "deco lost my
+            // answer" and "this extension changed since then" look the same.
             self.note(&format!(
                 "{id} was decided about at {older} and is now {version}, so its permissions are \
                  being asked again"
@@ -697,11 +696,11 @@ impl Hosts {
         Ok(())
     }
 
-    /// What an extension's manifest declared it wants.
+    /// The capabilities declared in an extension's manifest.
     ///
-    /// Read from the manifest again rather than kept in the catalogue: this is the
-    /// ceiling the broker enforces, and the fewer copies of it there are the
-    /// fewer places it can be wrong.
+    /// Read from the manifest again rather than stored in the catalogue. This is
+    /// the upper limit the broker enforces, and fewer copies mean fewer places
+    /// where it can be wrong.
     fn declared(&self, id: &str) -> Vec<deco_ext::Capability> {
         let Some(extension) = self.catalogue.by_id(id) else {
             return Vec::new();
@@ -718,8 +717,7 @@ impl Hosts {
     fn execute(running: &mut Running, session: &mut Session, command: &str, label: &str) {
         if !running.registered.contains(command) {
             // Contributed in the manifest but never registered in code. VS Code
-            // reports this as "command not found"; saying which extension was
-            // asked is more use than that.
+            // reports "command not found"; naming the extension is more useful.
             session.status = Some(format!("{label} did not register `{command}`"));
             return;
         }
@@ -735,8 +733,8 @@ impl Hosts {
 
     /// Advances every host: drains what arrived, and runs what was waiting.
     ///
-    /// Called from the event loop, like the language-server client, because a host
-    /// that started a minute ago is ready now and nothing else would notice.
+    /// Called from the event loop, like the language-server client, because
+    /// nothing else would detect that a host started earlier has become ready.
     pub fn poll(&mut self, session: &mut Session, files: &mut Files<'_>, now_ms: u64) {
         let ids: Vec<String> = self.running.keys().cloned().collect();
         for id in ids {
@@ -744,13 +742,13 @@ impl Hosts {
         }
     }
 
-    /// `now_ms` is the editor's own clock, for the undo step an applied edit
-    /// records — the same value a keystroke would have carried.
+    /// `now_ms` is the editor's clock, recorded in the undo step of an applied
+    /// edit. It is the same value a keystroke would use.
     fn poll_one(&mut self, id: &str, session: &mut Session, files: &mut Files<'_>, now_ms: u64) {
         let mut reported = Said::default();
         let mut dead = false;
-        // Collected rather than stored directly, because the host being drained is
-        // borrowed out of `self` for the length of this loop.
+        // Collected rather than stored directly, because the host being drained
+        // is borrowed from `self` for the duration of this loop.
         let mut pending: Option<Asking> = None;
 
         let Some(running) = self.running.get_mut(id) else {
@@ -762,8 +760,8 @@ impl Hosts {
             .map(|e| e.label.clone())
             .unwrap_or_else(|| id.to_owned());
 
-        // A budget rather than "everything available": an extension that logs in a
-        // loop must not be able to hold the event loop open.
+        // A fixed budget rather than draining everything, so an extension that
+        // logs in a loop cannot block the event loop.
         for _ in 0..64 {
             match running.host.poll() {
                 Some(HostEvent::Message(Message::Request(request))) => {
@@ -780,14 +778,14 @@ impl Hosts {
                             ));
                             response
                         }
-                        // Asking the user is the one thing deco cannot do yet, and
-                        // a prompt that does not exist must not become a silent
-                        // yes. Refused, and said out loud so the reason is not a
-                        // mystery when the extension misbehaves.
+                        // deco cannot ask the user yet, and a missing prompt must
+                        // not be treated as consent. The request is refused and
+                        // the reason is logged, so the extension's behaviour can
+                        // be explained.
                         // Held rather than answered: the extension is waiting on
-                        // a promise, so there is nothing to send until there is a
-                        // decision. Its host stays alive and its other requests
-                        // keep being served.
+                        // a promise, so nothing is sent until there is a
+                        // decision. Its host keeps running and its other requests
+                        // are still served.
                         Dispatch::Consent { capability } if pending.is_none() => {
                             pending = Some(Asking {
                                 extension: id.to_owned(),
@@ -797,9 +795,9 @@ impl Hosts {
                             continue;
                         }
                         // A second question while one is open. Refused rather than
-                        // queued, and the reason names the situation: a queue would
-                        // mean asking about a request the extension abandoned long
-                        // before anyone read the prompt.
+                        // queued, with a reason that describes the situation. A
+                        // queue could ask about a request the extension abandoned
+                        // long before the prompt was shown.
                         Dispatch::Consent { capability } => {
                             reported.notes.push(format!(
                                 "{label}: {} needs a decision about {capability:?}, and another \
@@ -843,10 +841,10 @@ impl Hosts {
                             running.state = State::Active;
                         }
                         (Some("$/executeCommand"), None) => {
-                            // The extension's own return value. Shown when it is a
-                            // string, because that is the only shape a status bar
-                            // can honestly render; anything else is the caller's
-                            // business and there is no caller yet.
+                            // The extension's return value. Shown only when it is
+                            // a string, because the status bar can only display
+                            // text. Other values would be for the caller, and
+                            // there is no caller yet.
                             let said = response
                                 .result
                                 .as_ref()
@@ -891,8 +889,8 @@ impl Hosts {
             }
         }
 
-        // Ready, so tell it what to load. Separate from the `$/ready` arm so that
-        // one iteration of the loop does one thing.
+        // Ready, so send the extension to load. Separate from the `$/ready` arm
+        // so that each loop iteration does one thing.
         if running.state == State::Activating && running.asked.is_empty() {
             let Some(extension) = self.catalogue.by_id(id) else {
                 return;
@@ -938,8 +936,8 @@ impl Hosts {
         }
 
         // Asked here rather than inside the drain loop, where the host is
-        // borrowed. A question raised by a host that has since died is dropped:
-        // there is nothing left to answer.
+        // borrowed. A question from a host that has since exited is dropped,
+        // because there is no request left to answer.
         if let (Some(asking), false) = (pending, dead) {
             let what = format!(
                 "{label} wants to {}",
@@ -954,9 +952,9 @@ impl Hosts {
 
     /// Offers every decision made in this session, newest extension first.
     ///
-    /// The point is a mistaken answer. A `deny` chosen in a hurry otherwise means
-    /// that extension quietly fails for the rest of the session, with nothing to
-    /// undo it and no hint that a decision is the reason.
+    /// This allows a mistaken answer to be undone. Otherwise an accidental `deny`
+    /// makes the extension fail for the rest of the session, with no way to undo
+    /// it and no indication that a decision is the cause.
     pub fn offer_permissions(&mut self, session: &mut Session) -> bool {
         self.decisions.clear();
         let mut entries = Vec::new();
@@ -980,10 +978,10 @@ impl Hosts {
                 self.decisions.push((id.clone(), capability.clone()));
             }
         }
-        // The message is put on the status bar here rather than returned for
-        // somebody to forward: this is invoked from a palette entry, whose caller
-        // has no outcome to hand onward, so a returned message would be dropped
-        // and the command would do nothing visible at all.
+        // The message is set on the status bar here rather than returned. This is
+        // invoked from a palette entry whose caller does not forward an outcome,
+        // so a returned message would be dropped and the command would have no
+        // visible effect.
         match session.offer_extension_permissions(entries) {
             deco_editor::commands::Outcome::Handled => true,
             deco_editor::commands::Outcome::Message(said) => {
@@ -994,7 +992,7 @@ impl Hosts {
         }
     }
 
-    /// Takes back the decision the user picked out of that list.
+    /// Revokes the decision the user selected from that list.
     pub fn forget_permission(&mut self, session: &mut Session, chosen: &str) {
         let Some((id, capability)) = chosen
             .parse::<usize>()
@@ -1015,8 +1013,9 @@ impl Hosts {
         };
         running.broker.forget(&capability);
         self.write_down(&id);
-        // Said in the terms the decision was made in, and what happens next: the
-        // extension is not re-asked now, because nothing is asking now.
+        // Describe the decision in the same terms as the original prompt, and
+        // what happens next. The user is not asked again now, because no request
+        // is pending.
         session.status = Some(format!(
             "{label} will ask again about {}",
             describe(&capability, "")
@@ -1027,12 +1026,11 @@ impl Hosts {
         ));
     }
 
-    /// Writes down what is now decided about `id`, if anything is being written
-    /// down at all.
+    /// Saves the current decisions for `id`, if decisions are being saved.
     ///
-    /// After every change rather than at shutdown: being killed is an ordinary way
-    /// for an editor to end, and a decision that only survives a clean exit is one
-    /// the user gets asked about again for no reason they can see.
+    /// Saved after every change rather than at shutdown. An editor is often
+    /// killed rather than exited cleanly, and a decision saved only on a clean
+    /// exit would be asked again without a visible reason.
     fn write_down(&mut self, id: &str) {
         let Some(path) = self.permissions_file.clone() else {
             return;
@@ -1048,8 +1046,8 @@ impl Hosts {
             .unwrap_or_default();
         self.permissions.set(id, &version, grants);
         if let Err(error) = self.permissions.save(&path) {
-            // Reported rather than swallowed: the decision still holds for this
-            // session, and what is lost is only that it will be asked again.
+            // Reported rather than ignored. The decision still applies for this
+            // session; it will only be asked again in a later session.
             self.note(&format!(
                 "extension permissions: {error}; this session's answers still hold"
             ));
@@ -1058,9 +1056,9 @@ impl Hosts {
 
     /// Applies the user's answer to the request that was waiting on it.
     ///
-    /// The decision is remembered on that extension's broker, so a second request
-    /// covered by the same grant is not asked about again — and a refusal is
-    /// remembered too, which is what stops an extension asking in a loop.
+    /// The decision is stored in that extension's broker, so a later request
+    /// covered by the same grant is not asked again. A refusal is also stored,
+    /// which prevents an extension from asking in a loop.
     pub fn answer_consent(
         &mut self,
         session: &mut Session,
@@ -1077,7 +1075,7 @@ impl Hosts {
             .map(|entry| entry.label.clone())
             .unwrap_or_else(|| asking.extension.clone());
         let Some(running) = self.running.get_mut(&asking.extension) else {
-            // The host died while the question was on screen.
+            // The host exited while the question was on screen.
             self.note(&format!("{label} was gone by the time you answered"));
             return;
         };
@@ -1095,10 +1093,9 @@ impl Hosts {
         };
 
         let mut reported = Said::default();
-        // Re-dispatched rather than served directly: the answer is a grant, and
-        // whether the grant covers this request is the broker's decision to make
-        // a second time. Anything else would let a "yes" to one path serve a
-        // request for another.
+        // Dispatched again rather than served directly. The answer is a grant,
+        // and the broker checks again whether the grant covers this request.
+        // Otherwise a "yes" for one path could serve a request for another.
         let reply = match dispatch(&running.broker, &asking.request) {
             Dispatch::Allowed => Self::mediated(
                 running,
@@ -1110,8 +1107,8 @@ impl Hosts {
                 now_ms,
             ),
             Dispatch::Refused(response) => response,
-            // Answered and still asking: nothing sensible remains but to refuse,
-            // and it would mean the grant did not cover what was asked.
+            // Still needs consent after the answer, which means the grant does
+            // not cover the request. Refuse it.
             Dispatch::Consent { .. } => Response::err(
                 asking.request.id,
                 ErrorCode::PermissionDenied,
@@ -1127,7 +1124,7 @@ impl Hosts {
         self.finish(&asking.extension, dead, reported, session);
     }
 
-    /// Records what one poll produced, and drops the host if it is gone.
+    /// Records the output of one poll, and drops the host if it has exited.
     fn finish(&mut self, id: &str, dead: bool, said: Said, session: &mut Session) {
         for note in said.notes {
             self.note(&note);
@@ -1156,10 +1153,10 @@ impl Hosts {
 
     /// Handles a request the broker allowed.
     ///
-    /// Only the mediated surface is implemented: registering a command, saying
-    /// something, and logging. Everything else is refused *by name* rather than
-    /// answered with a plausible empty value — an extension told "no" can cope,
-    /// while one told "here is your empty list of open editors" cannot.
+    /// Only the mediated surface is implemented: registering a command, showing a
+    /// message, and logging. Every other method is refused *by name* rather than
+    /// answered with an empty value. An extension can handle a refusal, but not
+    /// an incorrect empty result such as an empty list of open editors.
     fn mediated(
         running: &mut Running,
         request: &deco_ext::protocol::Request,
@@ -1197,15 +1194,14 @@ impl Hosts {
                 if !message.is_empty() {
                     statuses.push(format!("{label}: {message}"));
                 }
-                // The buttons an extension offered are not answered: there is no
-                // way to press one yet, and `undefined` is what VS Code returns
-                // when a message is dismissed, so this is a shape extensions
-                // already handle.
+                // Message buttons are not supported yet, so the response is
+                // `undefined`. VS Code returns the same value when a message is
+                // dismissed, so extensions already handle it.
                 Response::ok(request.id, serde_json::Value::Null)
             }
-            // Reached only once the broker has allowed it, which is what makes
-            // the path safe to act on: the check is that it falls inside a scope
-            // the manifest declared and the user did not decline.
+            // Reached only after the broker has allowed the request. The broker
+            // checks that the path is inside a scope the manifest declared and
+            // the user did not decline, so the path is safe to use.
             "fs.readFile" => {
                 let path = text("path");
                 if path.is_empty() {
@@ -1217,9 +1213,9 @@ impl Hosts {
                 }
                 match files.read(&path) {
                     Ok(contents) => Response::ok(request.id, serde_json::json!(contents)),
-                    // The operating system's words, not deco's: "no such file" and
-                    // "permission denied" are the two answers an extension can do
-                    // something about, and paraphrasing them loses which it was.
+                    // Pass through the operating system's message. "no such file"
+                    // and "permission denied" are the errors an extension can act
+                    // on, and rewording them would hide which one occurred.
                     Err(reason) => Response::err(
                         request.id,
                         ErrorCode::InvalidParams,
@@ -1236,9 +1232,9 @@ impl Hosts {
                         "a write needs a path",
                     );
                 }
-                // `content` is what the shim sends, and an absent one is an empty
-                // file rather than an error: truncating is a thing an extension
-                // may legitimately mean.
+                // The shim sends `content`. A missing value writes an empty file
+                // rather than returning an error, because an extension may intend
+                // to truncate the file.
                 let contents = text("content");
                 match files.write(&path, &contents) {
                     Ok(()) => Response::ok(request.id, serde_json::Value::Null),
@@ -1277,9 +1273,9 @@ impl Hosts {
                     );
                 }
                 match files.read_directory(&path) {
-                    // Pairs of name and kind, which is exactly what VS Code's
-                    // `readDirectory` resolves to — an extension written for it
-                    // destructures this without knowing deco is underneath.
+                    // Pairs of name and kind, the same result as VS Code's
+                    // `readDirectory`, so extensions written for VS Code can use
+                    // it unchanged.
                     Ok(entries) => Response::ok(
                         request.id,
                         serde_json::json!(entries
@@ -1322,10 +1318,10 @@ impl Hosts {
                     );
                 }
                 let options = &request.params["options"];
-                // deco has no trash. Refused rather than deleted permanently:
-                // an extension that asked for something recoverable and got an
-                // unrecoverable deletion instead is the worst outcome available
-                // here, and it would look like success.
+                // deco has no trash, so the request is refused rather than
+                // performed as a permanent delete. The extension asked for a
+                // recoverable delete, and a permanent one would appear to
+                // succeed.
                 if options["useTrash"].as_bool() == Some(true) {
                     return Response::err(
                         request.id,
@@ -1352,12 +1348,11 @@ impl Hosts {
                         "a move needs a source and a target",
                     );
                 }
-                // The broker checked the *target*, because that is the one
-                // capability a request can carry. The source is a write too —
-                // moving a file out of a directory changes that directory — so it
-                // is checked here, and has to be already covered: a second
-                // question cannot be asked while this request is the one being
-                // held for the first.
+                // The broker checked the *target*, because a request carries
+                // only one capability. The source is also written, because moving
+                // a file out of a directory changes that directory. It is checked
+                // here and must already be granted: a second question cannot be
+                // asked while this request is held for the first.
                 let wanted = deco_ext::capability::Capability::WriteFile {
                     scope: deco_ext::capability::PathScope::Subtree {
                         path: PathBuf::from(&source),
@@ -1383,8 +1378,8 @@ impl Hosts {
                     ),
                 }
             }
-            // An edit through the editor rather than past it. The broker has
-            // already checked it as a write, because that is what it is.
+            // An edit applied through the editor rather than directly to the
+            // file. The broker has already checked it as a write.
             "workspace.applyEdit" => {
                 let path = text("path");
                 if path.is_empty() {
@@ -1396,15 +1391,14 @@ impl Hosts {
                 }
                 let edits = deco_lsp::TextEdit::list_from_json(&request.params["edits"]);
                 if edits.is_empty() {
-                    // Nothing to do is a success. An extension that computed no
-                    // changes has not failed, and saying so would make it look
-                    // like it had.
+                    // No edits is a success. An extension that computed no
+                    // changes has not failed.
                     return Response::ok(request.id, serde_json::json!(true));
                 }
-                // The open document first, if this is one. Writing the file
-                // instead would be overwritten by the next save of a buffer that
-                // never learned about the edit — an edit that silently did not
-                // happen.
+                // Apply to the open document first, if the path is open. Writing
+                // the file instead would be overwritten by the next save of the
+                // buffer, which does not contain the edit, and the edit would be
+                // lost without an error.
                 if let Some(applied) = session.apply_edits_to_path(Path::new(&path), &edits, now_ms)
                 {
                     return match applied {
@@ -1419,9 +1413,9 @@ impl Hosts {
                         ),
                     };
                 }
-                // Not open, so the file itself is the document. Read, apply, write
-                // — through the same `Files`, so a remote session edits the file
-                // on the machine holding it.
+                // Not open, so edit the file directly: read, apply, write. All
+                // three use the same `Files`, so a remote session edits the file
+                // on the remote machine.
                 let edited = files.read(&path).and_then(|text| {
                     let mut buffer = deco_core::buffer::Buffer::from_text(&text);
                     let changes: Vec<deco_core::Change> = edits
@@ -1440,8 +1434,8 @@ impl Hosts {
                     if changes.is_empty() {
                         return Ok(None);
                     }
-                    // The same refusal the editor makes: overlapping edits have no
-                    // defined result, and guessing would corrupt the file quietly.
+                    // Same rule as the editor: overlapping edits have no defined
+                    // result, and guessing could corrupt the file without an error.
                     let transaction = deco_core::Transaction::new(changes)
                         .map_err(|_| "the edits overlap".to_owned())?;
                     buffer.apply(&transaction);
@@ -1474,9 +1468,9 @@ impl Hosts {
                 }
                 Response::ok(request.id, serde_json::Value::Null)
             }
-            // `MethodNotFound` rather than a new code: from the extension's side
-            // that is exactly what it is — deco does not answer this method — and
-            // an error an extension already handles beats a novel one.
+            // `MethodNotFound` rather than a new code. For the extension, deco
+            // does not implement this method, and extensions already handle this
+            // error.
             other => Response::err(
                 request.id,
                 ErrorCode::MethodNotFound,
@@ -1493,7 +1487,7 @@ impl Hosts {
         self.log.push_back(line.to_owned());
     }
 
-    /// Stops every host, politely first.
+    /// Stops every host, requesting a graceful shutdown first.
     pub fn shutdown(&mut self) {
         for (_, mut running) in std::mem::take(&mut self.running) {
             running.host.shutdown();
@@ -1509,9 +1503,9 @@ impl Drop for Hosts {
 
 /// One line saying how extensions would be run, for `--print-config`.
 ///
-/// The whole point of refusing to degrade silently is that the answer to "which
-/// sandbox am I getting" is always available, and a configuration dump is where
-/// someone looks for it.
+/// deco does not fall back to a weaker sandbox without notice, so the active
+/// sandbox must always be discoverable. The configuration dump is where users
+/// look for it.
 pub fn sandbox_summary(settings: &deco_config::Settings) -> String {
     match sandbox::policy(settings) {
         Sandbox::Process => "process (no container; asked for explicitly)".to_owned(),
@@ -1522,9 +1516,8 @@ pub fn sandbox_summary(settings: &deco_config::Settings) -> String {
                     container.runtime.display(),
                     container.image
                 ),
-                // Worth printing rather than hiding: this is the state in which
-                // extensions will refuse to start, and this is where someone
-                // would look to find out why.
+                // Printed because in this state extensions will not start, and
+                // this output is where users look for the reason.
                 Err(error) => format!("container — unavailable: {error}"),
             }
         }
@@ -1576,7 +1569,7 @@ mod tests {
   "contributes": { "commands": [{ "command": "acme.doThing", "title": "Do The Thing" }] }
 }"#,
         );
-        // Bookkeeping an extensions directory routinely holds.
+        // Metadata that an extensions directory usually contains.
         std::fs::create_dir_all(root.join(".obsolete")).expect("a directory");
 
         let catalogue = discover(std::slice::from_ref(&root));
@@ -1588,8 +1581,8 @@ mod tests {
 
     #[test]
     fn a_manifest_that_does_not_parse_is_reported_rather_than_ignored() {
-        // Silence here means an extension that is installed and absent, with the
-        // reason nowhere.
+        // Without a report, the installed extension would appear to be missing
+        // with no visible reason.
         let root = temporary("broken");
         install(&root, "acme.broken", "{ this is not json");
         let catalogue = discover(std::slice::from_ref(&root));
@@ -1616,8 +1609,8 @@ mod tests {
 
     #[test]
     fn the_palette_shows_the_extensions_name_beside_its_command() {
-        // Which extension a command comes from is what the title does not say and
-        // what decides whether you want it.
+        // The title does not show which extension a command belongs to, and that
+        // is often what the user needs to choose.
         let root = temporary("rows");
         install(
             &root,
@@ -1663,8 +1656,8 @@ mod tests {
 
     #[test]
     fn a_command_nothing_contributes_is_not_this_modules_business() {
-        // The caller reports it as unknown, which is what makes a mistyped
-        // keybinding legible instead of being swallowed here.
+        // The caller reports it as unknown, so a mistyped keybinding is reported
+        // instead of being ignored here.
         let mut hosts = Hosts::empty();
         let mut session = Session::new(
             deco_config::Settings::with_defaults(),
@@ -1691,7 +1684,7 @@ mod tests {
 }"#,
         );
         let mut hosts = Hosts::new(discover(std::slice::from_ref(&root)));
-        // As if deco were installed without its host code.
+        // Simulates a deco installation without its host code.
         hosts.bootstrap = None;
         let mut session = Session::new(
             deco_config::Settings::with_defaults(),
@@ -1699,8 +1692,8 @@ mod tests {
             deco_keymap::binding::Platform::Linux,
         );
 
-        // Owned — so the palette entry is this module's to answer — and refused
-        // with the reason rather than by doing nothing.
+        // The command is owned by an extension, so this module handles it, and
+        // it is refused with a reason rather than ignored.
         assert!(hosts.run_command(&mut session, "acme.doThing"));
         assert_eq!(hosts.started(), 0);
         let said = session.status.expect("a reason");
@@ -1743,8 +1736,9 @@ mod tests {
 
     #[test]
     fn the_bootstrap_is_looked_for_beside_the_binary_and_up_the_tree() {
-        // A checkout runs `target/debug/deco`; an installed tree has it beside the
-        // binary or under `share`. Written as a list so the order is reviewable.
+        // A checkout runs `target/debug/deco`; an installed tree has the host
+        // beside the binary or under `share`. Candidates are a list so the order
+        // is reviewable.
         let exe = if cfg!(windows) {
             PathBuf::from("C:\\src\\deco\\target\\debug\\deco.exe")
         } else {
@@ -1777,8 +1771,8 @@ mod tests {
         );
         assert!(sandbox_summary(&settings).starts_with("process"));
 
-        // The container case depends on what is installed on the machine running
-        // the test, so this asserts the shape of both answers rather than one.
+        // The container result depends on what is installed on the test machine,
+        // so this accepts either possible result.
         let settings = deco_config::Settings::with_defaults();
         let said = sandbox_summary(&settings);
         assert!(

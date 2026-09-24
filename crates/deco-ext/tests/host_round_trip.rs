@@ -1,11 +1,10 @@
-//! One extension, started for real, registering a command.
+//! One extension, started in a real host process, registering a command.
 //!
-//! Everything in `deco-ext`'s unit tests drives the connection over a `Cursor` or a
-//! channel, because the Rust suite has to run anywhere — including under Wine, which
-//! has no Node. This is the other half: the whole stack against the real
-//! `extension-host`, proving that the framing, the environment, the sandbox, the
-//! `vscode` shim and the capability seam agree with each other and not merely with
-//! their own tests.
+//! `deco-ext`'s unit tests drive the connection over a `Cursor` or a channel,
+//! because the Rust suite must run anywhere, including under Wine, which has no
+//! Node. These tests run the whole stack against the real `extension-host`. They
+//! check that the framing, the environment, the sandbox, the `vscode` shim and the
+//! capability checks work together, not only in their own unit tests.
 //!
 //! `#[ignore]`d, so `cargo test` stays portable. CI runs it in the job that already
 //! installs Node:
@@ -49,8 +48,8 @@ fn fixture(name: &str) -> PathBuf {
 }"#,
     )
     .expect("a manifest");
-    // Declares nothing, so it may only reach the mediated surface — which is exactly
-    // what registering a command is.
+    // Declares no capabilities, so it can only use the mediated surface, which
+    // includes registering a command.
     std::fs::write(
         dir.join("extension.js"),
         r#"'use strict';
@@ -69,9 +68,9 @@ module.exports = { activate };
 
 /// An absolute path to `node`.
 ///
-/// Absolute because the host's environment is built from nothing and so carries no
-/// `PATH` for the operating system to search — resolving it is the caller's job, and
-/// here the caller is this test. `DECO_TEST_NODE` overrides the search.
+/// Absolute because the host's environment is built from scratch and has no `PATH`
+/// for the operating system to search. The caller, here this test, must resolve it.
+/// `DECO_TEST_NODE` overrides the search.
 fn node() -> PathBuf {
     if let Ok(given) = std::env::var("DECO_TEST_NODE") {
         return PathBuf::from(given);
@@ -115,7 +114,7 @@ fn an_extension_activates_and_registers_a_command() {
         host.errors()
     );
 
-    // An extension that declared no capabilities at all.
+    // An extension that declared no capabilities.
     let broker = Broker::new(
         Vec::new(),
         GrantStore::default(),
@@ -127,9 +126,9 @@ fn an_extension_activates_and_registers_a_command() {
         .activate(&extension.to_string_lossy(), "./extension.js")
         .expect("the pipe should take a request");
 
-    // What the extension does on activation reaches deco as a request, and it has to
-    // survive the capability seam to get here — `commands.registerCommand` needs no
-    // declaration, which is the point of the mediated surface.
+    // The extension's calls during activation reach deco as requests and must pass
+    // the capability check. `commands.registerCommand` is part of the mediated
+    // surface, so it needs no declaration.
     let mut registered = false;
     let mut activated = false;
     let deadline = std::time::Instant::now() + Duration::from_secs(20);
@@ -181,10 +180,9 @@ fn an_extension_activates_and_registers_a_command() {
     );
     assert!(activated, "no `$/activated`; stderr:\n{}", host.errors());
 
-    // And now the other direction, which is what a palette entry will need:
-    // deco calling back a command the extension registered, and getting the
-    // callback's own return value. The host has been able to do this since the
-    // `vscode` shim was written and nothing had ever asked it to.
+    // The reverse direction, which a palette entry needs: deco invokes a command
+    // the extension registered and receives the callback's return value. The
+    // `vscode` shim has supported this since it was written, but no test used it.
     let hello = host
         .execute_command("roundTrip.hello", serde_json::json!([]))
         .expect("a request");
@@ -215,9 +213,8 @@ fn an_extension_activates_and_registers_a_command() {
                     );
                     said = response.result;
                 } else if response.id == unknown {
-                    // A command that is not registered is an error reply, not a
-                    // dead connection: deco asking for something the host does
-                    // not have must cost one message.
+                    // A command that is not registered gets an error reply and
+                    // does not break the connection.
                     refused = Some(
                         response
                             .error
@@ -251,9 +248,10 @@ fn an_extension_activates_and_registers_a_command() {
 #[test]
 #[ignore = "needs node; run with --ignored in the extension-host CI job"]
 fn the_host_starts_with_nothing_but_the_two_variables_it_is_given() {
-    // The environment is built from nothing rather than filtered from the parent's, and
-    // this is the test that it is true of the running process and not only of the spec.
-    // An extension that could read `$GITHUB_TOKEN` would make every other guard moot.
+    // The environment is built from scratch instead of filtered from the parent's.
+    // This test checks that this holds for the running process, not only for the
+    // spec. An extension that could read `$GITHUB_TOKEN` would defeat the other
+    // protections.
     let root = repo_root();
     let extension = fixture("environment");
     std::fs::write(
@@ -282,7 +280,7 @@ module.exports = { activate };
         allow_code_generation: false,
     };
     let mut spec = build_spec(&config, "test.environment");
-    // Something a real parent process would have, to prove it is not inherited.
+    // A variable a real parent process could have, to check it is not inherited.
     std::env::set_var("DECO_TEST_SECRET_TOKEN_SHOULD_NOT_LEAK", "hunter2");
     spec.env.remove("NOTHING");
 
@@ -323,8 +321,8 @@ module.exports = { activate };
 
     let leaked = reported.expect("the extension should have reported");
     let names: Vec<&str> = leaked.split(',').filter(|n| !n.is_empty()).collect();
-    // Windows needs `SystemRoot` to start Node at all, which `build_spec` adds
-    // deliberately; nothing else belongs here.
+    // Windows needs `SystemRoot` to start Node, so `build_spec` adds it. No other
+    // variable is allowed.
     let allowed: BTreeMap<&str, ()> = [("SystemRoot", ())].into_iter().collect();
     let unexpected: Vec<&&str> = names
         .iter()
@@ -339,13 +337,13 @@ module.exports = { activate };
     let _ = std::fs::remove_dir_all(&extension);
 }
 
-/// The extension used by the container test: it reports the environment it can
-/// see through the one call that needs no capability at all.
+/// The extension used by the container test. It reports the environment it sees
+/// through a call that needs no capability.
 ///
-/// Every name, including deco's own two — unlike the process-mode fixture, which
-/// filters `DECO_*` out. In a container the whole environment is built by hand,
-/// so the exact set is knowable, and a `DECO_`-prefixed variable that the parent
-/// happened to have would otherwise hide inside the filter.
+/// It reports every name, including deco's own two, unlike the process-mode
+/// fixture, which filters out `DECO_*`. In a container the whole environment is
+/// built explicitly, so the exact set is known. A filter would hide a
+/// `DECO_`-prefixed variable inherited from the parent.
 fn reporting_fixture(name: &str) -> PathBuf {
     let dir = fixture(name);
     std::fs::write(
@@ -366,23 +364,22 @@ module.exports = { activate };
 #[test]
 #[ignore = "needs a container runtime; run through `cargo xtask host-test`"]
 fn a_container_host_activates_an_extension_and_hands_it_no_environment() {
-    // The other two tests prove the stack against a borrowed `node`. This one
-    // proves it against the runtime deco actually intends to use: the image named
-    // by `DEFAULT_IMAGE`, pulled by digest, with the network severed by the
-    // kernel and nothing writable. If the pinned digest ever stops being a
-    // working Node, this is the test that says so.
+    // The other two tests use the `node` installed on the machine. This one uses
+    // the runtime deco is meant to use: the image named by `DEFAULT_IMAGE`, pulled
+    // by digest, with the network blocked by the kernel and nothing writable. If
+    // the pinned digest stops providing a working Node, this test fails.
     let root = repo_root();
     let extension = reporting_fixture("container");
-    // What a real parent process has and the extension must not see. Set before
-    // spawning, because the point is that it exists on deco's side at the moment
-    // the container starts.
+    // Variables a real parent process could have that the extension must not see.
+    // Set before spawning, so they exist in deco's environment when the container
+    // starts.
     std::env::set_var("DECO_TEST_PARENT_SECRET", "hunter2");
     std::env::set_var("PARENT_SECRET_SHOULD_NOT_LEAK", "hunter2");
 
     let config = HostConfig {
-        // Unused in a container — the image supplies Node — and left at
-        // something obviously wrong on purpose, so a spec that reached for the
-        // machine's own runtime would fail loudly here.
+        // Unused in a container, because the image supplies Node. Set to an
+        // invalid path on purpose, so a spec that used the machine's runtime
+        // would fail here.
         node: PathBuf::from("/nonexistent/node"),
         bootstrap: root.join("extension-host/src/bootstrap.js"),
         readable_roots: vec![root.join("extension-host"), extension.clone()],
@@ -452,9 +449,9 @@ fn a_container_host_activates_an_extension_and_hands_it_no_environment() {
         }
     }
 
-    // Reaching here at all means the whole stack works inside the container:
-    // the mounts, the translated paths, `--permission` with container roots, the
-    // `vscode` shim, and the capability seam.
+    // Reaching this point means the whole stack works inside the container: the
+    // mounts, the translated paths, `--permission` with container roots, the
+    // `vscode` shim, and the capability checks.
     let reported = reported.expect("the extension should have registered its report");
     let names: Vec<&str> = reported
         .split(',')
@@ -462,12 +459,11 @@ fn a_container_host_activates_an_extension_and_hands_it_no_environment() {
         .collect();
 
     // A container's environment is `--env`, plus what the image sets in its own
-    // layers, plus what the runtime adds for itself: Podman sets
-    // `container=podman` where Docker sets nothing, which is why this is a
-    // permitted set rather than an equality. Every name still has to be one deco
-    // has accounted for, so a new one is a failure and not a shrug — what an
-    // equality would buy on top of that is a test that passes on Docker and fails
-    // on Podman, which says nothing about deco.
+    // layers, plus what the runtime adds. Podman sets `container=podman` and
+    // Docker sets nothing, so this checks against a permitted set instead of an
+    // exact match. Every name must still be listed by deco, so a new name fails
+    // the test. An exact match would pass on Docker and fail on Podman, which
+    // would not reflect a problem in deco.
     let mut permitted: Vec<&str> = deco_ext::sandbox::IMAGE_ENVIRONMENT.to_vec();
     permitted.extend(deco_ext::sandbox::RUNTIME_INJECTED);
     permitted.extend(["DECO_EXTENSION_ID", "DECO_HOST_PROTOCOL"]);
@@ -480,13 +476,12 @@ fn a_container_host_activates_an_extension_and_hands_it_no_environment() {
         "the container handed the extension {unaccounted:?}, which deco did not \
          account for; all of it was {names:?}"
     );
-    // And deco's own two did arrive, so the emptiness above cannot be passing for
-    // the wrong reason.
+    // deco's own two variables arrived, so the check above did not pass because
+    // the report was empty.
     assert!(names.contains(&"DECO_EXTENSION_ID"), "{names:?}");
     assert!(names.contains(&"DECO_HOST_PROTOCOL"), "{names:?}");
-    // Implied by the above, but asserted where it can be read: neither of the
-    // parent's variables crossed — not the ordinary one, and not the one whose
-    // name looks like something deco itself would pass.
+    // Implied by the above, but asserted explicitly: neither parent variable
+    // reached the container, including the one with a `DECO_` prefix.
     for secret in ["PARENT_SECRET_SHOULD_NOT_LEAK", "DECO_TEST_PARENT_SECRET"] {
         assert!(
             !names.contains(&secret),

@@ -1,28 +1,27 @@
-//! The capability model that stands between an extension and the machine.
+//! The capability model that controls what an extension can do on the machine.
 //!
 //! # Why this exists
 //!
 //! A VS Code extension is arbitrary JavaScript running in a Node process with
 //! the user's full privileges. It can read `~/.ssh/id_ed25519`, open a socket,
-//! and spawn a shell — and nothing in the extension API makes that visible,
-//! let alone preventable. Installing an extension is trusting its author and
-//! every dependency in its `node_modules` with everything the user can reach.
+//! and spawn a shell. The extension API neither shows nor prevents this.
+//! Installing an extension means trusting its author and every dependency in
+//! its `node_modules` with everything the user can access.
 //!
-//! deco keeps the separate Node process (extensions are JavaScript; there is no
-//! way around that) but removes its ambient authority. The host process is
-//! started with no direct filesystem, network or process access of its own;
-//! every such operation is an RPC to deco, and deco checks it here.
+//! deco still runs extensions in a separate Node process, because extensions
+//! are JavaScript. The host process starts with no direct filesystem, network
+//! or process access. Every such operation is an RPC to deco, and deco checks
+//! it here.
 //!
 //! # The rules
 //!
 //! 1. **Deny by default.** A capability that is not declared in the extension's
-//!    manifest is refused outright and is never offered to the user. Consent
-//!    cannot be manufactured at request time by an extension that did not say
-//!    up front what it wanted.
-//! 2. **Declaration is a ceiling, not a grant.** A declared capability still
-//!    needs a decision — remembered, prompted for, or denied by policy.
+//!    manifest is denied and is never offered to the user. An extension cannot
+//!    obtain consent at request time for a capability it did not declare.
+//! 2. **Declaration is an upper bound, not a grant.** A declared capability
+//!    still needs a decision: remembered, prompted for, or denied by policy.
 //! 3. **Scopes are checked on the resolved path**, after `..` is collapsed, so
-//!    `workspace` access cannot be walked out of.
+//!    a path cannot use `..` to leave the `workspace` scope.
 //!
 //! What this does *not* defend against is documented on [`Broker::check`].
 
@@ -49,8 +48,8 @@ pub enum PathScope {
 
 /// Something an extension may ask deco to do on its behalf.
 ///
-/// Each variant carries its own bound, so a grant is never "network access" but
-/// always "network access to these hosts".
+/// Each variant carries its own bound. For example, a grant is never "network
+/// access" but always "network access to these hosts".
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "capability")]
 pub enum Capability {
@@ -76,8 +75,8 @@ pub enum Capability {
     },
     /// Read the environment variable `name`.
     ///
-    /// The host process starts with a scrubbed environment; this is the only
-    /// way anything from the user's environment reaches an extension.
+    /// The host process starts with a scrubbed environment. This capability is
+    /// the only way a variable from the user's environment reaches an extension.
     Env {
         /// The variable name.
         name: String,
@@ -108,8 +107,8 @@ impl Capability {
 
     /// Whether a grant of `self` covers `request`.
     ///
-    /// Write access implies read access to the same scope, matching how every
-    /// filesystem the user has ever met behaves; nothing else widens.
+    /// Write access implies read access to the same scope, as in ordinary
+    /// filesystems. No other capability implies another.
     pub fn covers(&self, request: &Capability, ctx: &ResolutionContext) -> bool {
         match (self, request) {
             (Capability::ReadFile { scope: granted }, Capability::ReadFile { scope: wanted })
@@ -143,8 +142,8 @@ fn scope_covers(granted: &PathScope, wanted: &PathScope, ctx: &ResolutionContext
         (PathScope::Subtree { path: granted }, PathScope::Subtree { path: wanted }) => {
             is_within(wanted, granted)
         }
-        // A concrete subtree request is satisfied by a broader named scope only
-        // if it actually falls inside one of that scope's roots.
+        // A named scope covers a subtree request only if the subtree is inside
+        // one of that scope's roots.
         (broad, PathScope::Subtree { path: wanted }) => ctx
             .roots_for(broad)
             .iter()
@@ -155,9 +154,9 @@ fn scope_covers(granted: &PathScope, wanted: &PathScope, ctx: &ResolutionContext
 
 /// Hostname matching with a single leading-wildcard form.
 ///
-/// `*.example.com` covers `api.example.com` but deliberately not
-/// `example.com` itself, and never `notexample.com` — a suffix comparison
-/// without the dot check is the classic way this goes wrong.
+/// `*.example.com` covers `api.example.com` but not `example.com` itself, and
+/// not `notexample.com`. The dot check prevents the second case, which a plain
+/// suffix comparison would accept.
 fn host_matches(granted: &str, wanted: &str) -> bool {
     let granted = granted.trim().to_ascii_lowercase();
     let wanted = wanted.trim().to_ascii_lowercase();
@@ -188,8 +187,8 @@ pub fn normalize(path: &Path) -> PathBuf {
 
 /// Whether `path` is `root` or sits inside it, comparing whole components.
 ///
-/// Component-wise comparison is what stops `/workspace-secrets` from passing as
-/// a child of `/workspace`.
+/// Comparing components prevents `/workspace-secrets` from matching as a child
+/// of `/workspace`.
 pub fn is_within(path: &Path, root: &Path) -> bool {
     let path = normalize(path);
     let root = normalize(root);
@@ -208,7 +207,7 @@ pub struct ResolutionContext {
 }
 
 impl ResolutionContext {
-    /// The roots a scope currently stands for.
+    /// The roots a scope currently resolves to.
     pub fn roots_for(&self, scope: &PathScope) -> Vec<PathBuf> {
         match scope {
             PathScope::Workspace => self.workspace_roots.clone(),
@@ -236,16 +235,16 @@ pub enum DefaultPolicy {
     /// Ask the user once, then remember.
     #[default]
     Prompt,
-    /// Refuse without asking. The right setting for shared machines and CI,
-    /// where there is no one at the keyboard to make a judgement.
+    /// Deny without asking. Intended for shared machines and CI, where no user
+    /// is present to answer a prompt.
     Deny,
-    /// Allow anything the manifest declared without asking. Convenient, and a
-    /// deliberate downgrade — declaration is then the only check.
+    /// Allow anything the manifest declared without asking. This weakens the
+    /// model: declaration becomes the only check.
     Allow,
 }
 
-/// The setting that chooses what happens to a declared capability nobody has
-/// decided about yet.
+/// The setting that controls what happens to a declared capability that has no
+/// decision yet.
 pub const DEFAULT_POLICY_KEY: &str = "extensions.permissions.default";
 
 impl DefaultPolicy {
@@ -360,8 +359,7 @@ impl Broker {
 
     /// Forgets a decision, so the next request covered by it asks again.
     ///
-    /// Both lists, because a decision is one answer and remembering it in one
-    /// place while forgetting it in the other would leave the old answer standing.
+    /// Removes the capability from both lists, so no earlier answer remains.
     pub fn forget(&mut self, capability: &Capability) {
         self.grants.allowed.retain(|c| c != capability);
         self.grants.denied.retain(|c| c != capability);
@@ -375,11 +373,11 @@ impl Broker {
     /// points outside it will pass this check, so callers that touch the
     /// filesystem must re-verify with the resolved real path
     /// ([`Broker::check_resolved_path`] does this) before opening anything.
-    /// This check also says nothing about how much CPU, memory or time the
-    /// extension consumes; the host process caps those separately.
+    /// This check also does not limit how much CPU, memory or time the
+    /// extension consumes. The host process limits those separately.
     pub fn check(&self, request: &Capability) -> CheckResult {
-        // Deny first: an explicit refusal outranks everything, including a
-        // broader allow granted earlier.
+        // Check denials first. An explicit denial takes precedence over
+        // everything, including a broader allow granted earlier.
         if self
             .grants
             .denied
@@ -391,8 +389,8 @@ impl Broker {
             };
         }
 
-        // Declaration is the ceiling. Checked before consulting grants so that
-        // a stale grant for a capability the extension has since dropped from
+        // Declaration is the upper bound. It is checked before grants, so a
+        // stale grant for a capability the extension has since removed from
         // its manifest cannot be used.
         if !self
             .declared
@@ -426,10 +424,10 @@ impl Broker {
 
     /// Checks a filesystem request against the path it actually resolves to.
     ///
-    /// `real_path` should be the canonicalised path — the caller has to supply
-    /// it because canonicalisation needs the filesystem, and this crate stays
-    /// free of I/O so it can be tested exhaustively. Passing the *unresolved*
-    /// path here is the mistake this signature exists to make obvious.
+    /// `real_path` must be the canonicalised path. The caller supplies it
+    /// because canonicalisation needs the filesystem, and this crate performs
+    /// no I/O so it can be tested exhaustively. The parameter name makes it
+    /// clear that passing the *unresolved* path is a mistake.
     pub fn check_resolved_path(&self, write: bool, real_path: &Path) -> CheckResult {
         let scope = PathScope::Subtree {
             path: normalize(real_path),
@@ -570,8 +568,8 @@ mod tests {
 
     #[test]
     fn a_grant_for_a_capability_no_longer_declared_is_ignored() {
-        // The extension updated and dropped `secrets` from its manifest; the
-        // stale grant must not keep working.
+        // The extension was updated and removed `secrets` from its manifest.
+        // The stale grant must no longer apply.
         let grants = GrantStore {
             allowed: vec![Capability::Secrets],
             denied: vec![],
@@ -645,8 +643,8 @@ mod tests {
 
     #[test]
     fn a_sibling_directory_with_a_shared_prefix_is_not_inside_the_scope() {
-        // `/home/u/project-secrets` must not pass as a child of
-        // `/home/u/project`; a plain string prefix test would let it through.
+        // `/home/u/project-secrets` must not match as a child of
+        // `/home/u/project`. A plain string prefix test would accept it.
         let b = broker(
             vec![Capability::ReadFile {
                 scope: PathScope::Workspace,
@@ -798,7 +796,7 @@ mod tests {
             }),
             CheckResult::Allowed
         );
-        // The classic exfiltration target must not come along for the ride.
+        // A grant for one variable must not expose a common exfiltration target.
         assert_eq!(
             b.check(&Capability::Env {
                 name: "AWS_SECRET_ACCESS_KEY".into()
@@ -890,8 +888,8 @@ mod tests {
 
     #[test]
     fn normalisation_leaves_leading_parent_components_alone() {
-        // Nothing to pop, so the `..` has to stay; dropping it would silently
-        // turn a relative escape into an innocent-looking path.
+        // There is nothing to pop, so the `..` stays. Dropping it would turn a
+        // relative escape into a path that looks harmless.
         assert_eq!(
             normalize(Path::new("../etc/passwd")),
             PathBuf::from("../etc/passwd")

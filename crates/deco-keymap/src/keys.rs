@@ -312,12 +312,12 @@ fn normalize_key(key: Key) -> Key {
 
 fn parse_key(token: &str) -> Option<Key> {
     let lower = token.to_ascii_lowercase();
-    // `space` is the one VS Code key name that stands for a character deco can
-    // also be handed directly. A terminal sends NUL for Ctrl+Space and crossterm
+    // `space` is the only VS Code key name for a character that deco can also
+    // receive directly. A terminal sends NUL for Ctrl+Space and crossterm
     // reports it as `Char(' ')` with Control; a window system reports the space
-    // bar as a named key. One of those has to be the representation, and the
-    // character is the one that also has to type a space when nothing is bound
-    // to it — so a binding written `space` means the same key.
+    // bar as a named key. deco uses the character as the single representation,
+    // because it must also type a space when nothing is bound to it. A binding
+    // written `space` therefore means the same key.
     if lower == "space" {
         return Some(Key::Char(' '));
     }
@@ -349,8 +349,8 @@ impl fmt::Display for Chord {
             f.write_str("cmd+")?;
         }
         match self.key {
-            // Written by name, so a chord round-trips through `keybindings.json`
-            // rather than ending in a trailing blank nothing can read back.
+            // Written by name so the chord round-trips through
+            // `keybindings.json`. A trailing blank could not be parsed back.
             Key::Char(' ') => f.write_str("space"),
             Key::Char(c) => write!(f, "{c}"),
             Key::Named(n) => write!(f, "{n}"),
@@ -469,9 +469,9 @@ mod tests {
 
     #[test]
     fn space_is_one_key_however_it_is_written() {
-        // The bug this guards: `space` parsed to a named key while both frontends
-        // could deliver the space bar as a character, so `ctrl+space` was a
-        // binding nothing could ever press.
+        // Regression test: `space` used to parse to a named key while both
+        // frontends could deliver the space bar as a character, so a
+        // `ctrl+space` binding never matched.
         assert_eq!(Chord::parse("space").unwrap().key, Key::Char(' '));
         assert_eq!(
             Chord::parse("ctrl+space").unwrap(),
@@ -481,8 +481,8 @@ mod tests {
 
     #[test]
     fn a_space_chord_is_written_back_by_name() {
-        // A trailing blank is not something `keybindings.json` can be read back
-        // from, so the canonical spelling stays `space`.
+        // A trailing blank cannot be parsed back from `keybindings.json`, so the
+        // canonical spelling is `space`.
         assert_eq!(
             Chord::parse("ctrl+space").unwrap().to_string(),
             "ctrl+space"
@@ -546,7 +546,7 @@ mod tests {
 
     #[test]
     fn parses_plus_and_minus_as_keys() {
-        // Splitting naively on '+' would mangle both of these.
+        // Splitting on every '+' would parse both of these incorrectly.
         let plus = Chord::parse("ctrl+shift+=").unwrap();
         assert_eq!(plus.key, Key::Char('='));
         let minus = Chord::parse("ctrl+-").unwrap();

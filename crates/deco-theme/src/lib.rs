@@ -20,7 +20,7 @@
 //! - [`semantic`] scores `type.modifier:language` selectors with type and
 //!   modifiers weighted equally and additively, as VS Code does.
 //!
-//! Themes in the wild define only a fraction of the workbench colours, so
+//! Published themes define only a fraction of the workbench colours, so
 //! [`ColorTheme::color`] falls back through VS Code's derivation chain and then
 //! to a built-in table before giving up.
 //!

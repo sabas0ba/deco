@@ -103,9 +103,9 @@ pub enum ThemeError {
 /// Resolves `.` and `..` lexically.
 ///
 /// `PathBuf::join` does not, so `themes/x.json` including `../shared/y.json`
-/// would otherwise produce `themes/../shared/y.json` — which works on a real
-/// filesystem but defeats the cycle check, since the same file can then be
-/// spelled many ways.
+/// would otherwise produce `themes/../shared/y.json`. That path works on a real
+/// filesystem, but the cycle check would fail because the same file could be
+/// written in several ways.
 fn normalize(path: PathBuf) -> PathBuf {
     use std::path::Component;
     let mut out = PathBuf::new();
@@ -291,9 +291,9 @@ impl ColorTheme {
     /// A workbench colour, falling back through VS Code's derivation chain and
     /// then to this theme kind's built-in default.
     ///
-    /// Themes routinely define only a handful of the several hundred workbench
-    /// colours, so unconditionally returning something is what keeps a partial
-    /// theme from rendering an unreadable editor.
+    /// Themes often define only a few of the several hundred workbench colours.
+    /// The fallbacks prevent a partial theme from rendering an unreadable
+    /// editor.
     pub fn color(&self, key: &str) -> Option<Rgba> {
         if let Some(color) = self.colors.get(key) {
             return Some(*color);
@@ -354,8 +354,8 @@ impl ColorTheme {
     /// The style for a semantic token, or `None` when no rule applies.
     ///
     /// Returns `None` rather than the default style so the caller can fall back
-    /// to the TextMate result, which is what VS Code does when semantic
-    /// highlighting has nothing to say about a token.
+    /// to the TextMate result, as VS Code does when no semantic rule applies to
+    /// a token.
     pub fn style_for_semantic(&self, token: &SemanticToken<'_>) -> Option<TokenStyle> {
         let mut matches: Vec<(crate::semantic::SemanticSpecificity, usize)> = self
             .semantic_rules

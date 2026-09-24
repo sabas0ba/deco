@@ -1,12 +1,12 @@
 name: Release
 
-# The packaging itself lives in `cargo xtask dist`, which is unit-tested and
-# runs identically on a contributor's machine:
+# Packaging is implemented in `cargo xtask dist`, which is unit-tested and runs
+# the same way on a contributor's machine:
 #
 #     cargo xtask dist --target aarch64-apple-darwin
 #
-# so a release can be rehearsed without pushing a tag. This file only decides
-# what runs where.
+# A release can therefore be tested without pushing a tag. This file only
+# selects what runs on which runner.
 #
 # Actions are pinned to commit SHAs; see the note in ci.yml.
 
@@ -27,18 +27,17 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
-  # Cutting a release needs a tag, and pushing one needs a checkout, a terminal
-  # and push rights. This job means it can also be done from the Actions tab:
-  # run the workflow against `main`, type the tag, and it is created here at the
-  # commit the run was dispatched from.
+  # A release needs a tag, and pushing one needs a checkout, a terminal and
+  # push rights. This job allows releasing from the Actions tab instead: run
+  # the workflow against `main` and enter the tag. The job creates the tag at
+  # the commit the run was dispatched from.
   #
-  # It costs a job — about five seconds of runner, one minute of billing — on
-  # every release. Releases are rare and a release is exactly when a mistake is
-  # expensive, so the trade is worth making here and would not be elsewhere.
+  # The job adds about five seconds of runner time, billed as one minute, to
+  # every release. Releases are rare and mistakes in them are expensive, so
+  # the extra job is acceptable here.
   #
-  # A tag created with GITHUB_TOKEN does not start another workflow run, which
-  # is what we want: this run goes on to build it rather than a second one
-  # racing it.
+  # A tag created with GITHUB_TOKEN does not start another workflow run. This
+  # run builds the tag, and no second run competes with it.
   tag:
     name: Ensure the tag exists
     runs-on: ubuntu-latest
@@ -53,9 +52,9 @@ jobs:
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          # `v*` is what the push trigger listens for, and `cargo xtask
-          # release-notes` reads the version out of the tag. A name that is
-          # neither is refused by name rather than released as something odd.
+          # The push trigger matches `v*`, and `cargo xtask release-notes`
+          # reads the version from the tag. Any other name is rejected with an
+          # error that names it.
           case "$TAG" in
             v[0-9]*) ;;
             *) echo "::error::'$TAG' is not a version tag — expected something like v0.1.0"; exit 1 ;;
@@ -67,8 +66,8 @@ jobs:
           fi
 
           echo "Creating $TAG at $SHA."
-          # Annotated rather than lightweight, so the tag carries who made it,
-          # when, and what it is — the same as `git tag -a` from a checkout.
+          # Annotated rather than lightweight, so the tag records its author,
+          # date and message, like `git tag -a` from a checkout.
           object=$(gh api "repos/$GITHUB_REPOSITORY/git/tags" \
             -f "tag=$TAG" -f "message=deco ${TAG#v}" \
             -f "object=$SHA" -f "type=commit" --jq .sha)
@@ -147,10 +146,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      # The same ref the build job used. The release's notes are read out of this
+      # The same ref the build job used. The release notes are read from this
       # checkout's CHANGELOG.md, so a `workflow_dispatch` rebuild of an older tag
-      # has to stand on that tag rather than on the default branch — otherwise it
-      # would publish the newest version's notes under an old tag's name.
+      # must check out that tag, not the default branch. Otherwise it would
+      # publish the newest version's notes under the old tag.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
@@ -169,10 +168,9 @@ jobs:
       - name: Collect checksums
         run: cargo xtask checksums
 
-      # The release's text is the section CHANGELOG.md already has for this
-      # version, so the repository and the release cannot describe the same
-      # version differently. A tag with no section fails here rather than
-      # publishing a release that says nothing.
+      # The release text is this version's section of CHANGELOG.md, so the
+      # repository and the release describe the version identically. A tag
+      # without a section fails here instead of publishing an empty release.
       #
       # Written outside `dist`, which is uploaded wholesale as assets.
       - name: Build the release notes
@@ -185,19 +183,18 @@ jobs:
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           body_path: target/release-notes.md
-          # Off, because it appends every commit since the previous tag — for
-          # the first release that is the entire history, which buries the
-          # notes rather than adding to them.
+          # Disabled because it appends every commit since the previous tag. For
+          # the first release that is the entire history, which hides the notes.
           generate_release_notes: false
-          # Stated rather than left to whatever the release already had. A
-          # release created in the web UI carries whatever that form's
-          # pre-release box was set to, and this action preserves a field it is
-          # not given — which is how 0.1.0 shipped as a pre-release and made
-          # `/releases/latest/`, the URL the README hands people, a 404.
+          # Set explicitly. A release created in the web UI keeps the value of
+          # that form's pre-release checkbox, and this action preserves fields
+          # it is not given. This caused 0.1.0 to be published as a pre-release,
+          # so `/releases/latest/`, the URL in the README, returned 404.
           #
-          # The tag decides, by semver's rule, in `xtask/src/release.rs`.
+          # `xtask/src/release.rs` derives the value from the tag using semver's
+          # rule.
           prerelease: ${{ steps.notes.outputs.prerelease }}
           files: dist/*
-          # A release missing the platform someone came for is worse than no
-          # release, so an empty upload is a failure rather than a quiet one.
+          # A release with a platform missing is worse than no release, so an
+          # upload with no matching files fails.
           fail_on_unmatched_files: true

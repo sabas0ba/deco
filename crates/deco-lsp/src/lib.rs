@@ -1,45 +1,45 @@
 //! A Language Server Protocol client.
 //!
-//! This crate is the editor's side of a conversation with a language server:
-//! what to say, in what order, and what to make of the answers. It deliberately
-//! does not start processes, own threads or perform I/O beyond reading and
-//! writing a stream someone else hands it — the protocol is a state machine,
-//! and a state machine that does not spawn anything can be driven entirely from
-//! tests.
+//! This crate implements the editor side of the protocol: which messages to
+//! send, in what order, and how to interpret the responses. Apart from
+//! [`mod@process`], it does not start processes, own threads or perform I/O
+//! beyond reading and writing a stream supplied by the caller. The protocol
+//! logic is a state machine, so tests can drive it without spawning anything.
 //!
-//! The pieces, roughly in the order a session uses them:
+//! The modules, roughly in the order a session uses them:
 //!
-//! - [`mod@uri`] — paths to `file:` URIs and back, spelled the way VS Code
-//!   spells them, because the servers people run were tested against VS Code.
+//! - [`mod@uri`] — converts paths to `file:` URIs and back, using the same
+//!   spelling as VS Code, because language servers are tested against VS Code.
 //! - [`mod@jsonrpc`] — JSON-RPC 2.0 and its `Content-Length` framing.
-//! - [`mod@capabilities`] — what the editor claims it can do, what the server
-//!   answers, and the position-encoding negotiation that keeps every subsequent
-//!   coordinate meaningful.
+//! - [`mod@capabilities`] — the client capabilities, the server's response,
+//!   and position-encoding negotiation, which determines how every later
+//!   coordinate is interpreted.
 //! - [`mod@server`] — which server to run for a language, as an argument
 //!   vector rather than a shell string.
-//! - [`mod@settings`] — reading those definitions out of layered settings while
-//!   keeping track of which layer each came from, because a definition from a
-//!   cloned repository must not be run unasked.
-//! - [`mod@sync`] — keeping the server's copy of a document identical to the
+//! - [`mod@settings`] — reads those definitions from layered settings and
+//!   records which layer each came from. A definition from a cloned repository
+//!   must not run without the user's consent.
+//! - [`mod@sync`] — keeps the server's copy of a document identical to the
 //!   editor's.
-//! - [`mod@requests`] — building the language-feature requests and reading the
-//!   several shapes each answer can arrive in.
-//! - [`mod@process`] — spawning that server and moving bytes to and from it.
-//!   The one module here that owns a process and threads.
-//! - [`mod@supervisor`] — all of the above driven end to end, which is the
-//!   layer a frontend actually uses.
-//! - [`mod@diagnostics`] — the errors a server pushes, and deciding which of
+//! - [`mod@requests`] — builds language-feature requests and parses the
+//!   different response shapes each one can have.
+//! - [`mod@process`] — spawns the server and transfers bytes to and from it.
+//!   This is the only module that owns a process and threads.
+//! - [`mod@supervisor`] — combines the modules above end to end. This is the
+//!   layer a frontend uses.
+//! - [`mod@diagnostics`] — diagnostics published by a server, and which of
 //!   them still apply.
 //! - [`mod@client`] — the session lifecycle, request routing and cancellation.
 //!
 //! # Nothing here trusts the server
 //!
 //! A language server is a program the user installed, usually from a package
-//! registry, running with their privileges — it is not part of the editor. So
-//! frames are size-limited before they are allocated, malformed messages are
-//! named errors rather than panics, a server that answers a question nobody
-//! asked is ignored, and a server that picks a position encoding the client did
-//! not offer is refused outright rather than silently misplacing every edit.
+//! registry, and it runs with the user's privileges. It is not part of the
+//! editor. Therefore frame sizes are checked before allocation, malformed
+//! messages produce named errors instead of panics, responses to unknown
+//! requests are ignored, and a server that selects a position encoding the
+//! client did not offer is rejected, because every edit would otherwise be
+//! applied at the wrong position.
 
 #![deny(missing_docs)]
 

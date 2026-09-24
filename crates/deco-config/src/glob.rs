@@ -1,9 +1,9 @@
 //! The small glob dialect VS Code uses in `files.exclude`, `files.watcherExclude`
 //! and an extension's `workspaceContains` activation event.
 //!
-//! Here rather than in `deco-ext` because `files.exclude` is a setting and this
-//! crate owns settings — and because the quick-open file walk needs the same
-//! dialect. One implementation, two callers.
+//! It lives here instead of in `deco-ext` because `files.exclude` is a setting
+//! and this crate owns settings. The quick-open file walk uses the same
+//! implementation.
 //!
 //! Supports `?`, `*` (within one path segment) and `**` (across segments).
 //! Brace alternation and character classes are not implemented.
@@ -40,9 +40,9 @@ fn match_segment(pattern: &str, text: &str) -> bool {
     let p: Vec<char> = pattern.chars().collect();
     let t: Vec<char> = text.chars().collect();
 
-    // Iterative backtracking: `star` remembers where to resume if the rest of
-    // the pattern fails, which keeps this linear for realistic patterns rather
-    // than exponential.
+    // Iterative backtracking: `star` records where to resume if the rest of
+    // the pattern fails. This keeps matching linear for realistic patterns
+    // instead of exponential.
     let (mut pi, mut ti) = (0usize, 0usize);
     let (mut star, mut resume) = (None, 0usize);
 

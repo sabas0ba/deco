@@ -162,9 +162,10 @@ test('an unknown message type is ignored', async () => {
 });
 
 test('deco closing the connection is reported exactly once', async () => {
-  // The host exits on this, so it has to fire — a host that outlives deco keeps
-  // whatever it was granted, and in a container keeps the container too. Once,
-  // because `end` and `close` both arrive and exiting twice is a race.
+  // The host exits on this event, so it must fire. A host that outlives deco
+  // keeps its granted access, and in a container keeps the container running.
+  // It fires once, because both `end` and `close` arrive and exiting twice is a
+  // race.
   const { rpc, input } = connect();
   let closed = 0;
   rpc.onClosed(() => {

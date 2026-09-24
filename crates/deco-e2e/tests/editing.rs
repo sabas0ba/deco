@@ -1,8 +1,8 @@
-//! Typing into a file and getting it back onto the disk.
+//! Typing into a file and saving it to disk.
 //!
-//! The claim each of these makes is the one a person would make about an editor:
-//! not that a command returned the right `Outcome`, but that after these
-//! keystrokes the bytes in the file are these bytes.
+//! Each scenario checks the result a user sees: not that a command returned the
+//! right `Outcome`, but that after the keystrokes the file contains the
+//! expected bytes.
 
 use deco_e2e::Scenario;
 
@@ -13,11 +13,11 @@ fn a_file_opens_showing_its_first_line_and_its_name() {
 
     let screen = editor.screen();
     screen.assert_fits();
-    // The gutter, then the text. Line one is on the first row: an editor that
-    // opens somewhere other than the top of the file is an editor nobody trusts.
+    // The gutter, then the text. Line one is on the first row, so the file
+    // opens at the top.
     screen.assert_row_shows(0, "fn main() {");
     screen.assert_row_shows(1, "hello();");
-    // The name and the position, which is what the status line is for.
+    // The status line shows the name and the position.
     screen.assert_status("main.rs");
     screen.assert_status("Ln 1, Col 1");
 }
@@ -39,11 +39,11 @@ fn typing_a_line_and_saving_it_puts_it_in_the_file() {
 
 #[test]
 fn a_file_that_does_not_exist_yet_is_created_by_saving_it() {
-    // How every editor is used to make a new file: name it on the command line
-    // and start typing.
-    // The ending is named rather than assumed: a new file follows the platform
-    // unless something says otherwise, and this scenario is about creating the
-    // file rather than about the runner it is created on.
+    // The usual way to create a new file: name it on the command line and start
+    // typing.
+    // The line ending is set explicitly. A new file uses the platform's ending
+    // unless configured otherwise, and this scenario tests file creation, not
+    // the runner's platform.
     let scenario = Scenario::new("new-file").user_settings(r#"{ "files.eol": "\n" }"#);
     let mut editor = scenario.launch(&["fresh.md"]);
     assert!(!editor.exists("fresh.md"), "nothing on disk yet");
@@ -56,17 +56,17 @@ fn a_file_that_does_not_exist_yet_is_created_by_saving_it() {
 
 #[test]
 fn the_indentation_settings_say_what_tab_inserts() {
-    // The whole point of reading VS Code's `settings.json`: a two-space project
-    // indents by two, and the key that says so is the one VS Code uses.
+    // A project configured for two-space indentation indents by two, using
+    // VS Code's setting key.
     let scenario = Scenario::new("indent")
         .user_settings(r#"{ "editor.tabSize": 2, "editor.insertSpaces": true }"#)
         .file("a.txt", "x\n");
     let mut editor = scenario.launch(&["a.txt"]);
 
     editor.press("tab");
-    // Read before saving: the save message is the whole absolute path, which on a
-    // deep directory is wider than the terminal and pushes everything else off
-    // the status line.
+    // Checked before saving. The save message contains the absolute path, which
+    // in a deep directory is wider than the terminal and hides the rest of the
+    // status line.
     editor.screen().assert_status("Spaces: 2");
 
     editor.press("ctrl+s");
@@ -75,8 +75,8 @@ fn the_indentation_settings_say_what_tab_inserts() {
 
 #[test]
 fn a_language_override_beats_the_general_setting_for_that_language() {
-    // `"[markdown]": { … }` is how a VS Code user keeps four spaces everywhere
-    // and two in Markdown, and it has to mean that here.
+    // A VS Code user uses `"[markdown]": { … }` to set a different indentation
+    // for Markdown only. deco must apply it the same way.
     let scenario = Scenario::new("language-override")
         .user_settings(
             r#"{
@@ -101,10 +101,10 @@ fn a_language_override_beats_the_general_setting_for_that_language() {
 
 #[test]
 fn typing_a_word_undoes_as_a_word() {
-    // Undo granularity is a clock question, and the clock is per keystroke. At a
-    // human typing rate the edits coalesce, so one `ctrl+z` takes back the word
-    // rather than the letter — which is what every editor does and what a test
-    // that pressed every key at the same millisecond could not tell apart.
+    // Undo granularity depends on the time between keystrokes. At a normal
+    // typing rate the edits are merged, so one `ctrl+z` undoes the word rather
+    // than the last letter. A test that pressed every key at the same
+    // millisecond could not detect a regression here.
     let scenario = Scenario::new("undo").file("a.txt", "\n");
     let mut editor = scenario.launch(&["a.txt"]);
 
@@ -120,7 +120,7 @@ fn a_pause_between_words_makes_them_separate_undo_steps() {
     let mut editor = scenario.launch(&["a.txt"]);
 
     editor.type_text("hello");
-    // Longer than the coalescing window, so the next word is its own step.
+    // Longer than the merge window, so the next word is a separate step.
     editor.wait(1_000);
     editor.type_text(" world");
     editor.press("ctrl+z");
@@ -159,8 +159,8 @@ fn commenting_twice_leaves_the_line_as_it_was() {
 
 #[test]
 fn a_windows_file_stays_a_windows_file_through_an_edit() {
-    // The single most common way an editor ruins a diff: opening a CRLF file,
-    // changing one line, and writing the whole thing back with Unix endings.
+    // A common cause of whole-file diffs: opening a CRLF file, changing one
+    // line, and writing the file back with Unix line endings.
     let scenario = Scenario::new("crlf").file("dos.txt", "one\r\ntwo\r\n");
     let mut editor = scenario.launch(&["dos.txt"]);
 
@@ -176,12 +176,11 @@ fn a_windows_file_stays_a_windows_file_through_an_edit() {
 
 #[test]
 fn setting_files_eol_leaves_an_existing_files_own_ending_alone() {
-    // `files.eol` in VS Code is the ending a *new* file gets; an existing file
-    // keeps the ending it already had until it is changed deliberately. deco
-    // applied it on open, so editing one line of a CRLF file under
-    // `"files.eol": "\n"` — an ordinary thing to have in a settings file —
-    // rewrote every line of it, a whole-file diff nobody asked for and one that
-    // is invisible in the editor.
+    // In VS Code, `files.eol` sets the line ending for new files. An existing
+    // file keeps its line ending until the user changes it. deco previously
+    // applied the setting on open, so editing one line of a CRLF file with the
+    // common setting `"files.eol": "\n"` rewrote every line. The resulting
+    // whole-file diff was not visible in the editor.
     let scenario = Scenario::new("eol-converts")
         .user_settings(r#"{ "files.eol": "\n" }"#)
         .file("dos.txt", "one\r\ntwo\r\n");
@@ -200,8 +199,8 @@ fn setting_files_eol_leaves_an_existing_files_own_ending_alone() {
 
 #[test]
 fn setting_files_eol_decides_for_a_file_that_has_no_ending_of_its_own() {
-    // The other side of the same rule: a file with no terminator in it has
-    // nothing to keep, so the setting is what there is to go on.
+    // The same rule, other case: a file without a line terminator has no ending
+    // to keep, so the setting applies.
     let scenario = Scenario::new("eol-no-ending")
         .user_settings(r#"{ "files.eol": "\r\n" }"#)
         .file("one.txt", "just one line");
@@ -219,8 +218,8 @@ fn setting_files_eol_decides_for_a_file_that_has_no_ending_of_its_own() {
 
 #[test]
 fn a_file_with_no_trailing_newline_does_not_grow_one_by_being_saved() {
-    // Saving a file deco only read should be a no-op on the bytes. A newline
-    // added here shows up in everybody's diff.
+    // Saving must not add bytes the user did not type. An added final newline
+    // would appear in the diff.
     let scenario = Scenario::new("no-eol").file("a.txt", "no newline at the end");
     let mut editor = scenario.launch(&["a.txt"]);
 
@@ -233,8 +232,8 @@ fn a_file_with_no_trailing_newline_does_not_grow_one_by_being_saved() {
 
 #[test]
 fn multiple_cursors_edit_every_occurrence_at_once() {
-    // `ctrl+d` is the keystroke people reach for most, and its whole value is
-    // that the next thing typed lands in every selection.
+    // `ctrl+d` is heavily used, and the next text typed must be inserted in
+    // every selection.
     let scenario = Scenario::new("multi-cursor").file("a.txt", "cat\ncat\ncat\n");
     let mut editor = scenario.launch(&["a.txt"]);
 
@@ -262,7 +261,7 @@ fn moving_a_line_up_swaps_it_with_the_one_above() {
 
 #[test]
 fn a_non_ascii_file_survives_being_edited() {
-    // A rope indexed by bytes instead of characters breaks here, and so does a
+    // This fails with a rope indexed by bytes instead of characters, or with a
     // renderer that counts a wide character as one column.
     let scenario = Scenario::new("unicode").file("hello.txt", "こんにちは\nсвіт\n");
     let mut editor = scenario.launch(&["hello.txt"]);
@@ -282,8 +281,8 @@ fn the_caret_lands_between_characters_of_an_emoji_never_inside_one() {
 
     editor.press("right");
     editor.press("right");
-    // Two rights from the start is past `a` and past the whole emoji, so a
-    // backspace here takes the emoji and leaves `ab`.
+    // Two `right` presses from the start move past `a` and the whole emoji, so
+    // backspace deletes the emoji and leaves `ab`.
     editor.press("backspace");
     editor.press("ctrl+s");
 
@@ -292,9 +291,9 @@ fn the_caret_lands_between_characters_of_an_emoji_never_inside_one() {
 
 #[test]
 fn a_large_file_opens_and_edits_without_the_screen_losing_its_shape() {
-    // 200,000 lines is the size the README's performance table is measured at,
-    // and the claim it makes — that drawing is bounded by the window rather than
-    // the document — is only worth anything if the window still looks right.
+    // The README's performance table is measured at 200,000 lines. It states
+    // that drawing cost depends on the window size rather than the document
+    // size, and this checks that the window is still drawn correctly.
     let text: String = (1..=200_000).map(|n| format!("line {n}\n")).collect();
     let scenario = Scenario::new("large").file("big.txt", &text);
     let mut editor = scenario.launch(&["big.txt"]);

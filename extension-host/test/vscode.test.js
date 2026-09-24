@@ -3,12 +3,12 @@
 /**
  * The `vscode` shim, and in particular the command registry.
  *
- * `createApi` had no tests: everything it does is forward a call to deco, and the
- * Rust side's tests covered the receiving end. The exception is
- * `$/executeCommand`, which is the one place the shim *holds state* — the map of
- * command ids to the callbacks an extension registered — and the one call deco
- * makes into an extension rather than the other way round. A palette entry that
- * runs an extension command depends entirely on this map.
+ * `createApi` previously had no tests: it only forwards calls to deco, and the
+ * Rust tests cover the receiving side. The exception is `$/executeCommand`. It is
+ * the only place where the shim *holds state* (the map from command ids to the
+ * callbacks an extension registered), and the only call from deco into an
+ * extension instead of the reverse. A palette entry that runs an extension
+ * command depends on this map.
  */
 
 const test = require('node:test');
@@ -17,7 +17,7 @@ const { PassThrough } = require('node:stream');
 const { RpcConnection } = require('../src/rpc');
 const { createApi } = require('../src/vscode');
 
-/** An api wired to in-memory streams, plus a way to speak to it as deco. */
+/** An api wired to in-memory streams, plus a helper that sends requests as deco. */
 function connect() {
   const input = new PassThrough();
   const output = new PassThrough();
@@ -69,8 +69,8 @@ test('arguments are passed through in order', async () => {
 });
 
 test('a command with no arguments is called with none rather than with undefined', async () => {
-  // deco may send `args` absent entirely; `(...(args ?? []))` is what makes that
-  // an empty call instead of one argument that happens to be undefined.
+  // deco may omit `args`. `(...(args ?? []))` turns that into a call with no
+  // arguments instead of one `undefined` argument.
   const { api, execute } = connect();
   api.commands.registerCommand('mine.count', (...given) => given.length);
   assert.strictEqual((await execute('mine.count', undefined)).result, 0);
@@ -87,8 +87,8 @@ test('an async command is awaited', async () => {
 });
 
 test('a command that returns nothing answers null rather than dropping the reply', async () => {
-  // deco correlates replies to requests, so a request that never gets one is a
-  // leak in its pending table — worse than a null.
+  // deco matches replies to requests, so a request without a reply would stay
+  // in its pending table. A null result avoids that.
   const { api, execute } = connect();
   api.commands.registerCommand('mine.quiet', () => {});
   const reply = await execute('mine.quiet', []);
@@ -110,14 +110,15 @@ test('a command that throws reports the reason and the host stays up', async () 
   });
   const reply = await execute('mine.explode', []);
   assert.match(reply.error.message, /it went wrong/);
-  // Still answering afterwards: one failing command must not end the session.
+  // The host still answers afterwards: one failing command must not end the
+  // session.
   api.commands.registerCommand('mine.fine', () => 'fine');
   assert.strictEqual((await execute('mine.fine', [])).result, 'fine');
 });
 
 test('disposing a command unregisters it', async () => {
-  // `context.subscriptions` disposes on deactivate, so a command that outlived
-  // its disposal would be callable after the extension stopped.
+  // `context.subscriptions` is disposed on deactivate. A command that remained
+  // registered after disposal would be callable after the extension stopped.
   const { api, execute } = connect();
   const registration = api.commands.registerCommand('mine.temporary', () => 'here');
   assert.strictEqual((await execute('mine.temporary', [])).result, 'here');
@@ -127,9 +128,9 @@ test('disposing a command unregisters it', async () => {
 });
 
 test('registering the same id twice keeps the newer callback', async () => {
-  // VS Code refuses this; the shim cannot see the other extensions to refuse it
-  // the same way, so the last writer wins *within one extension* and the
-  // catalogue on deco's side is what stops two extensions sharing an id.
+  // VS Code rejects this. The shim cannot see other extensions, so within one
+  // extension the last registration wins. The catalogue on deco's side prevents
+  // two extensions from sharing an id.
   const { api, execute } = connect();
   api.commands.registerCommand('mine.twice', () => 'first');
   api.commands.registerCommand('mine.twice', () => 'second');

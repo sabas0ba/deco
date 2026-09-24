@@ -1,10 +1,9 @@
 //! deco's built-in default settings.
 //!
-//! Keys and values match VS Code's defaults so that a user's `settings.json`
-//! only ever needs to state its differences from the same baseline. Settings
-//! deco does not implement yet are deliberately absent rather than present and
-//! ignored — `Settings::get` returning `None` is an honest answer, while a
-//! default that nothing reads is a silent lie.
+//! Keys and values match VS Code's defaults, so a user's `settings.json` only
+//! needs to state its differences from the same baseline. Settings that deco
+//! does not implement yet are omitted. `Settings::get` returns `None` for them
+//! instead of a default that nothing reads.
 
 use serde_json::{Map, Value};
 
@@ -77,8 +76,8 @@ pub const DEFAULT_SETTINGS_JSONC: &str = r#"{
 pub fn default_settings() -> Map<String, Value> {
     match crate::jsonc::parse(DEFAULT_SETTINGS_JSONC) {
         Ok(Value::Object(map)) => map,
-        // The constant is covered by a test, so this branch is unreachable in
-        // practice; returning empty beats panicking in a user's editor.
+        // A test covers the constant, so this branch is unreachable in
+        // practice. Return an empty map instead of panicking in the editor.
         _ => Map::new(),
     }
 }
@@ -119,8 +118,8 @@ mod tests {
         );
     }
 
-    /// Kept as a literal rather than importing deco-core so that this crate has
-    /// no dependency on it; the two must agree and this test is the check.
+    /// A literal copy of deco-core's value, so this crate does not depend on
+    /// deco-core. The two must agree; this test checks that.
     fn deco_core_word_separators() -> &'static str {
         "`~!@#$%^&*()-=+[{]}\\|;:'\",.<>/?"
     }

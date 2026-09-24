@@ -2,24 +2,25 @@
 //!
 //! # Why these are generated rather than recorded
 //!
-//! `deco_tui::render` is a pure function of a session and a terminal size, which
-//! is what lets the layout be asserted in CI with no terminal attached. The same
-//! property makes it a screenshot source: a scenario here presses real chords
-//! through [`deco_editor::Session`] and captures whatever the real renderer
-//! produced. Nothing is drawn by hand, so a demonstration cannot show a feature
-//! behaving in a way the code does not.
+//! `deco_tui::render` is a pure function of a session and a terminal size, so
+//! the layout can be asserted in CI without a terminal. For the same reason it
+//! can produce screenshots: a scenario here presses real chords through
+//! [`deco_editor::Session`] and captures the output of the real renderer.
+//! Nothing is drawn by hand, so a demonstration cannot show behaviour that the
+//! code does not have.
 //!
-//! `cargo xtask docs --check` re-runs the scenarios and compares them against
-//! what is committed, so a change in behaviour fails CI instead of quietly
-//! leaving the documentation describing an editor that no longer exists.
+//! `cargo xtask docs --check` re-runs the scenarios and compares the output with
+//! the committed files, so a behaviour change without regenerated images fails
+//! CI.
 //!
 //! # Why SVG and not GIF
 //!
-//! An animated SVG is text: it diffs, it reviews, and it needs no encoder and no
-//! embedded font. A GIF would need either a third-party encoder or a hand-written
-//! one plus bitmap glyphs for every character drawn — a dependency or several
-//! hundred lines and a font blob, for a file that reviews as noise. GitHub
-//! animates SVG referenced from Markdown, so the result is the same to a reader.
+//! An animated SVG is text: it can be diffed and reviewed, and it needs no
+//! encoder and no embedded font. A GIF would need a third-party encoder or a
+//! hand-written one plus bitmap glyphs for every character, which means a
+//! dependency or several hundred lines and a font file, and the result cannot be
+//! reviewed as a diff. GitHub animates SVG referenced from Markdown, so readers
+//! see the same result.
 
 use std::path::{Path, PathBuf};
 
@@ -49,9 +50,8 @@ pub fn run(root: &Path, check: bool) -> Result<Vec<PathBuf>> {
         let path = dir.join(format!("{}.svg", demo.name));
         let svg = (demo.build)();
         if check {
-            // A missing file reads as empty and so counts as stale, which is
-            // right: `--check` on a fresh clone that forgot to commit them should
-            // fail rather than pass.
+            // A missing file reads as empty and counts as stale, so `--check`
+            // fails on a clone where the files were never committed.
             if std::fs::read_to_string(&path).unwrap_or_default() != svg {
                 stale.push(path.clone());
             }
@@ -253,9 +253,8 @@ fn demos() -> Vec<Demo> {
 
 /// How wide and tall every demonstration's terminal is.
 ///
-/// One size for all of them so the images sit side by side in a page without
-/// jumping, and small enough that the text is legible when GitHub scales it into
-/// a column.
+/// One size for all of them, so the images align on a page, and small enough
+/// that the text is legible when GitHub scales it to the column width.
 const COLUMNS: usize = 76;
 const ROWS: usize = 14;
 
@@ -271,10 +270,10 @@ struct Take {
     branch: String,
     /// The workspace the file tree is shown over, if a demonstration set one.
     ///
-    /// The frontend's job in the real editor, done here by the demonstration —
-    /// which is the point of the tree asking for listings rather than reading
-    /// them: a workspace can be stated instead of created on disk. Each entry is
-    /// a path and the text that file holds.
+    /// In the real editor the frontend provides this; here the demonstration
+    /// does. Because the tree requests listings instead of reading the disk, a
+    /// workspace can be defined in memory. Each entry is a path and the file's
+    /// text.
     workspace: Vec<(String, String)>,
 }
 
@@ -284,11 +283,10 @@ struct Shot {
     caption: String,
     /// The editor background when this frame was captured.
     ///
-    /// Per frame rather than per demonstration, because a theme can change
-    /// mid-scenario and a light frame drawn on a dark page is not what the editor
-    /// looked like.
+    /// Per frame rather than per demonstration, because a theme can change during
+    /// a scenario, and a light frame on a dark page would not match the editor.
     bg: Rgba,
-    /// How many time slots this frame occupies. A frame worth reading gets
+    /// How many time slots this frame occupies. A frame meant to be read gets
     /// several; an intermediate keystroke gets one.
     hold: u32,
 }
@@ -298,11 +296,10 @@ impl Take {
         Self::with_settings(deco_config::Settings::with_defaults(), file, text)
     }
 
-    /// The same, for a demonstration whose subject *is* a setting.
+    /// Like [`Take::new`], for a demonstration about a setting.
     fn with_settings(settings: deco_config::Settings, file: &str, text: &str) -> Self {
-        // The Linux keymap rather than the host's: a demonstration that pressed
-        // `ctrl+d` would be pressing an unbound key when generated on a Mac, and
-        // the committed file would differ by who ran the command.
+        // The Linux keymap rather than the host's. On a Mac, `ctrl+d` would be
+        // unbound, and the generated file would depend on who ran the command.
         let mut session = Session::new(settings, None, Platform::Linux);
         session.open(PathBuf::from(format!("/demo/{file}")), text);
         session.resize(COLUMNS, ROWS - 1);
@@ -319,8 +316,8 @@ impl Take {
 
     /// Captures the same file again under an additional settings layer.
     ///
-    /// For demonstrations whose subject is a setting: the frames before and after sit
-    /// in one animation, which is the only way a reader can see what the setting did.
+    /// For demonstrations about a setting: the frames before and after are in one
+    /// animation, so the reader can see the setting's effect.
     fn append(&mut self, user_json: &str, caption: &str, hold: u32) -> &mut Self {
         let path = self
             .session
@@ -353,23 +350,19 @@ impl Take {
 
     /// Presses `keys` in order, capturing a frame after each.
     ///
-    /// The caption shows the key, so a reader can tell what caused the change
-    /// rather than inferring it.
+    /// The caption shows the key, so a reader can see what caused the change.
     fn press(&mut self, keys: &[&str]) -> &mut Self {
         for key in keys {
             let chord = Chord::parse(key).expect("demonstrations only press keys that parse");
             let outcome = self
                 .session
                 .handle_chord(chord, self.shots.len() as u64 * 10_000);
-            // The frontend's other half of the bargain. Without this the tree
-            // would appear to open a file and not open it, and the frames after
-            // would show typing going into whatever was already there — a
-            // demonstration of something the editor does not do, which is the
-            // one thing these files exist to make impossible.
-            // The same bargain for the tree's mutations: the session decided
-            // what should happen to a file, and this demonstration is the thing
-            // with the "filesystem". Applying it to the in-memory workspace is
-            // what makes the frames after show the tree as it really would be.
+            // The frontend's part of a file operation. The session decides what
+            // should happen to a file, and the demonstration acts as the
+            // filesystem by applying it to the in-memory workspace. Without
+            // this, the tree would not open a created file, and later frames
+            // would show typing into the previous document, which the editor
+            // does not do.
             if let deco_editor::Outcome::FileOperation(ref operation) = outcome {
                 let operation = operation.clone();
                 self.apply_file_operation(&operation);
@@ -378,17 +371,15 @@ impl Take {
                     self.session.open(path.clone(), "");
                 }
             }
-            // The frontend's half again: the session decided the document
-            // should be written, and this demonstration is the thing with the
-            // "filesystem". Without it the tab would stay dirty, and — the
-            // reason it is here — the session would never mark its git status
-            // stale, so a demonstration of the status bar would show a count
-            // that never moved.
+            // The frontend's part again: the session decided the document should
+            // be written, and the demonstration acts as the filesystem. Without
+            // this the tab would stay dirty, and the session would never mark
+            // its git status as stale, so a status bar demonstration would show
+            // a count that never changes.
             if let deco_editor::Outcome::GitOperation(ref operation) = outcome {
                 let operation = operation.clone();
-                // Told first, then answered — the order a frontend does it in,
-                // and the order that leaves the standing question cleared
-                // rather than set.
+                // Notify first, then apply, in the same order as a frontend. In
+                // this order the pending status request ends up cleared.
                 self.session.git_operation_done(&operation);
                 self.apply_git(&operation);
             }
@@ -455,12 +446,11 @@ impl Take {
 
     /// Answers the session's standing question about git, if it has one.
     ///
-    /// `output` is what `git status --porcelain=v2 --branch -z` would have
-    /// written. The demonstration is the thing with a `git` here, exactly as it
-    /// is the thing with a filesystem for the tree — and the gate is the point
-    /// rather than an optimisation: calling this when nothing has asked leaves
-    /// the bar alone, which is how a demonstration can show that typing does
-    /// not spawn a process and saving does.
+    /// `output` is what `git status --porcelain=v2 --branch -z` would write. The
+    /// demonstration acts as git here, as it acts as the filesystem for the tree.
+    /// The check is intentional, not an optimisation: when the session has not
+    /// requested a status, this leaves the bar unchanged. This shows that typing
+    /// does not start a git process and saving does.
     fn git(&mut self, output: &str) -> &mut Self {
         if !self.session.scm_wanted() {
             return self;
@@ -474,12 +464,11 @@ impl Take {
 
     /// Gives the demonstration an index and a working tree of its own.
     ///
-    /// Each entry is a path and its two halves, in git's own letters — a space
-    /// where that side has nothing, `?` in the second for a file git has never
-    /// been told about. Kept rather than handed over once, because the
-    /// source-control view is a thing you *act on*: staging has to move a row
-    /// from one heading to another, and a demonstration that could not do that
-    /// would be a picture of a list rather than of a feature.
+    /// Each entry is a path and its index and working-tree status, in git's
+    /// letters: a space where that side has no change, and `?` in the second for
+    /// an untracked file. The state is kept rather than passed once, because
+    /// the source-control view supports actions: staging must move a row from
+    /// one heading to another.
     fn repository(&mut self, files: &[(&str, char, char)]) -> &mut Self {
         self.scm = files
             .iter()
@@ -506,7 +495,7 @@ impl Take {
         self
     }
 
-    /// Hands the session what its own index would report.
+    /// Passes the session the status that its index would report.
     fn refresh_scm(&mut self) {
         let mut out = format!(
             "# branch.oid 1c9d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d\0\
@@ -530,17 +519,16 @@ impl Take {
 
     /// Carries out a repository change on the demonstration's own index.
     ///
-    /// The frontend's half again. The session decided what should happen to
-    /// the repository; this is the thing with one. Nothing here is a
-    /// simulation of git's *reasoning* — the session already refused whatever
-    /// it was going to refuse — only of its bookkeeping.
+    /// The frontend's part again. The session decided what should happen to the
+    /// repository, and this applies it. It does not simulate git's checks, which
+    /// the session has already applied, only the resulting state changes.
     fn apply_git(&mut self, operation: &deco_scm::Operation) {
         match operation {
             deco_scm::Operation::Stage(path) => {
                 for (held, staged, worktree) in self.scm.iter_mut() {
                     if held.as_str() == path.to_string_lossy() {
-                        // An untracked file becomes an addition; anything else
-                        // moves its working-tree letter across to the index.
+                        // An untracked file becomes an addition; otherwise the
+                        // working-tree letter moves to the index.
                         *staged = if *worktree == '?' { 'A' } else { *worktree };
                         *worktree = '.';
                     }
@@ -562,8 +550,8 @@ impl Take {
                     }
                 }
             }
-            // The staged half is now what HEAD has. A file modified again
-            // since it was staged remains as a working-tree change.
+            // The staged changes are now in HEAD. A file modified again after
+            // staging remains as a working-tree change.
             deco_scm::Operation::Commit(_) => {
                 for (_, staged, _) in self.scm.iter_mut() {
                     *staged = '.';
@@ -580,13 +568,12 @@ impl Take {
         self.refresh_scm();
     }
 
-    /// Says what `HEAD` had for the file on screen.
+    /// Sets the `HEAD` version of the file on screen.
     ///
-    /// The demonstration is the thing with a `git` here, as it is the thing
-    /// with a filesystem for the tree. Handed the committed text rather than a
-    /// diff: the marks that come out are computed by the editor's own code
-    /// from this and the buffer, so the frames cannot show a gutter the
-    /// editor would not draw.
+    /// The demonstration acts as git here, as it acts as the filesystem for the
+    /// tree. It passes the committed text rather than a diff. The editor's code
+    /// computes the gutter marks from this text and the buffer, so the frames
+    /// show only marks the editor would draw.
     fn committed(&mut self, text: &str) -> &mut Self {
         let path = self
             .session
@@ -601,10 +588,8 @@ impl Take {
 
     /// Carries out one of the tree's operations on the in-memory workspace.
     ///
-    /// A rename moves every path *under* the old one, not just the entry
-    /// itself — renaming a directory in the real filesystem takes its contents
-    /// with it, and a demonstration where it did not would be showing something
-    /// the editor does not do.
+    /// A rename also moves every path under the old one, because renaming a
+    /// directory in a real filesystem moves its contents.
     fn apply_file_operation(&mut self, operation: &deco_editor::FileOperation) {
         use deco_editor::FileOperation;
         let relative = |path: &Path| {
@@ -618,8 +603,8 @@ impl Take {
                 self.workspace.push((relative(path), String::new()));
             }
             // Directories are implied by the paths under them, so an empty one
-            // needs a marker to exist at all — the trailing slash the workspace
-            // shape already uses.
+            // needs a marker: the trailing slash the workspace format already
+            // uses.
             FileOperation::CreateFolder(path) => {
                 self.workspace
                     .push((format!("{}/", relative(path)), String::new()));
@@ -635,9 +620,9 @@ impl Take {
                 }
             }
             // The demonstration's workspace holds no content for a created
-            // file, so "if empty" is always true here — the refusal is a
-            // property of the real filesystem, and belongs to the frontend's
-            // tests rather than to a picture.
+            // file, so "if empty" is always true here. Refusing a non-empty
+            // delete depends on the real filesystem and is tested in the
+            // frontend's tests.
             FileOperation::Delete { path, .. } | FileOperation::DeleteIfEmpty { path, .. } => {
                 let gone = relative(path);
                 let under = format!("{gone}/");
@@ -649,11 +634,10 @@ impl Take {
 
     /// Gives the file tree a workspace to show, and roots it there.
     ///
-    /// Paths are `dir/file`, a trailing `/` marking a directory — the same shape
-    /// the tests use. Supplied rather than read from disk because that is how
-    /// the tree really works: the session is *handed* directory contents by
-    /// whoever has a filesystem, so a demonstration can be that whoever, and the
-    /// rows on screen are the model's own.
+    /// Paths are `dir/file`, with a trailing `/` for a directory, as in the
+    /// tests. They are supplied rather than read from disk, because the session
+    /// receives directory contents from the frontend. The demonstration acts as
+    /// the frontend, and the rows on screen come from the real model.
     fn workspace(&mut self, files: &[(&str, &str)]) -> &mut Self {
         self.workspace = files
             .iter()
@@ -664,7 +648,7 @@ impl Take {
         self
     }
 
-    /// Answers whatever listings the tree is waiting on, from `workspace`.
+    /// Supplies the directory listings the tree has requested, from `workspace`.
     fn fill_tree(&mut self) {
         for _ in 0..16 {
             let Some(dir) = self.session.directory_wanted() else {
@@ -709,7 +693,7 @@ impl Take {
 
     /// Types `text` one character at a time, capturing only the finished result.
     ///
-    /// A frame per letter makes a long word into a slideshow nobody reads.
+    /// One frame per letter would make a long word too slow to watch.
     fn type_text(&mut self, text: &str) -> &mut Self {
         for c in text.chars() {
             self.type_char(c);
@@ -721,9 +705,9 @@ impl Take {
 
     /// Types one character without capturing a frame.
     ///
-    /// The chord is built rather than parsed, because that is what a terminal
-    /// sends: a space arrives as the character `' '`, not as the named `space`
-    /// key — and the named key types nothing.
+    /// The chord is built rather than parsed, to match what a terminal sends: a
+    /// space arrives as the character `' '`, not as the named `space` key, and
+    /// the named key does not insert text.
     fn type_char(&mut self, c: char) {
         let chord = deco_keymap::keys::Chord {
             key: deco_keymap::keys::Key::Char(c),
@@ -735,8 +719,8 @@ impl Take {
 
     /// Keeps the text area's height right when a bar opens or closes.
     ///
-    /// The terminal frontend does this on every frame; a demonstration that
-    /// skipped it would show the find bar covering the last line of the file.
+    /// The terminal frontend does this on every frame. Without it, the find bar
+    /// would cover the last line of the file.
     fn resize_for_chrome(&mut self) {
         let chrome = render::chrome_height(&self.session, ROWS);
         self.session.resize(COLUMNS, ROWS.saturating_sub(chrome));
@@ -744,13 +728,11 @@ impl Take {
 
     /// Captures the current screen.
     fn capture(&mut self, caption: &str, hold: u32) -> &mut Self {
-        // What `Driver::frame` does before it draws, and here for the same
-        // reason: the git marks are derived from the buffer, so they are
-        // brought up to date at the moment of drawing rather than by the
-        // renderer. Here rather than in `press`, because a frame can be taken
-        // without a key being pressed — and a demonstration showing the gutter
-        // as it was one edit ago would be showing something the editor does
-        // not do.
+        // `Driver::frame` does the same before drawing: the git marks are
+        // derived from the buffer, so they are updated when a frame is drawn
+        // rather than by the renderer. This is here rather than in `press`,
+        // because a frame can be captured without a key press, and the gutter
+        // must not show the state from one edit earlier.
         self.session.refresh_diffs();
         let frame = render::render(&self.session, COLUMNS, ROWS);
         self.shots.push(Shot {
@@ -848,9 +830,9 @@ fn replace() -> String {
 
 fn diagnostics() -> String {
     let mut take = Take::new("main.rs", SAMPLE);
-    // Injected rather than fetched: a demonstration must not need a language
-    // server installed to build, and the renderer cannot tell the difference —
-    // this is the same list a `publishDiagnostics` notification produces.
+    // Injected rather than fetched, so building a demonstration does not need a
+    // language server. The renderer handles it the same way: this is the list a
+    // `publishDiagnostics` notification produces.
     take.session.set_diagnostics(vec![
         Diagnostic {
             range: Range::new(Position::new(2, 8), Position::new(2, 13)),
@@ -876,8 +858,8 @@ fn diagnostics() -> String {
 }
 
 fn code_actions() -> String {
-    // A file with something wrong with it, so the diagnostic and the fix for it
-    // are on screen together — which is the pairing the feature is about.
+    // A file with a warning, so the diagnostic and its fix are on screen
+    // together.
     const TEXT: &str = "fn main() {\n    let count = 2;\n    println!(\"hello\");\n}\n";
     let mut take = Take::new("main.rs", TEXT);
     take.session.set_diagnostics(vec![Diagnostic {
@@ -889,9 +871,9 @@ fn code_actions() -> String {
     }]);
     take.at(1, 8).capture("the caret is on the warning", 4);
 
-    // The list the server answered with, injected for the same reason the
-    // diagnostics are: a demonstration must not need a server installed to
-    // build. Everything after this is the editor's own code.
+    // The server's response, injected for the same reason as the diagnostics:
+    // building a demonstration must not need a server. Everything after this
+    // is the editor's own code.
     take.session.offer_code_actions(vec![
         deco_editor::commands::PaletteEntry::new("0", "Prefix the name with an underscore")
             .with_detail("quickfix"),
@@ -904,8 +886,9 @@ fn code_actions() -> String {
     take.resize_for_chrome();
     take.capture("ctrl+.", 7);
 
-    // Choosing the first one. The edit is the server's; applying it is the same
-    // workspace-edit path a rename uses, which is why one `ctrl+z` takes it back.
+    // Choose the first action. The edit comes from the server and is applied
+    // through the same workspace-edit path as a rename, so one `ctrl+z` reverts
+    // it.
     take.session
         .run("workbench.action.acceptSelectedQuickOpenItem", None, 0);
     let edit = deco_lsp::WorkspaceEdit {
@@ -941,10 +924,9 @@ fn rename() -> String {
     let mut take = Take::new("main.rs", RENAME_MAIN);
     take.at(1, 4).capture("the caret is on `greet`", 3);
 
-    // `f2` is gated on `editorHasRenameProvider`, which is set from what a
-    // server announced — so the prompt is opened the way the frontend opens it
-    // once that check has passed, rather than by pressing a key that would be
-    // unbound with no server running.
+    // `f2` requires `editorHasRenameProvider`, which is set from the server's
+    // capabilities. Without a server the key is unbound, so the prompt is opened
+    // as the frontend opens it after that check passes.
     take.session.offer_rename();
     take.resize_for_chrome();
     take.capture("f2", 4);
@@ -953,10 +935,10 @@ fn rename() -> String {
     take.session
         .run("workbench.action.acceptSelectedQuickOpenItem", None, 0);
 
-    // The server's answer, injected for the same reason the diagnostics above
-    // are: a demonstration must not need a language server installed to build.
-    // This is the `WorkspaceEdit` a rename provider returns, and everything from
-    // here on is the editor's own code deciding what to do with it.
+    // The server's response, injected for the same reason as the diagnostics
+    // above: building a demonstration must not need a language server. This is
+    // the `WorkspaceEdit` a rename provider returns, and everything after this
+    // is the editor's own code.
     let edit = deco_lsp::WorkspaceEdit {
         changes: vec![
             document_edits("file:///demo/main.rs", &[(1, 4, 9), (4, 3, 8)], "welcome"),
@@ -977,13 +959,13 @@ fn rename() -> String {
         .session
         .apply_workspace_edit(plan, 0)
         .expect("nothing overlaps");
-    // The sentence the terminal frontend puts there, built the same way, so the
-    // frame shows the status line a user would actually get.
+    // The same status message the terminal frontend builds, so the frame shows
+    // the status line a user would see.
     take.session.status = Some(applied.summary("Renamed"));
 
     take.resize_for_chrome();
-    // The tab bar is the part worth pausing on: `helper.rs` was not open a
-    // moment ago, and the status line says how much is now unsaved.
+    // Held longer for the tab bar: `helper.rs` was not open before, and the
+    // status line shows how much is now unsaved.
     take.capture("enter", 7);
 
     take.press_and_hold(&["ctrl+z"], 6);
@@ -1046,8 +1028,8 @@ fn snippet_tabstops() -> String {
 }
 
 fn completion() -> String {
-    // A blank line to complete on, so the frames show the prefix being typed
-    // into the file rather than a caption claiming it was.
+    // A blank line to complete on, so the frames show the prefix typed into the
+    // file rather than only in a caption.
     let mut take = Take::new("main.rs", "fn main() {\n    let total = 1;\n    \n}\n");
     take.at(2, 4);
 
@@ -1061,8 +1043,8 @@ fn completion() -> String {
     let mut suggest = Suggest::new(items, Position::new(2, 4), false);
     take.capture_overlay("ctrl+space", 4, None, Some(&suggest));
 
-    // Both the document and the list, in that order — which is what the event
-    // loop does, and why a keystroke narrows the list and inserts itself.
+    // Update the document, then the list, as the event loop does. A keystroke
+    // both inserts the character and narrows the list.
     for c in "pr".chars() {
         take.type_char(c);
         suggest.push(c);
@@ -1071,8 +1053,8 @@ fn completion() -> String {
     suggest.next();
     take.capture_overlay("down", 4, None, Some(&suggest));
 
-    // Accepting inserts the selected label, which is what the frontend does with
-    // `Session::replace_range` once the list has answered.
+    // Accepting inserts the selected label, as the frontend does with
+    // `Session::replace_range` once the list has a result.
     let selected = suggest.selected_item().expect("the list has a selection");
     let insert = selected.insert.clone();
     let anchor = suggest.anchor();
@@ -1084,9 +1066,8 @@ fn completion() -> String {
 }
 
 fn highlighting() -> String {
-    // One frame per language, so the colours can be compared across them. Each is
-    // a separate document, which is also what proves the lexer is chosen from the
-    // file name rather than guessed at.
+    // One frame per language, so the colours can be compared. Each is a separate
+    // document, which also shows that the lexer is selected from the file name.
     let samples: [(&str, &str); 5] = [
         (
             "main.rs",
@@ -1130,9 +1111,9 @@ fn go_to_symbol() -> String {
     let mut take = Take::new("counter.rs", TEXT);
     take.at(0, 0).capture("counter.rs", 4);
 
-    // Injected rather than fetched, as the diagnostics demonstration injects its
-    // own: building the documentation must not need rust-analyzer installed, and
-    // this is the list `textDocument/documentSymbol` decodes to.
+    // Injected rather than fetched, as in the diagnostics demonstration, so
+    // building the documentation does not need rust-analyzer. This is the list
+    // that `textDocument/documentSymbol` decodes to.
     take.session.offer_symbols(vec![
         symbol_entry("Counter", "struct", 0, 7),
         symbol_entry("Counter.value", "field", 1, 4),
@@ -1142,14 +1123,14 @@ fn go_to_symbol() -> String {
     take.resize_for_chrome();
     take.capture("ctrl+shift+o — the kind is the right-hand column", 6);
 
-    // Typing filters, and `bump` is reachable by its own name even though the
-    // list shows it qualified.
+    // Typing filters the list. `bump` matches by its own name, although the list
+    // shows the qualified name.
     take.type_text("bump");
 
-    // What the frontend does with the `OpenFile` outcome `enter` produces. Spelled
-    // out here because the core has no filesystem: it names the file and the
-    // position, and the frontend is what goes there. For a document already open
-    // this is a tab switch onto itself, which is why unsaved changes survive.
+    // What the frontend does with the `OpenFile` outcome of `enter`. Written out
+    // here because the core has no filesystem: it names the file and position,
+    // and the frontend opens it. For an open document this switches to its own
+    // tab, so unsaved changes are kept.
     take.session.prompt = None;
     take.session.open(PathBuf::from("/demo/counter.rs"), TEXT);
     take.at(9, 7);
@@ -1174,20 +1155,20 @@ fn symbol_entry(
 }
 
 fn semantic_tokens() -> String {
-    // Deliberately a sample the lexer gets *right* as far as it can, so the
-    // difference the frames show is only what a lexer cannot know: which names
-    // are parameters, which calls are methods, and that `LIMIT` is a constant
-    // rather than the type its capitals suggest.
+    // A sample the lexer highlights correctly as far as it can, so the frames
+    // show only information a lexer cannot have: which names are parameters,
+    // which calls are methods, and that `LIMIT` is a constant rather than a type
+    // as its capitals suggest.
     const TEXT: &str = "const LIMIT: u32 = 10;\n\nfn scale(values: &mut [u32], factor: u32) {\n    for value in values.iter_mut() {\n        *value = (*value * factor).min(LIMIT);\n    }\n}\n";
 
     let mut take = Take::new("main.rs", TEXT);
     take.at(0, 0)
         .capture("the lexer alone — LIMIT reads as a type", 5);
 
-    // Injected rather than fetched, for the same reason the diagnostics
-    // demonstration injects: building the documentation must not need
-    // rust-analyzer installed, and the renderer cannot tell the difference —
-    // this is the list `textDocument/semanticTokens/full` decodes to.
+    // Injected rather than fetched, as in the diagnostics demonstration, so
+    // building the documentation does not need rust-analyzer. The renderer
+    // handles it the same way: this is the list that
+    // `textDocument/semanticTokens/full` decodes to.
     take.session.semantic_tokens = vec![
         semantic("variable", &["readonly"], 0, 6, 11),
         semantic("function", &[], 2, 3, 8),
@@ -1204,8 +1185,8 @@ fn semantic_tokens() -> String {
     ];
     take.capture("the server: LIMIT is a constant, and names are bound", 6);
 
-    // Off again, in place: the setting is read on every frame, so the same
-    // document and the same token list answer both ways without reopening it.
+    // Disabled in place. The setting is read on every frame, so the same
+    // document and token list show both states without reopening.
     take.session
         .settings
         .load_layer(
@@ -1217,7 +1198,7 @@ fn semantic_tokens() -> String {
     take.finish()
 }
 
-/// One token in a server's answer, in the shape the decoder produces.
+/// One token in a server's response, in the form the decoder produces.
 fn semantic(
     token_type: &str,
     modifiers: &[&str],
@@ -1236,13 +1217,12 @@ fn chrome() -> String {
     let mut take = Take::new("main.rs", SAMPLE);
     take.at(1, 8).capture("the editor has the whole window", 4);
 
-    // Real keys: both of these were named refusals until this chapter shipped.
+    // Real keys. Both commands were previously rejected as not implemented.
     take.press_and_hold(&["ctrl+b"], 6)
         .press_and_hold(&["ctrl+j"], 6);
 
-    // The keyboard is still in the text — showing a region does not cost you
-    // your place, which is the thing that is easiest to get wrong and hardest
-    // to see in a still image.
+    // Keyboard focus stays in the text: showing a region does not move the
+    // caret. This is easy to break and hard to see in a still image.
     take.type_text("mut ");
 
     take.press_and_hold(&["ctrl+b"], 4)
@@ -1266,20 +1246,20 @@ fn file_tree() -> String {
     ]);
     take.at(1, 8).capture("a workspace, and one file open", 3);
 
-    // The tree appears without taking the keyboard: `ctrl+b` shows, it does not
-    // focus. `ctrl+shift+e` is what moves into it.
+    // The tree appears without taking keyboard focus: `ctrl+b` shows it but does
+    // not focus it. `ctrl+shift+e` moves focus into it.
     take.press_and_hold(&["ctrl+b"], 5);
     take.press_and_hold(&["ctrl+shift+e"], 4);
 
-    // Two levels down, a directory at a time. Each `right` is what asks for
-    // that directory's contents — nothing below a closed folder has been read.
+    // Two levels down, one directory at a time. Each `right` requests that
+    // directory's contents; nothing below a closed folder has been read.
     take.press_and_hold(&["right"], 3)
         .press(&["down"])
         .press_and_hold(&["right"], 4)
         .press(&["down"]);
 
-    // Enter opens the file and takes the keyboard with it, so what is typed
-    // next goes into what was just opened rather than into what was there.
+    // Enter opens the file and moves focus to it, so the next text typed goes
+    // into the opened file rather than the previous one.
     take.press_and_hold(&["enter"], 5);
     take.type_text("// ");
     take.capture("the caret is in the file the tree opened", 5);
@@ -1287,9 +1267,9 @@ fn file_tree() -> String {
 }
 
 fn git_status() -> String {
-    // Assembled as the bytes `git status --porcelain=v2 --branch -z` writes,
-    // and parsed by the same code the editor uses. A `Status` built by hand
-    // here would be a demonstration of a struct rather than of git.
+    // Built as the bytes `git status --porcelain=v2 --branch -z` writes, and
+    // parsed by the editor's own code. A hand-built `Status` would skip the
+    // parser.
     fn status(entries: &[&str]) -> String {
         let mut out = String::from(
             "# branch.oid 1c9d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d\0\
@@ -1313,19 +1293,19 @@ fn git_status() -> String {
     take.at(1, 8)
         .capture("on `main`, two commits to push, nothing else to say", 5);
 
-    // Typing changes the file on screen and nothing else: `git` is not run per
-    // keystroke, so the bar is still describing the last thing it was told.
+    // Typing changes only the file on screen. `git` is not run per keystroke, so
+    // the bar still shows the last reported status.
     take.type_text("mut ");
     take.git(&status(&[MODIFIED]))
         .capture("edited, and the bar has not moved", 5);
 
-    // A save is what asks again — and the same `git` call is what answers.
+    // A save requests the status again, and the same `git` call supplies it.
     take.press_and_hold(&["ctrl+s"], 2);
     take.git(&status(&[MODIFIED]))
         .capture("saving is what asks git again", 6);
 
-    // So is making a file. One more thing git has to say about, before it has
-    // ever been written to.
+    // Creating a file also requests the status. The new file is reported before
+    // anything is written to it.
     take.press_and_hold(&["ctrl+b"], 3)
         .press_and_hold(&["ctrl+shift+e"], 3)
         .press_and_hold(&["ctrl+n"], 3);
@@ -1337,9 +1317,9 @@ fn git_status() -> String {
 }
 
 fn git_gutter() -> String {
-    // The file as it was committed. The demonstration then edits it with real
-    // keys, so every mark on screen is one the editor worked out from this
-    // text and the buffer — not one the scenario asked for.
+    // The committed file. The demonstration edits it with real keys, so every
+    // mark on screen is computed by the editor from this text and the buffer,
+    // not set by the scenario.
     const HEAD: &str = "fn main() {\n    let total = 0;\n    let count = 2;\n\
                             let extra = 4;\n    let last = 5;\n    report();\n}\n";
 
@@ -1350,20 +1330,19 @@ fn git_gutter() -> String {
         5,
     );
 
-    // A line that says something else.
+    // A changed line.
     take.at(1, 0).press(&["end", "backspace", "backspace"]);
     take.type_text("9;");
     take.capture("`│` — this line differs from the committed one", 6);
 
-    // A line that was not there at all. Separated from the change above by an
-    // untouched line, which is what keeps the two marks distinct rather than
-    // one block: git reports a replaced run as a single hunk.
+    // An added line. An unchanged line separates it from the change above, so
+    // the two marks stay distinct; git reports adjacent changes as one hunk.
     take.at(2, 0).press(&["end", "enter"]);
     take.type_text("let sum = 3;");
     take.capture("`┃` — this line is new", 6);
 
-    // And one taken away. Nothing is left to draw beside, so the mark sits on
-    // the top edge of the line that took its place.
+    // A removed line. There is no line to mark, so the mark is drawn on the top
+    // edge of the following line.
     take.at(5, 0).press_and_hold(&["ctrl+shift+k"], 6);
     take.capture("`▔` — a line was removed just above", 6);
     take.finish()
@@ -1376,24 +1355,23 @@ fn git_view() -> String {
         ("src/main.rs", SAMPLE),
         ("src/notes.md", "# notes\n"),
     ]);
-    // One file edited since the last commit, one git has never seen.
+    // One file edited since the last commit, and one untracked file.
     take.repository(&[("src/main.rs", '.', 'M'), ("src/notes.md", '.', '?')]);
     take.at(1, 8).capture("two files differ from `HEAD`", 5);
 
-    // The side bar's other tenant. One key opens it, switches to it and takes
-    // the keyboard.
+    // The side bar's other view. One key opens it, switches to it and moves
+    // keyboard focus to it.
     take.press_and_hold(&["ctrl+shift+g"], 6);
 
-    // Staging moves the row from one heading to another, which is the whole
-    // reason a file can appear under two. Through the palette, because VS Code
-    // has no default key for it either — its view is driven by the buttons on
-    // each row, and deco does not invent keys VS Code has not.
+    // Staging moves the row from one heading to the other; this is why a file
+    // can appear under both. It is run from the palette because VS Code has no
+    // default key for it either. VS Code's view uses buttons on each row, and
+    // deco does not add keys that VS Code does not have.
     take.press(&["ctrl+shift+p"]);
     take.type_text("stage all");
     take.press_and_hold(&["enter"], 6);
 
-    // And a commit empties the list, because what was staged is now what
-    // `HEAD` has.
+    // A commit empties the list, because the staged changes are now in `HEAD`.
     take.press(&["ctrl+enter"]);
     take.type_text("first commit");
     take.press_and_hold(&["enter"], 6);
@@ -1499,8 +1477,8 @@ fn file_mutations() -> String {
     take.press_and_hold(&["ctrl+b"], 3);
     take.press_and_hold(&["ctrl+shift+e"], 3);
 
-    // Into `src`, so the new file lands beside its siblings rather than at the
-    // root — the directory a new file goes in is the one that is selected.
+    // Into `src`, so the new file is created beside its siblings rather than at
+    // the root. A new file goes into the directory of the selection.
     take.press_and_hold(&["right"], 3).press(&["down"]);
     take.capture("src/lib.rs selected", 3);
 
@@ -1509,21 +1487,21 @@ fn file_mutations() -> String {
     take.type_text("parse.rs");
     take.press_and_hold(&["enter"], 5);
 
-    // It was created *and* opened, and the keyboard went with it — so this
-    // types into the new file.
+    // The file was created and opened, and keyboard focus moved to it, so this
+    // text goes into the new file.
     take.type_text("pub fn parse() {}");
     take.capture("created, opened, and being typed into", 5);
 
-    // Back to the tree to rename it. `F2` here is the file; `F2` in the text is
-    // the symbol under the cursor, and they are told apart by what has focus.
+    // Back to the tree to rename it. `F2` in the tree renames the file; `F2` in
+    // the text renames the symbol under the cursor. Focus decides which applies.
     take.press_and_hold(&["ctrl+shift+e"], 3);
     take.press_and_hold(&["f2"], 4);
     take.type_text("lexer.rs");
     take.press_and_hold(&["enter"], 5);
     take.capture("renamed — and the tab followed it", 5);
 
-    // The tree's own undo. `ctrl+z` here puts the file back; in the text it
-    // would put characters back.
+    // The tree's own undo. `ctrl+z` here reverts the rename; in the text it
+    // would revert text edits.
     take.press_and_hold(&["ctrl+z"], 6);
     take.finish()
 }
@@ -1545,14 +1523,14 @@ fn tabs() -> String {
         .type_text("mut ")
         .press_and_hold(&["ctrl+tab"], 3)
         .press_and_hold(&["ctrl+tab"], 4)
-        // A dirty tab refuses to close — losing edits to a keystroke is the
-        // worst thing an editor can do, and deco has no dialog to ask with.
+        // A dirty tab does not close, because a keystroke must not discard edits
+        // and deco has no confirmation dialog.
         .press_and_hold(&["ctrl+w"], 5);
-    // The refusal has been read; a status message persists until the next one,
-    // and carrying it into the closing frames would read as a second refusal.
+    // Clear the refusal message. A status message stays until the next one, and
+    // in the following frames it would look like a second refusal.
     take.session.status = None;
     take.press_and_hold(&["ctrl+tab"], 2)
-        // The clean tab closes, and with one document left the bar goes away.
+        // The clean tab closes, and with one document left the bar disappears.
         .press_and_hold(&["ctrl+w"], 5);
     take.finish()
 }
@@ -1576,10 +1554,10 @@ fn save_all() -> String {
         .type_text("mut ");
     take.capture("two tabs edited — the bar marks both", 5);
 
-    // Exactly what the frontend does with `Outcome::SaveAll`: the loop and the
-    // reporting are the core's, and only the write belongs to the frontend. Here
-    // the write succeeds without touching a disk, which is the same closure the
-    // tests use.
+    // The same as the frontend's handling of `Outcome::SaveAll`: the core does
+    // the loop and the report, and only the write is the frontend's. Here the
+    // write succeeds without touching a disk, using the same closure as the
+    // tests.
     if let deco_editor::commands::Outcome::Message(report) = take.session.save_all(|_, _| Ok(())) {
         take.session.status = Some(report);
     }
@@ -1594,10 +1572,10 @@ fn color_theme() -> String {
     take.press(&["ctrl+k"]);
     take.press(&["ctrl+t"]);
 
-    // The list is the frontend's, since a contributed theme is a file in an
-    // extension directory. Handed in rather than walked, so the demonstration does
-    // not depend on what happens to be installed where it is generated — but
-    // through the real row builder, so the columns are the ones a reader will see.
+    // The frontend builds the list, since a contributed theme is a file in an
+    // extension directory. It is passed in rather than read from disk, so the
+    // demonstration does not depend on what is installed where it is generated.
+    // The real row builder is used, so the columns match what users see.
     let installed = [
         ("Default Dark Modern", None, "dark"),
         ("Default Light Modern", None, "light"),
@@ -1615,9 +1593,9 @@ fn color_theme() -> String {
     take.capture("dark or light is the second column", 6);
     take.type_text("light");
 
-    // Exactly what the frontend does with `Outcome::LoadTheme`: the picker names a
-    // theme, and reading it belongs to the side with a filesystem. A built-in
-    // needs only its label.
+    // The same as the frontend's handling of `Outcome::LoadTheme`: the picker
+    // names a theme, and the frontend, which has filesystem access, reads it. A
+    // built-in theme needs only its label.
     take.session.prompt = None;
     if let deco_editor::commands::Outcome::Message(report) = take.session.set_theme(
         deco_theme::defaults::builtin("Default Light Modern")
@@ -1631,8 +1609,8 @@ fn color_theme() -> String {
 }
 
 fn split() -> String {
-    // Long enough that the two groups can be looking at different parts of it,
-    // which is the reason to split at all.
+    // Long enough that the two groups can show different parts of it, which is
+    // the purpose of splitting.
     let mut text = String::from("fn main() {\n");
     for n in 1..=40 {
         text.push_str(&format!("    step_{n}();\n"));
@@ -1644,7 +1622,7 @@ fn split() -> String {
     take.press_and_hold(&["ctrl+\\"], 6);
 
     // Scroll the new group to the end of the function while the first stays at
-    // the top: two places in one file, at once.
+    // the top, showing two places in one file at the same time.
     take.session.view.scroll_top = 28;
     take.at(30, 4);
     take.resize_for_chrome();
@@ -1662,8 +1640,8 @@ fn block_comment() -> String {
         "main.rs",
         "fn main() {\n    let total = 1;\n    let count = 2;\n    println!(\"{total}\");\n}\n",
     );
-    // Two whole lines, which is what makes the difference from `ctrl+/` visible:
-    // one comment around the block rather than a token on each line.
+    // Two whole lines, to show the difference from `ctrl+/`: one comment around
+    // the block rather than a comment token on each line.
     take.session.view.selections = SelectionSet::single(deco_core::Selection::new(
         Position::new(1, 4),
         Position::new(2, 18),
@@ -1671,7 +1649,7 @@ fn block_comment() -> String {
     take.capture("two lines selected", 4);
     take.press_and_hold(&["ctrl+shift+a"], 6);
     take.press_and_hold(&["ctrl+shift+a"], 5);
-    // And with nothing selected, an empty comment with the caret inside it.
+    // With nothing selected, an empty comment with the caret inside it.
     take.at(3, 23);
     take.press_and_hold(&["ctrl+shift+a"], 5);
     take.type_text("why");
@@ -1679,8 +1657,8 @@ fn block_comment() -> String {
 }
 
 fn word_wrap() -> String {
-    // Prose rather than code, because that is where the long line comes from, and
-    // where moving by row rather than by line is the visible difference.
+    // Prose rather than code, because prose has long lines, and moving by row
+    // rather than by line is visible there.
     let mut take = Take::new(
         "notes.md",
         "# Word wrap\n\nA paragraph long enough to run several rows past the right edge \
@@ -1691,8 +1669,8 @@ fn word_wrap() -> String {
         .capture("line 3 runs off the edge — the rest is not on screen", 5)
         .press_and_hold(&["alt+z"], 6);
 
-    // Down the wrapped rows. Each press moves one row and not one line, which the
-    // status bar's column reports and a still image cannot show.
+    // Down the wrapped rows. Each press moves one row, not one line, as the
+    // status bar's column shows.
     take.press(&["down"]);
     take.press(&["down"]);
     take.press_and_hold(&["down"], 4);
@@ -1702,8 +1680,8 @@ fn word_wrap() -> String {
 }
 
 fn wrapping_indent() -> String {
-    // Indented code, where the continuation row's own indentation is the point: at
-    // column zero it would sit beside the unindented lines around it.
+    // Indented code, to show the continuation row's indentation. At column zero
+    // it would align with the unindented lines around it.
     const NESTED: &str = "fn main() {\n    if ready {\n        let total = one + two + three + four + five + six + seven + eight;\n    }\n}\n";
     let mut take = Take::new("main.rs", NESTED);
     take.at(2, 8).capture(
@@ -1730,13 +1708,14 @@ fn detect_indentation() -> String {
         "config.ts",
         "export const config = {\n  retries: 3,\n  timeout: 500,\n};\n",
     );
-    // At the start of the closing line, where one press of `tab` inserts exactly
-    // one level and the width of that level is the thing being demonstrated.
+    // At the start of the closing line, where one press of `tab` inserts one
+    // indentation level, whose width is what this demonstrates.
     take.at(3, 0).capture(
         "two-space TypeScript — the status bar says the file overruled the setting",
         6,
     );
-    // One press of `tab` in somebody else's project must not reindent it.
+    // One press of `tab` in another project's file must not introduce a
+    // different indentation width.
     take.press_and_hold(&["tab"], 6);
 
     // The same key in a file that indents by four, for contrast.
@@ -1754,15 +1733,15 @@ fn detect_indentation() -> String {
 }
 
 fn view_settings() -> String {
-    // Three settings that draw rather than behave, so one scenario shows all three
-    // against the same file by turning them on in turn.
+    // Three settings that affect only rendering, so one scenario shows all three
+    // on the same file by enabling them in turn.
     let mut take = Take::new("main.rs", RULED);
     take.at(1, 4).capture(
         "the defaults: whitespace shows inside a selection, and nowhere else",
         5,
     );
 
-    // Selected, which is what the default mode marks.
+    // A selection, where the default mode shows whitespace.
     take.session.view.selections = SelectionSet::single(deco_core::Selection::new(
         Position::new(1, 0),
         Position::new(1, 18),
@@ -1784,21 +1763,22 @@ fn view_settings() -> String {
     take.finish()
 }
 
-/// A file with lines either side of column 24, so a ruler has something to warn
-/// about; one tab-indented line, so an arrow has somewhere to go; and enough lines
-/// that `lineNumbers: "interval"` reaches its first tenth.
+/// A file with lines on both sides of column 24, so a ruler is meaningful; one
+/// tab-indented line, to show a tab arrow; and enough lines that
+/// `lineNumbers: "interval"` reaches its first tenth.
 const RULED: &str = "fn main() {\n    let total = 1;\n    let long = total + 2 + 3 + 4;\n\tlet tabbed = 5;\n    let a = 1;\n    let b = 2;\n    let c = 3;\n    let d = 4;\n    let e = 5;\n    let f = 6;\n    println!(\"{total}\");\n}\n";
 
 fn auto_closing_brackets() -> String {
     let mut take = Take::new("main.rs", "fn main() {\n    \n}\n");
     take.at(1, 4).capture("an empty line, ready for a call", 4);
-    // Every keystroke captured: the pair appearing and the caret staying inside it
-    // is the whole feature, and it happens one character at a time.
+    // Every keystroke is captured, because the feature (the closing character
+    // appearing and the caret staying inside the pair) happens per character.
     take.press(&["p", "r", "i", "n", "t"]);
     take.press_and_hold(&["("], 6);
     take.press_and_hold(&["\""], 6);
     take.press(&["h", "i"]);
-    // And back out over both closers, typing them rather than moving past them.
+    // Type both closing characters, which moves over them instead of inserting
+    // duplicates.
     take.press_and_hold(&["\""], 5);
     take.press_and_hold(&[")"], 6);
     take.press_and_hold(&[";"], 5);
@@ -1809,21 +1789,21 @@ fn auto_indent() -> String {
     let mut take = Take::new("main.rs", "fn main() {\n    if ready \n}\n");
     take.at(1, 14)
         .capture("the caret after `if ready`, one level in", 4);
-    // `{` closes itself, and `enter` opens the pair into a block.
+    // `{` inserts its closing brace, and `enter` expands the pair into a block.
     take.press_and_hold(&["{"], 5);
     take.press_and_hold(&["enter"], 7);
     take.press(&["r", "u", "n"]);
     take.press_and_hold(&["("], 4);
     take.press_and_hold(&[")"], 4);
     take.press_and_hold(&[";"], 6);
-    // And a second `enter`, which keeps the indentation it is on.
+    // A second `enter` keeps the current indentation.
     take.press_and_hold(&["enter"], 6);
     take.finish()
 }
 
 fn trim_auto_whitespace() -> String {
-    // Whitespace is invisible, so the demonstration turns it on: with
-    // `renderWhitespace: "all"` the indent that is taken back can be seen going.
+    // Whitespace is invisible by default, so the demonstration enables
+    // `renderWhitespace: "all"` to show the removed indentation.
     let mut take = Take::new("main.rs", "fn main() {\n    let total = 1;\n}\n");
     take.append(
         r#"{"editor.renderWhitespace": "all"}"#,
@@ -1845,13 +1825,13 @@ fn save_as() -> String {
         .capture("notes.txt — plain, and named as such", 4);
     take.press_and_hold(&["ctrl+shift+s"], 5);
 
-    // The seed opens selected, so typing replaces it — which is what makes
-    // seeding the field with the current path worth doing.
+    // The initial path is selected, so typing replaces it. This is what makes
+    // filling the field with the current path useful.
     take.type_text("/demo/Cargo.toml");
 
-    // What the frontend does with `Outcome::SaveAs`: resolve the path, write it,
-    // and hand it back. The write is elided here — a demonstration must not touch a
-    // disk — but the renaming is the real thing.
+    // What the frontend does with `Outcome::SaveAs`: resolve the path, write the
+    // file, and pass the path back. The write is skipped because a demonstration
+    // must not touch the disk, but the rename is real.
     take.session.prompt = None;
     if let deco_editor::commands::Outcome::Message(report) =
         take.session.rename_to(PathBuf::from("/demo/Cargo.toml"))
@@ -1864,8 +1844,8 @@ fn save_as() -> String {
 }
 
 fn language_mode() -> String {
-    // A `.txt` file that is really TOML. Nothing about the name says so, so the
-    // lexer has nothing to go on until it is told.
+    // A `.txt` file that contains TOML. The name does not indicate the language,
+    // so no lexer is selected until the language is set.
     let mut take = Take::new(
         "notes.txt",
         "# A manifest, in a file that does not say so.\n[package]\nname = \"deco\"\nedition = \"2021\"\n",
@@ -1881,9 +1861,9 @@ fn language_mode() -> String {
 
 fn quick_open() -> String {
     let mut take = Take::new("main.rs", SAMPLE);
-    // The list is handed in rather than walked: a demonstration must not depend on
-    // what happens to be in the working directory when it is generated, or the
-    // committed file would differ by who ran the command.
+    // The list is passed in rather than read from disk. Otherwise the output
+    // would depend on the working directory, and the committed file would
+    // differ depending on who ran the command.
     let files = [
         "src/main.rs",
         "src/lib.rs",
@@ -1904,8 +1884,8 @@ fn quick_open() -> String {
     take.capture("ctrl+p", 4);
     take.type_text("conf");
     take.press_and_hold(&["down"], 4);
-    // Accepting asks the frontend to read the file; the demonstration stands in
-    // for that, since there is nothing on disk to read.
+    // Accepting asks the frontend to read the file. The demonstration supplies
+    // the content, since there is no file on disk.
     take.session.prompt = None;
     take.session.open(
         PathBuf::from("/demo/src/config/parse.rs"),
@@ -1914,8 +1894,8 @@ fn quick_open() -> String {
     take.resize_for_chrome();
     take.capture("enter — opened in a new tab", 5);
 
-    // And again, now that two files have been on screen: they come first, most
-    // recently first, which is most of what makes the key fast.
+    // Again, now that two files have been open: they are listed first, most
+    // recent first, which makes switching between them fast.
     take.session.offer_files(
         files
             .iter()
@@ -1931,8 +1911,8 @@ fn quick_open() -> String {
 }
 
 fn replace_in_files() -> String {
-    // Two files that both say `amount`, one of them not open — the case the
-    // feature is about, and the reason the tab bar changes partway through.
+    // Two files that contain `amount`, one of them not open. This is the main use
+    // case, and the reason the tab bar changes partway through.
     const OPEN: &str = "fn total(rows: &[Row]) -> u32 {\n    let mut amount = 0;\n    for row in rows {\n        amount += row.value;\n    }\n    amount\n}\n";
     const OTHER: &str = "pub struct Row {\n    pub amount: u32,\n}\n";
 
@@ -1942,8 +1922,8 @@ fn replace_in_files() -> String {
     take.session.run("workbench.action.replaceInFiles", None, 0);
     take.resize_for_chrome();
     take.capture("ctrl+shift+h", 3);
-    // The field opens seeded from the caret and selected, so this is a
-    // demonstration of typing over it rather than of clearing it first.
+    // The field opens filled from the caret and selected, so typing replaces it
+    // without clearing it first.
     take.type_text("amount");
     take.session
         .run("workbench.action.acceptSelectedQuickOpenItem", None, 0);
@@ -1951,9 +1931,9 @@ fn replace_in_files() -> String {
     take.capture("enter — and it asks what to put there", 4);
     take.type_text("subtotal");
 
-    // The search is the frontend's, and a demonstration has no workspace to
-    // walk; the two paths it would have found are handed in. Everything after
-    // this is the editor's own code deciding what the edit is.
+    // The frontend performs the search, and a demonstration has no workspace on
+    // disk, so the two paths it would find are passed in. Everything after this
+    // is the editor's own code building the edit.
     take.session
         .run("workbench.action.acceptSelectedQuickOpenItem", None, 0);
     let plan = take
@@ -1985,17 +1965,17 @@ fn search_in_files() -> String {
     let mut take = Take::new("main.rs", SAMPLE);
     take.at(1, 9)
         .capture("the caret is on `total`", 3)
-        // The field is seeded from the caret, and the seed is only a seed: it
-        // opens selected, so searching for something the cursor is nowhere near
-        // is just typing it.
+        // The field is filled from the caret and selected, so a different term
+        // can be searched by typing it.
         .press_and_hold(&["ctrl+shift+f"], 5)
         .type_text("amount")
-        // The prompt has one line and no room to draw the options, so the toggle
-        // reports them. They are this search's own, not the find bar's.
+        // The prompt has one line and no room for the options, so the toggle
+        // reports them in the status. They belong to this search, not to the
+        // find bar.
         .press_and_hold(&["alt+c"], 5);
 
-    // Handed in for the same reason as the quick-open list: a demonstration must
-    // not depend on what happens to be on disk when it is generated.
+    // Passed in for the same reason as the quick-open list: a demonstration must
+    // not depend on the disk contents where it is generated.
     take.session.offer_search_results(
         "amount",
         vec![
@@ -2028,7 +2008,7 @@ fn search_in_files() -> String {
     take.finish()
 }
 
-/// A search result: the file to open, the line to show, and where to land.
+/// A search result: the file to open, the line to show, and the caret position.
 fn entry(
     path: &str,
     title: &str,
@@ -2040,16 +2020,15 @@ fn entry(
 
 fn command_palette() -> String {
     let mut take = Take::new("main.rs", SAMPLE);
-    // The terminal frontend's own list, so the demonstration cannot offer a
-    // command the editor does not.
+    // The terminal frontend's own list, so the demonstration offers only
+    // commands the editor has.
     take.session.frontend_commands = deco_tui::app::frontend_commands();
     take.at(1, 4)
         .capture("ctrl+shift+p lists every command", 2)
         .press(&["ctrl+shift+p"])
         .type_text("comment")
-        // Down to `Toggle Line Comment`, which is the one with something to show:
-        // `Remove Line Comment` on a line that is not commented correctly does
-        // nothing, and a demonstration of nothing happening teaches nothing.
+        // Down to `Toggle Line Comment`, which has a visible effect. `Remove Line
+        // Comment` on a line that is not commented does nothing.
         .press(&["down"])
         .press_and_hold(&["down"], 3)
         .press_and_hold(&["enter"], 5);
@@ -2058,10 +2037,10 @@ fn command_palette() -> String {
 
 /// The palette listing what an extension contributes.
 ///
-/// The catalogue is built from a manifest written here rather than from a
-/// directory, because the generator has to produce the same picture on every
-/// machine and a real extensions directory is whatever the reader happens to have
-/// installed. What is *drawn* is the real palette over the real rows.
+/// The catalogue is built from a manifest defined here rather than from a
+/// directory, because the generator must produce the same output on every
+/// machine, and a real extensions directory depends on what is installed. The
+/// real palette and real rows are rendered.
 fn extension_commands() -> String {
     let manifest = deco_ext::Manifest::parse(
         r#"{
@@ -2085,7 +2064,7 @@ fn extension_commands() -> String {
 
     let mut take = Take::new("main.rs", SAMPLE);
     take.session.frontend_commands = deco_tui::app::frontend_commands();
-    // The same rows the editor puts there, from the same function.
+    // The same rows the editor adds, from the same function.
     take.session
         .frontend_commands
         .extend(deco_tui::extensions::rows(&catalogue));
@@ -2134,11 +2113,11 @@ fn item(label: &str, kind: CompletionKind, detail: &str) -> CompletionItem {
 
 /// Width of one character cell, in user units.
 ///
-/// Every run of text is drawn with a `textLength` of exactly its cell count
-/// times this, so the glyphs are stretched or squeezed to the grid rather than
-/// trusting the reader's monospace font to advance by the width we assumed.
-/// Without that, the text drifts out of its background rectangles on any machine
-/// whose default monospace differs from the one used to pick this number.
+/// Every run of text is drawn with a `textLength` of its cell count times this
+/// value, so the glyphs are scaled to the grid instead of relying on the
+/// reader's monospace font having the assumed width. Without it, the text
+/// drifts out of its background rectangles on machines whose default monospace
+/// font differs from the one used to choose this value.
 const CELL: f32 = 8.5;
 /// Height of one row.
 const LINE: f32 = 19.0;
@@ -2164,7 +2143,7 @@ fn svg(shots: &[Shot], columns: usize, rows: usize) -> String {
          viewBox=\"0 0 {width:.0} {height:.0}\" role=\"img\">\n"
     ));
 
-    // A generated file, and one a reader may well open directly.
+    // Mark the file as generated, since readers may open it directly.
     out.push_str(
         "<!-- Generated by `cargo xtask docs` from deco's own renderer. Do not edit by hand. -->\n",
     );
@@ -2187,8 +2166,8 @@ fn svg(shots: &[Shot], columns: usize, rows: usize) -> String {
         out.push_str(&format!(
             "  .s{index} {{ animation: s{index} {total:.2}s step-end infinite }}\n"
         ));
-        // `step-end` and explicit 0% keeps every frame hidden outside its slot;
-        // the first frame is the one that also has to be visible at 0%.
+        // `step-end` with an explicit 0% keyframe hides every frame outside its
+        // slot. The first frame must also be visible at 0%.
         if start == 0 {
             out.push_str(&format!(
                 "  @keyframes s{index} {{ 0% {{ opacity: 1 }} {to:.3}% {{ opacity: 0 }} }}\n"
@@ -2203,8 +2182,8 @@ fn svg(shots: &[Shot], columns: usize, rows: usize) -> String {
     }
     out.push_str("</style>\n");
 
-    // The page, in the first frame's colours. It is what shows if the animation
-    // does not run, since every frame group starts hidden.
+    // The page, in the first frame's colours. It is shown if the animation does
+    // not run, since every frame group starts hidden.
     let page = shots.first().map(|shot| shot.bg).unwrap_or(Rgba::BLACK);
     out.push_str(&format!(
         "<rect width=\"{width:.0}\" height=\"{height:.0}\" rx=\"6\" fill=\"{}\"/>\n",
@@ -2213,8 +2192,8 @@ fn svg(shots: &[Shot], columns: usize, rows: usize) -> String {
 
     for (index, shot) in shots.iter().enumerate() {
         out.push_str(&format!("<g class=\"s s{index}\">\n"));
-        // Repainted per frame so that a theme change is drawn to the edges rather
-        // than leaving the previous theme in the margin.
+        // Repainted per frame so that a theme change extends to the edges instead
+        // of leaving the previous theme's colour in the margin.
         out.push_str(&format!(
             "<rect width=\"{width:.0}\" height=\"{height:.0}\" rx=\"6\" fill=\"{}\"/>\n",
             hex(shot.bg)
@@ -2252,8 +2231,8 @@ fn frame_body(out: &mut String, frame: &Frame, bg: Rgba) {
                     hex(span.bg)
                 ));
             }
-            // Blank runs are common — the padding on every row — and drawing
-            // spaces costs bytes for nothing.
+            // Blank runs, such as the padding on every row, are common, and
+            // drawing spaces only increases the file size.
             if span.text.trim().is_empty() {
                 column += cells;
                 continue;
@@ -2283,7 +2262,7 @@ fn frame_body(out: &mut String, frame: &Frame, bg: Rgba) {
     }
 }
 
-/// `#rrggbb`, which is what SVG wants and what a reviewer can read.
+/// `#rrggbb`, which SVG accepts and a reviewer can read.
 fn hex(color: Rgba) -> String {
     format!("#{:02x}{:02x}{:02x}", color.r, color.g, color.b)
 }
@@ -2318,9 +2297,9 @@ mod tests {
                 demo.name
             );
             assert!(svg.trim_end().ends_with("</svg>"), "{}", demo.name);
-            // Every group opened is a group closed. A mismatch renders as a blank
-            // image in some viewers and as the last frame only in others, so it
-            // is worth catching here rather than by looking at it.
+            // Every opened group is closed. A mismatch renders as a blank image
+            // in some viewers and as only the last frame in others, so it is
+            // checked here.
             assert_eq!(
                 svg.matches("<g ").count(),
                 svg.matches("</g>").count(),
@@ -2386,8 +2365,8 @@ mod tests {
 
     #[test]
     fn checking_a_directory_with_no_demonstrations_fails() {
-        // `--check` has to fail on a tree that never committed them, or the CI
-        // step passes while the documentation shows nothing.
+        // `--check` must fail when the files were never committed. Otherwise the
+        // CI step passes while the documentation has no images.
         let empty = std::env::temp_dir().join("deco-docs-check-empty");
         let _ = std::fs::remove_dir_all(&empty);
         std::fs::create_dir_all(empty.join("docs/img")).unwrap();
@@ -2486,9 +2465,9 @@ mod tests {
 
     #[test]
     fn the_find_demonstration_shows_the_bar_it_is_demonstrating() {
-        // The scenarios are the part most likely to rot: a keybinding changes and
-        // the animation quietly shows nothing happening. Assert the feature
-        // actually appears.
+        // The scenarios are most likely to break unnoticed: if a keybinding
+        // changes, the animation shows nothing happening. Assert that the feature
+        // appears.
         assert!(find().contains("Find:"));
         assert!(replace().contains("With:"));
     }

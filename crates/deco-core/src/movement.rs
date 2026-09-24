@@ -1,8 +1,7 @@
 //! Caret motion primitives: graphemes, words, lines and display columns.
 //!
-//! Everything here is a pure function of `(buffer, position)`, which is what
-//! lets the same motions drive the terminal frontend, the GPU frontend and the
-//! headless tests without duplication.
+//! Everything here is a pure function of `(buffer, position)`, so the terminal
+//! frontend, the GPU frontend and the headless tests share the same motions.
 
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -110,8 +109,8 @@ pub fn display_column(text: &str, utf16_col: u32, tab_size: usize) -> usize {
 /// The UTF-16 column whose rendered position is closest to `display_col`.
 ///
 /// When `display_col` falls in the middle of a tab or a wide character the
-/// caret snaps to the nearer edge, which is what makes vertical motion through
-/// indented or CJK text feel stable.
+/// caret snaps to the nearer edge. This keeps the caret column stable during
+/// vertical motion through indented or CJK text.
 pub fn utf16_col_at_display(text: &str, display_col: usize, tab_size: usize) -> u32 {
     let tab_size = tab_size.max(1);
     let mut col = 0usize;
@@ -188,11 +187,10 @@ fn line_string(buffer: &Buffer, line: u32) -> String {
 
 /// Moves to the start of the previous word (`cursorWordStartLeft`).
 ///
-/// Mirrors VS Code's `WordOperations._moveWordLeft`: a caret in column 0 first
-/// hops to the end of the previous line, and the word scan then happens
-/// entirely within that one line. Scanning line-locally (rather than treating
-/// `\n` as ordinary whitespace and running on) is what makes the caret stop on
-/// blank lines instead of skipping over them.
+/// Mirrors VS Code's `WordOperations._moveWordLeft`. A caret in column 0 first
+/// moves to the end of the previous line, and the word scan then stays within
+/// that line. Because `\n` is not treated as ordinary whitespace, the caret
+/// stops on blank lines instead of skipping over them.
 pub fn word_start_left(buffer: &Buffer, pos: Position, separators: &str) -> Position {
     let mut pos = buffer.clamp_position(pos);
     if pos.character == 0 {
@@ -231,8 +229,8 @@ pub fn word_start_left(buffer: &Buffer, pos: Position, separators: &str) -> Posi
 
 /// Moves to the end of the next word (`cursorWordEndRight`).
 ///
-/// The mirror image of [`word_start_left`]: a caret at the end of a line first
-/// hops to column 0 of the next line, then scans within that line.
+/// The reverse of [`word_start_left`]: a caret at the end of a line first
+/// moves to column 0 of the next line, then scans within that line.
 pub fn word_end_right(buffer: &Buffer, pos: Position, separators: &str) -> Position {
     let mut pos = buffer.clamp_position(pos);
     if pos.character == buffer.line_len_utf16(pos.line as usize) {
@@ -390,9 +388,9 @@ pub fn horizontal(
 /// Moves `selection`'s active end vertically by `count` lines, maintaining the
 /// sticky goal column.
 ///
-/// Returns the updated selection so the caller does not have to thread
-/// `goal_column` through by hand — forgetting to do so is the usual cause of
-/// "the caret drifts left when I scroll through short lines".
+/// Returns the updated selection, including `goal_column`, so the caller does
+/// not have to carry the goal column separately. Losing it makes the caret move
+/// left after passing through short lines.
 pub fn vertical(
     buffer: &Buffer,
     selection: Selection,
@@ -517,8 +515,7 @@ mod tests {
 
     #[test]
     fn word_motion_stops_on_blank_lines() {
-        // Scanning is line-local, so a blank line is a stop rather than
-        // something the caret skims over.
+        // Scanning is line-local, so the caret stops on a blank line.
         let b = buf("one\n\ntwo");
         assert_eq!(word_start_left(&b, p(2, 0), SEP), p(1, 0));
         assert_eq!(word_end_right(&b, p(0, 3), SEP), p(1, 0));

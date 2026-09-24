@@ -58,11 +58,11 @@ pub enum ClientError {
     Connection(#[from] frame::FrameError),
     /// The server closed without answering.
     ///
-    /// The usual cause is the far end not having a `deco` at all, so the
-    /// transport ran something that printed to stderr and exited.
+    /// The usual cause is that the remote environment has no `deco`, so the
+    /// transport ran a command that printed to stderr and exited.
     #[error("the server stopped without answering{}", .stderr.as_ref().map(|e| format!("; it said: {e}")).unwrap_or_default())]
     Closed {
-        /// Whatever the far end put on stderr, if anything.
+        /// The remote side's stderr output, if any.
         stderr: Option<String>,
     },
     /// The server refused the request.
@@ -76,7 +76,7 @@ pub enum ClientError {
         /// What was missing.
         field: &'static str,
     },
-    /// The two ends do not speak the same protocol.
+    /// The client and server use different protocol versions.
     #[error(
         "this deco speaks remote protocol {PROTOCOL_VERSION} and the server speaks \
          {theirs}; update whichever is older"
@@ -87,23 +87,23 @@ pub enum ClientError {
     },
 }
 
-/// What a server said about itself.
+/// The server's handshake response.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Handshake {
-    /// The directory it serves, as *it* spells it.
+    /// The directory it serves, in the server's path format.
     pub workspace: String,
-    /// The methods it says it has.
+    /// The methods the server supports.
     pub methods: Vec<String>,
 }
 
 impl Handshake {
     /// Whether the server answers `method`.
     ///
-    /// The handshake lists what a server has so a client need not discover it
-    /// by being refused — which matters once a refusal and an ordinary "no"
-    /// would look the same. `settings.read` on a server that predates it is
-    /// the case: asking and catching the refusal would also swallow a genuine
-    /// failure to read the file.
+    /// The handshake lists supported methods so a client does not have to probe
+    /// by sending a request and checking for an error. A probe cannot tell an
+    /// unsupported method from an ordinary failure. For example, calling
+    /// `settings.read` on an older server and ignoring the error would also
+    /// ignore a real failure to read the file.
     pub fn serves(&self, method: &str) -> bool {
         self.methods.iter().any(|known| known == method)
     }
@@ -123,10 +123,10 @@ pub struct Match {
 }
 
 impl Match {
-    /// Reads one match, or nothing if the server sent something else.
+    /// Reads one match, or `None` if the entry is malformed.
     ///
-    /// Skipped rather than failing the whole search: one malformed entry in five
-    /// hundred is not a reason to show none of them.
+    /// A malformed entry is skipped so that the rest of the search results are
+    /// still shown.
     fn from_json(value: &Value) -> Option<Self> {
         Some(Self {
             path: value["path"].as_str()?.to_owned(),
@@ -154,22 +154,21 @@ pub struct Client {
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     next_id: u64,
-    /// What the handshake said this server has, once it has been asked.
+    /// The methods listed in the handshake, once it has been performed.
     ///
-    /// Kept so that a caller which did not perform the handshake can still ask
-    /// what the far end supports. Without it, "does this server have
-    /// `settings.read`?" could only be answered by calling it and reading the
-    /// refusal — which is indistinguishable from the file being unreadable.
+    /// Kept so that a caller which did not perform the handshake can still check
+    /// what the server supports. Otherwise, support for `settings.read` could
+    /// only be tested by calling it, and the resulting error cannot be told apart
+    /// from an unreadable file.
     served: Vec<String>,
 }
 
 impl Client {
     /// Starts `command` and connects to it over its stdin and stdout.
     ///
-    /// Stderr is left inherited on purpose: `ssh` writes its own diagnostics
-    /// there — host key prompts, "permission denied", "connection refused" — and
-    /// swallowing them would turn every connection problem into deco's vaguest
-    /// error message.
+    /// Stderr is intentionally inherited. `ssh` writes its diagnostics there,
+    /// such as host key prompts, "permission denied" and "connection refused".
+    /// Capturing them would hide the cause of connection failures.
     pub fn start(command: &Command) -> Result<Self, ClientError> {
         let mut child = OsCommand::new(&command.program)
             .args(&command.args)
@@ -215,10 +214,9 @@ impl Client {
                 return Err(ClientError::Closed { stderr: None });
             };
             match message {
-                // Answering the request that was asked. A reply to some other id
-                // cannot happen in this protocol, but reading on rather than
-                // trusting that keeps a future server that pipelines from
-                // confusing this one.
+                // The response to this request. This protocol never sends a
+                // reply for another id, but other messages are skipped so that a
+                // future pipelining server does not break this client.
                 Message::Response {
                     id: answered,
                     result,
@@ -235,11 +233,12 @@ impl Client {
         }
     }
 
-    /// Asks what the server is, and refuses a version this deco does not speak.
+    /// Requests the server's handshake and rejects an unsupported protocol
+    /// version.
     ///
-    /// Called once, before anything else: a protocol mismatch found here is a
-    /// sentence about versions, and the same mismatch found later is a file that
-    /// mysteriously will not open.
+    /// Call this once, before any other request. A mismatch detected here gives
+    /// a clear version error instead of a later, unrelated-looking failure such
+    /// as a file that does not open.
     pub fn handshake(&mut self) -> Result<Handshake, ClientError> {
         let said = self.request(HANDSHAKE, json!({}))?;
         let theirs = said["protocol"]
@@ -270,8 +269,8 @@ impl Client {
 
     /// Whether the handshake said this server has `method`.
     ///
-    /// False before the handshake, which is the safe direction: nothing optional
-    /// should be attempted against a server that has not said what it is.
+    /// Returns false before the handshake, so no optional method is attempted
+    /// against a server whose capabilities are unknown.
     pub fn serves(&self, method: &str) -> bool {
         self.served.iter().any(|known| known == method)
     }
@@ -308,11 +307,11 @@ impl Client {
             .unwrap_or_default())
     }
 
-    /// What the remote says about one path.
+    /// Metadata for one path on the remote.
     ///
-    /// The value is passed through as the server sent it — VS Code's `FileStat`
-    /// shape — because the only consumer is an extension expecting exactly that,
-    /// and a type here would be a third spelling of the same four fields.
+    /// The value is passed through unchanged in VS Code's `FileStat` shape. The
+    /// only consumer is an extension that expects that shape, so no separate
+    /// type is defined for the same four fields.
     pub fn stat(&mut self, path: &str) -> Result<Value, ClientError> {
         let said = self.request("fs.stat", json!({ "path": path }))?;
         said.get("stat").cloned().ok_or(ClientError::Malformed {
@@ -323,20 +322,19 @@ impl Client {
 
     /// The remote machine's own settings, and the path they came from.
     ///
-    /// `None` for the text when the machine has no `machine-settings.json`,
-    /// which is the ordinary case — the path is still returned, so
-    /// `--print-config` can say where the far end looked rather than leaving
-    /// "why is my remote setting not applying" to guesswork.
+    /// The text is `None` when the machine has no `machine-settings.json`, which
+    /// is the common case. The path is still returned so that `--print-config`
+    /// can show where the remote side looked for the file.
     ///
-    /// **What comes back is not trusted.** It is written where anyone with an
-    /// account on that machine can write it, so it is loaded as
-    /// [`Scope::Remote`] and everything that treats that scope as untrusted —
-    /// the extension sandbox, and language-server definitions, which have to be
-    /// confirmed — keeps doing so.
+    /// **The returned settings are not trusted.** Anyone with an account on that
+    /// machine may be able to write the file, so it is loaded as
+    /// [`Scope::Remote`]. Everything that treats that scope as untrusted, such as
+    /// the extension sandbox and language-server definitions that require
+    /// confirmation, continues to do so.
     ///
-    /// Ask [`Handshake::serves`] before calling this: a server too old to know
-    /// the method would refuse it, and a refusal here is a real failure worth
-    /// reporting rather than something to read as "no settings".
+    /// Check [`Handshake::serves`] before calling this. An older server that does
+    /// not know the method rejects it, and an error here should be reported as a
+    /// failure rather than treated as "no settings".
     ///
     /// [`Scope::Remote`]: https://docs.rs/deco-config
     pub fn machine_settings(&mut self) -> Result<(String, Option<String>), ClientError> {
@@ -347,10 +345,10 @@ impl Client {
         ))
     }
 
-    /// What is directly inside one directory on the remote.
+    /// The direct children of one directory on the remote.
     ///
-    /// Not [`Client::list`], which walks the whole workspace for quick open. This
-    /// is one level, which is what a `readDirectory` means.
+    /// Unlike [`Client::list`], which walks the whole workspace for quick open,
+    /// this reads one level, matching the semantics of `readDirectory`.
     pub fn read_directory(&mut self, path: &str) -> Result<Vec<(String, u32)>, ClientError> {
         let said = self.request("fs.dir", json!({ "path": path }))?;
         Ok(said["entries"]
@@ -377,9 +375,8 @@ impl Client {
 
     /// Removes a path on the remote.
     ///
-    /// `recursive` is the caller's own word, passed through: without it a
-    /// directory with anything in it is refused by the operating system, which is
-    /// the distinction between "delete this" and "delete everything under this".
+    /// `recursive` is passed through from the caller. Without it, the operating
+    /// system rejects deleting a non-empty directory.
     pub fn delete(&mut self, path: &str, recursive: bool) -> Result<(), ClientError> {
         self.request("fs.delete", json!({ "path": path, "recursive": recursive }))?;
         Ok(())
@@ -394,10 +391,10 @@ impl Client {
 
     /// Searches the remote's workspace for `needle`.
     ///
-    /// The matching happens on the far end because the files do. What comes back
-    /// is bounded by the server rather than by this end — see
-    /// [`server::MAX_MATCHES`](crate::server::MAX_MATCHES) — so a workspace with
-    /// a million occurrences cannot make it send them.
+    /// Matching runs on the remote side, where the files are. The server limits
+    /// the number of results (see
+    /// [`server::MAX_MATCHES`](crate::server::MAX_MATCHES)), so a workspace with
+    /// a million occurrences does not send them all.
     pub fn search(
         &mut self,
         needle: &str,
@@ -422,7 +419,7 @@ impl Client {
         })
     }
 
-    /// What git says about the repository on the far end.
+    /// Git status of the repository in the remote environment.
     ///
     /// The root is returned with the status because every path in that status
     /// is relative to the repository rather than to the served workspace.
@@ -443,7 +440,7 @@ impl Client {
         Ok((root, status))
     }
 
-    /// What `HEAD` held for one file on the far end.
+    /// The `HEAD` contents of one file in the remote environment.
     pub fn scm_committed(&mut self, path: &Path) -> Result<Option<String>, ClientError> {
         let said = self.request(
             "scm.committed",
@@ -459,7 +456,8 @@ impl Client {
         }
     }
 
-    /// Both repository states needed for one source-control diff on the far end.
+    /// Both repository states needed for one source-control diff in the remote
+    /// environment.
     pub fn scm_comparison(
         &mut self,
         request: &deco_scm::ComparisonRequest,
@@ -471,7 +469,7 @@ impl Client {
         })
     }
 
-    /// Local branches available in the repository on the far end.
+    /// Local branches available in the repository in the remote environment.
     pub fn scm_branches(&mut self) -> Result<Vec<deco_scm::Branch>, ClientError> {
         let said = self.request("scm.branches", json!({}))?;
         serde_json::from_value(said["branches"].clone()).map_err(|_| ClientError::Malformed {
@@ -480,7 +478,7 @@ impl Client {
         })
     }
 
-    /// The cost of switching to one local branch on the far end.
+    /// The plan for switching to one local branch in the remote environment.
     pub fn scm_checkout_plan(
         &mut self,
         target: &str,
@@ -492,7 +490,7 @@ impl Client {
         })
     }
 
-    /// Carries out one source-control operation on the far end.
+    /// Carries out one source-control operation in the remote environment.
     pub fn scm_apply(&mut self, operation: &deco_scm::Operation) -> Result<(), ClientError> {
         self.request("scm.apply", json!({ "operation": operation }))?;
         Ok(())
@@ -500,12 +498,12 @@ impl Client {
 
     /// Asks the server to stop, then waits for it briefly.
     ///
-    /// Errors are dropped: this runs while the editor is quitting, and there is
-    /// nobody left to tell. What matters is that the far end is asked rather than
-    /// left holding a workspace open on someone else's machine.
+    /// Errors are ignored because this runs while the editor is quitting and
+    /// cannot report them. The request ensures that the remote server does not
+    /// keep the workspace open after the editor exits.
     pub fn shutdown(&mut self) {
         let _ = self.request("$/shutdown", json!({}));
-        // Closing stdin is what a server that never got the message will notice.
+        // A server that did not receive the request stops when stdin is closed.
         let _ = self.stdin.flush();
         let _ = self.child.wait();
     }
@@ -524,8 +522,8 @@ mod tests {
 
     #[test]
     fn a_command_that_does_not_exist_says_which_one() {
-        // Matched rather than unwrapped: a `Client` owns a child process and has
-        // no `Debug`, so `expect_err` cannot print one.
+        // Matched rather than unwrapped because `Client` owns a child process and
+        // does not implement `Debug`, which `expect_err` requires.
         match Client::start(&Command {
             program: "deco-no-such-transport".to_owned(),
             args: Vec::new(),
@@ -540,8 +538,8 @@ mod tests {
 
     #[test]
     fn a_protocol_mismatch_names_both_versions() {
-        // Constructed rather than provoked: there is only one version of this
-        // protocol so far, and the check has to be right before there is a second.
+        // Constructed directly because only one protocol version exists so far.
+        // The message must be correct before a second version is released.
         let error = ClientError::Protocol {
             theirs: "99".to_owned(),
         };
@@ -558,15 +556,14 @@ mod tests {
         let error = ClientError::Closed {
             stderr: Some("ssh: connect to host x port 22: Connection refused".to_owned()),
         };
-        // The transport's own diagnostic is what a person needs here, so it is
-        // carried rather than replaced.
+        // The transport's diagnostic is included in the message rather than
+        // replaced, because it explains the failure.
         assert!(error.to_string().contains("Connection refused"));
     }
 
-    /// The rest of the tests need a server binary to talk to, which only the
-    /// `deco` crate builds. They live in `crates/deco/tests/remote_session.rs`
-    /// for that reason: a test that cannot name its counterpart is a test that
-    /// mocks it, and the whole point here is not mocking it.
+    /// The remaining tests need a server binary, which only the `deco` crate
+    /// builds. They are in `crates/deco/tests/remote_session.rs` so that they
+    /// run against a real server instead of a mock.
     #[test]
     fn the_client_is_exercised_against_a_real_server_elsewhere() {
         assert!(std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

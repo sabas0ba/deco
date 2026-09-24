@@ -1,16 +1,14 @@
 //! Walking a workspace for the quick-open list.
 //!
-//! Here rather than in `deco-editor` because the core has no filesystem at all —
-//! a document is handed its text, never a path to read — and that is what lets the
-//! whole editable surface be tested without one.
+//! This module is in this crate rather than in `deco-editor` because the core has
+//! no filesystem access. A document receives its text, never a path to read, so
+//! all editing behaviour can be tested without a filesystem.
 //!
 //! # Bounded on purpose
 //!
-//! `ctrl+p` must answer immediately, and a workspace can be a home directory
-//! someone opened by mistake. The walk therefore stops at [`MAX_FILES`] and at
-//! [`MAX_DEPTH`], and says so rather than pretending the list is complete: a
-//! quick-open that silently omits the file you wanted is worse than one that
-//! admits it ran out of room.
+//! `ctrl+p` must respond immediately, and a workspace can be a home directory
+//! opened by mistake. The walk therefore stops at [`MAX_FILES`] and at
+//! [`MAX_DEPTH`], and reports that the list is incomplete when it stops early.
 
 use std::path::Path;
 
@@ -19,25 +17,25 @@ use deco_core::search::SearchOptions;
 use deco_core::Buffer;
 use deco_editor::commands::PaletteEntry;
 
-/// How many files the list holds before the walk gives up.
+/// How many files the list holds before the walk stops.
 ///
-/// Large enough for any real project, small enough that the walk and the
-/// filtering are both imperceptible.
+/// Large enough for typical projects, and small enough that the walk and the
+/// filtering have no noticeable delay.
 pub const MAX_FILES: usize = 10_000;
 
 /// How deep the walk goes.
 ///
-/// A guard against a symlink loop as much as against a deep tree: `read_dir`
-/// follows symlinks, and a link pointing at an ancestor would otherwise recurse
-/// until the stack ran out.
+/// Guards against symlink loops as well as deep trees. `read_dir` follows
+/// symlinks, and a link to an ancestor would otherwise recurse until the stack
+/// overflowed.
 pub const MAX_DEPTH: usize = 24;
 
-/// Directories skipped whatever the settings say.
+/// Directories skipped regardless of settings.
 ///
-/// `files.exclude` covers `.git` and friends by default, but a build directory is
-/// not in it and is exactly what makes a walk slow and its results useless. These
-/// are conventions rather than configuration; a user who wants `target/` in the
-/// list can still open it by typing the path.
+/// `files.exclude` covers `.git` and similar directories by default, but not build
+/// directories, which make the walk slow and fill the results with generated
+/// files. These names are conventions rather than configuration. A file in
+/// `target/` can still be opened by typing its path.
 const ALWAYS_SKIP: &[&str] = &[
     ".git",
     "node_modules",
@@ -64,31 +62,29 @@ pub struct Listing {
 
 /// Lists the files under `root` for quick open.
 ///
-/// Paths in the entries are absolute, because that is what opening one needs;
-/// the titles are relative to `root`, because that is what a person recognises.
+/// Entry paths are absolute because opening a file needs an absolute path.
+/// Titles are relative to `root` because they are easier to read.
 pub fn list(root: &Path, settings: &Settings) -> Listing {
     let excludes = exclude_patterns(settings);
     let mut listing = Listing::default();
     walk(root, root, 0, &excludes, &mut listing);
 
-    // By path, so the same workspace always offers the same order — `read_dir`
-    // gives no ordering guarantee, and a list that reshuffles between presses is
-    // one you cannot learn.
+    // Sort by path so the same workspace always has the same order. `read_dir`
+    // does not guarantee any ordering.
     listing.files.sort_by(|a, b| a.title.cmp(&b.title));
     listing
 }
 
 /// How many matches a project-wide search reports before it stops.
 ///
-/// A term that appears ten thousand times is not being looked for one occurrence
-/// at a time, and a list nobody can scroll to the end of is not more useful than
-/// a list that says how many it stopped at.
+/// Very large result lists are not useful to scroll through. The search reports
+/// that it stopped at the limit instead.
 pub const MAX_MATCHES: usize = 500;
 
 /// Largest file a project-wide search will read.
 ///
-/// A minified bundle or a checked-in database is not what anyone means by
-/// "search my project", and reading it is most of the time the search takes.
+/// Large files such as minified bundles or checked-in databases are rarely search
+/// targets, and reading them would take most of the search time.
 pub const MAX_FILE_BYTES: u64 = 1 << 20;
 
 /// What a project-wide search found.
@@ -105,9 +101,9 @@ pub struct Found {
 
 /// Searches every file under `root` for `needle`.
 ///
-/// Synchronous and bounded, which is the honest first version: a search that
-/// streams results as it finds them needs a thread and a panel that updates, and
-/// this needs neither to be useful. The bounds are reported rather than hidden.
+/// The search is synchronous and bounded. Streaming results would require a
+/// background thread and a panel that updates while results arrive. When a bound
+/// is reached, the result reports it.
 pub fn search(root: &Path, settings: &Settings, needle: &str, options: SearchOptions) -> Found {
     let mut found = Found::default();
     if needle.is_empty() {
@@ -122,21 +118,19 @@ pub fn search(root: &Path, settings: &Settings, needle: &str, options: SearchOpt
             break;
         }
         let path = Path::new(&entry.id);
-        // Size first, so a huge file costs a `stat` rather than a read.
+        // Check the size first, so a huge file costs a `stat` rather than a read.
         if std::fs::metadata(path).map(|m| m.len()).unwrap_or(u64::MAX) > MAX_FILE_BYTES {
             continue;
         }
-        // Not UTF-8 is how a binary file presents itself here, and skipping it is
-        // right: a match inside a PNG is not a search result.
+        // A file that is not valid UTF-8 is treated as binary and skipped.
         let Ok(text) = std::fs::read_to_string(path) else {
             continue;
         };
         found.files_searched += 1;
 
-        // The same search the find bar uses, so a term that matches in one place
-        // matches in the other. Reading the file into a rope to do it is more work
-        // than a bespoke scan would be, and worth it for having one definition of
-        // what a match is.
+        // Use the same search as the find bar, so both report the same matches.
+        // Loading the file into a rope costs more than a dedicated scan, but keeps
+        // a single definition of a match.
         let buffer = Buffer::from_text(&text);
         for range in deco_core::search::find_all(&buffer, needle, options) {
             if found.matches.len() >= MAX_MATCHES {
@@ -175,8 +169,8 @@ fn walk(root: &Path, dir: &Path, depth: usize, excludes: &[String], listing: &mu
         listing.truncated = true;
         return;
     }
-    // An unreadable directory is skipped rather than reported: a workspace with
-    // one root-owned subdirectory in it should still offer the rest.
+    // An unreadable directory is skipped without an error, so a workspace with
+    // one root-owned subdirectory still lists the other files.
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -194,8 +188,8 @@ fn walk(root: &Path, dir: &Path, depth: usize, excludes: &[String], listing: &mu
             continue;
         };
 
-        // `file_type` rather than `metadata`, so a broken symlink is a symlink
-        // and not an error that aborts the directory.
+        // Use `file_type` rather than `metadata`, so a broken symlink is reported
+        // as a symlink instead of an error that aborts the directory.
         let Ok(kind) = entry.file_type() else {
             continue;
         };
@@ -212,11 +206,11 @@ fn walk(root: &Path, dir: &Path, depth: usize, excludes: &[String], listing: &mu
     }
 }
 
-/// `path` relative to `root`, with `/` separators whatever the platform uses.
+/// `path` relative to `root`, with `/` separators on every platform.
 ///
-/// The glob dialect is `/`-separated, and so is every pattern anyone writes in a
-/// `files.exclude`, so a Windows path has to be spelled that way before it is
-/// matched — otherwise `**/.git` never matches anything there.
+/// Glob patterns, including those in `files.exclude`, use `/` separators. A
+/// Windows path has to be converted before matching, otherwise `**/.git` never
+/// matches on Windows.
 fn relative_to(root: &Path, path: &Path) -> Option<String> {
     let relative = path.strip_prefix(root).ok()?;
     let mut out = String::new();
@@ -231,36 +225,33 @@ fn relative_to(root: &Path, path: &Path) -> Option<String> {
 
 /// The enabled patterns from `files.exclude`.
 ///
-/// The setting is a map of pattern to boolean, and a pattern set to `false` is
-/// how VS Code turns off one it inherited — so the value matters, not just the
-/// key's presence.
-/// Whether `relative` is one of the paths `files.exclude` turns off.
+/// The setting is a map of pattern to boolean. VS Code uses `false` to disable an
+/// inherited pattern, so the value is checked, not only the key.
+/// Whether `relative` is one of the paths `files.exclude` hides.
 ///
-/// Public because a remote search is filtered here rather than on the far end:
-/// the server reads no settings — deliberately, since answering `fs.read` by
-/// consulting a `settings.json` on the remote would be an authority nobody gave
-/// it — so the user's own excludes can only be applied by whoever has them.
+/// Public because remote search results are filtered on the local side, not in
+/// the remote environment. The server intentionally reads no settings: a
+/// `settings.json` on the remote machine must not affect how it handles
+/// `fs.read`. The user's excludes can therefore only be applied locally.
 pub fn excluded_by_settings(settings: &Settings, relative: &str) -> bool {
     is_excluded(&exclude_patterns(settings), relative)
 }
 
 /// Lists one directory for the file tree.
 ///
-/// One level, not a walk: the tree reads a directory when it is expanded, so the
-/// cost of opening a workspace is one `read_dir` however large it is. That is
-/// the whole reason the tree asks a level at a time rather than being handed the
-/// listing quick open already has — that one is capped at [`MAX_FILES`] and
-/// flattened, and a tree built from it would be both truncated and unable to
-/// show an empty directory.
+/// Lists one level only. The tree reads a directory when it is expanded, so
+/// opening a workspace costs one `read_dir` regardless of its size. The tree
+/// does not reuse the quick-open listing because that listing is capped at
+/// [`MAX_FILES`] and flattened. A tree built from it would be truncated and could
+/// not show empty directories.
 ///
-/// The same exclusions quick open uses, for the same reason: a `files.exclude`
-/// that hid a file from `ctrl+p` but not from the tree would be one setting with
-/// two meanings.
+/// Applies the same exclusions as quick open, so `files.exclude` hides the same
+/// files from `ctrl+p` and from the tree.
 pub fn list_dir(root: &Path, dir: &Path, settings: &Settings) -> Vec<deco_editor::explorer::Entry> {
     let excludes = exclude_patterns(settings);
-    // An unreadable directory reads as empty rather than as an error: a
-    // workspace with one root-owned subdirectory should still show the rest,
-    // which is the same call the walk makes.
+    // An unreadable directory is returned as empty rather than as an error, so a
+    // workspace with one root-owned subdirectory still shows the other entries.
+    // The walk handles this case the same way.
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
@@ -356,8 +347,8 @@ mod tests {
             .map(|entry| format!("{}{}", entry.name, if entry.is_dir { "/" } else { "" }))
             .collect();
         names.sort();
-        // `src/` appears as one row; nothing inside it does, and the
-        // conventionally-skipped directories are not offered at all.
+        // `src/` appears as one row without its contents, and the conventionally
+        // skipped directories are not listed.
         assert_eq!(names, ["a.rs", "src/"]);
 
         let mut inner: Vec<String> = list_dir(&root, &root.join("src"), &Settings::with_defaults())
@@ -443,8 +434,8 @@ mod tests {
 
     #[test]
     fn a_pattern_turned_off_is_not_applied() {
-        // `false` is how VS Code disables a pattern it inherited, so the value
-        // matters and not just the key.
+        // VS Code uses `false` to disable an inherited pattern, so the value is
+        // checked, not only the key.
         let root = tree("disabled", &["keep.rs", ".git-not-a-dir"]);
         let mut settings = Settings::with_defaults();
         settings
@@ -514,8 +505,7 @@ mod tests {
 
     #[test]
     fn the_search_options_are_the_find_bars() {
-        // One definition of what a match is: a term found in the find bar must be
-        // found here too, and not found where the find bar would not find it.
+        // Project search and the find bar must report exactly the same matches.
         let root = tree("search-options", &["a.rs"]);
         std::fs::write(root.join("a.rs"), "Total\ntotalise\n").unwrap();
         let settings = Settings::with_defaults();
@@ -635,9 +625,9 @@ mod tests {
 
     #[test]
     fn hitting_the_file_limit_is_reported_rather_than_hidden() {
-        // The limit itself is not exercised — writing ten thousand files in a test
-        // is slower than the feature — so the flag is checked on the depth guard,
-        // which is the same field and the same contract.
+        // The file limit itself is not exercised because writing ten thousand
+        // files would make the test slow. The flag is checked through the depth
+        // limit, which sets the same field.
         let mut listing = Listing::default();
         walk(
             Path::new("/"),
