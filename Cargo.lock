@@ -586,6 +586,7 @@ dependencies = [
 name = "deco-core"
 version = "0.1.0"
 dependencies = [
+ "regex",
  "ropey",
  "serde",
  "thiserror 2.0.20",

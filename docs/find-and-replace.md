@@ -1,10 +1,10 @@
 # Find and replace
 
-Search is **literal**; regular-expression mode is not implemented. The find bar searches the active document. For workspace search, use [Find in Files](commands.md#search-in-files); workspace replacement is described [below](#replacing-across-the-workspace).
+Search is literal by default; `alt+r` switches to [regular expressions](#regular-expressions). The find bar searches the active document. For workspace search, use [Find in Files](commands.md#search-in-files); workspace replacement is described [below](#replacing-across-the-workspace).
 
 ## Finding
 
-`ctrl+f` opens the bar with the selection, if there is one, as the query. The query is selected, so typing replaces it instead of appending. Typing narrows the query, `enter` and `F3` move forward, `shift+enter` and `shift+F3` move back, and both directions wrap. `alt+c` and `alt+w` toggle case sensitivity and whole-word matching; a capital letter in `[aa ww]` means the option is on.
+`ctrl+f` opens the bar with the selection, if there is one, as the query. The query is selected, so typing replaces it instead of appending. Typing narrows the query, `enter` and `F3` move forward, `shift+enter` and `shift+F3` move back, and both directions wrap. `alt+c`, `alt+w` and `alt+r` toggle case sensitivity, whole-word matching and regular expressions; a capital letter in `[aa ww rr]` means the option is on.
 
 ![Opening the find bar, stepping through matches, and toggling whole-word](img/find.svg)
 
@@ -15,6 +15,7 @@ Search is **literal**; regular-expression mode is not implemented. The find bar 
 | `shift+F3` / `shift+enter` | `editor.action.previousMatchFindAction` |
 | `alt+c` | `toggleFindCaseSensitive` |
 | `alt+w` | `toggleFindWholeWord` |
+| `alt+r` | `toggleFindRegex` |
 | `escape` | `closeFindWidget` |
 
 All matches are highlighted with `editor.findMatchHighlightBackground`, and the current match with `editor.findMatchBackground`. These are VS Code's theme keys, with VS Code's distinction between the current match and the others. The readout on the right shows `3 of 7`. If the selection no longer corresponds to a match, it shows only the total, such as `7 results`.
@@ -47,6 +48,31 @@ Two cases deliberately replace nothing:
 
 An empty replacement deletes the matches.
 
+## Regular expressions
+
+`alt+r` switches the query to a regular expression, in the find bar and in the `ctrl+shift+f` / `ctrl+shift+h` prompt. The query is kept as typed when the mode changes. A query seeded from a selection is escaped in regex mode, so it still matches the selected text.
+
+![Toggling regex mode and replacing with capture groups](img/regex.svg)
+
+The syntax is that of the Rust [`regex`](https://docs.rs/regex/1/regex/#syntax) crate, which is close to the JavaScript syntax VS Code uses. Matching takes time linear in the length of the text, so no pattern can make a search hang. The differences from VS Code:
+
+- Look-around (`(?=…)`, `(?<!…)`) and backreferences (`\1`) are not supported. They are reported as invalid patterns.
+- `^` and `$` match at the start and end of every line. `.` does not match a line break; a pattern containing `\n` matches across lines.
+- Matches of zero length, such as `^` on its own, are skipped.
+
+An invalid pattern shows `Invalid regex` in the bar instead of a count. `enter`, `F3` or a replace command reports the parser's message, which names the problem and its position, in the status bar. A project search with an invalid pattern reports the error without reading any file.
+
+In the replacement, the following references are expanded for each match:
+
+| Reference | Inserts |
+| --- | --- |
+| `$1` … `$99` | The capture group; an empty string if the group did not take part in the match |
+| `$0`, `$&` | The whole match |
+| `$$` | `$` |
+| `\n`, `\t`, `\\` | A line break, a tab, a backslash |
+
+A reference to a group the pattern does not have, such as `$3` with two groups, is inserted literally. `$12` refers to group 12 if the pattern has one, and otherwise to group 1 followed by `2`, as in JavaScript. Case-changing references (`\u`, `\U`, `\l`, `\L`) are not supported. In literal mode the replacement is inserted as typed.
+
 ## Replacing across the workspace
 
 ![ctrl+shift+h replacing a term in two files, one of them not open, undone with ctrl+z](img/replace-in-files.svg)
@@ -68,7 +94,7 @@ An empty replacement removes every occurrence; this is allowed.
 
 **A search that reached its limit reports it.** Project search is bounded (see [Running commands](commands.md#search-in-files)). The report states that there may be more matches, so a replace-all that did not cover every match is not mistaken for a complete one.
 
-The match options are those of project search, not the find bar; case sensitivity set in one does not change the other. Both are currently literal; [regular expressions](roadmap.md#the-gaps-behind-the-features) are not built yet.
+The match options are those of project search, not the find bar; case sensitivity or regex mode set in one does not change the other. In regex mode, each file's replacements expand capture groups against that file's own matches.
 
 In a [remote session](remote.md), the search, reads and edits all go through the connection, so replacements change the files on the remote environment, not files at the same paths on the local machine.
 
@@ -85,4 +111,4 @@ The query has a caret and at most one selection, which covers the whole query. T
 
 VS Code compiles the needle into `\bneedle\b` and therefore uses `\b`'s definition: a *transition* between a word character and a non-word character. With whole-word matching on, searching for `(` therefore matches `f(x)` but not ` ( `. This is a side effect of the regex engine, not intended behaviour.
 
-deco constrains only the ends of the needle that are word characters. For every needle that begins and ends with a word character, which covers typical whole-word searches, the two behave the same.
+deco constrains only the ends of the needle that are word characters. For every needle that begins and ends with a word character, which covers typical whole-word searches, the two behave the same. In regex mode the rule applies to the ends of each match: `foo\d` with whole word on finds `foo1` in `(foo1)` but not in `xfoo1`.

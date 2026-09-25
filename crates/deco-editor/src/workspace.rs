@@ -78,6 +78,9 @@ pub enum WorkspaceError {
         /// What the frontend said went wrong.
         reason: String,
     },
+    /// A replace-in-files query is not a valid regular expression.
+    #[error(transparent)]
+    InvalidPattern(#[from] deco_core::search::PatternError),
 }
 
 /// One document's share of a workspace edit, resolved to a path.

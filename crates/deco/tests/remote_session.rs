@@ -232,6 +232,35 @@ fn a_search_crosses_the_connection_and_every_hit_can_be_opened() {
 }
 
 #[test]
+fn a_regex_search_crosses_the_connection() {
+    // The option has to reach the server. A server that ignored it would search
+    // for the pattern literally and find nothing here.
+    let root = workspace("search-regex");
+    std::fs::write(root.join("src/main.rs"), "let a1 = 1;\nlet b22 = 2;\n").expect("a file");
+    let mut client = connect(&root);
+    client.handshake().expect("a handshake");
+
+    let options = deco_core::search::SearchOptions {
+        regex: true,
+        ..deco_core::search::SearchOptions::EXACT
+    };
+    let found = client.search(r"[a-z]\d+ =", options).expect("a search");
+    let lines: Vec<u32> = found.matches.iter().map(|entry| entry.line).collect();
+    assert_eq!(lines, [0, 1]);
+
+    let error = client
+        .search("(", options)
+        .expect_err("an invalid pattern is an error");
+    assert!(
+        error.to_string().contains("invalid regular expression"),
+        "{error}"
+    );
+
+    client.shutdown();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn source_control_reads_and_writes_the_repository_on_the_far_end() {
     let Some(root) = repository("source-control") else {
         return;

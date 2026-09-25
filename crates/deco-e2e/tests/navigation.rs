@@ -151,6 +151,55 @@ fn replace_all_changes_every_match_and_saves_what_it_changed() {
 }
 
 #[test]
+fn a_regex_replace_all_rewrites_each_match_from_its_groups() {
+    let scenario = Scenario::new("replace-regex").file("a.txt", "width=80\nheight=24\n");
+    let mut editor = scenario.launch(&["a.txt"]);
+
+    editor.press("ctrl+h");
+    editor.press("alt+r");
+    editor.type_text(r"^(\w+)=(\d+)$");
+    let screen = editor.screen();
+    assert!(
+        screen.text().contains("[aa ww Rr]"),
+        "the bar shows regex mode{}",
+        screen.dump()
+    );
+    editor.press("tab");
+    editor.type_text("$1: $2");
+    editor.press("ctrl+alt+enter");
+    editor.press("escape");
+    editor.press("ctrl+s");
+
+    assert_eq!(editor.on_disk("a.txt"), "width: 80\nheight: 24\n");
+}
+
+#[test]
+fn replace_in_files_with_a_regex_expands_groups_in_every_file() {
+    let scenario = workspace("replace-files-regex");
+    let mut editor = scenario.launch(&["src/main.rs"]);
+
+    editor.press("ctrl+shift+h");
+    editor.press("alt+r");
+    editor.press("ctrl+x");
+    editor.type_text(r"greet(\w*)\(");
+    editor.press("enter");
+    editor.type_text("welcome$1(");
+    editor.press("enter");
+
+    assert_eq!(editor.text(), "fn main() {\n    welcome();\n}\n");
+    let greet = editor
+        .session()
+        .unsaved()
+        .into_iter()
+        .find(|(path, _)| path.ends_with("src/greet.rs"))
+        .map(|(_, text)| text);
+    assert_eq!(
+        greet.as_deref(),
+        Some("pub fn welcome() {\n    println!(\"hi\");\n}\n")
+    );
+}
+
+#[test]
 fn ctrl_h_focuses_the_query_when_there_is_nothing_to_replace_yet() {
     // `ctrl+h` fills the query only from a selection. With no selection and no
     // previous search there is nothing to replace, so the first text typed is

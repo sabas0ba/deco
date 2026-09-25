@@ -118,6 +118,7 @@ pub const DEFAULT_KEYBINDINGS_JSONC: &str = r#"[
     { "key": "alt+c",        "command": "toggleFindCaseSensitive", "when": "searchViewletVisible" },
     { "key": "alt+w",        "command": "toggleFindWholeWord",     "when": "searchViewletVisible" },
     { "key": "alt+r",        "command": "toggleFindRegex",         "when": "findWidgetVisible" },
+    { "key": "alt+r",        "command": "toggleFindRegex",         "when": "searchViewletVisible" },
     { "key": "enter",        "command": "editor.action.replaceOne", "when": "replaceInputFocussed" },
     { "key": "ctrl+alt+enter", "mac": "cmd+alt+enter", "command": "editor.action.replaceAll", "when": "findWidgetVisible" },
     // VS Code moves between the two inputs with the browser's own focus

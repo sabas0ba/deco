@@ -406,6 +406,7 @@ impl Client {
                 "needle": needle,
                 "caseSensitive": options.case_sensitive,
                 "wholeWord": options.whole_word,
+                "regex": options.regex,
             }),
         )?;
         let matches = said["matches"]

@@ -280,6 +280,15 @@ impl Buffer {
         Position::new(line as u32, character)
     }
 
+    /// Converts a byte offset into [`Buffer::text`] to a UTF-16 position.
+    ///
+    /// The offset must be on a character boundary, as offsets returned by a
+    /// regex match over that text are.
+    pub fn byte_to_position(&self, byte_idx: usize) -> Position {
+        let byte_idx = byte_idx.min(self.rope.len_bytes());
+        self.char_to_position(self.rope.byte_to_char(byte_idx))
+    }
+
     /// The text covered by `range`.
     pub fn text_in_range(&self, range: Range) -> String {
         let range = self.clamp_range(range);

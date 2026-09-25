@@ -24,14 +24,15 @@
 //! through, so that `ctrl+x` does not cut a line from the document while the
 //! user is editing a search term.
 //!
-//! # No regular expressions
+//! # Regular expressions
 //!
-//! [`deco_core::search`] is literal. `toggleFindRegex` is recognised so that the
-//! key reports the feature as unsupported instead of reporting an unknown
-//! command.
+//! `alt+r` (`toggleFindRegex`) switches the query between literal text and a
+//! regular expression; see [`deco_core::search`] for the syntax. An invalid
+//! expression finds nothing and [`Find::error`] reports why, so the bar can show
+//! the error instead of "No results".
 
 use deco_core::position::{Position, Range};
-use deco_core::search::{self, SearchOptions};
+use deco_core::search::{self, Pattern, PatternError, SearchOptions};
 use deco_core::Buffer;
 use serde_json::Value;
 
@@ -73,6 +74,8 @@ pub struct Find {
     origin: Position,
     /// Matches for `query`, recomputed by [`Find::refresh`].
     matches: Vec<Range>,
+    /// The compiled query, or why it did not compile. Set by [`Find::refresh`].
+    pattern: Option<Result<Pattern, PatternError>>,
 }
 
 impl Find {
@@ -137,6 +140,36 @@ impl Find {
         &self.matches
     }
 
+    /// Why the query did not compile, when regex mode is on and it is invalid.
+    pub fn error(&self) -> Option<&PatternError> {
+        self.pattern
+            .as_ref()
+            .and_then(|pattern| pattern.as_ref().err())
+    }
+
+    /// Every current match with the text that replaces it.
+    ///
+    /// In regex mode, capture references in the replacement are expanded against
+    /// each match. Empty when the query is invalid.
+    pub fn replacements(&self, buffer: &Buffer) -> Vec<(Range, String)> {
+        match &self.pattern {
+            Some(Ok(pattern)) => pattern.replacements(buffer, self.replace.text()),
+            _ => Vec::new(),
+        }
+    }
+
+    /// `text` as a query that matches it literally under the current options.
+    ///
+    /// A seed taken from a selection is escaped in regex mode, so selecting
+    /// `a.b` and pressing `ctrl+f` finds `a.b` and not `axb`.
+    pub fn literal_query(&self, text: String) -> String {
+        if self.options.regex {
+            search::escape(&text)
+        } else {
+            text
+        }
+    }
+
     /// Whether all of the focused field's text is selected.
     ///
     /// Used by the renderer to distinguish a field whose next keystroke
@@ -169,6 +202,7 @@ impl Find {
                 // The seed is selected, not appended to. It is the text the
                 // user selected, so the next input either replaces it or edits
                 // it, and is never a suffix.
+                let seed = self.literal_query(seed);
                 self.query.seed(seed);
             }
         }
@@ -205,6 +239,7 @@ impl Find {
         self.replacing = false;
         self.field = Field::Query;
         self.matches.clear();
+        self.pattern = None;
     }
 
     /// Replaces the query, putting the caret at the end.
@@ -218,7 +253,12 @@ impl Find {
     /// the document is edited. Nothing is cached across calls, because this type
     /// cannot detect when a cached result becomes stale.
     pub fn refresh(&mut self, buffer: &Buffer) {
-        self.matches = search::find_all(buffer, self.query.text(), self.options);
+        let pattern = Pattern::new(self.query.text(), self.options);
+        self.matches = match &pattern {
+            Ok(pattern) => pattern.find_all(buffer),
+            Err(_) => Vec::new(),
+        };
+        self.pattern = Some(pattern);
     }
 
     /// The first match at or after `from`, wrapping to the start.
@@ -264,6 +304,14 @@ impl Find {
     /// Turns whole-word matching on or off. Callers refresh afterwards.
     pub fn toggle_whole_word(&mut self) {
         self.options.whole_word = !self.options.whole_word;
+    }
+
+    /// Turns regular-expression matching on or off. Callers refresh afterwards.
+    ///
+    /// The query is kept as typed, as in VS Code. Toggling does not escape or
+    /// unescape it.
+    pub fn toggle_regex(&mut self) {
+        self.options.regex = !self.options.regex;
     }
 
     /// Applies a command to the focused input, if it is one the input owns.

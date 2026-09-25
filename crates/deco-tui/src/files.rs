@@ -109,6 +109,11 @@ pub fn search(root: &Path, settings: &Settings, needle: &str, options: SearchOpt
     if needle.is_empty() {
         return found;
     }
+    // Compiled once for every file. The session rejects an invalid pattern before
+    // asking for a search, so an error here finds nothing rather than panicking.
+    let Ok(pattern) = deco_core::search::Pattern::new(needle, options) else {
+        return found;
+    };
     let listing = list(root, settings);
     found.truncated = listing.truncated;
 
@@ -132,7 +137,7 @@ pub fn search(root: &Path, settings: &Settings, needle: &str, options: SearchOpt
         // Loading the file into a rope costs more than a dedicated scan, but keeps
         // a single definition of a match.
         let buffer = Buffer::from_text(&text);
-        for range in deco_core::search::find_all(&buffer, needle, options) {
+        for range in pattern.find_all(&buffer) {
             if found.matches.len() >= MAX_MATCHES {
                 found.truncated = true;
                 break;
@@ -523,9 +528,22 @@ mod tests {
             SearchOptions {
                 case_sensitive: false,
                 whole_word: true,
+                regex: false,
             },
         );
         assert_eq!(matches(&whole), vec!["a.rs:1: Total"]);
+
+        let regex = search(
+            &root,
+            &settings,
+            "^tot.l$",
+            SearchOptions {
+                case_sensitive: false,
+                whole_word: false,
+                regex: true,
+            },
+        );
+        assert_eq!(matches(&regex), vec!["a.rs:1: Total"]);
         let _ = std::fs::remove_dir_all(&root);
     }
 

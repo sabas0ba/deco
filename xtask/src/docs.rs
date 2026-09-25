@@ -99,6 +99,10 @@ fn demos() -> Vec<Demo> {
             build: replace,
         },
         Demo {
+            name: "regex",
+            build: regex,
+        },
+        Demo {
             name: "diagnostics",
             build: diagnostics,
         },
@@ -824,6 +828,21 @@ fn replace() -> String {
         .type_text("sum")
         .press_and_hold(&["tab"], 3)
         .type_text("total")
+        .press_and_hold(&["ctrl+alt+enter"], 5);
+    take.finish()
+}
+
+fn regex() -> String {
+    const DECLARATIONS: &str =
+        "fn main() {\n    let width = 80;\n    let height = 24;\n    let depth = 3;\n}\n";
+    let mut take = Take::new("main.rs", DECLARATIONS);
+    take.at(0, 0)
+        .capture("press ctrl+h, then alt+r for a regular expression", 2)
+        .press(&["ctrl+h"])
+        .press_and_hold(&["alt+r"], 3)
+        .type_text(r"let (\w+) = (\d+)")
+        .press_and_hold(&["tab"], 3)
+        .type_text("let $1: u32 = $2")
         .press_and_hold(&["ctrl+alt+enter"], 5);
     take.finish()
 }

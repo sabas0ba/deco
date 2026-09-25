@@ -9,6 +9,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+regex.workspace = true
 ropey.workspace = true
 serde = { workspace = true, optional = true }
 thiserror.workspace = true
