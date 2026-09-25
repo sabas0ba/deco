@@ -72,8 +72,9 @@ impl Output {
 pub trait Runner {
     /// Runs `argv` on the remote, feeding `stdin` to it if given.
     ///
-    /// `argv` is a program and its arguments, never a shell string, for the
-    /// reason [`transport`](crate::transport) gives.
+    /// `argv` is a program and its arguments, never a shell string. Where the
+    /// transport passes it through a remote shell, it quotes each argument, as
+    /// [`transport`](crate::transport) describes.
     fn run(
         &mut self,
         argv: &[String],
@@ -260,7 +261,8 @@ fn arch_name(uname: &str) -> String {
 /// This runs one `sh -c` with a constant script. It is the only exception to
 /// this crate's no-shell-strings rule, and it is allowed because nothing is
 /// interpolated into it: the remote expands `$HOME`, and no local value appears
-/// in the script.
+/// in the script. Over SSH the transport quotes the script as one argument, so
+/// the login shell passes it to `sh -c` unchanged.
 pub fn probe(runner: &mut dyn Runner) -> Result<Platform, InstallError> {
     let argv = [
         "sh".to_owned(),
@@ -878,6 +880,44 @@ mod tests {
         probe(&mut fake).expect("a platform");
         let script = &fake.ran[0][2];
         assert_eq!(script, "uname -s && uname -m && printf '%s\\n' \"$HOME\"");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_probe_script_reaches_sh_intact_through_ssh_quoting() {
+        // Replays what the remote login shell does with the SSH command: the
+        // arguments after the host, joined with spaces, parsed by a POSIX
+        // shell. The probe must reach `sh -c` as one script.
+        struct ThroughSsh;
+        impl Runner for ThroughSsh {
+            fn run(
+                &mut self,
+                argv: &[String],
+                _stdin: Option<&mut dyn Read>,
+            ) -> Result<Output, std::io::Error> {
+                let command = command_for(
+                    &Authority::parse("ssh-remote+myhost").unwrap(),
+                    argv,
+                    &TransportOptions::default(),
+                )
+                .unwrap();
+                let host = command.args.iter().position(|a| a == "myhost").unwrap();
+                let script = command.args[host + 1..].join(" ");
+                let output = std::process::Command::new("/bin/sh")
+                    .arg("-c")
+                    .arg(script)
+                    .env("HOME", "/home/u with space")
+                    .output()?;
+                Ok(Output {
+                    status: output.status.code(),
+                    stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+                    stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+                })
+            }
+        }
+        let platform = probe(&mut ThroughSsh).expect("a platform");
+        assert_eq!(platform.home, "/home/u with space");
+        assert!(!platform.os.is_empty() && !platform.arch.is_empty());
     }
 
     #[test]

@@ -1,10 +1,16 @@
 //! Building the command that runs a program on the remote for an authority.
 //!
 //! Every command is built as an argument vector and passed to the OS directly.
-//! Nothing is assembled into a shell string, because a hostname or container id
-//! can come from an untrusted source such as a `deco-remote://` link or a
-//! `.code-workspace` file. With `ssh "$host" "$cmd"`, a host of `x; rm -rf ~`
-//! would allow remote code execution.
+//! A hostname or container id can come from an untrusted source such as a
+//! `deco-remote://` link or a `.code-workspace` file, so it is never placed in a
+//! shell string. With `ssh "$host" "$cmd"`, a host of `x; rm -rf ~` would allow
+//! remote code execution.
+//!
+//! The remote command is a different case for SSH. OpenSSH joins the arguments
+//! after the host with spaces and the remote login shell parses the result, so
+//! each remote argument is POSIX single-quoted before it is passed to `ssh`.
+//! This requires a POSIX-compatible login shell on the remote (`sh`, `bash`,
+//! `dash`, `zsh`, `ksh`); `csh`, `tcsh` and `fish` are not supported.
 
 use std::path::{Path, PathBuf};
 
@@ -15,7 +21,9 @@ use crate::authority::Authority;
 pub struct Command {
     /// The program to execute.
     pub program: String,
-    /// Its arguments, one element per argument. Never a shell string.
+    /// Its arguments, one element per argument, passed to the local OS without
+    /// a shell. For SSH, the remote arguments among them are already quoted
+    /// for the remote login shell.
     pub args: Vec<String>,
 }
 
@@ -170,8 +178,11 @@ fn private_directory(directory: &Path) -> Result<PathBuf, std::io::Error> {
 
 /// Builds the command that runs `remote_command` on `authority`.
 ///
-/// `remote_command` is passed through as separate arguments, so the remote's
-/// shell never sees a string deco assembled.
+/// `remote_command` is a program and its arguments. Containers receive it as an
+/// exact argument vector. SSH passes it to the remote login shell as one string,
+/// so each element is single-quoted with `posix_quote` and the shell recovers
+/// the original arguments. WSL passes it unquoted; see the comment in that
+/// branch.
 pub fn command_for(
     authority: &Authority,
     remote_command: &[String],
@@ -210,10 +221,18 @@ pub fn command_for(
             // `--` stops a hostname beginning with `-` being read as a flag.
             args.push("--".to_owned());
             args.push(host.clone());
-            args.extend(remote_command.iter().cloned());
+            // OpenSSH joins these with spaces into one string that the remote
+            // login shell parses. Quoting each one keeps spaces, `;`, `$(...)`
+            // and backticks inside the argument instead of being interpreted.
+            args.extend(remote_command.iter().map(|arg| posix_quote(arg)));
             Ok(Command::new("ssh", args))
         }
 
+        // Known limitation: `wsl.exe -- argv` also runs the command through the
+        // distribution's default Linux shell, so an argument containing spaces
+        // or shell metacharacters may be split or interpreted there as with
+        // unquoted SSH. It is left unquoted until the behaviour of `wsl.exe` is
+        // verified on a real machine.
         Authority::Wsl { distro } => {
             let mut args = Vec::new();
             if let Some(distro) = distro {
@@ -239,6 +258,15 @@ pub fn command_for(
             Ok(Command::new("docker", args))
         }
     }
+}
+
+/// Quotes `arg` for a POSIX shell so that it is read back as exactly one word.
+///
+/// The argument is enclosed in single quotes, inside which a POSIX shell treats
+/// every character literally. A single quote in the argument ends the quoted
+/// part, is emitted as `\'`, and starts a new quoted part.
+fn posix_quote(arg: &str) -> String {
+    format!("'{}'", arg.replace('\'', "'\\''"))
 }
 
 /// The command that starts deco's headless server on the remote.
@@ -379,9 +407,63 @@ mod tests {
         let command = ssh("ssh-remote+myhost");
         assert_eq!(command.program, "ssh");
         assert!(command.args.contains(&"myhost".to_owned()));
-        // The remote command survives as separate arguments.
+        // The remote command follows the host, one quoted argument per element.
         let tail = &command.args[command.args.len() - 2..];
-        assert_eq!(tail, ["deco", "--server"]);
+        assert_eq!(tail, ["'deco'", "'--server'"]);
+    }
+
+    /// The arguments after the host, which OpenSSH joins with spaces into the
+    /// string the remote login shell parses.
+    fn ssh_remote_string(remote_command: &[&str]) -> String {
+        let remote_command: Vec<String> = remote_command.iter().map(|s| (*s).to_owned()).collect();
+        let command = command_for(
+            &Authority::parse("ssh-remote+myhost").unwrap(),
+            &remote_command,
+            &TransportOptions::default(),
+        )
+        .unwrap();
+        let host = command.args.iter().position(|a| a == "myhost").unwrap();
+        command.args[host + 1..].join(" ")
+    }
+
+    #[test]
+    fn ssh_quotes_remote_arguments_for_the_login_shell() {
+        let joined =
+            ssh_remote_string(&["deco", "--workspace", "/home/u/my project; touch x", "it's"]);
+        assert_eq!(
+            joined,
+            r"'deco' '--workspace' '/home/u/my project; touch x' 'it'\''s'"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ssh_remote_arguments_survive_a_posix_shell_unchanged() {
+        // Runs the joined string through a local `/bin/sh -c`, which is what
+        // the remote login shell does with it, and checks that each argument
+        // arrives as it was given.
+        let inputs = [
+            "/home/u/my project",
+            "$(echo x)",
+            "`echo x`",
+            "it's",
+            ";id",
+            "",
+            "a  b\tc",
+            "$HOME",
+        ];
+        let mut remote_command = vec!["printf", "%s\\n"];
+        remote_command.extend(inputs);
+        let script = ssh_remote_string(&remote_command);
+        let output = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(&script)
+            .output()
+            .expect("/bin/sh runs");
+        assert!(output.status.success(), "{output:?}");
+        let stdout = String::from_utf8(output.stdout).expect("UTF-8");
+        let lines: Vec<&str> = stdout.lines().collect();
+        assert_eq!(lines, inputs, "{script}");
     }
 
     #[test]

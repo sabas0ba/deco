@@ -225,7 +225,7 @@ An unknown kind before the `+` is an error naming the kind. deco does not fall b
 
 ## Transports
 
-Each authority maps to the command that reaches it: `ssh`, `wsl.exe`, or `docker exec`. The argument vector is built as a list, never as a shell string, so a hostname or container id containing shell metacharacters is passed as an argument and not interpreted. The language-server launcher follows the same rule.
+Each authority maps to the command that reaches it: `ssh`, `wsl.exe`, or `docker exec`. The argument vector is built as a list, never as a shell string, so a hostname or container id containing shell metacharacters is passed as an argument and not interpreted. The language-server launcher follows the same rule. OpenSSH joins the arguments after the host into one string that the remote login shell parses, so deco single-quotes each remote argument; a workspace path with spaces or a `;` arrives as one argument. This requires a POSIX-compatible login shell on the remote, such as `sh`, `bash`, `dash`, `zsh` or `ksh`; `csh`, `tcsh` and `fish` are not supported. `docker exec` passes the arguments exactly. `wsl.exe` currently passes them unquoted, and the distribution's default shell may split or interpret a WSL workspace path containing spaces or shell metacharacters; this has not been verified on a real machine.
 
 ## The wire protocol
 

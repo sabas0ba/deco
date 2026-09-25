@@ -23,7 +23,9 @@
 //!   `dev-container+id`, plus the `vscode-remote://` URIs they appear in.
 //! - [`transport`] turns an authority into a command. Commands are argument
 //!   vectors, never shell strings. A hostname can come from an untrusted URI, so
-//!   a host such as `-oProxyCommand=…` is rejected rather than escaped.
+//!   a host such as `-oProxyCommand=…` is rejected rather than escaped. Over
+//!   SSH, the remote arguments are single-quoted for the remote login shell,
+//!   which must be POSIX-compatible.
 //! - [`frame`] is the length-prefixed JSON framing used by client and server. A
 //!   size limit prevents a hostile peer from requesting a 900GB allocation on
 //!   the local machine.

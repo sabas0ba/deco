@@ -1883,10 +1883,10 @@ mod tests {
             .resolve(&definition(Vec::new()))
             .expect("a command");
         assert_eq!(resolved.command.program, "ssh");
-        // The server's command remains at the end, as separate arguments. The
-        // transport never builds a shell string.
+        // The server's command remains at the end, one argument each, quoted
+        // for the remote login shell that ssh hands them to.
         let tail = &resolved.command.args[resolved.command.args.len() - 3..];
-        assert_eq!(tail, ["taplo", "lsp", "stdio"]);
+        assert_eq!(tail, ["'taplo'", "'lsp'", "'stdio'"]);
         assert!(resolved.command.args.contains(&"myhost".to_owned()));
         // The rest of the definition is unchanged: it is the same server,
         // started on another machine.
@@ -1908,7 +1908,7 @@ mod tests {
 
         let args = resolved.command.args.join(" ");
         assert!(
-            args.contains("env RUST_LOG=debug PATH_EXTRA=/opt/bin taplo lsp stdio"),
+            args.contains("'env' 'RUST_LOG=debug' 'PATH_EXTRA=/opt/bin' 'taplo' 'lsp' 'stdio'"),
             "{args}"
         );
     }
