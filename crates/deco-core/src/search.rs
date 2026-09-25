@@ -1,9 +1,28 @@
-//! Finding literal text in a buffer.
+//! Finding text in a buffer, literally or by regular expression.
 //!
-//! Search is literal and does not support regular expressions. `ctrl+d` and
-//! `ctrl+shift+l` search for the selected text exactly, and a find bar defaults
-//! to literal search. A regex mode would need its own escaping rules and error
-//! reporting for invalid patterns; this module provides neither.
+//! `ctrl+d` and `ctrl+shift+l` search for the selected text exactly through
+//! [`find_all`] with [`SearchOptions::EXACT`]. The find bar and search in files
+//! build a [`Pattern`] from the user's query, because a regular expression can be
+//! invalid and the error must be reported rather than shown as "no results".
+//!
+//! # Regular expressions
+//!
+//! With [`SearchOptions::regex`] set, the query uses the syntax of the `regex`
+//! crate, which is close to the JavaScript syntax VS Code uses. Matching runs in
+//! time linear in the length of the text, so a pattern cannot make a search hang.
+//! The differences from VS Code are:
+//!
+//! - Look-around and backreferences are not supported and are reported as
+//!   invalid patterns.
+//! - `^` and `$` match at every line start and end, and `.` does not match a
+//!   line break. A pattern containing `\n` matches across lines.
+//! - A match of zero length, such as `^` or `a*` before a `b`, is skipped. An
+//!   empty selection cannot be replaced or stepped through.
+//!
+//! In a replacement, `$1` to `$99` insert a capture group, `$0` and `$&` insert
+//! the whole match, `$$` inserts `$`, and `\n`, `\t` and `\\` insert a line
+//! break, a tab and a backslash. A reference to a group the pattern does not
+//! have is inserted literally, as in JavaScript.
 //!
 //! # Positions, not byte offsets
 //!
@@ -31,6 +50,10 @@
 //! ` ( `. This is a side effect of `\b`. deco does not reproduce it, because
 //! "whole word" would then exclude results for a needle that contains no word
 //! characters.
+//!
+//! With a regular expression, the same rule applies to the ends of each match:
+//! an end of the matched text that is a word character must not be next to
+//! another word character.
 
 use crate::position::{Position, Range};
 use crate::Buffer;
@@ -42,24 +65,254 @@ pub struct SearchOptions {
     pub case_sensitive: bool,
     /// Whether a match must be bounded by non-word characters.
     pub whole_word: bool,
+    /// Whether the needle is a regular expression rather than literal text.
+    pub regex: bool,
 }
 
 impl SearchOptions {
-    /// Case-sensitive, matching anywhere.
+    /// Case-sensitive, literal, matching anywhere.
     ///
     /// Used by `ctrl+d`: the user selected exactly this text, so a match with
     /// different case is not expected.
     pub const EXACT: Self = Self {
         case_sensitive: true,
         whole_word: false,
+        regex: false,
     };
+}
+
+/// A query that could not be compiled.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("invalid regular expression: {reason}")]
+pub struct PatternError {
+    /// The parser's description, including the position of the error.
+    pub reason: String,
+}
+
+/// A query compiled once and run against any number of buffers.
+///
+/// Search in files runs one pattern over many files, so the regular expression
+/// is compiled here rather than once per file.
+#[derive(Debug, Clone)]
+pub struct Pattern {
+    needle: String,
+    options: SearchOptions,
+    regex: Option<regex::Regex>,
+}
+
+/// Upper bound on the compiled size of a user's regular expression.
+///
+/// The `regex` crate's own default is 10 MiB. A bounded repetition such as
+/// `\w{1000}` over Unicode classes can exceed it; the error is then reported
+/// as an invalid pattern.
+const REGEX_SIZE_LIMIT: usize = 10 * (1 << 20);
+
+impl Pattern {
+    /// Compiles `needle` according to `options`.
+    ///
+    /// A literal needle always compiles. A regular expression can fail; the
+    /// error names the problem and its position.
+    pub fn new(needle: &str, options: SearchOptions) -> Result<Self, PatternError> {
+        let regex = if options.regex && !needle.is_empty() {
+            let compiled = regex::RegexBuilder::new(needle)
+                .case_insensitive(!options.case_sensitive)
+                .multi_line(true)
+                .size_limit(REGEX_SIZE_LIMIT)
+                .build()
+                .map_err(|error| PatternError {
+                    reason: error.to_string(),
+                })?;
+            Some(compiled)
+        } else {
+            None
+        };
+        Ok(Self {
+            needle: needle.to_owned(),
+            options,
+            regex,
+        })
+    }
+
+    /// The options this pattern was compiled with.
+    pub fn options(&self) -> SearchOptions {
+        self.options
+    }
+
+    /// Every match in `buffer`, in document order.
+    pub fn find_all(&self, buffer: &Buffer) -> Vec<Range> {
+        match &self.regex {
+            Some(regex) => regex_matches(buffer, &buffer.text(), regex, self.options.whole_word)
+                .into_iter()
+                .map(|found| found.range)
+                .collect(),
+            None => find_literal(buffer, &self.needle, self.options),
+        }
+    }
+
+    /// Every match in `buffer` with the text that replaces it.
+    ///
+    /// For a literal pattern the replacement is `template` unchanged. For a
+    /// regular expression, capture references in `template` are expanded
+    /// against each match; see the module docs for the syntax.
+    pub fn replacements(&self, buffer: &Buffer, template: &str) -> Vec<(Range, String)> {
+        match &self.regex {
+            Some(regex) => {
+                let text = buffer.text();
+                regex_matches(buffer, &text, regex, self.options.whole_word)
+                    .into_iter()
+                    .map(|found| {
+                        let captures = regex.captures_at(&text, found.start).filter(|captures| {
+                            captures.get(0).is_some_and(|whole| {
+                                whole.start() == found.start && whole.end() == found.end
+                            })
+                        });
+                        let expanded = match captures {
+                            Some(captures) => expand(template, &captures),
+                            // Unreachable for a match `regex_matches` returned, but
+                            // an unexpanded template is a safe result.
+                            None => template.to_owned(),
+                        };
+                        (found.range, expanded)
+                    })
+                    .collect()
+            }
+            None => self
+                .find_all(buffer)
+                .into_iter()
+                .map(|range| (range, template.to_owned()))
+                .collect(),
+        }
+    }
+}
+
+/// `text` with every regular-expression metacharacter escaped.
+///
+/// Used to seed a regex-mode find bar from a selection, so the seed matches the
+/// selected text literally.
+pub fn escape(text: &str) -> String {
+    regex::escape(text)
 }
 
 /// Every match of `needle` in `buffer`, in document order.
 ///
 /// An empty needle matches nothing. Otherwise `ctrl+shift+l` on an empty
-/// selection would put a cursor on every character in the file.
+/// selection would put a cursor on every character in the file. An invalid
+/// regular expression also matches nothing; callers that must report the error
+/// use [`Pattern::new`].
 pub fn find_all(buffer: &Buffer, needle: &str, options: SearchOptions) -> Vec<Range> {
+    Pattern::new(needle, options)
+        .map(|pattern| pattern.find_all(buffer))
+        .unwrap_or_default()
+}
+
+/// A regular-expression match, as a position range and as byte offsets into
+/// [`Buffer::text`].
+struct RegexMatch {
+    range: Range,
+    start: usize,
+    end: usize,
+}
+
+/// The non-empty matches of `regex` in `buffer` that satisfy `whole_word`.
+///
+/// `text` is `buffer.text()`, passed in so a caller that also needs it reads the
+/// buffer once.
+fn regex_matches(
+    buffer: &Buffer,
+    text: &str,
+    regex: &regex::Regex,
+    whole_word: bool,
+) -> Vec<RegexMatch> {
+    regex
+        .find_iter(text)
+        .filter(|found| !found.is_empty())
+        .filter(|found| !whole_word || is_whole_word_bytes(text, found.start(), found.end()))
+        .map(|found| RegexMatch {
+            range: Range::new(
+                buffer.byte_to_position(found.start()),
+                buffer.byte_to_position(found.end()),
+            ),
+            start: found.start(),
+            end: found.end(),
+        })
+        .collect()
+}
+
+/// [`is_whole_word`] for a match given as byte offsets into `text`.
+///
+/// The matched text itself stands in for the needle, because a regular
+/// expression's ends are only known once it has matched.
+fn is_whole_word_bytes(text: &str, start: usize, end: usize) -> bool {
+    let matched = &text[start..end];
+    let starts_with_word = matched.chars().next().is_some_and(is_word_char);
+    let ends_with_word = matched.chars().next_back().is_some_and(is_word_char);
+    let before_ok =
+        !starts_with_word || !text[..start].chars().next_back().is_some_and(is_word_char);
+    let after_ok = !ends_with_word || !text[end..].chars().next().is_some_and(is_word_char);
+    before_ok && after_ok
+}
+
+/// Expands capture references in a replacement template.
+fn expand(template: &str, captures: &regex::Captures<'_>) -> String {
+    let group = |index: usize| captures.get(index).map_or("", |found| found.as_str());
+    let groups = captures.len() - 1;
+    let chars: Vec<char> = template.chars().collect();
+    let mut out = String::with_capacity(template.len());
+    let mut index = 0;
+    while index < chars.len() {
+        let c = chars[index];
+        let next = chars.get(index + 1).copied();
+        match (c, next) {
+            ('$', Some('$')) => {
+                out.push('$');
+                index += 2;
+            }
+            ('$', Some('&')) => {
+                out.push_str(group(0));
+                index += 2;
+            }
+            ('$', Some(first)) if first.is_ascii_digit() => {
+                let one = first.to_digit(10).unwrap_or(0) as usize;
+                let two = chars
+                    .get(index + 2)
+                    .and_then(|second| second.to_digit(10))
+                    .map(|second| one * 10 + second as usize);
+                // Two digits win when that group exists, as in JavaScript:
+                // `$12` is group 12 if there is one, otherwise group 1 and `2`.
+                if let Some(two) = two.filter(|two| (1..=groups).contains(two)) {
+                    out.push_str(group(two));
+                    index += 3;
+                } else if one <= groups {
+                    out.push_str(group(one));
+                    index += 2;
+                } else {
+                    out.push('$');
+                    index += 1;
+                }
+            }
+            ('\\', Some('n')) => {
+                out.push('\n');
+                index += 2;
+            }
+            ('\\', Some('t')) => {
+                out.push('\t');
+                index += 2;
+            }
+            ('\\', Some('\\')) => {
+                out.push('\\');
+                index += 2;
+            }
+            _ => {
+                out.push(c);
+                index += 1;
+            }
+        }
+    }
+    out
+}
+
+/// Every match of a literal `needle`, in document order.
+fn find_literal(buffer: &Buffer, needle: &str, options: SearchOptions) -> Vec<Range> {
     if needle.is_empty() {
         return Vec::new();
     }
@@ -280,7 +533,8 @@ mod tests {
                 "foo",
                 SearchOptions {
                     case_sensitive: false,
-                    whole_word: false
+                    whole_word: false,
+                    regex: false,
                 }
             )
             .len(),
@@ -299,6 +553,7 @@ mod tests {
             SearchOptions {
                 case_sensitive: false,
                 whole_word: false,
+                regex: false,
             },
         );
         assert_eq!(ranges(&matches), vec![(0, 2, 0, 5)]);
@@ -311,6 +566,7 @@ mod tests {
         let options = SearchOptions {
             case_sensitive: true,
             whole_word: true,
+            regex: false,
         };
         // Only the standalone `foo` at the start qualifies: `_` is a word
         // character, so `_foo` and `foo_` are parts of longer words.
@@ -323,6 +579,7 @@ mod tests {
         let options = SearchOptions {
             case_sensitive: true,
             whole_word: true,
+            regex: false,
         };
         assert_eq!(find_all(&b, "foo", options).len(), 1);
     }
@@ -335,6 +592,7 @@ mod tests {
         let options = SearchOptions {
             case_sensitive: true,
             whole_word: true,
+            regex: false,
         };
         assert_eq!(find_all(&buffer("f(x) g(y)"), "(", options).len(), 2);
         assert_eq!(find_all(&buffer(" ( ) "), "(", options).len(), 1);
@@ -345,6 +603,7 @@ mod tests {
         let options = SearchOptions {
             case_sensitive: true,
             whole_word: true,
+            regex: false,
         };
         // `foo(` ends in a bracket, so only its left side needs a boundary:
         // it matches `foo(` and not `barfoo(`.
@@ -493,5 +752,170 @@ mod tests {
     fn a_position_past_the_end_of_the_document_finds_no_word() {
         let b = buffer("a\n");
         assert_eq!(word_at(&b, at(99, 0)), None);
+    }
+
+    const REGEX: SearchOptions = SearchOptions {
+        case_sensitive: true,
+        whole_word: false,
+        regex: true,
+    };
+
+    fn pattern(needle: &str, options: SearchOptions) -> Pattern {
+        Pattern::new(needle, options).expect("a valid pattern")
+    }
+
+    #[test]
+    fn a_regex_finds_every_match_in_document_order() {
+        let b = buffer("let a1 = 1;\nlet b22 = 2;\n");
+        assert_eq!(
+            ranges(&pattern(r"[a-z]\d+", REGEX).find_all(&b)),
+            vec![(0, 4, 0, 6), (1, 4, 1, 7)]
+        );
+    }
+
+    #[test]
+    fn regex_metacharacters_are_literal_without_regex_mode() {
+        let b = buffer("a.c abc\n");
+        assert_eq!(find_all(&b, "a.c", SearchOptions::EXACT).len(), 1);
+        assert_eq!(pattern("a.c", REGEX).find_all(&b).len(), 2);
+    }
+
+    #[test]
+    fn an_invalid_regex_is_an_error_naming_the_problem() {
+        let error = Pattern::new("(foo", REGEX).expect_err("unclosed group");
+        assert!(error.to_string().starts_with("invalid regular expression"));
+        assert!(error.reason.contains("unclosed"), "{}", error.reason);
+        assert!(find_all(&buffer("(foo"), "(foo", REGEX).is_empty());
+    }
+
+    #[test]
+    fn look_around_is_reported_as_unsupported() {
+        assert!(Pattern::new("foo(?=bar)", REGEX).is_err());
+    }
+
+    #[test]
+    fn anchors_match_at_every_line() {
+        let b = buffer("one\ntwo\n");
+        assert_eq!(
+            ranges(&pattern("^t|e$", REGEX).find_all(&b)),
+            vec![(0, 2, 0, 3), (1, 0, 1, 1)]
+        );
+    }
+
+    #[test]
+    fn a_regex_with_a_line_break_matches_across_lines() {
+        let b = buffer("one\ntwo\n");
+        assert_eq!(
+            ranges(&pattern(r"e\nt", REGEX).find_all(&b)),
+            vec![(0, 2, 1, 1)]
+        );
+    }
+
+    #[test]
+    fn empty_matches_are_skipped() {
+        let b = buffer("abc\n\nb\n");
+        assert!(pattern("^", REGEX).find_all(&b).is_empty());
+        assert_eq!(
+            ranges(&pattern("a*", REGEX).find_all(&b)),
+            vec![(0, 0, 0, 1)]
+        );
+    }
+
+    #[test]
+    fn a_case_insensitive_regex_ignores_case() {
+        let options = SearchOptions {
+            case_sensitive: false,
+            ..REGEX
+        };
+        assert_eq!(
+            pattern("fo+", options).find_all(&buffer("FOO foo")).len(),
+            2
+        );
+        assert_eq!(pattern("fo+", REGEX).find_all(&buffer("FOO foo")).len(), 1);
+    }
+
+    #[test]
+    fn whole_word_applies_to_the_ends_of_each_regex_match() {
+        let options = SearchOptions {
+            whole_word: true,
+            ..REGEX
+        };
+        let b = buffer("foo1 xfoo2 foo3y (foo4)\n");
+        assert_eq!(
+            ranges(&pattern(r"foo\d", options).find_all(&b)),
+            vec![(0, 0, 0, 4), (0, 18, 0, 22)]
+        );
+        // A match whose ends are not word characters is not constrained.
+        assert_eq!(pattern(r"\(", options).find_all(&b).len(), 1);
+    }
+
+    #[test]
+    fn a_regex_match_after_non_ascii_text_reports_utf16_columns() {
+        let b = buffer("🎉日本 foo\n");
+        assert_eq!(
+            ranges(&pattern("f.o", REGEX).find_all(&b)),
+            vec![(0, 5, 0, 8)]
+        );
+    }
+
+    fn replaced(text: &str, needle: &str, template: &str) -> Vec<String> {
+        pattern(needle, REGEX)
+            .replacements(&buffer(text), template)
+            .into_iter()
+            .map(|(_, replacement)| replacement)
+            .collect()
+    }
+
+    #[test]
+    fn capture_groups_are_expanded_in_a_replacement() {
+        assert_eq!(
+            replaced("key=value\n", r"(\w+)=(\w+)", "$2: $1"),
+            vec!["value: key"]
+        );
+    }
+
+    #[test]
+    fn the_whole_match_and_a_dollar_sign_can_be_inserted() {
+        assert_eq!(replaced("ab\n", "ab", "[$&|$0|$$]"), vec!["[ab|ab|$]"]);
+    }
+
+    #[test]
+    fn a_missing_group_is_inserted_literally_and_an_unmatched_one_is_empty() {
+        assert_eq!(replaced("ab\n", "(a)(x)?b", "$3-$2-$1"), vec!["$3--a"]);
+    }
+
+    #[test]
+    fn two_digit_references_fall_back_to_one_digit() {
+        // With one group, `$12` is group 1 followed by `2`.
+        assert_eq!(replaced("ab\n", "(a)b", "$12"), vec!["a2"]);
+        let twelve = "(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)(l)";
+        assert_eq!(replaced("abcdefghijkl\n", twelve, "$12"), vec!["l"]);
+    }
+
+    #[test]
+    fn escapes_in_a_replacement_insert_control_characters() {
+        assert_eq!(replaced("a b\n", " ", r"\n\t\\\x"), vec!["\n\t\\\\x"]);
+    }
+
+    #[test]
+    fn a_literal_replacement_is_not_expanded() {
+        let literal = pattern("a", SearchOptions::EXACT);
+        let replacements = literal.replacements(&buffer("a\n"), "$0\\n");
+        assert_eq!(replacements[0].1, "$0\\n");
+    }
+
+    #[test]
+    fn each_replacement_uses_its_own_match() {
+        assert_eq!(replaced("x1 y2\n", r"(\w)(\d)", "$2$1"), vec!["1x", "2y"]);
+    }
+
+    #[test]
+    fn an_escaped_seed_matches_itself_literally() {
+        let seed = "a.b(c)*";
+        let b = buffer("a.b(c)* axb(c)\n");
+        assert_eq!(
+            ranges(&pattern(&escape(seed), REGEX).find_all(&b)),
+            vec![(0, 0, 0, 7)]
+        );
     }
 }

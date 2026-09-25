@@ -52,7 +52,10 @@ use crate::frame::{self, Message};
 ///
 /// Sent in the handshake and checked by the client, so a new frontend connected
 /// to an old server fails with a clear error instead of partially working.
-pub const PROTOCOL_VERSION: &str = "1";
+///
+/// Version 2 added the `regex` option to `fs.search`. A version 1 server ignores
+/// the option and would return literal matches for a regular expression.
+pub const PROTOCOL_VERSION: &str = "2";
 
 /// The handshake method, sent first in every session.
 pub const HANDSHAKE: &str = "$/handshake";
@@ -137,6 +140,9 @@ pub enum ServerError {
         /// What it wanted.
         what: String,
     },
+    /// A search's regular expression could not be compiled.
+    #[error(transparent)]
+    InvalidPattern(#[from] deco_core::search::PatternError),
     /// Git failed to answer or carry out a source-control request.
     #[error("source control is unavailable: {reason}")]
     SourceControl {
@@ -650,8 +656,10 @@ impl Server {
                 let options = deco_core::search::SearchOptions {
                     case_sensitive: params["caseSensitive"].as_bool().unwrap_or(true),
                     whole_word: params["wholeWord"].as_bool().unwrap_or(false),
+                    regex: params["regex"].as_bool().unwrap_or(false),
                 };
-                Ok(self.search(needle, options))
+                let pattern = deco_core::search::Pattern::new(needle, options)?;
+                Ok(self.search(needle, &pattern))
             }
             "scm.status" => {
                 let repository = self.repository_root()?;
@@ -892,7 +900,7 @@ impl Server {
     ///
     /// Synchronous and bounded, like the local search it replaces. Truncation is
     /// reported, so "500 matches" and "the first 500 of many" can be told apart.
-    fn search(&self, needle: &str, options: deco_core::search::SearchOptions) -> serde_json::Value {
+    fn search(&self, needle: &str, pattern: &deco_core::search::Pattern) -> serde_json::Value {
         let mut matches = Vec::new();
         let mut truncated = false;
         let mut files_searched = 0usize;
@@ -922,7 +930,7 @@ impl Server {
             files_searched += 1;
 
             let buffer = deco_core::buffer::Buffer::from_text(&text);
-            for range in deco_core::search::find_all(&buffer, needle, options) {
+            for range in pattern.find_all(&buffer) {
                 if matches.len() >= MAX_MATCHES {
                     truncated = true;
                     break;
@@ -1518,6 +1526,29 @@ mod tests {
                 json!({ "needle": "needle", "wholeWord": true })
             ),
             1
+        );
+        // A regular expression, which a literal search would not find.
+        assert_eq!(
+            count(&mut server, json!({ "needle": "needles?", "regex": true })),
+            2
+        );
+        assert_eq!(count(&mut server, json!({ "needle": "needles?" })), 0);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_invalid_regex_is_an_error_rather_than_no_matches() {
+        let root = workspace("search-invalid");
+        let mut server = Server::new(&root).expect("a server");
+        let error = ask(
+            &mut server,
+            "fs.search",
+            json!({ "needle": "(", "regex": true }),
+        )
+        .expect_err("an invalid pattern");
+        assert!(
+            error.to_string().starts_with("invalid regular expression"),
+            "{error}"
         );
         let _ = std::fs::remove_dir_all(&root);
     }

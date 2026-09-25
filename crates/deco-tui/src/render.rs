@@ -1082,22 +1082,28 @@ fn choice_row(
 
 /// The find bar, and the column its caret sits in.
 ///
-/// One line containing the query, the two toggles shown as the letters on VS
-/// Code's buttons, and the match count.
+/// One line containing the query, the three toggles shown as letters, and the
+/// match count.
 fn find_bar(session: &Session, width: usize, palette: &Palette) -> (Row, usize) {
     const PROMPT: &str = " Find: ";
 
     let find = &session.find;
     let options = find.options();
     let toggles = format!(
-        "[{}a {}w] ",
+        "[{}a {}w {}r] ",
         if options.case_sensitive { 'A' } else { 'a' },
         if options.whole_word { 'W' } else { 'w' },
+        if options.regex { 'R' } else { 'r' },
     );
-    // VS Code's buttons show `Aa`/`ab`. Here a capital letter means the option
-    // is on. The status bar names the option the first time either is toggled.
+    // VS Code's buttons show `Aa`, `ab` and `.*`. Here a capital letter means
+    // the option is on: case, whole word and regex, bound to `alt+c`, `alt+w`
+    // and `alt+r`.
     let count = if find.query().is_empty() {
         String::new()
+    } else if find.error().is_some() {
+        // The full parser message is long; stepping with `enter` or `F3` shows
+        // it in the status bar.
+        "Invalid regex ".to_owned()
     } else if find.matches().is_empty() {
         "No results ".to_owned()
     } else {
@@ -3009,11 +3015,22 @@ mod tests {
     fn the_toggles_show_which_options_are_on() {
         let mut session = searching("foo\n", "foo");
         let row = find_row(&render(&session, 40, 8));
-        assert!(row.contains("[aa ww]") || row.contains("[a"), "{row:?}");
+        assert!(row.contains("[aa ww rr]"), "{row:?}");
         session.run("toggleFindCaseSensitive", None, 0);
         session.run("toggleFindWholeWord", None, 0);
+        session.run("toggleFindRegex", None, 0);
         let row = find_row(&render(&session, 40, 8));
-        assert!(row.contains("[Aa Ww]"), "{row:?}");
+        assert!(row.contains("[Aa Ww Rr]"), "{row:?}");
+    }
+
+    #[test]
+    fn an_invalid_regex_is_shown_instead_of_no_results() {
+        let mut session = searching("(foo\n", "(foo");
+        assert!(find_row(&render(&session, 40, 8)).contains("1 of 1"));
+        session.run("toggleFindRegex", None, 0);
+        let row = find_row(&render(&session, 40, 8));
+        assert!(row.contains("Invalid regex"), "{row:?}");
+        assert!(!row.contains("No results"), "{row:?}");
     }
 
     #[test]
@@ -3061,20 +3078,20 @@ mod tests {
         let session = searching("foo\n", "foo");
         let wide = find_row(&render(&session, 40, 8));
         assert!(
-            wide.contains("1 of 1") && wide.contains("[aa ww]"),
+            wide.contains("1 of 1") && wide.contains("[aa ww rr]"),
             "{wide:?}"
         );
 
-        let narrow = find_row(&render(&session, 24, 8));
+        let narrow = find_row(&render(&session, 27, 8));
         assert!(
             !narrow.contains("1 of 1"),
             "the count should go first: {narrow:?}"
         );
-        assert!(narrow.contains("[aa ww]"), "{narrow:?}");
+        assert!(narrow.contains("[aa ww rr]"), "{narrow:?}");
         assert!(narrow.contains("foo"), "{narrow:?}");
 
         let tiny = find_row(&render(&session, 16, 8));
-        assert!(!tiny.contains("[aa ww]"), "the toggles go next: {tiny:?}");
+        assert!(!tiny.contains("[aa ww"), "the toggles go next: {tiny:?}");
         assert!(tiny.contains("foo"), "the query survives: {tiny:?}");
     }
 

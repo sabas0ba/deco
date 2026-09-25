@@ -1670,11 +1670,14 @@ impl Session {
                     self.find_query_changed()
                 }
             }
-            // Recognised so the key reports that the feature is missing.
-            // `deco_core::search` is literal. A regex mode needs its own escaping
-            // and error reporting for invalid patterns.
             "toggleFindRegex" => {
-                Outcome::Message("regular-expression search is not implemented yet".to_owned())
+                if self.searching_project() {
+                    self.search_options.regex = !self.search_options.regex;
+                    self.report_search_options()
+                } else {
+                    self.find.toggle_regex();
+                    self.find_query_changed()
+                }
             }
             "editor.action.startFindReplaceAction" => self.open_find(true),
             // The quick-open prompt. Like the find bar, it needs the whole
@@ -2194,9 +2197,10 @@ impl Session {
     fn report_search_options(&mut self) -> Outcome {
         let describe = |on: bool| if on { "on" } else { "off" };
         Outcome::Message(format!(
-            "Search: case {}, whole word {}",
+            "Search: case {}, whole word {}, regex {}",
             describe(self.search_options.case_sensitive),
-            describe(self.search_options.whole_word)
+            describe(self.search_options.whole_word),
+            describe(self.search_options.regex)
         ))
     }
 
@@ -2204,8 +2208,15 @@ impl Session {
     ///
     /// The selection, the word under the cursor, or the find bar's last query, in
     /// that order, from most to least recently indicated by the user.
+    ///
+    /// Text from the document is escaped when project search is in regex mode,
+    /// so it matches itself. The find bar's query is already a query and is
+    /// used as typed.
     pub fn search_seed(&self) -> Option<String> {
         if let Some((text, _)) = self.seed_from_document() {
+            if self.search_options.regex {
+                return Some(deco_core::search::escape(&text));
+            }
             return Some(text);
         }
         let query = self.find.query();
@@ -2308,6 +2319,12 @@ impl Session {
                 if typed.is_empty() {
                     self.replacing_in_files = false;
                     return Outcome::Message("nothing to search for".to_owned());
+                }
+                // Reported here, before any file is read, so that an invalid
+                // regular expression is not shown as "no matches".
+                if let Err(error) = deco_core::search::Pattern::new(typed, self.search_options) {
+                    self.replacing_in_files = false;
+                    return Outcome::Message(error.to_string());
                 }
                 if self.replacing_in_files {
                     // The second step. The query is stored in the session, not in
@@ -2505,6 +2522,15 @@ impl Session {
         Outcome::Handled
     }
 
+    /// What to report when the find bar's query found nothing: the regex error
+    /// when the query did not compile, otherwise that there are no results.
+    fn no_find_results(&self) -> Outcome {
+        match self.find.error() {
+            Some(error) => Outcome::Message(error.to_string()),
+            None => Outcome::Message(format!("no results for `{}`", self.find.query())),
+        }
+    }
+
     /// `F3` and `shift+F3`: the next or previous match, wrapping.
     fn step_find(&mut self, direction: Direction) -> Outcome {
         // `F3` with an empty query searches for the selection, or for the word
@@ -2513,6 +2539,7 @@ impl Session {
             let Some((seed, range)) = self.seed_from_document() else {
                 return Outcome::Message("nothing to search for".to_owned());
             };
+            let seed = self.find.literal_query(seed);
             self.find.set_query(seed);
             // Select the seed so that the step below moves past it. Otherwise the
             // search starts from a caret inside the seed word, finds that word,
@@ -2521,7 +2548,7 @@ impl Session {
         }
         self.find.refresh(&self.document.buffer);
         if self.find.matches().is_empty() {
-            return Outcome::Message(format!("no results for `{}`", self.find.query()));
+            return self.no_find_results();
         }
 
         let primary = *self.view.selections.primary();
@@ -2559,7 +2586,7 @@ impl Session {
         }
         self.find.refresh(&self.document.buffer);
         if self.find.matches().is_empty() {
-            return Outcome::Message(format!("no results for `{}`", self.find.query()));
+            return self.no_find_results();
         }
 
         let primary = *self.view.selections.primary();
@@ -2568,7 +2595,17 @@ impl Session {
             return self.step_find(Direction::Next);
         }
 
-        let replacement = self.find.replace().to_owned();
+        // In regex mode the replacement depends on the match, so it is taken from
+        // the expansion for the selected match.
+        let Some(replacement) = self
+            .find
+            .replacements(&self.document.buffer)
+            .into_iter()
+            .find(|(range, _)| *range == current)
+            .map(|(_, replacement)| replacement)
+        else {
+            return self.step_find(Direction::Next);
+        };
         let after = self.replace_range(current, &replacement, now_ms);
         // The document changed, so rebuild the match list before using it.
         self.find.refresh(&self.document.buffer);
@@ -2588,26 +2625,28 @@ impl Session {
         }
         self.find.refresh(&self.document.buffer);
         if self.find.matches().is_empty() {
-            return Outcome::Message(format!("no results for `{}`", self.find.query()));
+            return self.no_find_results();
         }
 
-        let replacement = self.find.replace().to_owned();
-        // Skip matches that already equal the replacement, so replacing `foo`
+        // Skip matches that already equal their replacement, so replacing `foo`
         // with `foo` does not dirty the file or add an undo step. A match can
         // differ from the query, because a case-insensitive search for `foo` also
         // finds `FOO`.
         let edits: Vec<deco_lsp::TextEdit> = self
             .find
-            .matches()
-            .iter()
-            .filter(|range| self.document.buffer.text_in_range(**range) != replacement)
-            .map(|range| deco_lsp::TextEdit {
-                range: *range,
-                new_text: replacement.clone(),
+            .replacements(&self.document.buffer)
+            .into_iter()
+            .filter(|(range, replacement)| {
+                self.document.buffer.text_in_range(*range) != *replacement
             })
+            .map(|(range, new_text)| deco_lsp::TextEdit { range, new_text })
             .collect();
         if edits.is_empty() {
-            return Outcome::Message(format!("every match already reads `{replacement}`"));
+            return Outcome::Message(if self.find.options().regex {
+                "every match already reads as its replacement".to_owned()
+            } else {
+                format!("every match already reads `{}`", self.find.replace())
+            });
         }
 
         // `TextEdit` is a range and a string, and `apply_edits` already turns a
@@ -2989,7 +3028,7 @@ impl Session {
     /// relevant text, and positions from disk do not match it.
     ///
     /// Each file is therefore searched again, against the buffer when a tab holds
-    /// one, with the same [`deco_core::search::find_all`] the find bar uses. The
+    /// one, with the same [`deco_core::search::Pattern`] the find bar uses. The
     /// count reported afterwards is therefore the number of replacements, not
     /// the number of earlier search results.
     ///
@@ -3004,6 +3043,7 @@ impl Session {
         options: deco_core::search::SearchOptions,
         mut read: impl FnMut(&Path) -> Result<String, String>,
     ) -> Result<crate::workspace::Plan, crate::workspace::WorkspaceError> {
+        let pattern = deco_core::search::Pattern::new(needle, options)?;
         let mut documents = Vec::with_capacity(paths.len());
         for path in paths {
             let open = self.document_at_path(path);
@@ -3026,14 +3066,13 @@ impl Session {
                 }
             };
 
-            let edits: Vec<deco_lsp::TextEdit> =
-                deco_core::search::find_all(&buffer, needle, options)
-                    .into_iter()
-                    .map(|range| deco_lsp::TextEdit {
-                        range,
-                        new_text: replacement.to_owned(),
-                    })
-                    .collect();
+            // In regex mode each match gets its own replacement, with capture
+            // references expanded against that match.
+            let edits: Vec<deco_lsp::TextEdit> = pattern
+                .replacements(&buffer, replacement)
+                .into_iter()
+                .map(|(range, new_text)| deco_lsp::TextEdit { range, new_text })
+                .collect();
 
             // Skip a file with no remaining matches (for example, because the
             // matched text has since changed) instead of opening it.
@@ -6552,13 +6591,108 @@ mod tests {
         assert_eq!(s.find.matches().len(), 1);
     }
 
+    /// Types `text` into whichever input has the keyboard.
+    fn type_into(s: &mut Session, text: &str) {
+        s.dispatch("type", Some(&serde_json::json!({ "text": text })), 0);
+    }
+
     #[test]
-    fn the_features_that_are_missing_say_so_rather_than_reporting_unknown() {
-        let mut s = searchable("foo\n");
+    fn alt_r_toggles_regex_and_re_searches() {
+        let mut s = searchable("foo fooo f.o\n");
         press(&mut s, "ctrl+f");
+        type_into(&mut s, "fo+");
+        assert!(
+            s.find.matches().is_empty(),
+            "literal `fo+` is not in the text"
+        );
+        assert_eq!(press(&mut s, "alt+r"), Outcome::Handled);
+        assert!(s.find.options().regex);
+        assert_eq!(s.find.matches().len(), 2);
+        assert_eq!(selected(&s), ((0, 0), (0, 3)));
+        press(&mut s, "alt+r");
+        assert!(!s.find.options().regex);
+        assert!(s.find.matches().is_empty());
+    }
+
+    #[test]
+    fn an_invalid_regex_is_reported_rather_than_shown_as_no_results() {
+        let mut s = searchable("(foo\n");
+        press(&mut s, "ctrl+f");
+        press(&mut s, "alt+r");
+        type_into(&mut s, "(foo");
+        assert!(s.find.matches().is_empty());
+        assert!(s.find.error().is_some());
+        let Outcome::Message(message) = press(&mut s, "enter") else {
+            panic!("stepping should report the error");
+        };
+        assert!(
+            message.starts_with("invalid regular expression"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_seed_is_escaped_in_regex_mode() {
+        let mut s = searchable("a.b axb a.b\n");
+        press(&mut s, "ctrl+f");
+        press(&mut s, "alt+r");
+        press(&mut s, "escape");
+        s.view.selections = deco_core::SelectionSet::single(deco_core::Selection::new(
+            Position::new(0, 0),
+            Position::new(0, 3),
+        ));
+        press(&mut s, "ctrl+f");
+        assert_eq!(s.find.query(), r"a\.b");
+        assert_eq!(s.find.matches().len(), 2);
+    }
+
+    #[test]
+    fn replace_all_expands_capture_groups_per_match_in_one_step() {
+        let mut s = searchable("a=1\nb=2\n");
+        press(&mut s, "ctrl+h");
+        press(&mut s, "alt+r");
+        type_into(&mut s, r"(\w)=(\d)");
+        press(&mut s, "tab");
+        type_into(&mut s, "$2=$1");
         assert_eq!(
-            press(&mut s, "alt+r"),
-            Outcome::Message("regular-expression search is not implemented yet".to_owned())
+            s.run("editor.action.replaceAll", None, 0),
+            Outcome::Message("replaced 2 occurrences".to_owned())
+        );
+        assert_eq!(s.document.buffer.text(), "1=a\n2=b\n");
+        s.run("undo", None, 0);
+        assert_eq!(s.document.buffer.text(), "a=1\nb=2\n");
+    }
+
+    #[test]
+    fn replace_one_expands_capture_groups_for_the_selected_match() {
+        let mut s = searchable("a=1\nb=2\n");
+        press(&mut s, "ctrl+h");
+        press(&mut s, "alt+r");
+        type_into(&mut s, r"(\w)=(\d)");
+        press(&mut s, "tab");
+        type_into(&mut s, "$2");
+        s.run("editor.action.replaceOne", None, 0);
+        assert_eq!(s.document.buffer.text(), "1\nb=2\n");
+        assert_eq!(selected(&s), ((1, 0), (1, 3)), "the next match is selected");
+    }
+
+    #[test]
+    fn an_invalid_regex_in_a_project_search_is_reported_before_searching() {
+        let mut s = searchable("x\n");
+        s.run("workbench.action.findInFiles", None, 0);
+        press(&mut s, "alt+r");
+        assert_eq!(
+            s.status.as_deref(),
+            Some("Search: case off, whole word off, regex on")
+        );
+        press(&mut s, "ctrl+x");
+        type_into(&mut s, "(x");
+        let Outcome::Message(message) = press(&mut s, "enter") else {
+            panic!("an invalid pattern should not reach the frontend");
+        };
+        assert!(
+            message.starts_with("invalid regular expression"),
+            "{message}"
         );
     }
 
@@ -7473,7 +7607,7 @@ mod tests {
         press(&mut s, "alt+c");
         assert_eq!(
             s.status.as_deref(),
-            Some("Search: case on, whole word off"),
+            Some("Search: case on, whole word off, regex off"),
             "a toggle nobody can see is a toggle nobody trusts"
         );
         assert!(
