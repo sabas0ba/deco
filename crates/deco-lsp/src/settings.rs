@@ -1,8 +1,8 @@
 //! Reading the language-server registry out of layered settings.
 //!
-//! The key is `deco.lsp.servers`, deco's own namespace rather than one of VS
-//! Code's — VS Code has no equivalent setting, because there a server arrives
-//! inside an extension. A definition looks like:
+//! The key is `deco.lsp.servers`, in deco's own namespace. VS Code has no
+//! equivalent setting because it gets servers from extensions. A definition
+//! looks like:
 //!
 //! ```jsonc
 //! {
@@ -20,17 +20,17 @@
 //!
 //! # Why this is not just `settings.get("deco.lsp.servers")`
 //!
-//! Ordinary settings can be resolved by precedence and forgotten about: the
-//! highest-priority layer wins and nothing depends on where it came from. A
-//! server definition is different, because acting on it means **executing a
-//! program**. A `.vscode/settings.json` arrives with a cloned repository, so a
-//! definition from workspace scope has to stay marked as such all the way to
-//! the spawn — which is why each layer is read separately and tagged with its
-//! [`Trust`], instead of being resolved into one anonymous value.
+//! Ordinary settings are resolved by precedence: the highest-priority layer
+//! wins, and nothing depends on which layer the value came from. A server
+//! definition is different because using it means **executing a program**. A
+//! `.vscode/settings.json` can come from a cloned repository, so a definition
+//! from workspace scope must keep that marking until the process is spawned.
+//! Therefore each layer is read separately and tagged with its [`Trust`]
+//! instead of being resolved into a single value.
 //!
 //! Layers are still applied in VS Code's order, so a workspace *can* override a
-//! user-defined server. It just cannot launder itself into a trusted one on the
-//! way: see [`crate::server::ServerRegistry::merge`].
+//! user-defined server. The override keeps the workspace's trust level and
+//! does not become trusted: see [`crate::server::ServerRegistry::merge`].
 
 use deco_config::{Scope, Settings};
 
@@ -45,22 +45,20 @@ pub const ENABLED_KEY: &str = "deco.lsp.enabled";
 /// Which [`Trust`] a settings scope confers.
 fn trust_of(scope: Scope) -> Trust {
     match scope {
-        // Defaults ship with deco. The user's own file is theirs.
+        // Defaults ship with deco. The user settings file is written by the user.
         Scope::Default => Trust::BuiltIn,
         Scope::User => Trust::User,
-        // Not the user's, even though connecting was the user's decision.
+        // Untrusted, even though the user chose to connect.
         //
-        // Choosing to connect to a machine is not the same as vouching for
-        // every file on it: a remote layer is written where anyone with an
-        // account there can write it, which is the same shape of problem as a
-        // `.vscode/settings.json` arriving with a clone. The rest of deco
-        // already treats this scope as untrusted — `deco_ext::sandbox` will not
-        // let it choose the extension sandbox — and a definition here is a
-        // *program to execute*, which is the case that matters most.
-        //
-        // So it asks, exactly as a workspace's does.
+        // Connecting to a machine does not mean trusting every file on it. The
+        // remote layer can be written by anyone with an account on that
+        // machine, which is the same problem as a `.vscode/settings.json` in a
+        // cloned repository. The rest of deco already treats this scope as
+        // untrusted: `deco_ext::sandbox` does not let it choose the extension
+        // sandbox. A definition here is a *program to execute*, so it requires
+        // confirmation in the same way as a workspace definition.
         Scope::Remote => Trust::Workspace,
-        // Both arrive with the project's files, so both need agreement.
+        // Both come with the project's files, so both require confirmation.
         Scope::Workspace | Scope::Folder => Trust::Workspace,
     }
 }
@@ -72,15 +70,15 @@ pub fn enabled(settings: &Settings) -> bool {
 
 /// Builds the registry from every layer, plus whatever could not be read.
 ///
-/// Problems are returned rather than raised: one malformed definition should
-/// cost its own server, not every server, and certainly not the editor's
-/// ability to open the file that would fix it.
+/// Problems are returned instead of causing a failure. A malformed definition
+/// disables only its own server. Other servers, and opening the settings file
+/// to fix it, are unaffected.
 pub fn registry(settings: &Settings) -> (ServerRegistry, Vec<ConfigError>) {
     let mut registry = crate::server::built_in();
     let mut problems = Vec::new();
 
     // Lowest precedence first, so a later layer's definition replaces an
-    // earlier one's — and carries its own trust when it does.
+    // earlier one. The replacement keeps the later layer's trust.
     for scope in Scope::ALL {
         let Some(layer) = settings.layer(scope) else {
             continue;
@@ -141,8 +139,8 @@ mod tests {
 
     #[test]
     fn a_workspace_definition_needs_confirmation() {
-        // The point of reading layers separately: a `.vscode/settings.json`
-        // arrives with a cloned repository, and cloning must not be enough to
+        // Layers are read separately for this case. A `.vscode/settings.json`
+        // can come from a cloned repository, and cloning must not be enough to
         // run a program.
         let (registry, _) = registry(&settings(&[(
             Scope::Workspace,
@@ -162,11 +160,11 @@ mod tests {
 
     #[test]
     fn a_remote_definition_needs_confirmation_like_a_workspaces() {
-        // Connecting to a machine is a decision about the machine, not a vouch
-        // for every file on it: a remote layer sits where anyone with an
-        // account there can write it. `deco_ext::sandbox` already refuses this
-        // scope the extension sandbox; a server definition is a *program to
-        // execute*, so it cannot be the looser of the two.
+        // Connecting to a machine does not mean trusting every file on it. The
+        // remote layer can be written by anyone with an account on that
+        // machine. `deco_ext::sandbox` already does not let this scope choose
+        // the extension sandbox. A server definition is a *program to
+        // execute*, so its policy must be at least as strict.
         let (registry, _) = registry(&settings(&[(
             Scope::Remote,
             r#"{"deco.lsp.servers": {"theirs": {"languages": ["rust"], "command": "./ra"}}}"#,
@@ -176,9 +174,8 @@ mod tests {
 
     #[test]
     fn a_remote_override_of_a_user_server_still_needs_confirmation() {
-        // The laundering path, by the layer that sits directly above the user's
-        // own: `remote` wins on precedence, and must not inherit the trust of
-        // the entry it displaced.
+        // `remote` is the layer directly above the user layer. It wins on
+        // precedence but must not inherit the trust of the entry it replaces.
         let (registry, _) = registry(&settings(&[
             (
                 Scope::User,
@@ -199,8 +196,8 @@ mod tests {
 
     #[test]
     fn a_workspace_override_of_a_user_server_still_needs_confirmation() {
-        // Otherwise shadowing a familiar id — `rust-analyzer`, say — would
-        // launder an untrusted command into a trusted slot.
+        // Otherwise an untrusted command could reuse a familiar id, such as
+        // `rust-analyzer`, and become trusted.
         let (registry, _) = registry(&settings(&[
             (
                 Scope::User,
@@ -221,7 +218,7 @@ mod tests {
 
     #[test]
     fn a_workspace_override_of_a_built_in_still_needs_confirmation() {
-        // The most tempting id to shadow, since the user has seen it work.
+        // A built-in id is a likely target because the user has seen it work.
         let (registry, _) = registry(&settings(&[(
             Scope::Workspace,
             r#"{"deco.lsp.servers": {"rust-analyzer": {"languages": ["rust"], "command": "./evil"}}}"#,
@@ -287,13 +284,13 @@ mod tests {
 
     #[test]
     fn every_scope_maps_to_a_trust_level() {
-        // Guards the match being exhaustive in intent, not just in the compiler:
-        // a new scope must be classified deliberately rather than defaulting.
+        // Checks the intended classification of every scope, not only that the
+        // match compiles. A new scope must be classified explicitly.
         for scope in Scope::ALL {
             let trust = trust_of(scope);
-            // Everything that does not come from deco or from the user's own
-            // file has to ask. `Remote` is here because a machine you connect
-            // to is not a file you wrote.
+            // Every scope other than deco's defaults and the user's own file
+            // requires confirmation. `Remote` is included because files on a
+            // connected machine are not written by the user.
             let expected_confirmation =
                 matches!(scope, Scope::Workspace | Scope::Folder | Scope::Remote);
             assert_eq!(

@@ -1,82 +1,80 @@
 //! Where a line is broken when it is wider than the text area.
 //!
 //! One line of the document becomes one or more rows on screen. Everything that
-//! reads or writes a position still uses document lines and UTF-16 columns —
-//! wrapping is a fact about the *display*, and letting it into the text model
-//! would mean every edit had to know how wide the window is.
+//! reads or writes a position still uses document lines and UTF-16 columns.
+//! Wrapping affects only the *display*; if the text model included it, every
+//! edit would depend on the window width.
 //!
 //! # What this module answers
 //!
 //! [`row_starts`] gives the UTF-16 column each row of a line begins at, and
-//! [`row_of`] says which of those rows a column falls on. Those two are enough to
-//! draw a wrapped line, to scroll by rows, and to move a caret down one row
+//! [`row_of`] returns the row a column falls on. These two functions are enough
+//! to draw a wrapped line, to scroll by rows, and to move a caret down one row
 //! rather than down one line.
 //!
 //! # Where it breaks
 //!
-//! After whitespace, at the last opportunity that fits — so a word is kept whole
-//! where it can be. Two rules qualify that, and both exist because the obvious
-//! version of the rule produces a layout nobody wants:
+//! A line breaks after whitespace, at the last opportunity that fits, so words
+//! are kept whole where possible. Two rules refine this:
 //!
-//! - **Whitespace itself never forces a break.** Trailing spaces hang past the
-//!   right edge instead, where they are invisible. Breaking *before* the space
-//!   that overflows would start the next row with it, and a continuation row
-//!   beginning with a space reads as indentation the file does not have.
-//! - **Whitespace before the row's first word is not an opportunity.** Otherwise
-//!   an indented line breaks immediately after its indent, spending a row on a
-//!   lone tab and starting the text at column zero — which loses the one visual
-//!   cue that says how deep the line is.
+//! - **Whitespace itself never forces a break.** Trailing spaces extend past the
+//!   right edge instead, where they are invisible. Breaking *before* the
+//!   overflowing space would start the next row with it, and a continuation row
+//!   that begins with a space looks like indentation the file does not have.
+//! - **Whitespace before the row's first word is not a break opportunity.**
+//!   Otherwise an indented line would break immediately after its indent, use a
+//!   row for a lone tab, and start the text at column zero. The indentation
+//!   depth of the line would then no longer be visible.
 //!
-//! A run with no whitespace in it breaks at the width instead. That is not a
-//! compromise for code, where a hundred-character run is a URL or a base64 blob
-//! and any break is arbitrary; and it is the *right* answer for Chinese, Japanese
-//! and Korean, which put no spaces between words and are broken between
-//! characters by every editor that handles them.
+//! A run with no whitespace breaks at the width instead. In code, such a long
+//! run is usually a URL or a base64 blob, where any break point is arbitrary.
+//! Chinese, Japanese and Korean have no spaces between words and are normally
+//! broken between characters, so this rule also suits them.
 //!
-//! Line breaking proper — Unicode UAX #14, which knows that a closing bracket
-//! may not start a row and that `,` may not be separated from what precedes it —
-//! needs a table this crate does not carry and would be the first dependency
-//! added for cosmetics.
+//! Full line breaking (Unicode UAX #14, which forbids a row from starting with a
+//! closing bracket or separating `,` from the preceding text) needs a table this
+//! crate does not include. It would be the first dependency added only for
+//! presentation.
 //!
 //! # The continuation indent
 //!
-//! Every function here takes the display column a continuation row's text starts
-//! at, which `editor.wrappingIndent` decides. It is not cosmetic: a row pushed in by
-//! four columns has four fewer to fill, and its tab stops land differently. Left out
-//! of the measurement, the text would be drawn one place and broken in another.
+//! Every function here takes the display column at which a continuation row's
+//! text starts, as set by `editor.wrappingIndent`. This affects layout: a row
+//! indented by four columns has four fewer columns for text, and its tab stops
+//! fall differently. If the indent were not measured, text would be drawn in one
+//! place and broken in another.
 
 use unicode_width::UnicodeWidthChar as _;
 
 /// The UTF-16 column each visual row of `text` starts at.
 ///
-/// The first is always `0`, so the result is never empty: an empty line still
-/// occupies one row, because a caret has to sit somewhere.
+/// The first is always `0`, so the result is never empty. An empty line still
+/// occupies one row so that the caret has a place to be drawn.
 ///
 /// `width` is the columns available for text, so the caller subtracts its gutter
-/// first. A width below two disables wrapping — one column cannot hold a wide
-/// character, and a layout that breaks every character is not readable at any
-/// width, so refusing is better than looping.
+/// first. A width below two disables wrapping. One column cannot hold a wide
+/// character, and breaking after every character is not readable, so wrapping is
+/// skipped rather than risking an endless loop.
 pub fn row_starts(text: &str, width: usize, tab_size: usize, indent: usize) -> Vec<u32> {
     let mut starts = vec![0u32];
     if width < 2 {
         return starts;
     }
     let tab_size = tab_size.max(1);
-    // Never so wide that a continuation row has no room; the caller caps it, and
-    // this is the backstop that keeps the loop finite if one does not.
+    // Leave room for text on a continuation row. The caller caps the indent;
+    // this cap keeps the loop finite if it does not.
     let indent = indent.min(width.saturating_sub(2));
 
     // Display columns used by the row being filled, and where it started. `used`
     // counts from the left edge of the text area, so a continuation row starts at
-    // `indent` — which is both how its tab stops line up and how it runs out of
-    // room sooner than the first row does.
+    // `indent`. This aligns its tab stops and gives it less room than the first
+    // row.
     let mut used = 0usize;
     let mut row_start = 0u32;
-    // The column just after the most recent whitespace run on this row, and
-    // `None` until one is seen — a row of solid text has nowhere better to break
-    // than the width.
+    // The column just after the most recent whitespace run on this row, or
+    // `None` until one is seen. A row without whitespace breaks at the width.
     let mut opportunity: Option<u32> = None;
-    // Whether this row has any non-whitespace on it yet, which is what makes a
+    // Whether this row has any non-whitespace on it yet. Only then is a
     // following space a break opportunity rather than part of the indent.
     let mut word_on_row = false;
     let mut column = 0u32;
@@ -90,11 +88,11 @@ pub fn row_starts(text: &str, width: usize, tab_size: usize, indent: usize) -> V
         };
 
         // Break *before* this character when it would overflow, so a wide
-        // character is never split down the middle. Whitespace is exempt: it
-        // hangs past the edge instead of starting the next row.
+        // character is never split. Whitespace is exempt: it extends past the
+        // edge instead of starting the next row.
         if !whitespace && used + advance > width {
-            // The opportunity has to be past the row's own start, or the break
-            // makes no progress and the loop never ends.
+            // The break must be past the row's own start. Otherwise it makes no
+            // progress and the loop never ends.
             let at = match opportunity {
                 Some(at) if at > row_start => at,
                 _ => column.max(row_start + 1),
@@ -103,17 +101,17 @@ pub fn row_starts(text: &str, width: usize, tab_size: usize, indent: usize) -> V
             row_start = at;
             opportunity = None;
             word_on_row = false;
-            // Re-measured from the break, because tab stops are counted from the
-            // start of the row a tab lands on and not of the document line — and
-            // from `indent`, which is where a continuation row's text begins.
+            // Re-measure from the break, because tab stops are counted from the
+            // start of the row, not of the document line. Measurement starts at
+            // `indent`, where a continuation row's text begins.
             used = indent + display_width_from(text, at, column, tab_size, indent);
         }
 
         used += advance;
         column += c.len_utf16() as u32;
         if whitespace {
-            // Recorded after the character, so a break keeps the space on the row
-            // that ended with it rather than starting the next one with it.
+            // Recorded after the character, so the space stays at the end of the
+            // current row instead of starting the next one.
             if word_on_row {
                 opportunity = Some(column);
             }
@@ -127,23 +125,23 @@ pub fn row_starts(text: &str, width: usize, tab_size: usize, indent: usize) -> V
 
 /// The display width of `text` between two UTF-16 columns.
 ///
-/// Its own function because the measurement restarts at a break: tab stops are
-/// counted from the start of the row, and a tab in the middle of a wrapped line
-/// advances to the next stop on the row it lands on.
+/// The measurement restarts at a break: tab stops are counted from the start of
+/// the row, and a tab in the middle of a wrapped line advances to the next stop
+/// on its own row.
 ///
-/// Public because a renderer needs the same answer to place a caret on a wrapped
-/// row — and if it computed the width its own way the two could disagree, which
-/// is a caret sitting a column away from the character it is on.
+/// It is public so that a renderer placing a caret on a wrapped row uses the same
+/// calculation. A separate calculation could disagree and draw the caret one
+/// column away from its character.
 pub fn width_between(text: &str, from: u32, to: u32, tab_size: usize) -> usize {
     display_width_from(text, from, to, tab_size.max(1), 0)
 }
 
 /// The same, for text drawn starting at display column `at`.
 ///
-/// Only tabs care: their stops are counted from the left edge of the text area, so a
-/// row pushed in by `editor.wrappingIndent` reaches a different one. The answer is
-/// still relative — how many columns the text occupies — because that is what a
-/// caller placing a caret within the row needs.
+/// Only tabs are affected: their stops are counted from the left edge of the
+/// text area, so a row indented by `editor.wrappingIndent` reaches a different
+/// stop. The result is still relative (the number of columns the text occupies),
+/// because a caller placing a caret within the row needs that value.
 pub fn width_between_from(text: &str, from: u32, to: u32, tab_size: usize, at: usize) -> usize {
     display_width_from(text, from, to, tab_size.max(1), at)
 }
@@ -169,15 +167,15 @@ fn display_width_from(text: &str, from: u32, to: u32, tab_size: usize, at: usize
 
 /// The UTF-16 column `display` columns into the row `start..end`.
 ///
-/// The counterpart to [`width_between`], and what vertical motion through a
-/// wrapped line is built from: the caret keeps its column on screen, so the
-/// question is which character sits under it on the row below.
+/// The counterpart to [`width_between`], used for vertical motion through a
+/// wrapped line. The caret keeps its screen column, and this function finds the
+/// character at that column on the target row.
 ///
-/// Never past the row's own last character. A row that ends because the next
-/// character would not fit is a column or two short of the width, and a caret
-/// landing on `end` would be on the row below — one keypress moving two rows.
-/// `end` is `None` for a line's last row, where there is no row below and the
-/// caret may sit one past the final character.
+/// The result is never past the row's last character. A row that ends because
+/// the next character would not fit is a column or two short of the width. A
+/// caret placed on `end` would be on the row below, so one keypress would move
+/// two rows. `end` is `None` for a line's last row, where there is no row below
+/// and the caret may be one past the final character.
 pub fn column_in_row(
     text: &str,
     start: u32,
@@ -191,7 +189,7 @@ pub fn column_in_row(
 /// The same, for a row whose text begins at display column `at`.
 ///
 /// `display` stays relative to the row's own text, so a caller keeping a caret's
-/// column across rows does not have to know how far each is pushed in.
+/// column across rows does not need to know each row's indent.
 pub fn column_in_row_from(
     text: &str,
     start: u32,
@@ -223,8 +221,8 @@ pub fn column_in_row_from(
         } else {
             c.width().unwrap_or(0).max(1)
         };
-        // Landing inside a tab or a wide character snaps to the nearer edge, which
-        // is what keeps vertical motion through indented or CJK text stable.
+        // A column inside a tab or a wide character snaps to the nearer edge. This
+        // keeps vertical motion through indented or CJK text stable.
         if used + advance > display {
             return if display - used >= advance.div_ceil(2) {
                 column + c.len_utf16() as u32
@@ -237,8 +235,8 @@ pub fn column_in_row_from(
         column += c.len_utf16() as u32;
     }
 
-    // Ran out of row. A line's last row may hold the caret one past its text; any
-    // other row hands it back to the last character it actually shows.
+    // End of row reached. On a line's last row the caret may be one past the
+    // text; on other rows it goes to the last character the row shows.
     match end {
         None => column,
         Some(_) => last.max(start),
@@ -247,8 +245,8 @@ pub fn column_in_row_from(
 
 /// Which row of a line `column` falls on, given that line's [`row_starts`].
 ///
-/// A column at a break belongs to the row it *starts*, which is what puts the
-/// caret at the beginning of the second row rather than off the end of the first.
+/// A column at a break belongs to the row it *starts*, so the caret is drawn at
+/// the beginning of the second row rather than past the end of the first.
 pub fn row_of(starts: &[u32], column: u32) -> usize {
     starts
         .partition_point(|start| *start <= column)
@@ -257,9 +255,9 @@ pub fn row_of(starts: &[u32], column: u32) -> usize {
 
 /// The UTF-16 columns row `row` covers, as `start..end`.
 ///
-/// The end is the next row's start, or `None` for the last row — a caller
-/// drawing it wants the rest of the line, and a caller measuring it wants to know
-/// there is nothing after.
+/// The end is the next row's start, or `None` for the last row. For the last
+/// row, a caller drawing it uses the rest of the line, and a caller measuring it
+/// knows no row follows.
 pub fn row_range(starts: &[u32], row: usize) -> (u32, Option<u32>) {
     let start = starts.get(row).copied().unwrap_or(0);
     (start, starts.get(row + 1).copied())
@@ -269,12 +267,12 @@ pub fn row_range(starts: &[u32], row: usize) -> (u32, Option<u32>) {
 mod tests {
     use super::*;
 
-    /// The rows `text` is broken into, as strings, for tests that read better
-    /// that way than as a list of columns.
+    /// The rows `text` is broken into, as strings, for tests that are clearer
+    /// with strings than with a list of columns.
     fn rows(text: &str, width: usize) -> Vec<String> {
         let starts = row_starts(text, width, 4, 0);
         let chars: Vec<char> = text.chars().collect();
-        // UTF-16 columns to char indices. Sound here because the tests below use
+        // UTF-16 columns to char indices. Valid here because the tests below use
         // no astral-plane characters; the surrogate case is tested through
         // `row_starts` directly.
         starts
@@ -298,7 +296,7 @@ mod tests {
 
     #[test]
     fn an_empty_line_still_occupies_a_row() {
-        // A caret has to sit somewhere.
+        // The caret needs a row to be drawn on.
         assert_eq!(row_starts("", 20, 4, 0), [0]);
     }
 
@@ -309,8 +307,8 @@ mod tests {
 
     #[test]
     fn the_space_stays_on_the_row_it_ended() {
-        // Otherwise a continuation row begins with a space that reads as indent
-        // the file does not have.
+        // Otherwise a continuation row begins with a space that looks like
+        // indentation the file does not have.
         let rows = rows("aaa bbb ccc", 8);
         assert!(
             rows.iter().skip(1).all(|row| !row.starts_with(' ')),
@@ -320,8 +318,8 @@ mod tests {
 
     #[test]
     fn a_word_longer_than_the_width_breaks_at_the_width() {
-        // A URL or a base64 blob. Any break is arbitrary, so the one that uses
-        // the whole row is the least bad.
+        // For example a URL or a base64 blob. Any break is arbitrary, so the
+        // break uses the whole row.
         assert_eq!(rows("aaaaaaaaaa", 4), ["aaaa", "aaaa", "aa"]);
     }
 
@@ -352,24 +350,24 @@ mod tests {
 
     #[test]
     fn a_tab_after_a_break_counts_from_the_new_rows_start() {
-        // Not from the document line's start: the row is what has tab stops on
-        // screen. `xx` then a tab to column 4, then `yy` — six columns, so it
-        // fits a width of six.
+        // Tab stops are counted from the row's start, not the document line's.
+        // `xx`, a tab to column 4, then `yy` is six columns, so it fits a width
+        // of six.
         assert_eq!(row_starts("aaaaaa xx\tyy", 6, 4, 0), [0, 7]);
     }
 
     #[test]
     fn a_width_below_two_does_not_wrap() {
-        // One column cannot hold a wide character, and breaking every character
-        // is not a layout. Refusing beats looping.
+        // One column cannot hold a wide character, and breaking after every
+        // character is not usable. Wrapping is disabled instead of looping.
         assert_eq!(row_starts("abcdef", 1, 4, 0), [0]);
         assert_eq!(row_starts("abcdef", 0, 4, 0), [0]);
     }
 
     #[test]
     fn every_break_makes_progress() {
-        // The loop's termination argument, stated as a test: whatever the text,
-        // the starts strictly increase and none is past the end.
+        // Checks loop termination: for any text, the starts strictly increase and
+        // none is past the end.
         let end = |text: &str| text.chars().map(|c| c.len_utf16() as u32).sum::<u32>();
         for text in [
             "   ",
@@ -397,7 +395,7 @@ mod tests {
     #[test]
     fn a_run_of_spaces_wider_than_the_row_does_not_stall() {
         // The break opportunity is at the row's own start, which would make no
-        // progress; the width has to win.
+        // progress, so the row breaks at the width.
         let starts = row_starts("        x", 4, 4, 0);
         assert!(starts.len() > 1, "{starts:?}");
         assert!(starts.windows(2).all(|w| w[1] > w[0]), "{starts:?}");
@@ -406,7 +404,7 @@ mod tests {
     #[test]
     fn astral_characters_advance_two_utf16_units() {
         // An emoji is one character, two UTF-16 code units, and two columns
-        // wide — the three counts all differ, which is where off-by-ones live.
+        // wide. Differences between these counts often cause off-by-one errors.
         let starts = row_starts("😀😀😀", 4, 4, 0);
         assert_eq!(starts, [0, 4], "two per row, two units each");
     }
@@ -424,7 +422,7 @@ mod tests {
 
     #[test]
     fn the_first_row_keeps_the_whole_width() {
-        // The indent is a continuation row's, not the line's: the first row starts
+        // The indent applies only to continuation rows. The first row starts
         // where the line starts.
         let text = "aaaaaaaa bb";
         assert_eq!(
@@ -436,8 +434,8 @@ mod tests {
 
     #[test]
     fn a_tab_on_a_pushed_in_row_reaches_the_stop_the_screen_has() {
-        // Its stops are counted from the left edge of the text area, not from the
-        // row's own start, so the indent shifts which one it lands on.
+        // Tab stops are counted from the left edge of the text area, not from the
+        // row's own start, so the indent changes which stop the tab reaches.
         assert_eq!(width_between_from("\tx", 0, 1, 4, 0), 4, "from column 0");
         assert_eq!(width_between_from("\tx", 0, 1, 4, 2), 2, "from column 2");
         assert_eq!(width_between_from("\tx", 0, 1, 4, 4), 4, "from column 4");
@@ -445,8 +443,8 @@ mod tests {
 
     #[test]
     fn a_goal_column_stays_relative_to_the_rows_own_text() {
-        // So a caller keeping a caret's column across rows does not have to know how
-        // far each of them is pushed in.
+        // A caller keeping a caret's column across rows does not need to know
+        // each row's indent.
         let text = "abcdef";
         assert_eq!(column_in_row_from(text, 0, None, 3, 4, 0), 3);
         assert_eq!(column_in_row_from(text, 0, None, 3, 4, 4), 3);
@@ -454,8 +452,8 @@ mod tests {
 
     #[test]
     fn an_indent_wider_than_the_width_cannot_stall_the_loop() {
-        // The caller caps it; this is the backstop, and the property that matters is
-        // that the breaks still make progress.
+        // The caller caps the indent. Without that cap, the breaks must still
+        // make progress.
         for indent in [8, 20, 500] {
             let starts = row_starts("aaaa bbbb cccc", 10, 4, indent);
             assert!(
@@ -476,7 +474,7 @@ mod tests {
 
     #[test]
     fn the_caret_may_sit_one_past_the_end_of_a_lines_last_row() {
-        // There is no row below to hand it to.
+        // There is no row below to move it to.
         assert_eq!(column_in_row("abc", 0, None, 99, 4), 3);
     }
 
@@ -493,7 +491,8 @@ mod tests {
 
     #[test]
     fn a_goal_inside_a_tab_snaps_to_the_nearer_edge() {
-        // Otherwise moving down a column of indented lines drifts left.
+        // Otherwise the caret moves left when moving down through indented
+        // lines.
         let text = "\tx";
         assert_eq!(column_in_row(text, 0, None, 1, 4), 0, "nearer the start");
         assert_eq!(column_in_row(text, 0, None, 3, 4), 1, "nearer the end");
@@ -506,8 +505,8 @@ mod tests {
 
     #[test]
     fn a_column_at_a_break_belongs_to_the_row_it_starts() {
-        // Otherwise the caret sits off the end of the row above instead of at the
-        // start of the one below.
+        // Otherwise the caret is drawn past the end of the row above instead of
+        // at the start of the row below.
         let starts = [0u32, 10, 20];
         assert_eq!(row_of(&starts, 0), 0);
         assert_eq!(row_of(&starts, 9), 0);

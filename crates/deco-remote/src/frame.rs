@@ -1,9 +1,10 @@
 //! The framing deco uses between a local frontend and a remote server.
 //!
 //! Length-prefixed JSON: `Content-Length: N\r\n\r\n` followed by exactly `N`
-//! bytes. This is the Language Server Protocol's base framing, chosen because
-//! it survives a stream that also carries a remote shell's stray output, and
-//! because anything that can already speak to a language server can speak this.
+//! bytes. This is the Language Server Protocol's base framing. It was chosen
+//! because it tolerates a stream that also carries stray output from a remote
+//! shell, and because any existing language-server client can already handle
+//! it.
 
 use std::io::{BufRead, Write};
 
@@ -74,9 +75,8 @@ pub enum FrameError {
 
 /// The largest frame that will be read or written.
 ///
-/// A remote is not automatically trusted with the local machine's memory: a
-/// hostile or broken peer sending `Content-Length: 999999999999` should get an
-/// error rather than an allocation.
+/// A hostile or broken peer that sends `Content-Length: 999999999999` gets an
+/// error instead of causing a large allocation on the local machine.
 pub const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 
 /// Writes one message.
@@ -102,7 +102,7 @@ pub fn read(input: &mut impl BufRead) -> Result<Option<Message>, FrameError> {
     loop {
         line.clear();
         if input.read_line(&mut line)? == 0 {
-            // End of stream between frames is how a session ends normally.
+            // End of stream between frames is a normal end of session.
             return if content_length.is_none() {
                 Ok(None)
             } else {
@@ -128,8 +128,8 @@ pub fn read(input: &mut impl BufRead) -> Result<Option<Message>, FrameError> {
                 }
             })?;
         }
-        // Any other header is ignored, which keeps a future Content-Type from
-        // breaking an older peer.
+        // Other headers are ignored, so adding a header such as Content-Type in
+        // the future does not break older peers.
     }
 
     let size = content_length.ok_or(FrameError::MissingContentLength)?;

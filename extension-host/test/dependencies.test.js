@@ -1,19 +1,18 @@
 'use strict';
 
-// The extension host has no npm dependencies, and that is a security property
-// rather than an accident.
+// The extension host has no npm dependencies. This is an intentional security
+// property.
 //
-// This process is the one part of deco that loads third-party code by design —
-// it runs VS Code extensions. Everything it uses to do that (`node:test`,
-// `node:worker_threads`, the permission model) ships with Node itself, so the
-// only untrusted code in the process is the extension the user chose to
-// install. Adding a single npm dependency here would put an unreviewed
-// transitive graph *inside* the sandbox host, on the trusted side of the
-// boundary the host exists to enforce.
+// This process is the only part of deco that loads third-party code by design:
+// it runs VS Code extensions. Everything it uses for that (`node:test`,
+// `node:worker_threads`, the permission model) ships with Node, so the only
+// untrusted code in the process is the extension the user installed. A single
+// npm dependency would put an unreviewed transitive dependency graph *inside*
+// the sandbox host, on the trusted side of the boundary the host enforces.
 //
-// A dependency is a decision, so this test exists to make it a visible one:
-// adding to package.json turns CI red, and the person adding it has to say why
-// in the same commit that deletes the assertion's expectation.
+// This test makes adding a dependency an explicit decision. Adding one to
+// package.json fails CI, and the commit that changes this assertion must
+// explain why.
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -43,20 +42,20 @@ test('the host declares no runtime or build dependencies', () => {
 });
 
 test('nothing under src requires a package outside the standard library', () => {
-  // Catches the case package.json alone would miss: a `require` that resolves
-  // through a globally installed module, or one added to node_modules without
-  // being declared. Relative paths and `node:`-prefixed builtins are fine.
+  // Catches cases that package.json alone would miss: a `require` that resolves
+  // to a globally installed module, or to one added to node_modules without
+  // being declared. Relative paths and `node:`-prefixed builtins are allowed.
   //
-  // `node:fs` and `fs` load the same module, but only the second can be
-  // shadowed: a package literally named `fs` sitting in node_modules wins the
-  // resolution. The prefix is unspoofable, so the host uses it everywhere.
+  // `node:fs` and `fs` load the same module, but only `fs` can be shadowed: a
+  // package named `fs` in node_modules takes precedence in resolution. The
+  // prefix cannot be shadowed, so the host uses it everywhere.
   const srcDir = path.join(__dirname, '..', 'src');
   const offenders = [];
 
   for (const entry of fs.readdirSync(srcDir)) {
     if (!entry.endsWith('.js')) continue;
-    // Comments discuss `require('vscode')` — the specifier extensions use —
-    // without performing it, so they are stripped before scanning.
+    // Comments mention `require('vscode')`, the specifier extensions use, without
+    // calling it, so comments are stripped before scanning.
     const source = fs
       .readFileSync(path.join(srcDir, entry), 'utf8')
       .replace(/\/\*[\s\S]*?\*\//g, '')

@@ -2,9 +2,8 @@
 //!
 //! Commands are addressed by VS Code's identifiers, so a user's
 //! `keybindings.json` reaches the same command deco runs by default. They
-//! operate on a [`Document`] and a [`View`] and touch nothing else — no
-//! terminal, no window — which is what lets the whole editable surface be
-//! tested headlessly.
+//! operate only on a [`Document`] and a [`View`], not on a terminal or window,
+//! so the editable surface can be tested headlessly.
 
 use deco_core::movement::{self, VerticalDirection};
 use deco_core::{Buffer, Change, EditKind, Position, Range, Selection, SelectionSet, Transaction};
@@ -15,7 +14,7 @@ use crate::document::{block_comment_tokens, line_comment_token, Document, View};
 /// Somewhere to put cut and copied text.
 ///
 /// A trait rather than a concrete type because the terminal frontend, the GPU
-/// frontend and the tests all have different ideas of what the clipboard is.
+/// frontend and the tests each use a different clipboard implementation.
 pub trait Clipboard {
     /// Reads the clipboard.
     fn read(&self) -> String;
@@ -47,148 +46,149 @@ pub enum Outcome {
     Handled,
     /// No command with that identifier exists here.
     ///
-    /// Not necessarily an error: a frontend owns commands the core cannot
-    /// implement, because they need something the core has no concept of — a
-    /// language server, a window, a file dialog. The identifier is carried so it
-    /// can be offered to whoever does own it.
+    /// Not necessarily an error: a frontend implements commands the core cannot,
+    /// because they need a language server, a window or a file dialog. The
+    /// identifier is kept so that it can be passed to the component that
+    /// implements it.
     NotFound,
     /// The command exists but belongs to the frontend, which is given its name.
     ///
-    /// Distinct from [`Outcome::NotFound`] so that a typo in a keybinding still
-    /// reports as unknown rather than being silently handed onward and dropped.
+    /// Distinct from [`Outcome::NotFound`] so that a typo in a keybinding is
+    /// still reported as unknown rather than passed on and dropped.
     Frontend(String),
     /// The document should be written to disk.
     Save,
-    /// A repository should be changed — staged, unstaged, committed or switched.
+    /// A repository should be changed (staged, unstaged, committed or switched).
     ///
-    /// Carried out by whoever can run `git`, and reported back with
+    /// The frontend runs `git` and reports back with
     /// [`Session::git_operation_done`](crate::Session::git_operation_done) so
-    /// the view and the status bar catch up. See [`deco_scm::Operation`] for
-    /// what deliberately is not in it.
+    /// the view and the status bar are updated. See [`deco_scm::Operation`] for
+    /// what is intentionally excluded.
     GitOperation(deco_scm::Operation),
     /// Local branches should be fetched and offered in a picker.
     GitBranches,
-    /// The cost of switching to this local branch should be fetched.
+    /// The effect of switching to this local branch should be fetched.
     GitCheckoutPreview(String),
     /// A repository comparison should be fetched and shown read-only.
     GitComparison(deco_scm::ComparisonRequest),
-    /// The user chose a remembered decision to take back.
+    /// The user chose a recorded decision to revoke.
     ///
-    /// The identifier is whatever the frontend put on the choice when it built
-    /// the list: only the frontend knows which extension and capability it stands
-    /// for, and the core has no reason to learn.
+    /// The identifier is the one the frontend assigned to the choice when it
+    /// built the list. Only the frontend knows which extension and capability it
+    /// refers to; the core does not need to.
     ForgetExtensionPermission(String),
     /// The user answered an extension's permission request.
     ///
-    /// Which extension and which capability are not carried: whoever opened the
-    /// prompt is holding the request that is waiting on it, and putting a copy
-    /// here would create two answers to keep in step.
+    /// The extension and capability are not included. The code that opened the
+    /// prompt holds the pending request, and a copy here would have to be kept
+    /// consistent with it.
     ExtensionConsent {
         /// Whether the extension may proceed.
         allow: bool,
     },
-    /// The frontend should load this colour theme and hand it back with
+    /// The frontend should load this colour theme and pass it back with
     /// [`Session::set_theme`](crate::Session::set_theme).
     ///
-    /// Named rather than loaded here for the usual reason: a theme that lives in
-    /// an extension directory is a file, and the core has no filesystem.
+    /// The theme is named rather than loaded here because a theme in an
+    /// extension directory is a file, and the core has no filesystem access.
     LoadTheme {
-        /// What it is called, for reporting and for the `workbench.colorTheme`
-        /// setting that would make the choice stick.
+        /// The theme's name, for reporting and for the `workbench.colorTheme`
+        /// setting that would persist the choice.
         label: String,
         /// The file to read, or `None` for a theme compiled in.
         path: Option<std::path::PathBuf>,
     },
-    /// The document should be written to this path, which then becomes its own.
+    /// The document should be written to this path, which becomes its path.
     ///
     /// The path is **exactly what was typed**. Resolving `~` and a relative path
-    /// needs a home directory and a working directory, neither of which the core
-    /// has — so the frontend resolves it, writes, and reports the path it settled
-    /// on with [`Session::rename_to`](crate::Session::rename_to).
+    /// requires a home directory and a working directory, which the core does
+    /// not have. The frontend resolves it, writes the file, and reports the
+    /// resolved path with [`Session::rename_to`](crate::Session::rename_to).
     SaveAs(std::path::PathBuf),
     /// The workspace should be searched for `query`.
     ///
-    /// Carries the options rather than leaving the frontend to read the find
-    /// bar's: a project search and the find bar are different searches, and
-    /// "case-insensitive while I skim this file" and "case-sensitive across the
-    /// project" are ordinary things to want at once.
+    /// Carries its own options instead of letting the frontend read the find
+    /// bar's. A project search and the find bar are separate searches, and a
+    /// user may want a case-insensitive find in the file and a case-sensitive
+    /// search across the project at the same time.
     SearchInFiles {
-        /// What to look for. Never empty — the session refuses before this.
+        /// What to look for. Never empty; the session rejects an empty query
+        /// before producing this.
         query: String,
-        /// How to match, this search's own.
+        /// Match options for this search.
         options: deco_core::search::SearchOptions,
     },
-    /// The symbol under the cursor should be renamed to `new_name`, everywhere.
+    /// The symbol under the cursor should be renamed to `new_name` everywhere.
     ///
-    /// Only a frontend can carry this out: it takes a language server to find
-    /// out what "everywhere" is, and a filesystem to read the files that answer
-    /// names. The frontend asks the server, hands the reply to
+    /// Only a frontend can do this, because it needs a language server to find
+    /// all occurrences and a filesystem to read the files they are in. The
+    /// frontend asks the server, passes the reply to
     /// [`Session::plan_workspace_edit`](crate::Session::plan_workspace_edit),
-    /// reads whatever files the plan asks for, and applies it with
+    /// reads the files the plan lists, and applies it with
     /// [`Session::apply_workspace_edit`](crate::Session::apply_workspace_edit).
     ///
-    /// Carries no position: the cursor has not moved since the prompt opened —
-    /// the prompt has the keyboard — and a copy kept here would be a second
-    /// answer to keep in step with the first.
+    /// Carries no position. The cursor cannot move while the prompt has the
+    /// keyboard, and a copy here would have to be kept consistent with it.
     Rename {
-        /// What the user typed. Never empty, and never the current name: the
-        /// session refuses both before this is produced.
+        /// What the user typed. Never empty and never the current name; the
+        /// session rejects both before producing this.
         new_name: String,
     },
     /// Every occurrence of `query` in the workspace should become `replacement`.
     ///
-    /// The frontend searches — only it knows where the files are — and then
-    /// hands what it found to
+    /// The frontend searches, because only it has file access, and passes the
+    /// results to
     /// [`Session::plan_replacements`](crate::Session::plan_replacements), which
-    /// decides what the edit is, and to
+    /// builds the edit, and then to
     /// [`Session::apply_workspace_edit`](crate::Session::apply_workspace_edit),
-    /// which makes it one undoable action.
+    /// which applies it as one undoable action.
     ReplaceInFiles {
-        /// What to look for. Never empty — the session refuses before this.
+        /// What to look for. Never empty; the session rejects an empty query
+        /// before producing this.
         query: String,
-        /// What to put there. **May be empty**, which deletes every occurrence
-        /// and is a thing people mean to do.
+        /// The replacement text. **May be empty**, which deletes every
+        /// occurrence; this is a valid use.
         replacement: String,
-        /// How to match, the project search's own.
+        /// Match options for the project search.
         options: deco_core::search::SearchOptions,
     },
     /// The user chose one of the code actions the frontend offered.
     ///
-    /// The identifier is whatever the frontend put on the choice, as with
-    /// [`Outcome::ForgetExtensionPermission`]: only the frontend is holding the
-    /// list the server sent, and a copy kept here would be a second answer to
-    /// keep in step with it.
+    /// The identifier is the one the frontend assigned to the choice, as with
+    /// [`Outcome::ForgetExtensionPermission`]. Only the frontend holds the list
+    /// the server sent, and a copy here would have to be kept consistent with
+    /// it.
     CodeAction(String),
-    /// The document should be re-read from disk, throwing away the edits.
+    /// The document should be re-read from disk, discarding the edits.
     ///
-    /// The frontend reads `session.document.path` and hands the text back with
-    /// [`Session::revert_to`](crate::Session::revert_to). Re-read rather than
-    /// remembered: keeping a second copy of every open file to revert to would
-    /// double what a large one costs, and re-reading is also what "revert" means
-    /// when the file has changed underneath you.
+    /// The frontend reads `session.document.path` and passes the text back with
+    /// [`Session::revert_to`](crate::Session::revert_to). The file is re-read
+    /// rather than kept in memory: a second copy of every open file would double
+    /// the memory for large files, and re-reading is also the expected meaning
+    /// of "revert" when the file has changed on disk.
     ///
-    /// An untitled document never produces this — there is nothing to read, so
+    /// An untitled document never produces this. There is nothing to read, so
     /// the session reverts it to empty itself.
     Revert,
     /// Every unsaved document should be written to disk.
     ///
-    /// Names no paths and no bytes, for the same reason [`Outcome::Save`] does not:
-    /// the core has no filesystem. The frontend asks
-    /// [`Session::unsaved`](crate::Session::unsaved) what to write and reports each
-    /// success back with
-    /// [`Session::mark_saved_at`](crate::Session::mark_saved_at), so a write that
-    /// fails leaves that document dirty rather than looking saved.
+    /// Carries no paths or bytes, for the same reason as [`Outcome::Save`]: the
+    /// core has no filesystem access. The frontend asks
+    /// [`Session::unsaved`](crate::Session::unsaved) what to write and reports
+    /// each success with
+    /// [`Session::mark_saved_at`](crate::Session::mark_saved_at), so a failed
+    /// write leaves that document dirty.
     SaveAll,
     /// The editor should exit.
     Quit,
-    /// Something worth telling the user.
+    /// A message to show to the user.
     Message(String),
     /// The frontend should read this path, open it, and put the cursor at `at`.
     ///
-    /// The core has no filesystem — `Document::from_file` is handed text, never a
-    /// path to read — which is what keeps the whole editable surface testable
-    /// without one. Quick open therefore names the file and lets the frontend
-    /// fetch it, exactly as [`Outcome::Save`] names no bytes.
+    /// The core has no filesystem access (`Document::from_file` receives text,
+    /// not a path to read), which keeps the editable surface testable without
+    /// one. Quick open therefore names the file and the frontend reads it, in
+    /// the same way that [`Outcome::Save`] carries no bytes.
     OpenFile {
         /// What to open.
         path: std::path::PathBuf,
@@ -198,27 +198,27 @@ pub enum Outcome {
     /// The frontend should list this directory and hand the entries back with
     /// [`Session::fill_directory`](crate::Session::fill_directory).
     ///
-    /// The file tree's half of the same bargain [`Outcome::OpenFile`] makes: the
-    /// core decides *which* directory needs reading — that is a question about
-    /// what is expanded and on screen — and whoever has a filesystem answers it.
-    /// On a remote workspace that is the connection rather than `std::fs`, and
-    /// the tree does not know the difference.
+    /// This is the file tree's equivalent of [`Outcome::OpenFile`]. The core
+    /// decides *which* directory needs reading, based on what is expanded and
+    /// shown, and the frontend reads it. On a remote workspace the frontend
+    /// reads through the connection rather than `std::fs`; the tree does not
+    /// distinguish the two.
     ListDirectory(std::path::PathBuf),
-    /// The frontend should carry out this change to the files themselves.
+    /// The frontend should perform this file operation.
     ///
-    /// The core has decided it is allowed — the name is a name, the path is
-    /// inside the workspace, nothing is in the way — and has already recorded it
-    /// on the explorer's undo stack. What is left is the part that needs a
-    /// filesystem. The frontend reports back with
-    /// [`Session::file_operation_failed`](crate::Session::file_operation_failed)
-    /// if the disk disagrees, which takes the entry back off the stack.
+    /// The core has already validated it (the name is a plain name, the path is
+    /// inside the workspace, and nothing is in the way) and recorded it on the
+    /// explorer's undo stack. The frontend performs the filesystem part. If it
+    /// fails, the frontend reports with
+    /// [`Session::file_operation_failed`](crate::Session::file_operation_failed),
+    /// which removes the entry from the stack.
     FileOperation(crate::files::Operation),
 }
 
 /// The title of a command deco binds but has not built, if `id` is one.
 ///
-/// Used to turn an unhandled binding into a sentence rather than silence — see
-/// [`PENDING`].
+/// Used to report an unhandled binding with a message instead of doing
+/// nothing. See [`PENDING`].
 pub fn pending_title(id: &str) -> Option<&'static str> {
     PENDING
         .iter()
@@ -229,23 +229,23 @@ pub fn pending_title(id: &str) -> Option<&'static str> {
 /// One entry in the command palette: what to run, and what to call it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaletteEntry {
-    /// The command identifier, VS Code's — or, for a quick-open entry, the path
-    /// to open.
+    /// The VS Code command identifier, or the path to open for a quick-open
+    /// entry.
     pub id: String,
-    /// The title to show, VS Code's wording where it has one.
+    /// The title to show, using VS Code's wording where it has one.
     pub title: String,
-    /// Where in the file to land, for an entry that names a place rather than a
+    /// The position to go to, for an entry that names a location rather than a
     /// whole file.
     ///
-    /// `None` for a command and for quick open, which opens a file at wherever
-    /// the cursor last was; `Some` for a search result, which is a position.
+    /// `None` for a command and for quick open, which opens a file at the last
+    /// cursor position. `Some` for a search result, which is a position.
     pub at: Option<deco_core::position::Position>,
     /// A second column, drawn right-aligned when there is room.
     ///
-    /// For what the title does not say and the reader needs: a command's
-    /// identifier, which is what a `keybindings.json` refers to, or a symbol's
-    /// kind, which is what tells a field from a method of the same name. `None`
-    /// for a file or a search result, whose title already is the path.
+    /// Shows information the title does not include: a command's identifier,
+    /// which `keybindings.json` refers to, or a symbol's kind, which
+    /// distinguishes a field from a method of the same name. `None` for a file
+    /// or a search result, whose title is already the path.
     pub detail: Option<String>,
 }
 
@@ -277,47 +277,48 @@ impl PaletteEntry {
 
 /// The commands the palette offers from this module.
 ///
-/// Deliberately not every arm of [`execute`]: a palette entry has to *work* when
-/// chosen, and the entries here are the ones that need nothing but a document, a
-/// view and a clipboard. Commands that need something only a frontend has — a
-/// language server, a window — are contributed by the frontend instead, through
-/// `Session::frontend_commands`. A palette that offers something the editor cannot
-/// do is worse than a short one.
+/// This is intentionally not every arm of [`execute`]. A palette entry must
+/// work when chosen, and these entries need only a document, a view and a
+/// clipboard. Commands that need something only a frontend has, such as a
+/// language server or a window, are added by the frontend through
+/// `Session::frontend_commands`. The palette lists only commands the editor can
+/// run.
 ///
-/// Motions are left out on purpose. `cursorDown` is a keypress, not a thing anyone
-/// looks up by name, and listing forty of them would bury the commands people do
-/// look for.
+/// Cursor motions are intentionally excluded. `cursorDown` is used as a
+/// keypress, not looked up by name, and listing about forty motions would make
+/// other commands harder to find.
 /// Commands the default keymap binds that deco does not implement yet.
 ///
 /// # Why this list exists
 ///
-/// A key bound to a command nothing handles does *nothing at all*, and a key that
-/// does nothing is indistinguishable from an editor that has stopped responding.
-/// Naming them here turns silence into a sentence — `Split Editor is not
-/// implemented yet` — and gives a test something to check: every command the
-/// default keymap binds either has a handler or is on this list, so a new binding
-/// cannot be added as a dead key by accident.
+/// A key bound to a command with no handler does nothing, which looks the same
+/// as an editor that has stopped responding. Listing the commands here lets the
+/// editor show a message such as `Split Editor is not implemented yet`. A test
+/// also checks that every command the default keymap binds either has a
+/// handler or is on this list, so a new binding cannot be added without a
+/// handler by accident.
 ///
-/// They are deliberately *not* in [`PALETTE`]. A palette entry has to work when
-/// chosen; offering one that only apologises is worse than a shorter list.
+/// These commands are intentionally *not* in [`PALETTE`], because a palette
+/// entry must work when chosen.
 ///
-/// An identifier leaves this list when the feature lands.
+/// An identifier is removed from this list when the feature is implemented.
 pub const PENDING: &[(&str, &str)] = &[
-    // The panel exists now; what is missing is a terminal to put in it, which
-    // needs a PTY dependency — see docs/roadmap.md.
+    // The panel exists, but a terminal for it needs a PTY dependency. See
+    // docs/roadmap.md.
     (
         "workbench.action.terminal.toggleTerminal",
         "Toggle Terminal",
     ),
     ("workbench.action.toggleZenMode", "Zen Mode"),
-    // Needs a font size the frontend can change, which the terminal does not own.
+    // Needs a font size the frontend can change. The terminal frontend does not
+    // control the font size.
     ("workbench.action.zoomIn", "Zoom In"),
     ("workbench.action.zoomOut", "Zoom Out"),
     ("workbench.action.zoomReset", "Reset Zoom"),
-    // Needs a new workspace root, which the file walk, the search and the language
-    // servers are all anchored to.
+    // Needs a change of workspace root, which the file walk, the search and the
+    // language servers all depend on.
     ("workbench.action.files.openFolder", "Open Folder"),
-    // Needs an editor for a file deco reads but never writes.
+    // Needs an editor for settings files, which deco reads but never writes.
     ("workbench.action.openSettings", "Open Settings"),
     (
         "workbench.action.openGlobalKeybindings",
@@ -334,10 +335,10 @@ pub const PALETTE: &[(&str, &str)] = &[
     ("explorer.newFolder", "File: New Folder"),
     ("renameFile", "File: Rename"),
     ("deleteFile", "File: Delete"),
-    // The repository's own. VS Code has no default key for these — its
-    // source-control view is driven by the buttons on each row — so the
-    // palette is how they are reached, and inventing keys VS Code does not
-    // have would be the one thing this project has said it will not do.
+    // Source-control commands. VS Code has no default keys for these because
+    // its source-control view uses buttons on each row, so they are reached
+    // through the palette. deco does not add key bindings that VS Code does
+    // not have.
     ("workbench.view.scm", "View: Show Source Control"),
     ("git.stage", "Git: Stage Changes"),
     ("git.stageAll", "Git: Stage All Changes"),
@@ -393,8 +394,8 @@ pub const PALETTE: &[(&str, &str)] = &[
     ("editor.action.clipboardCutAction", "Cut"),
     ("editor.action.clipboardPasteAction", "Paste"),
     // Implemented by `Session::run` rather than by `execute`, because they need
-    // the whole session. Listed here all the same: what matters to the palette is
-    // that the editor runs them, not which function does.
+    // the whole session. They are listed here because the palette only requires
+    // that the editor can run them.
     ("actions.find", "Find"),
     ("editor.action.startFindReplaceAction", "Replace"),
     ("editor.action.nextMatchFindAction", "Find Next"),
@@ -441,8 +442,8 @@ pub struct Context<'a> {
 
 /// Runs `command`.
 pub fn execute(ctx: &mut Context<'_>, command: &str, args: Option<&Value>) -> Outcome {
-    // Motions come first: they are by far the most frequent, and every one of
-    // them shares the same "extend or not" shape.
+    // Motions are checked first because they are the most frequent commands,
+    // and they all share the same extend/move handling.
     if let Some(outcome) = motion(ctx, command) {
         return outcome;
     }
@@ -497,8 +498,8 @@ pub fn execute(ctx: &mut Context<'_>, command: &str, args: Option<&Value>) -> Ou
         }
         "undo" => {
             // The history applies its own transaction, so this cannot go through
-            // `Document::apply`; invalidate wholesale instead of guessing which
-            // lines an undo touched.
+            // `Document::apply`. Invalidate everything instead of computing
+            // which lines the undo touched.
             ctx.document.invalidate();
             if let Some(selections) = ctx.document.history.undo(&mut ctx.document.buffer) {
                 ctx.view.selections = selections;
@@ -637,15 +638,15 @@ fn motion(ctx: &mut Context<'_>, command: &str) -> Option<Outcome> {
         _ => None,
     };
     if let Some((direction, count)) = vertical {
-        // Rows rather than lines while wrapping, because on screen a row is what
-        // one press of the key looks like it moves by. The goal column is measured
-        // within the row for the same reason.
+        // While wrapping, move by rows rather than lines, because one key press
+        // should move one visible row. The goal column is measured within the
+        // row for the same reason.
         if ctx.view.wrap_column(&ctx.document.settings) > 0 {
             let view = &*ctx.view;
             let settings = &ctx.document.settings;
             let down = direction == VerticalDirection::Down;
-            // Collected before assigning, because working out where a row is takes
-            // the view and the selections live on it.
+            // Collected before assigning, because row computation borrows the
+            // view, which also holds the selections.
             let moved: Vec<Selection> = view
                 .selections
                 .iter()
@@ -678,9 +679,9 @@ fn motion(ctx: &mut Context<'_>, command: &str) -> Option<Outcome> {
         return Some(Outcome::Handled);
     }
 
-    // `home` and `end` mean the ends of the row while wrapping, which is where the
-    // key points on screen. On a line's first and last row those are the line's
-    // ends, so an unwrapped line behaves exactly as it always did.
+    // While wrapping, `home` and `end` move to the ends of the visible row. On a
+    // line's first and last row those are the line's ends, so an unwrapped line
+    // behaves as before.
     if matches!(base, "cursorHome" | "cursorEnd")
         && ctx.view.wrap_column(&ctx.document.settings) > 0
     {
@@ -695,8 +696,9 @@ fn motion(ctx: &mut Context<'_>, command: &str) -> Option<Outcome> {
                 let (start, end) = view.row_bounds(buffer, settings, from);
                 let to = if home {
                     if start == 0 {
-                        // The first row keeps `home`'s usual trick of stopping at
-                        // the first non-whitespace and toggling to column zero.
+                        // On the first row, `home` keeps its usual behaviour:
+                        // stop at the first non-whitespace character, then
+                        // toggle to column zero.
                         movement::smart_home(buffer, from)
                     } else {
                         Position::new(from.line, start)
@@ -704,8 +706,8 @@ fn motion(ctx: &mut Context<'_>, command: &str) -> Option<Outcome> {
                 } else {
                     match end {
                         None => movement::line_end(buffer, from),
-                        // One short of the next row's start, or `end` would put the
-                        // caret on the row below the one whose end was asked for.
+                        // One before the next row's start. Otherwise `end` would
+                        // put the caret on the next row.
                         Some(_) => {
                             let text = buffer
                                 .line_content(from.line as usize)
@@ -729,8 +731,8 @@ fn motion(ctx: &mut Context<'_>, command: &str) -> Option<Outcome> {
                 } else {
                     selection.moved_to(to)
                 };
-                // Cleared, so a following `down` measures the column afresh from
-                // where `home` or `end` actually landed.
+                // Cleared so that a following `down` measures the column from
+                // the position `home` or `end` moved to.
                 next.goal_column = None;
                 next
             })
@@ -757,8 +759,8 @@ fn motion(ctx: &mut Context<'_>, command: &str) -> Option<Outcome> {
 
     ctx.view.selections.map(|s| {
         // A non-extending left/right motion with a selection collapses to that
-        // selection's edge rather than moving from the caret, which is what
-        // makes arrow keys feel right after a drag.
+        // selection's edge rather than moving from the caret, as in other
+        // editors.
         if !extend && !s.is_empty() {
             match base {
                 "cursorLeft" => return s.moved_to(s.start()),
@@ -784,9 +786,8 @@ fn motion(ctx: &mut Context<'_>, command: &str) -> Option<Outcome> {
 
 /// Applies one change per selection and places a caret after each insertion.
 ///
-/// The running delta is what makes this correct for multiple cursors: change
-/// *i*'s post-edit position depends on the net length change of every earlier
-/// one.
+/// The running delta handles multiple cursors: the post-edit position of change
+/// *i* depends on the net length change of every earlier change.
 fn edit_at_selections(
     ctx: &mut Context<'_>,
     kind: EditKind,
@@ -795,9 +796,9 @@ fn edit_at_selections(
     let before = ctx.view.selections.clone();
     let buffer = &ctx.document.buffer;
 
-    // `false` for a caret, `true` for a trim: only the edits that came from a
-    // selection leave a cursor behind, but both have to be in the transaction and
-    // both shift what follows them.
+    // `false` for a caret, `true` for a trim. Only edits from a selection leave
+    // a cursor, but both kinds are in the transaction and both shift later
+    // positions.
     let mut planned: Vec<(usize, usize, String, bool)> = Vec::new();
     for selection in before.iter() {
         let Some((range, text)) = plan(buffer, selection) else {
@@ -814,9 +815,9 @@ fn edit_at_selections(
     if planned.is_empty() {
         return;
     }
-    // `editor.trimAutoWhitespace`, folded into this edit rather than applied as one
-    // of its own: an auto-indent left behind and the keystroke that left it behind
-    // are one action, so `ctrl+z` should take back one thing.
+    // `editor.trimAutoWhitespace` is included in this edit rather than applied
+    // separately. The trim and the keystroke that caused it are one action, so
+    // one `ctrl+z` reverts both.
     let kept: Vec<(Position, Position, bool)> = planned
         .iter()
         .map(|(start, end, text, _)| {
@@ -851,8 +852,8 @@ fn edit_at_selections(
         .collect();
 
     let Ok(transaction) = Transaction::new(changes) else {
-        // Overlapping edits mean two cursors are fighting over the same text;
-        // dropping the whole thing is safer than applying half of it.
+        // Overlapping edits mean two cursors target the same text. The whole
+        // edit is dropped rather than applied partially.
         return;
     };
 
@@ -863,8 +864,8 @@ fn edit_at_selections(
     for (start, end, text, trimmed) in &planned {
         let inserted = text.chars().count();
         let new_start = (*start as isize + delta) as usize;
-        // A trim is nobody's cursor. It still counts towards the delta, which is what
-        // keeps the cursors after it in the right place.
+        // A trim has no cursor. It still counts towards the delta so that later
+        // cursors stay in the right place.
         if !trimmed {
             carets.push(Selection::caret(
                 ctx.document.buffer.char_to_position(new_start + inserted),
@@ -873,9 +874,9 @@ fn edit_at_selections(
         delta += inserted as isize - (*end - *start) as isize;
     }
 
-    // Every edit invalidates the record: whitespace on a line that has just been
-    // edited is that line's indentation now, and whitespace this call has trimmed is
-    // gone. `insert_newline` writes the new record after it returns.
+    // Every edit invalidates the record. Whitespace on an edited line is now
+    // that line's indentation, and trimmed whitespace no longer exists.
+    // `insert_newline` writes the new record after this returns.
     ctx.document.auto_whitespace.clear();
     let after = SelectionSet::from_vec(carets, 0);
     ctx.view.selections = after.clone();
@@ -888,16 +889,16 @@ fn edit_at_selections(
 /// Replaces each selection with `text`.
 /// The auto-indents an edit may take back with it.
 ///
-/// `changes` is what the edit is about to do, as `(start, end, starts with a newline)`
-/// per change. Two conditions, and both are about not deleting anything anybody wants:
+/// `changes` describes the pending edit as `(start, end, starts with a newline)`
+/// per change. Both conditions prevent deleting wanted text:
 ///
-/// - The line must *still* hold exactly the whitespace that was put there and nothing
-///   else, checked against the buffer rather than trusted from the record. A stale
-///   entry then costs nothing instead of costing somebody their text.
-/// - No change may leave content on the line. A change that inserts a newline at or
-///   past the whitespace is the one exception, and the case the feature exists for:
-///   pressing enter on a freshly indented line is how the line gets abandoned, and
-///   what stays behind is exactly the whitespace to take back.
+/// - The line must *still* contain exactly the inserted whitespace and nothing
+///   else. This is checked against the buffer rather than taken from the
+///   record, so a stale entry has no effect instead of deleting text.
+/// - No change may leave content on the line. The one exception, and the main
+///   use case, is a change that inserts a newline at or after the whitespace:
+///   pressing enter on a newly indented line leaves only that whitespace
+///   behind.
 fn trimmable_whitespace(document: &Document, changes: &[(Position, Position, bool)]) -> Vec<Range> {
     if !document.settings.trim_auto_whitespace {
         return Vec::new();
@@ -910,8 +911,8 @@ fn trimmable_whitespace(document: &Document, changes: &[(Position, Position, boo
                 if start.line > *line || end.line < *line {
                     return false;
                 }
-                // Anything spanning the line, or landing inside its whitespace, or
-                // putting text other than a line break on it.
+                // Any change that spans the line, lands inside its whitespace, or
+                // puts text other than a line break on it.
                 !(*newline && start.line == *line && end == start && start.character >= *columns)
             });
             if leaves_content {
@@ -932,29 +933,29 @@ fn trimmable_whitespace(document: &Document, changes: &[(Position, Position, boo
 ///
 /// # Why `enter` needed this and `ctrl+enter` did not
 ///
-/// `editor.action.insertLineAfter` has always copied the line's indentation, because
-/// it is a command that knows it is making a line. `enter` is bound to `type` with a
-/// newline in it — a plain insertion — so it landed at column zero, and the same
-/// editor indented on one key and not the other.
+/// `editor.action.insertLineAfter` has always copied the line's indentation,
+/// because it is a dedicated command for creating a line. `enter` is bound to
+/// `type` with a newline, which is a plain insertion, so the new line started at
+/// column zero. The two keys therefore behaved differently.
 ///
 /// # Between a pair of brackets
 ///
-/// With `brackets` (the default), `{|}` and `enter` puts the closer on its own line
-/// at the outer indent and leaves the caret on an indented line between them, which
-/// is the shape everybody types next. It pairs with
-/// [`auto_close`]: typing `{` produces `{}`, and `enter` opens it into a block.
+/// With `brackets` (the default), `enter` in `{|}` puts the closer on its own
+/// line at the outer indent and leaves the caret on an indented line between
+/// them. This works with [`auto_close`]: typing `{` produces `{}`, and `enter`
+/// expands it into a block.
 ///
-/// All the carets have to be between a pair for that, or one keystroke would open a
-/// block under some and not others — the same rule, for the same reason, as closing a
-/// bracket.
+/// Every caret must be between a pair for this to apply. Otherwise one
+/// keystroke would open a block at some carets and not at others. The same rule
+/// applies to closing a bracket.
 fn insert_newline(ctx: &mut Context<'_>) -> Option<Outcome> {
     use deco_config::AutoIndent;
     let mode = ctx.document.settings.auto_indent;
     if mode == AutoIndent::None {
         return None;
     }
-    // A selection is replaced by the newline, and the indentation of a line that is
-    // about to be partly deleted is not the indentation of what is left.
+    // A selection is replaced by the newline, and the indentation of a partly
+    // deleted line may not match what remains.
     if ctx.view.selections.iter().any(|s| !s.is_empty()) {
         return None;
     }
@@ -963,8 +964,9 @@ fn insert_newline(ctx: &mut Context<'_>) -> Option<Outcome> {
     let pairs = crate::document::bracket_pairs(ctx.document.language());
     let buffer = &ctx.document.buffer;
 
-    // Only the leading whitespace *before* the caret: pressing enter inside a line's
-    // indentation should not hand the new line more indent than the caret had.
+    // Only the leading whitespace *before* the caret, so pressing enter inside a
+    // line's indentation does not give the new line more indent than the caret
+    // had.
     let indent_at = |buffer: &Buffer, at: Position| -> String {
         let text = line_text(buffer, at.line);
         text.chars()
@@ -985,7 +987,7 @@ fn insert_newline(ctx: &mut Context<'_>) -> Option<Outcome> {
                     if pairs.iter().any(|(o, c)| *o == open && *c == close)
             )
         });
-    // And whether every caret merely *follows* one, which only adds a level.
+    // Whether every caret only *follows* an opener, which adds one level.
     let after_opener = mode == AutoIndent::Brackets
         && ctx.view.selections.iter().all(|s| {
             let at = buffer.clamp_position(s.active);
@@ -993,8 +995,8 @@ fn insert_newline(ctx: &mut Context<'_>) -> Option<Outcome> {
         });
 
     if !between_pair && !after_opener && indentation_is_absent(buffer, &ctx.view.selections) {
-        // Nothing to copy and no bracket to open: a plain newline is the same answer
-        // and a cheaper one.
+        // No indentation to copy and no bracket to open. A plain newline gives
+        // the same result at lower cost.
         return None;
     }
 
@@ -1014,8 +1016,8 @@ fn insert_newline(ctx: &mut Context<'_>) -> Option<Outcome> {
         Some((selection.range(), text))
     });
 
-    // Recorded after the edit: each caret sits just past the indent this call put
-    // there, so its column *is* how much whitespace to take back.
+    // Recorded after the edit. Each caret is just after the indent this call
+    // inserted, so its column is the amount of whitespace to trim later.
     let recorded: Vec<(u32, u32)> = ctx
         .view
         .selections
@@ -1025,9 +1027,9 @@ fn insert_newline(ctx: &mut Context<'_>) -> Option<Outcome> {
         .collect();
 
     if between_pair {
-        // The caret is after the closer's indent on the last inserted line; it belongs
-        // at the end of the one above. Read off the buffer rather than counted back,
-        // so every caret lands right whatever its own indent was.
+        // The caret is after the closer's indent on the last inserted line and
+        // must move to the end of the line above. The position is read from the
+        // buffer rather than computed, so it is correct for any indent.
         ctx.view.selections.map(|s| {
             let line = s.active.line.saturating_sub(1);
             let end = movement::line_end(&ctx.document.buffer, Position::new(line, 0));
@@ -1078,22 +1080,22 @@ fn previous_char(buffer: &Buffer, at: Position) -> Option<char> {
 ///
 /// # What it deliberately does not do
 ///
-/// - **Surround a selection.** Typing `(` with text selected replaces it, as it
-///   always has. Wrapping instead is `editor.autoSurround`, a separate setting deco
-///   does not read — and closing a bracket *around* a replacement while leaving the
-///   replacement out would be neither behaviour.
-/// - **Remember which closers it inserted.** Typing `)` in front of any `)` steps
-///   over it. VS Code tracks the ones it added and only steps over those; the state
-///   that needs is a per-document list invalidated by every other edit, and the two
-///   answers differ only where somebody typed both halves of a pair by hand and then
-///   typed a third closer.
+/// - **Surround a selection.** Typing `(` with text selected replaces it. Wrapping
+///   is controlled by `editor.autoSurround`, a separate setting deco does not
+///   read. Inserting a pair in place of the selection would match neither
+///   behaviour.
+/// - **Track which closers it inserted.** Typing `)` before any `)` steps over
+///   it. VS Code steps over only the closers it inserted. That requires a
+///   per-document list invalidated by every other edit, and the results differ
+///   only when both halves of a pair were typed by hand and a third closer is
+///   typed.
 fn auto_close(ctx: &mut Context<'_>, text: &str) -> Option<Outcome> {
     let mode = ctx.document.settings.auto_closing_brackets;
     if mode == deco_config::AutoClosingBrackets::Never {
         return None;
     }
-    // One character, typed: a paste or a multi-character insertion is not somebody
-    // reaching for a bracket.
+    // Only a single typed character. A paste or a multi-character insertion is
+    // not handled.
     let mut chars = text.chars();
     let typed = chars.next()?;
     if chars.next().is_some() {
@@ -1107,8 +1109,9 @@ fn auto_close(ctx: &mut Context<'_>, text: &str) -> Option<Outcome> {
     let pairs = crate::document::bracket_pairs(ctx.document.language());
     let after = |ctx: &Context<'_>, at: Position| next_char(&ctx.document.buffer, at);
 
-    // Stepping over a closer comes first: `"` both opens and closes, and in front of
-    // one the useful answer is to move past it rather than to open another.
+    // Stepping over a closer is checked first. `"` both opens and closes, and
+    // before an existing `"` the caret should move past it rather than open
+    // another pair.
     if pairs.iter().any(|(_, close)| *close == typed)
         && ctx
             .view
@@ -1125,8 +1128,8 @@ fn auto_close(ctx: &mut Context<'_>, text: &str) -> Option<Outcome> {
     }
 
     let (_, closer) = pairs.iter().find(|(open, _)| *open == typed)?;
-    // Every caret has to agree, or one keystroke would insert a pair in some places
-    // and a bare bracket in others.
+    // Every caret must qualify. Otherwise one keystroke would insert a pair at
+    // some carets and a single bracket at others.
     if !ctx
         .view
         .selections
@@ -1141,8 +1144,8 @@ fn auto_close(ctx: &mut Context<'_>, text: &str) -> Option<Outcome> {
     edit_at_selections(ctx, EditKind::Insert, |_, selection| {
         Some((selection.range(), pair.clone()))
     });
-    // Back between the two, which is the point. One column: every character in a
-    // pair here is ASCII, so one UTF-16 unit.
+    // Move the caret back between the two characters. One column is enough
+    // because every pair character here is ASCII, one UTF-16 unit.
     ctx.view.selections.map(|s| {
         let at = s.active;
         s.moved_to(Position::new(at.line, at.character.saturating_sub(1)))
@@ -1308,7 +1311,7 @@ fn selected_lines(selections: &SelectionSet, buffer: &Buffer) -> Vec<u32> {
     for selection in selections.iter() {
         let start = selection.start().line.min(last);
         // A selection ending exactly at column 0 does not include that line,
-        // which is what stops a full-line selection from deleting two lines.
+        // so a full-line selection does not delete two lines.
         let mut end = selection.end().line.min(last);
         if selection.end().character == 0 && end > start {
             end -= 1;
@@ -1372,8 +1375,8 @@ fn delete_lines(ctx: &mut Context<'_>) {
         let range = if line < last {
             Range::new(Position::new(line, 0), Position::new(line + 1, 0))
         } else if line > 0 {
-            // The last line has no terminator of its own, so take the previous
-            // line's instead or the file grows a blank line.
+            // The last line has no terminator, so delete the previous line's
+            // terminator instead. Otherwise a blank line would remain.
             Range::new(
                 Position::new(line - 1, buffer.line_len_utf16(line as usize - 1)),
                 buffer.end_position(),
@@ -1436,7 +1439,7 @@ fn move_lines(ctx: &mut Context<'_>, up: bool) {
     }
 
     // Rewriting the whole span in one change keeps this a single undo step and
-    // avoids any question of overlapping edits.
+    // avoids overlapping edits.
     let (block_start, block_end, other) = if up {
         (first - 1, last, first - 1)
     } else {
@@ -1531,15 +1534,13 @@ fn copy_lines(ctx: &mut Context<'_>, up: bool) {
 ///
 /// # What counts as already commented
 ///
-/// Two shapes, because both arise from pressing the key twice. Either the
-/// selection *contains* the delimiters — which is what you get by selecting a
-/// commented region — or it sits immediately *inside* them, which is what this
-/// command leaves behind, so that pressing the key again undoes it. Recognising
-/// only the first would make the command not its own inverse.
+/// Two forms are recognised. Either the selection *contains* the delimiters, as
+/// when a commented region is selected, or it is immediately *inside* them,
+/// which is the selection this command leaves. Recognising the second form lets
+/// a second press unwrap what the first press wrapped.
 ///
 /// An empty selection inserts an empty comment and puts the caret inside it,
-/// which is what VS Code does: the point of pressing it with no selection is to
-/// write the comment next.
+/// as VS Code does, so the comment can be typed next.
 fn block_comment(ctx: &mut Context<'_>) {
     let Some((open, close)) = block_comment_tokens(ctx.document.language()) else {
         return;
@@ -1547,8 +1548,8 @@ fn block_comment(ctx: &mut Context<'_>) {
     let before = ctx.view.selections.clone();
     let buffer = &ctx.document.buffer;
 
-    // Planned in character indices, since every edit after the first sits at a
-    // position the earlier ones moved.
+    // Planned in character indices, because earlier edits shift the positions
+    // of later ones.
     let mut planned: Vec<Planned> = Vec::new();
     for selection in before.iter() {
         let range = buffer.clamp_range(selection.range());
@@ -1571,14 +1572,14 @@ fn block_comment(ctx: &mut Context<'_>) {
         })
         .collect();
     let Ok(transaction) = Transaction::new(changes) else {
-        // Two cursors fighting over the same text. Dropping the whole thing is
-        // safer than applying half of it.
+        // Two cursors target the same text. The whole edit is dropped rather
+        // than applied partially.
         return;
     };
     let inverse = ctx.document.apply(&transaction);
 
-    // The selection each edit leaves behind: the text inside the delimiters, so
-    // that pressing the key again unwraps exactly what it just wrapped.
+    // Each edit leaves the text inside the delimiters selected, so pressing the
+    // key again unwraps exactly what it wrapped.
     let mut selections = Vec::with_capacity(planned.len());
     let mut delta: isize = 0;
     for plan in &planned {
@@ -1607,9 +1608,8 @@ struct Planned {
     end: usize,
     /// What replaces it.
     text: String,
-    /// Where the interesting part of `text` is, in characters from its start —
-    /// the text inside the delimiters after a wrap, or the whole of it after an
-    /// unwrap.
+    /// The part of `text` to select, in characters from its start: the text
+    /// inside the delimiters after a wrap, or all of it after an unwrap.
     inner: std::ops::Range<usize>,
 }
 
@@ -1641,9 +1641,9 @@ fn plan_block_comment(
         };
     }
 
-    // The selection sits inside them, which is what a wrap leaves behind. The
-    // delimiters are swallowed along with one space each, since that is what the
-    // wrap inserted.
+    // The selection is inside them, as a wrap leaves it. The delimiters are
+    // removed together with one space each, because the wrap inserted those
+    // spaces.
     if let Some((outer_start, outer_end)) = surrounding_comment(buffer, start, end, open, close) {
         return Planned {
             start: outer_start,
@@ -1653,8 +1653,8 @@ fn plan_block_comment(
         };
     }
 
-    // Otherwise wrap. `/* foo */`, and `/*  */` for an empty selection — with the
-    // caret between the spaces, which is where the comment gets typed.
+    // Otherwise wrap: `/* foo */`, or `/*  */` for an empty selection with the
+    // caret between the spaces, where the comment is typed.
     let text = format!("{open} {selected} {close}");
     let lead = open.chars().count() + 1;
     Planned {
@@ -1714,20 +1714,20 @@ fn surrounding_comment(
 /// Which way [`line_comment`] should go.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CommentMode {
-    /// `editor.action.commentLine` — comment unless everything already is.
+    /// `editor.action.commentLine`: comment unless every line already is.
     Toggle,
-    /// `editor.action.addCommentLine` — always comment.
+    /// `editor.action.addCommentLine`: always comment.
     Add,
-    /// `editor.action.removeCommentLine` — always uncomment.
+    /// `editor.action.removeCommentLine`: always uncomment.
     Remove,
 }
 
 /// Adds or removes line comments on the selected lines.
 ///
-/// `Toggle` comments unless *every* non-blank line already is, which is what
-/// makes the command its own inverse. Blank lines are never touched, and a line
-/// that is not actually commented is never uncommented — without that check,
-/// removing comments from a mixed selection would eat real code.
+/// `Toggle` comments the lines unless *every* non-blank line is already
+/// commented, so pressing it twice restores the original. Blank lines are never
+/// changed, and a line that is not commented is never uncommented. Without that
+/// check, removing comments from a mixed selection would delete code.
 fn line_comment(ctx: &mut Context<'_>, mode: CommentMode) {
     let Some(token) = line_comment_token(ctx.document.language()) else {
         return;
@@ -1766,7 +1766,7 @@ fn line_comment(ctx: &mut Context<'_>, mode: CommentMode) {
                 continue;
             }
             let after_token = indent + token.chars().count() as u32;
-            // Swallow the single space comment styles conventionally add.
+            // Also remove the single space conventionally added after the token.
             let trailing_space = text
                 .chars()
                 .nth(after_token as usize)
@@ -1819,16 +1819,16 @@ fn delete_selection_or_line(ctx: &mut Context<'_>) {
 
 /// The text `ctrl+d` and `ctrl+shift+l` search for, and the selection it came from.
 ///
-/// With a selection, that text. With a bare caret, the word under it — and the
-/// caret is replaced by a selection of that word, which is `ctrl+d`'s first press
-/// and the reason it feels like two different commands.
+/// With a selection, the selected text. With a caret, the word under it, and the
+/// caret is replaced by a selection of that word. This is `ctrl+d`'s first press,
+/// which only selects.
 fn search_term(ctx: &mut Context<'_>) -> Option<(String, Selection)> {
     let primary = *ctx.view.selections.primary();
 
     if !primary.is_empty() {
         let text = ctx.document.buffer.text_in_range(primary.range());
-        // A selection spanning a line break is a legitimate search term, but an
-        // empty one is not — and `text_in_range` on a collapsed range gives "".
+        // A selection spanning a line break is a valid search term, but an empty
+        // one is not. `text_in_range` on a collapsed range returns "".
         return (!text.is_empty()).then_some((text, primary));
     }
 
@@ -1836,12 +1836,10 @@ fn search_term(ctx: &mut Context<'_>) -> Option<(String, Selection)> {
     let text = ctx.document.buffer.text_in_range(word);
     let selection = Selection::new(word.start, word.end);
 
-    // Every caret expands to its own word, which is what VS Code does. Cursors are
-    // placed deliberately and expanding each of them keeps that placement —
-    // discarding them would not, but discarding them was never the alternative.
-    // A caret with no word under it stays a caret rather than selecting the
-    // whitespace it sits in, and a selection that is already a selection is left
-    // as the user made it.
+    // Every caret expands to its own word, as in VS Code, which keeps the
+    // existing cursor placement. A caret with no word under it stays a caret
+    // rather than selecting whitespace, and an existing selection is left
+    // unchanged.
     let index = ctx.view.selections.primary_index();
     let selections: Vec<Selection> = ctx
         .view
@@ -1863,18 +1861,17 @@ fn search_term(ctx: &mut Context<'_>) -> Option<(String, Selection)> {
 
 /// `ctrl+d`: selects the word under the caret, then adds each next occurrence.
 ///
-/// Two behaviours behind one key, which is what VS Code does and what makes it
-/// worth using: the first press turns a caret into a selection, and every press
-/// after that adds a cursor at the following match.
+/// One key has two behaviours, as in VS Code: the first press turns a caret into
+/// a selection, and each later press adds a cursor at the next match.
 fn add_next_match(ctx: &mut Context<'_>) -> Outcome {
-    // Read before `search_term`, which turns a bare caret into a selection of the
-    // word under it and so destroys the evidence of which press this was.
+    // Read before `search_term`, which turns a caret into a selection of the
+    // word under it, after which the first press can no longer be detected.
     let was_caret = ctx.view.selections.primary().is_empty();
     let Some((needle, primary)) = search_term(ctx) else {
         return Outcome::Handled;
     };
-    // The first press only selects the word. Adding a cursor in the same breath
-    // would skip an occurrence, and the user has not yet seen what they selected.
+    // The first press only selects the word. Adding a cursor at the same time
+    // would skip an occurrence before the user has seen the selection.
     if was_caret {
         return Outcome::Handled;
     }
@@ -1886,10 +1883,10 @@ fn add_next_match(ctx: &mut Context<'_>) -> Outcome {
     );
     let taken: Vec<Range> = ctx.view.selections.iter().map(Selection::range).collect();
 
-    // Every occurrence from the one after the primary selection onwards, then
-    // round to the top of the file — skipping anything a cursor already sits on,
-    // so holding ctrl+d walks the file rather than stalling on the occurrence
-    // after the last one added.
+    // Search from the occurrence after the primary selection, then wrap to the
+    // top of the file. Occurrences that already have a cursor are skipped, so
+    // repeated ctrl+d continues through the file instead of stopping at an
+    // occurrence that is already selected.
     let start_at = matches
         .iter()
         .position(|range| range.start >= primary.end())
@@ -1900,8 +1897,8 @@ fn add_next_match(ctx: &mut Context<'_>) -> Outcome {
         .find(|range| !taken.contains(range));
 
     let Some(&next) = after else {
-        // Every occurrence already has a cursor. Saying so beats a key that
-        // silently does nothing.
+        // Every occurrence already has a cursor. Report this instead of doing
+        // nothing.
         return Outcome::Message(format!(
             "all {} occurrences of {needle:?} are selected",
             matches.len()
@@ -1934,8 +1931,8 @@ fn select_all_matches(ctx: &mut Context<'_>) -> Outcome {
         .iter()
         .map(|range| Selection::new(range.start, range.end))
         .collect();
-    // The last one is primary, so the view scrolls to the end of the file and the
-    // user can see how far the change reaches.
+    // The last one is primary, so the view scrolls to the last occurrence and
+    // shows how far the selection extends.
     let primary = selections.len() - 1;
     ctx.view.selections = SelectionSet::from_vec(selections, primary);
     ctx.view
@@ -1945,15 +1942,14 @@ fn select_all_matches(ctx: &mut Context<'_>) -> Outcome {
 
 /// `ctrl+k ctrl+d`: moves the last cursor to the next occurrence instead of adding one.
 ///
-/// The escape hatch for `ctrl+d` pressed once too often: it skips the occurrence
-/// you did not want rather than making you start over.
+/// Used after `ctrl+d` selects an unwanted occurrence: it skips that occurrence
+/// without starting over.
 fn move_to_next_match(ctx: &mut Context<'_>) -> Outcome {
     let was_caret = ctx.view.selections.primary().is_empty();
     let Some((needle, primary)) = search_term(ctx) else {
         return Outcome::Handled;
     };
-    // Like `ctrl+d`, the first press only selects the word — there is nothing to
-    // move yet.
+    // As with `ctrl+d`, the first press only selects the word.
     if was_caret {
         return Outcome::Handled;
     }
@@ -2000,10 +1996,10 @@ mod tests {
                 PathBuf::from(format!("/w/file.{extension}")),
                 text,
                 EditorSettings {
-                    // Off, so a test's indentation is the one it set rather than one
-                    // read out of its own fixture. `editor.detectIndentation` has its
-                    // own tests in `deco_config::indent`, and its effect on `tab` and
-                    // `outdent` is asserted through a whole session.
+                    // Off, so a test uses the indentation it sets rather than one
+                    // detected from its fixture. `editor.detectIndentation` is
+                    // tested in `deco_config::indent`, and its effect on `tab` and
+                    // `outdent` is tested through a whole session.
                     detect_indentation: false,
                     ..EditorSettings::default()
                 },
@@ -2071,8 +2067,8 @@ mod tests {
 
     #[test]
     fn a_new_line_starts_where_the_old_one_started() {
-        // The gap this closes: `enter` went to column zero while `ctrl+enter` copied
-        // the indent, so the same editor indented on one key and not the other.
+        // Regression: `enter` went to column zero while `ctrl+enter` copied the
+        // indent.
         let mut h = Harness::with_language("fn main() {\n    let x = 1;\n}\n", "rs").at(1, 14);
         enter(&mut h);
         assert_eq!(h.text(), "fn main() {\n    let x = 1;\n    \n}\n");
@@ -2089,12 +2085,12 @@ mod tests {
 
     #[test]
     fn enter_inside_the_indentation_carries_only_what_the_caret_had() {
-        // Otherwise pressing enter two spaces into a four-space indent would hand the
-        // new line more indentation than the caret was sitting at.
+        // Otherwise pressing enter two spaces into an indent would give the new
+        // line more indentation than the caret position.
         let mut h = Harness::new("        deep\n").at(0, 2);
         enter(&mut h);
-        // Two spaces stay above; the new line carries those two, and the six the
-        // caret had not reached stay in front of `deep`.
+        // Two spaces stay above. The new line gets those two, and the six after
+        // the caret stay in front of `deep`.
         assert_eq!(h.text(), "  \n        deep\n");
         assert_eq!(h.cursor(), Position::new(1, 2));
     }
@@ -2109,8 +2105,8 @@ mod tests {
 
     #[test]
     fn enter_between_a_pair_opens_a_block() {
-        // The shape everybody types next, and the pair to `auto_close`: typing `{`
-        // produces `{}`, and `enter` opens it into a block.
+        // Works with `auto_close`: typing `{` produces `{}`, and `enter` expands
+        // it into a block.
         let mut h = Harness::with_language("fn main() {}\n", "rs").at(0, 11);
         enter(&mut h);
         assert_eq!(h.text(), "fn main() {\n    \n}\n");
@@ -2127,7 +2123,7 @@ mod tests {
 
     #[test]
     fn typing_a_bracket_and_pressing_enter_composes() {
-        // The two features in sequence, which is how they are actually used.
+        // Both features in sequence, as they are normally used.
         let mut h = Harness::with_language("fn main() \n", "rs").at(0, 10);
         h.type_text("{");
         assert_eq!(h.text(), "fn main() {}\n", "closed by `auto_close`");
@@ -2161,8 +2157,7 @@ mod tests {
 
     #[test]
     fn a_selection_is_replaced_rather_than_indented() {
-        // The indentation of a line about to be partly deleted is not the indentation
-        // of what is left of it.
+        // The indentation of a partly deleted line may not match what remains.
         let mut h = Harness::new("    one    two\n").selecting((0, 4), (0, 11));
         enter(&mut h);
         assert_eq!(h.text(), "    \ntwo\n");
@@ -2203,8 +2198,8 @@ mod tests {
 
     #[test]
     fn one_enter_too_many_leaves_no_trailing_whitespace() {
-        // The mess `editor.autoIndent` makes and this cleans up: without it the line
-        // you pressed past keeps four spaces, and a diff shows it.
+        // Without trimming, the line left by `editor.autoIndent` keeps four
+        // spaces, which appear in a diff.
         let mut h = Harness::with_language("fn main() {\n    let x = 1;\n}\n", "rs").at(1, 14);
         enter(&mut h);
         assert_eq!(h.text(), "fn main() {\n    let x = 1;\n    \n}\n");
@@ -2218,8 +2213,8 @@ mod tests {
 
     #[test]
     fn the_trim_is_part_of_the_same_undo_step() {
-        // The whitespace and the keystroke that abandoned it are one action, so one
-        // `ctrl+z` should take back one thing.
+        // The trim and the keystroke that caused it are one action, so one
+        // `ctrl+z` reverts both.
         let mut h = Harness::with_language("    a\n", "rs").at(0, 5);
         enter(&mut h);
         enter(&mut h);
@@ -2250,8 +2245,8 @@ mod tests {
 
     #[test]
     fn an_edit_elsewhere_trims_the_line_that_was_left() {
-        // Not only the next `enter`: any edit is the moment the abandoned line stops
-        // being where the caret is.
+        // Not only the next `enter`: any edit that moves the caret off the line
+        // triggers the trim.
         let mut h = Harness::with_language("    a\nb\n", "rs").at(0, 5);
         enter(&mut h);
         assert_eq!(h.text(), "    a\n    \nb\n");
@@ -2271,12 +2266,12 @@ mod tests {
 
     #[test]
     fn a_line_that_gained_text_some_other_way_is_left_alone() {
-        // The record is a record, not an authority: the line is checked against the
-        // buffer, so a stale entry does nothing rather than deleting somebody's text.
+        // The record is only a hint. The line is checked against the buffer, so a
+        // stale entry has no effect instead of deleting text.
         let mut h = Harness::with_language("    a\n", "rs").at(0, 5);
         enter(&mut h);
-        // Put text on the tracked line without going through an edit that clears the
-        // record, which is what a stale entry looks like.
+        // Put text on the tracked line without an edit that clears the record,
+        // which produces a stale entry.
         let end = h.document.buffer.end_position();
         let transaction =
             Transaction::single(Change::insert(Position::new(1, 4), "kept".to_owned()));
@@ -2332,8 +2327,8 @@ mod tests {
 
     #[test]
     fn a_quote_both_opens_and_closes() {
-        // Which is why stepping over is tried before opening: in front of a `"` the
-        // useful answer is to move past it, not to open another pair.
+        // Stepping over is therefore tried before opening: before a `"` the caret
+        // moves past it instead of opening another pair.
         let mut h = Harness::with_language("let x = ;\n", "rs").at(0, 8);
         h.type_text("\"");
         assert_eq!(h.text(), "let x = \"\";\n");
@@ -2346,7 +2341,7 @@ mod tests {
     #[test]
     fn nothing_closes_in_the_middle_of_a_word() {
         // `languageDefined`, the default. Closing here would turn `word` into
-        // `wo(r)rd`, which is the reason the default is conditional.
+        // `wo(r)rd`, which is why the default is conditional.
         let mut h = Harness::new("word\n").at(0, 2);
         h.type_text("(");
         assert_eq!(h.text(), "wo(rd\n");
@@ -2382,7 +2377,7 @@ mod tests {
 
     #[test]
     fn a_rust_apostrophe_is_a_lifetime_and_does_not_close() {
-        // `&'a str` is ordinary Rust, and `&''a str` is what closing it would write.
+        // `&'a str` is common Rust, and closing the quote would produce `&''a str`.
         let mut h = Harness::with_language("let a = b;\n", "rs").at(0, 9);
         h.type_text("'");
         assert_eq!(h.text(), "let a = b';\n");
@@ -2408,9 +2403,9 @@ mod tests {
 
     #[test]
     fn a_selection_is_replaced_rather_than_surrounded() {
-        // Wrapping instead is `editor.autoSurround`, which deco does not read.
-        // Closing a bracket *around* a replacement while leaving the replacement out
-        // would be neither behaviour.
+        // Wrapping is controlled by `editor.autoSurround`, which deco does not
+        // read. Inserting a pair in place of the selection would match neither
+        // behaviour.
         let mut h = Harness::new("hello world\n").selecting((0, 0), (0, 5));
         h.type_text("(");
         assert_eq!(h.text(), "( world\n");
@@ -2418,7 +2413,7 @@ mod tests {
 
     #[test]
     fn a_pasted_pair_is_not_reopened() {
-        // More than one character is not somebody reaching for a bracket.
+        // A multi-character insertion is not auto-closed.
         let mut h = Harness::new("\n").at(0, 0);
         h.type_text("foo()");
         assert_eq!(h.text(), "foo()\n");
@@ -2426,13 +2421,14 @@ mod tests {
 
     #[test]
     fn every_caret_closes_or_none_of_them_does() {
-        // One keystroke inserting a pair in some places and a bare bracket in others
-        // is the sort of multi-cursor edit nobody can undo by looking at it.
+        // One keystroke must not insert a pair at some carets and a single
+        // bracket at others.
         let mut h = Harness::new("aa\nbb\n");
         h.view.selections = SelectionSet::from_vec(
             vec![
                 Selection::new(Position::new(0, 2), Position::new(0, 2)),
-                // Mid-word on the second line, where `languageDefined` refuses.
+                // Mid-word on the second line, where `languageDefined` does not
+                // close.
                 Selection::new(Position::new(1, 1), Position::new(1, 1)),
             ],
             0,
@@ -2466,8 +2462,8 @@ mod tests {
 
     #[test]
     fn the_rows_of_the_sample_are_where_the_tests_below_assume() {
-        // Stated once, so a failure in the motion tests is about motion rather
-        // than about where this particular sentence happens to break.
+        // Checked once here, so a failure in the motion tests indicates a motion
+        // problem rather than a change in where this text wraps.
         let h = wrapped(WORDS);
         assert_eq!(
             h.view
@@ -2478,8 +2474,8 @@ mod tests {
 
     #[test]
     fn down_moves_one_row_and_not_one_line() {
-        // Line 0 is four rows. Moving by line would skip all of it, which in prose
-        // is most of a paragraph passing under one keypress.
+        // Line 0 is four rows. Moving by line would skip all of them, which in
+        // prose can be most of a paragraph.
         let mut h = wrapped(WORDS).at(0, 0);
         for expected in [6, 12, 18] {
             h.run("cursorDown");
@@ -2491,8 +2487,8 @@ mod tests {
 
     #[test]
     fn down_still_moves_one_line_when_nothing_is_wrapped() {
-        // The same key, the same file, wrapping off: the rows and the lines are
-        // the same thing, and the old path is what runs.
+        // Same key and file with wrapping off: rows and lines are the same, and
+        // the unwrapped code path runs.
         let mut h = Harness::new(WORDS).at(0, 0);
         h.run("cursorDown");
         assert_eq!(h.cursor(), Position::new(1, 0));
@@ -2500,9 +2496,9 @@ mod tests {
 
     #[test]
     fn up_and_down_keep_the_column_within_the_row() {
-        // Two columns into row 1 is column 8 of the line, and coming back up has to
-        // be two columns into row 0 — column 2 — rather than column 8, which is
-        // where a goal measured from the line's start would land.
+        // Two columns into row 1 is column 8 of the line. Moving back up must go
+        // to two columns into row 0 (column 2), not column 8, where a goal
+        // measured from the line's start would go.
         let mut h = wrapped(WORDS).at(0, 8);
         h.run("cursorUp");
         assert_eq!(h.cursor(), Position::new(0, 2));
@@ -2512,8 +2508,9 @@ mod tests {
 
     #[test]
     fn a_goal_past_the_end_of_a_row_stops_on_that_row() {
-        // Row 0 is ten columns and row 1 is two, so the goal overshoots. Landing on
-        // the next row's first column would make one press of `down` move two rows.
+        // Row 0 is ten columns and row 1 is two, so the goal is past the end of
+        // row 1. Moving to the next row's first column would make one press of
+        // `down` move two rows.
         let mut h = wrapped("aaaaaaaaaa bb\ncc\n").at(0, 9);
         h.run("cursorDown");
         assert_eq!(h.cursor(), Position::new(0, 13), "the end of row 1");
@@ -2542,8 +2539,8 @@ mod tests {
 
     #[test]
     fn home_on_a_lines_first_row_still_stops_at_the_indent() {
-        // The row's start and the line's start are the same cell there, so the key
-        // keeps the trick it has when nothing is wrapped.
+        // On the first row, the row's start and the line's start are the same
+        // cell, so the key keeps its unwrapped smart-home behaviour.
         let mut h = wrapped("  aaaa bbbb cccc\n").at(0, 4);
         h.run("cursorHome");
         assert_eq!(h.cursor(), Position::new(0, 2), "the first non-whitespace");
@@ -2564,8 +2561,8 @@ mod tests {
 
     #[test]
     fn end_then_down_measures_the_column_from_where_it_landed() {
-        // `home` and `end` clear the sticky goal. Keeping it would move `down` back
-        // to whatever column was last aimed at rather than down from the end.
+        // `home` and `end` clear the sticky goal. Keeping it would make `down`
+        // return to the previous goal column rather than move down from the end.
         let mut h = wrapped(WORDS).at(0, 0);
         h.run("cursorEnd");
         assert_eq!(h.cursor(), Position::new(0, 5));
@@ -2575,9 +2572,9 @@ mod tests {
 
     #[test]
     fn the_goal_column_is_a_column_of_the_screen_and_not_of_the_row() {
-        // `editor.wrappingIndent` pushes a continuation row in, so the same offset
-        // into two rows is two different places on screen. The caret keeps the
-        // screen column: what looks like straight down has to be straight down.
+        // `editor.wrappingIndent` indents a continuation row, so the same offset
+        // into two rows is at different screen columns. The caret keeps the
+        // screen column so that `down` moves straight down.
         let mut h = Harness::new("  aaaaa bbbbb ccccc\n");
         h.document.settings.word_wrap = deco_config::WordWrap::On;
         h.document.settings.wrapping_indent = deco_config::WrappingIndent::Same;
@@ -2589,7 +2586,7 @@ mod tests {
             .row_starts(&h.document.buffer, &h.document.settings, 0);
         assert!(starts.len() > 1, "the line wraps: {starts:?}");
 
-        // Two columns into row 0's text is screen column 2; row 1 is pushed in by
+        // Two columns into row 0's text is screen column 2. Row 1 is indented by
         // two, so the same screen column is its *first* character.
         h.view.selections = SelectionSet::caret(Position::new(0, 2));
         assert_eq!(
@@ -2612,7 +2609,7 @@ mod tests {
 
     #[test]
     fn a_goal_inside_the_indent_lands_on_the_rows_first_character() {
-        // There is no column further left on that row to land on.
+        // That row has no column further left.
         let mut h = Harness::new("      aaaaa bbbbb ccccc\n");
         h.document.settings.word_wrap = deco_config::WordWrap::On;
         h.document.settings.wrapping_indent = deco_config::WrappingIndent::Same;
@@ -2654,8 +2651,8 @@ mod tests {
 
     #[test]
     fn pressing_it_twice_leaves_the_text_as_it_was() {
-        // Its own inverse, which needs the selection it leaves behind to be the
-        // text inside the delimiters.
+        // A second press reverts the first. This requires the resulting
+        // selection to be the text inside the delimiters.
         let mut h = Harness::with_language("let x = 1;\n", "rs").selecting((0, 8), (0, 9));
         h.run("editor.action.blockComment");
         h.run("editor.action.blockComment");
@@ -2664,8 +2661,8 @@ mod tests {
 
     #[test]
     fn selecting_a_whole_comment_removes_it() {
-        // The other shape a commented selection comes in: selected from outside
-        // rather than left behind by a wrap.
+        // The other form of a commented selection: the delimiters are included
+        // in the selection rather than left outside it by a wrap.
         let mut h = Harness::with_language("let x = /* 1 */;\n", "rs").selecting((0, 8), (0, 15));
         h.run("editor.action.blockComment");
         assert_eq!(h.text(), "let x = 1;\n");
@@ -2676,13 +2673,13 @@ mod tests {
         let mut h = Harness::with_language("let x = 1;\n", "rs").at(0, 10);
         h.run("editor.action.blockComment");
         assert_eq!(h.text(), "let x = 1;/*  */\n");
-        // Between the spaces, which is where the comment gets typed.
+        // Between the spaces, where the comment is typed.
         assert_eq!(h.cursor(), Position::new(0, 13));
     }
 
     #[test]
     fn a_multi_line_selection_is_wrapped_once_not_per_line() {
-        // The difference from a line comment, and the reason to have both.
+        // This is how it differs from a line comment.
         let mut h = Harness::with_language("a();\nb();\n", "rs").selecting((0, 0), (1, 4));
         h.run("editor.action.blockComment");
         assert_eq!(h.text(), "/* a();\nb(); */\n");
@@ -2724,9 +2721,10 @@ mod tests {
 
     #[test]
     fn a_language_with_no_block_comment_is_left_alone() {
-        // Shell, YAML, TOML and friends have none, and neither does VS Code claim
-        // one for them. Ruby's `=begin` must sit alone at the start of a line, so
-        // wrapping a selection with it would produce text Ruby cannot parse.
+        // Shell, YAML, TOML and similar languages have none, and VS Code does not
+        // define one for them. Ruby's `=begin` must be alone at the start of a
+        // line, so wrapping a selection with it would produce text Ruby cannot
+        // parse.
         for extension in ["sh", "yaml", "toml", "rb", "json", "txt"] {
             let mut h = Harness::with_language("x\n", extension).selecting((0, 0), (0, 1));
             h.run("editor.action.blockComment");
@@ -2736,7 +2734,7 @@ mod tests {
 
     #[test]
     fn a_comment_wrapped_without_spaces_is_still_recognised() {
-        // Not what this command inserts, but what a person writes by hand.
+        // Not what this command inserts, but a form typed by hand.
         let mut h = Harness::with_language("/*x*/\n", "rs").selecting((0, 0), (0, 5));
         h.run("editor.action.blockComment");
         assert_eq!(h.text(), "x\n");
@@ -3333,8 +3331,8 @@ mod tests {
 
     #[test]
     fn add_next_match_searches_for_the_selected_text_not_the_word() {
-        // A partial selection is a search term in its own right, so `oo` matches
-        // inside every `foo` — which a word-based search would miss.
+        // A partial selection is used as the search term, so `oo` matches inside
+        // every `foo`. A word-based search would not match these.
         let mut h = Harness::new(THREE_FOOS).selecting((0, 1), (0, 3));
         h.run("editor.action.addSelectionToNextFindMatch");
         assert_eq!(spans(&h), vec![((0, 1), (0, 3)), ((1, 1), (1, 3))]);
@@ -3375,9 +3373,8 @@ mod tests {
 
     #[test]
     fn every_caret_expands_to_its_own_word() {
-        // What VS Code does. The cursors were placed deliberately and expanding
-        // each of them keeps that placement; the alternative the old comment
-        // argued against — discarding them — was never on the table.
+        // Matches VS Code. Expanding each cursor keeps the existing cursor
+        // placement.
         let mut h = Harness::new(THREE_FOOS);
         h.view.selections = SelectionSet::from_vec(
             vec![
@@ -3392,7 +3389,8 @@ mod tests {
 
     #[test]
     fn a_caret_with_no_word_under_it_stays_a_caret() {
-        // Selecting the whitespace it sits in would be worse than leaving it.
+        // The caret is left as is rather than selecting the surrounding
+        // whitespace.
         let mut h = Harness::new("foo\n   \n");
         h.view.selections = SelectionSet::from_vec(
             vec![
@@ -3471,8 +3469,8 @@ mod tests {
 
         for (id, title) in PALETTE {
             assert!(!title.is_empty(), "{id} has no title");
-            // A title that is just the identifier is not a title; the palette is
-            // searched by what things are called.
+            // A title must not be just the identifier, because the palette is
+            // searched by title.
             assert_ne!(title, id, "{id} needs a human title");
         }
     }

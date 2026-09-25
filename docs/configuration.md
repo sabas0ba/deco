@@ -4,8 +4,7 @@ deco reads VS Code's configuration formats and uses the same setting and command
 
 ## Where files are read from
 
-deco keeps everything under one root, and falls back to VS Code's location so an
-existing setup works without being copied.
+deco keeps its configuration under one root and falls back to VS Code's location, so an existing setup works without copying it.
 
 | Platform | deco | VS Code (read-only fallback) |
 | --- | --- | --- |
@@ -13,10 +12,7 @@ existing setup works without being copied.
 | macOS | `~/Library/Application Support/deco` | `~/Library/Application Support/Code/User` |
 | Windows | `%APPDATA%\deco` | `%APPDATA%\Code\User` |
 
-Under that root: `settings.json`, `keybindings.json`, `extensions/`, `snippets/`.
-VS Code splits these — user JSON under `Code/User` but extensions under
-`~/.vscode/extensions` on every platform — and deco applies that quirk when
-reading VS Code's, while keeping its own together.
+The root contains `settings.json`, `keybindings.json`, `extensions/` and `snippets/`. VS Code stores user JSON under `Code/User` but extensions under `~/.vscode/extensions` on every platform. deco uses those separate locations when reading VS Code's files, and keeps its own files under one root.
 
 **Nothing is ever written back to VS Code's directory.** The fallback is one-way.
 
@@ -30,14 +26,10 @@ Layers apply in VS Code's order, each overriding the one before:
 Default  <  User  <  Remote  <  Workspace  <  Folder
 ```
 
-**Remote** is filled only in a remote session, from `machine-settings.json` on
-the machine you connected to — settings that are facts about that machine rather
-than about you. It is fetched over the connection, since this machine cannot
-read it, and it is **not trusted**: see
+**Remote** is used only in a remote session. It is read from `machine-settings.json` on the remote machine and contains machine-specific settings. It is fetched over the connection because the local machine cannot read it directly, and it is **not trusted**. See
 [Settings that belong to the machine](remote.md#settings-that-belong-to-the-machine).
 
-Language-specific overrides work as they do in VS Code, and are resolved against
-the open document's language:
+Language-specific overrides work as in VS Code and are resolved for the open document's language:
 
 ```jsonc
 {
@@ -68,19 +60,11 @@ Settings deco resolves into an open document's behaviour: `editor.tabSize`,
 `deco.lsp.*` (see [Language servers](language-servers.md)) and
 `deco.extensions.*` (below).
 
-`files.eol` is **the ending a new file gets**, as VS Code documents it. A file
-that already has an ending keeps it, whether or not the setting agrees: opening
-a CRLF file under `"files.eol": "\n"` does not stage a rewrite of every line in
-it. The setting decides for an untitled buffer, and for a file with no
-terminator in it at all — the two cases with no ending to keep. `auto`, the
-default, falls back to the platform's.
+`files.eol` is **the line ending for new files**, as documented by VS Code. A file that already has line endings keeps them regardless of the setting, so opening a CRLF file with `"files.eol": "\n"` does not change every line. The setting applies to untitled buffers and to files with no line terminator. `auto`, the default, uses the platform's line ending.
 
 ### Settings a workspace cannot set
 
-Most settings can be resolved by precedence and forgotten about: the
-highest-priority layer wins and where it came from stops mattering. Three cannot,
-because acting on them means **deciding how much authority to hand executing
-code**, and a `.vscode/settings.json` arrives with a cloned repository:
+Most settings are resolved by precedence, and the source layer does not matter. Three settings are different because they **control how much authority executing code receives**, and a `.vscode/settings.json` can come with a cloned repository:
 
 | Key | Default | What it does |
 | --- | --- | --- |
@@ -88,67 +72,33 @@ code**, and a `.vscode/settings.json` arrives with a cloned repository:
 | `deco.extensions.containerRuntime` | first of `podman`, `docker` found | `"podman"`, `"docker"`, or an absolute path to one. Nothing else is accepted. |
 | `deco.extensions.containerImage` | a digest-pinned Node image | The image the host runs in. **Must** be pinned as `name@sha256:<64 hex>`. |
 
-These are read from deco's own defaults and your user settings only. Workspace,
-folder and remote layers are ignored for them, and the attempt is reported rather
-than dropped in silence. The same rule already applies to `deco.lsp.servers` for
-the same reason: see [Language servers](language-servers.md).
+These are read only from deco's defaults and your user settings. Workspace, folder and remote values are ignored and reported. The same rule applies to `deco.lsp.servers` for the same reason. See [Language servers](language-servers.md).
 
-If the sandbox is `"container"` and no runtime can be found, deco **refuses to
-start the extension host** and names this setting in the error. It does not fall
-back. [Extensions](extensions.md#the-container) has the reasoning.
+If the sandbox is `"container"` and no runtime can be found, deco **refuses to start the extension host** and names this setting in the error. It does not fall back to `"process"`. See [Extensions](extensions.md#the-container) for the reason.
 
-Four keys deco ships a **default** for are still read by nothing:
-`editor.tabCompletion`, `editor.largeFileOptimizations`, `files.encoding` and
+Four keys have a **default** in deco but are not used yet: `editor.tabCompletion`, `editor.largeFileOptimizations`, `files.encoding` and
 `workbench.editor.enablePreview`. Changing these values currently has no effect.
 
-`editor.fontFamily`, `editor.fontSize` and `editor.lineHeight` are the GPU
-frontend's alone — a terminal has no font size — and the GPU frontend does not wrap
-or draw whitespace, so `editor.wordWrap`, `editor.wrappingIndent`,
-`editor.renderWhitespace`, `editor.rulers` and `editor.lineNumbers: "interval"` are
-the terminal's alone in the other
-direction. The [top-level README](https://github.com/sabas0ba/deco#readme) tracks
-what is unbuilt.
+`editor.fontFamily`, `editor.fontSize` and `editor.lineHeight` apply only to the GPU frontend, because a terminal has no font size. The GPU frontend does not wrap or draw whitespace, so `editor.wordWrap`, `editor.wrappingIndent`, `editor.renderWhitespace`, `editor.rulers` and `editor.lineNumbers: "interval"` apply only to the terminal frontend. The [top-level README](https://github.com/sabas0ba/deco#readme) lists features that are not built.
 
-Unknown keys are kept rather than rejected. A settings file written for VS Code
-contains a great many of them, and failing on the first one would make the file
-unusable.
+Unknown keys are kept rather than rejected, because settings files written for VS Code contain many keys that deco does not use.
 
 ### The file outranks your indentation setting
 
-`editor.detectIndentation` is **on** by default, in VS Code and here. It is why
-opening somebody else's two-space project and pressing `tab` does not reindent it
-to four: your `editor.tabSize` is a preference for files that have no answer of
-their own, and a file that has one outranks it.
+`editor.detectIndentation` is **on** by default, as in VS Code. With it, pressing `tab` in a project indented with two spaces inserts two spaces rather than four. `editor.tabSize` applies to files whose indentation cannot be detected; detected indentation takes precedence.
 
 ![tab in a two-space file, then in a four-space one](img/detect-indentation.svg)
 
-The status bar says what one `tab` inserts, because nothing in the text does, and
-it is what decides whether a diff is one line or forty. `(detected)` is added only
-when the file's indentation **differed** from your settings and won — a two-space
-file read as two-space where `editor.tabSize` already said two overrode nothing,
-and a permanent note about that would be noise on most files.
+The status bar shows what one `tab` inserts, because the text does not show it. `(detected)` is added only when the file's indentation **differed** from your settings and was used. For example, a two-space file with `editor.tabSize` set to two shows no note.
 
-Two halves, guessed separately:
+The two properties are detected separately:
 
-- **Tabs or spaces** is a vote: how many indented lines begin with a tab against
-  how many begin with a space. An even split says nothing and the setting stands,
-  because a mixed file is usually one halfway through being converted and guessing
-  would finish the conversion in whichever direction the coin landed.
-- **How wide** comes from the *differences* between consecutive lines' indents, not
-  from the indents themselves. A file indented by four has lines starting at 0, 4,
-  8 and 12 columns, and every one of those is a multiple of two — counting
-  multiples would call it a two-space file. The differences are all four. Ties go
-  to the smaller width, in VS Code's own order.
+- **Tabs or spaces** is decided by count: indented lines that begin with a tab against indented lines that begin with a space. On an even split, the setting is used, because a mixed file is often partway through a conversion.
+- **Width** is taken from the *differences* between consecutive lines' indents, not from the indents themselves. A file indented by four has lines starting at columns 0, 4, 8 and 12, and each is a multiple of two, so counting multiples would detect two spaces. The differences are all four. Ties go to the smaller width, in VS Code's order.
 
-A tab-indented file settles *tabs or spaces* and says nothing about how wide to
-draw a tab, so `editor.tabSize` still decides that. Only the first
-10,000 lines are examined, which is VS Code's limit too: a file's indentation is
-evident long before that, and a generated file of half a million lines is not worth
-scanning to be told the same thing.
+A tab-indented file determines *tabs or spaces* but not the display width of a tab, so `editor.tabSize` still sets that. Only the first 10,000 lines are examined, which is also VS Code's limit.
 
-Set `"editor.detectIndentation": false` to have your settings win outright. It can
-arrive in workspace settings after the file is open and still takes effect — the
-file's answer is remembered rather than re-read, so nothing is copied to apply it.
+Set `"editor.detectIndentation": false` to always use your settings. The setting takes effect even if it is added in workspace settings after the file is open, because the detection result is stored and the file is not scanned again.
 
 ### What the view settings draw
 
@@ -163,63 +113,30 @@ Three settings change how the text area looks rather than how it behaves.
 | `editor.lineNumbers` | `on` (default), `off`, `relative`, `interval` | `interval` numbers every tenth line, and the caret's |
 | `editor.cursorStyle` | `line` (default), `block`, `underline`, and the `-thin` / `-outline` variants | Sets the terminal's caret shape |
 
-**Whitespace.** `selection` is VS Code's default and the least intrusive useful
-mode: the dots appear exactly where you are looking. `boundary` marks everything
-*except* a single space with a word on each side — without that exception it would
-be the same as `all` and would put a dot between every word of a sentence. A tab is
-one arrow at the column it starts on and blank for the rest of its span, the way VS
-Code draws it; filling the span with dots would make one tab indistinguishable from
-the spaces it replaces.
+**Whitespace.** `selection` is VS Code's default and shows markers only in the selection. `boundary` marks all whitespace *except* a single space between two words; otherwise it would be the same as `all`. A tab is drawn as one arrow at its starting column, with the rest of its span blank, as in VS Code. This keeps a tab distinguishable from the spaces it replaces.
 
-**Rulers** are a hairline *between* two columns in VS Code, and a terminal has no
-space between cells to put one in. So a ruler becomes a tint of the cell instead, at
-a quarter strength — strong enough to follow down the screen, weak enough to read
-the code sitting on it, which is the column a ruler is there to warn about in the
-first place. A selection or a find match wins over it: those are what you are doing,
-and a ruler is furniture.
+**Rulers** are drawn as a thin line *between* two columns in VS Code, but a terminal has no space between cells. deco therefore tints the ruler column's cells at a quarter strength, so the column is visible and its text remains readable. Selections and find matches are drawn over the ruler tint.
 
-**The caret shape** is set through `DECSCUSR`, the escape sequence terminals use for
-it, and restored when deco exits — leaving your shell with an editor's caret would
-not be deco's business. Two details:
+**The caret shape** is set with `DECSCUSR`, the terminal escape sequence for caret shape, and restored when deco exits. Two details:
 
-- **Nothing is sent unless `editor.cursorStyle` is written down.** Your terminal's
-  caret is already configured, and replacing it with VS Code's default on behalf of
-  somebody who never mentioned it would be deco overruling a preference it was not
-  asked about. Setting the key — even to `"line"`, its default value — is asking.
-- **`line-thin` and `block-outline` collapse** onto `line` and `block`. `DECSCUSR`
-  has a bar, a block and an underline, and no thin or hollow variant of any of them,
-  so the nearest shape is closer than refusing.
+- **Nothing is sent unless `editor.cursorStyle` is set.** Without the setting, deco keeps the terminal's configured caret. Setting the key, even to its default `"line"`, enables the change.
+- **`line-thin` and `block-outline` are mapped** to `line` and `block`. `DECSCUSR` supports a bar, a block and an underline, with no thin or hollow variants, so deco uses the nearest shape.
 
-`editor.cursorBlinking` is not read, and the caret blinks: that is VS Code's default
-for it, and with the setting unread there is one answer rather than a choice.
+`editor.cursorBlinking` is not read. The caret blinks, which is VS Code's default.
 
 ### Saving on a delay
 
-`files.autoSave: "afterDelay"` writes the file `files.autoSaveDelay` milliseconds
-after the last edit. It is **off by default**, in VS Code and here: an editor that
-writes without being asked is a decision, not a convenience, so it stays one you make.
+`files.autoSave: "afterDelay"` writes the file `files.autoSaveDelay` milliseconds after the last edit. It is **off by default**, as in VS Code, so files are written automatically only if you enable it.
 
-The clock restarts on every edit, so a delay measured from the first keystroke of a
-paragraph cannot fire in the middle of typing it. The save happens on an *idle* poll —
-the same one that lets a language server's diagnostics arrive — so keys still coming in
-postpone it rather than racing it. A clean document is never written: an idle editor
-rewriting the same bytes every second would keep touching a modification time other
-tools watch.
+The timer restarts on every edit, so the save does not happen while you are still typing. The save runs on an *idle* poll, the same poll that receives language-server diagnostics, so incoming keys postpone it. A clean document is never written, so an idle editor does not keep updating the file's modification time, which other tools may watch.
 
-`files.autoSaveDelay` is clamped to at least 100 ms. Zero would be a write per
-keystroke, which is the thing the delay exists to avoid.
+`files.autoSaveDelay` is clamped to at least 100 ms, so the file is not written on every keystroke.
 
-**`onFocusChange` and `onWindowChange` are not honoured**, and deco *says so* rather
-than doing nothing: setting either puts a line in the problem list the editor shows at
-startup, where an unknown colour theme already goes. Both need a focus event — an
-editor losing focus is a tab switch, a window losing it is a terminal event not every
-terminal sends — and a save that silently never happens is the worst way to find that
-out.
+**`onFocusChange` and `onWindowChange` are not supported.** Setting either adds an entry to the problem list shown at startup, where an unknown colour theme is also reported. Both require focus events: an editor losing focus corresponds to a tab switch, and a window losing focus is a terminal event that not every terminal sends. The warning prevents these modes from failing without notice.
 
 ## keybindings.json
 
-The same format, including chords, `when` clauses, per-platform `mac` keys, and
-`-command` removals:
+deco uses VS Code's format, including chords, `when` clauses, per-platform `mac` keys, and `-command` removals:
 
 ```jsonc
 [
@@ -231,70 +148,37 @@ The same format, including chords, `when` clauses, per-platform `mac` keys, and
 ]
 ```
 
-Later rules win, as they do in VS Code, so a user binding overrides a default with
-the same key and `when` clause. Context keys are VS Code's, verbatim —
-`editorTextFocus`, `textInputFocus`, `editorHasSelection`,
-`editorHasMultipleSelections`, `suggestWidgetVisible`, `findWidgetVisible`,
-`findInputFocussed`, `editorHasDiagnostics`, `editorHasDefinitionProvider`,
-`editorHasDocumentFormattingProvider`, `isMac`, `isWindows` — so a `when` clause
-copied out of an existing file means the same thing.
+Later rules take precedence, as in VS Code, so a user binding overrides a default with the same key and `when` clause. Context keys use VS Code's names, including `editorTextFocus`, `textInputFocus`, `editorHasSelection`, `editorHasMultipleSelections`, `suggestWidgetVisible`, `findWidgetVisible`, `findInputFocussed`, `editorHasDiagnostics`, `editorHasDefinitionProvider`, `editorHasDocumentFormattingProvider`, `isMac` and `isWindows`, so a `when` clause copied from an existing file has the same meaning.
 
-A broken `keybindings.json` does not stop the editor from opening. Each entry that
-fails to parse is reported through the session's problem list and skipped: an
-editor that refuses to start because of a typo in a config file cannot be used to
-fix that typo.
+A broken `keybindings.json` does not stop the editor from opening. Each entry that fails to parse is reported through the session's problem list and skipped, so the editor can still be used to fix the file.
 
 ## Colour themes
 
-`workbench.colorTheme` names a theme. Two are built in — `Default Dark Modern` and
-`Default Light Modern` — and a theme extension from the marketplace works as-is,
-because a theme is declarative and starts no host process.
+`workbench.colorTheme` names a theme. Two are built in: `Default Dark Modern` and `Default Light Modern`. Theme extensions from the marketplace work without changes, because a theme is declarative and starts no host process.
 
 `ctrl+k ctrl+t` switches between them.
 
 ![Switching from the dark theme to the light one](img/color-theme.svg)
 
-The right-hand column is `dark`, `light` or `high contrast`, from the
-contribution's `uiTheme`. It is the part of the choice a label often does not say,
-and it is what tells you whether the screen is about to go white.
+The right-hand column shows `dark`, `light` or `high contrast`, taken from the contribution's `uiTheme`. Theme labels often do not include this information.
 
-The list is the two built-in themes — first, because they are the ones that always
-work — followed by every `contributes.themes` entry of every extension under deco's
-extensions directory **and VS Code's**, so a theme you installed for VS Code is
-offered here without being copied. One label is offered once; the same extension
-installed under two versions is the usual reason for a duplicate. Nothing is read
-while listing: a picker over forty themes would otherwise parse forty files and
-thirty-nine of them for nothing.
+The list starts with the two built-in themes, which are always available. It then lists every `contributes.themes` entry from every extension in deco's extensions directory **and VS Code's**, so themes installed for VS Code are available without copying. Each label is listed once; duplicates usually come from two installed versions of the same extension. Theme files are not read while the list is built.
 
-**The choice lasts the session.** Making it stick means putting
-`workbench.colorTheme` in your settings, which the status bar says when the theme
-changes.
+**The choice lasts for the session.** To keep it, add `workbench.colorTheme` to your settings. The status bar shows the setting when the theme changes.
 
 **deco does not write settings files.** Selecting a theme leaves `settings.json`, including its comments and formatting, unchanged. To keep a theme selected with `ctrl+k ctrl+t` across sessions, add the `workbench.colorTheme` setting shown in the status bar.
 
-The same answer settles a question it is easy to reach from the other direction:
-there is no per-workspace "I trust this repository" for
-[a workspace-defined language server](language-servers.md#configuring-a-server),
-because remembering that answer would mean writing it somewhere.
+For the same reason, there is no per-workspace trust setting for [a workspace-defined language server](language-servers.md#configuring-a-server), because storing that decision would require writing a file.
 
-A theme that cannot be read reports why and leaves the current one alone, because
-the alternative is an editor with no colours.
+If a theme cannot be read, deco reports the reason and keeps the current theme.
 
-What is read from a theme file: `colors`, `tokenColors` (including TextMate scope
-matching), `semanticTokenColors`, and `include` chains for themes that build on
-another. Naming a theme deco cannot find falls back to the dark theme and says so
-rather than starting with no colours.
+deco reads these parts of a theme file: `colors`, `tokenColors` (including TextMate scope matching), `semanticTokenColors`, and `include` chains for themes based on another theme. If the named theme cannot be found, deco uses the dark theme and reports the problem.
 
 `.tmTheme` (plist) themes are **not** supported, and neither are `-` scope
 exclusions in a scope selector.
 
-The terminal frontend composites translucent colours — selections, find
-highlights — against the editor background, because a terminal cell has no alpha.
+The terminal frontend blends translucent colours, such as selections and find highlights, with the editor background, because a terminal cell has no alpha channel.
 
 ## Nothing here fails closed
 
-Every configuration path degrades rather than refusing: an unknown theme falls
-back, a broken keybinding is skipped, an unparseable workspace settings file is
-reported and ignored, an unknown setting is kept. The editor collects what went
-wrong into a list the frontend can show. This is deliberate — configuration is
-exactly the thing you need a working editor to repair.
+Configuration errors do not prevent the editor from starting. An unknown theme falls back to the default, a broken keybinding is skipped, an unparseable workspace settings file is reported and ignored, and an unknown setting is kept. The editor collects these problems into a list that the frontend can show, so the configuration can be repaired from within the editor.

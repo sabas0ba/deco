@@ -1,31 +1,30 @@
 //! Which lines changed, for the gutter.
 //!
-//! Pure, like [`crate::status`]: two strings in, a list of hunks out. No
-//! process, no filesystem — which matters more here than usual, because the
-//! text being compared is the *buffer*, and a buffer is not on disk. Handing
-//! git two files to compare would mean writing the unsaved text somewhere
-//! first, on every keystroke that moved a line; and comparing the saved file
-//! against `HEAD` would show the marks the file deserved a moment ago rather
-//! than the ones the screen does.
+//! Pure, like [`crate::status`]: two strings in, a list of hunks out. It uses no
+//! process and no filesystem. This matters here because the compared text is
+//! the editor buffer, which is not on disk. Using git to compare two files
+//! would require writing the unsaved text to disk on every keystroke that
+//! changes a line. Comparing the saved file against `HEAD` would show stale
+//! marks that do not match the screen.
 //!
-//! So git is asked only for the committed text of a path, and the comparison
-//! happens here.
+//! Git is therefore used only to obtain the committed text of a path, and the
+//! comparison happens here.
 //!
 //! # The algorithm, and why it has a limit
 //!
-//! Myers' greedy diff, which is what `git diff` itself uses. It runs in
-//! O(*n* × *d*) where *d* is the number of edits — excellent when the answer is
-//! small, which is the case a gutter exists for, and quadratic when it is not.
-//! Two things keep that in hand:
+//! Myers' greedy diff, the algorithm `git diff` uses. It runs in O(*n* × *d*),
+//! where *d* is the number of edits. This is fast when there are few edits, the
+//! usual case for a gutter, and quadratic when there are many. Two measures
+//! bound the cost:
 //!
-//! - **The common prefix and suffix come off first.** Typing on line 400 of a
-//!   thousand-line file leaves a handful of lines in the middle to compare,
-//!   whatever the file's size.
-//! - **The search gives up at [`MAX_EDITS`].** A file replaced wholesale has an
-//!   edit distance in the thousands and no gutter worth drawing; chasing it
-//!   would cost seconds. Past the limit the middle collapses into one modified
-//!   hunk and [`Diff::truncated`] says so, rather than the marks quietly being
-//!   approximate.
+//! - **The common prefix and suffix are removed first.** Typing on line 400 of
+//!   a thousand-line file leaves only a few lines in the middle to compare,
+//!   regardless of file size.
+//! - **The search stops at [`MAX_EDITS`].** A file replaced wholesale has an
+//!   edit distance in the thousands, and the gutter marks are not useful; the
+//!   full search would take seconds. Past the limit, the middle becomes one
+//!   modified hunk and [`Diff::truncated`] is set, so the approximation is
+//!   visible to callers.
 
 use std::ops::Range;
 
@@ -39,30 +38,29 @@ pub const MAX_EDITS: usize = 2_000;
 /// What the gutter should draw beside a line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mark {
-    /// Lines that are not in the committed text at all.
+    /// Lines that are not in the committed text.
     Added,
-    /// Lines that are there but say something else.
+    /// Lines that exist in both texts with different content.
     Modified,
-    /// Lines that were removed. There is nothing left to mark, so this belongs
-    /// to the line that now sits where they were.
+    /// Lines that were removed. Removed lines cannot be marked, so the mark is
+    /// placed on the line that now occupies their position.
     Deleted,
 }
 
 /// One run of lines that differ.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hunk {
-    /// What it replaces in the committed text. Empty for a pure addition.
+    /// The replaced range in the committed text. Empty for a pure addition.
     pub head: Range<usize>,
-    /// What is there now. Empty for a pure deletion.
+    /// The current range in the working text. Empty for a pure deletion.
     pub working: Range<usize>,
 }
 
 impl Hunk {
-    /// What to draw for it.
+    /// The gutter mark for this hunk.
     ///
-    /// A line that was replaced is *modified* rather than an addition sitting
-    /// on a deletion. That is what VS Code shows and what a reader means: one
-    /// line was edited, not two things happened to it.
+    /// A replaced line is marked as modified rather than as an addition plus a
+    /// deletion. This matches VS Code and represents one edit as one mark.
     pub fn mark(&self) -> Mark {
         match (self.head.is_empty(), self.working.is_empty()) {
             (true, _) => Mark::Added,
@@ -79,14 +77,13 @@ pub struct Diff {
     pub hunks: Vec<Hunk>,
     /// Whether the search gave up and collapsed the middle into one hunk.
     ///
-    /// Carried rather than hidden: a caller that draws a whole file as modified
-    /// should be able to say why, and a test should be able to tell the two
-    /// cases apart.
+    /// Exposed so that a caller drawing a whole region as modified can explain
+    /// why, and a test can distinguish this case from a real rewrite.
     pub truncated: bool,
 }
 
 impl Diff {
-    /// Nothing differs.
+    /// A diff with no differences.
     fn same() -> Self {
         Self {
             hunks: Vec::new(),
@@ -99,13 +96,12 @@ impl Diff {
         self.hunks.is_empty()
     }
 
-    /// What to draw beside `line` of the working text, if anything.
+    /// The mark for `line` of the working text, if any.
     ///
-    /// A deletion belongs to the line that took the removed lines' place, so it
-    /// answers for `hunk.working.start` even though that range is empty. When
-    /// a deletion and a change meet at the same line the change wins: the line
-    /// really is there and really is different, and saying only that something
-    /// vanished above it would be the less useful half.
+    /// A deletion is reported at `hunk.working.start`, the line that took the
+    /// removed lines' position, even though that range is empty. When a
+    /// deletion and a change fall on the same line, the change takes precedence
+    /// because it describes the line itself.
     pub fn mark_at(&self, line: usize) -> Option<Mark> {
         let mut deleted = None;
         for hunk in &self.hunks {
@@ -122,15 +118,14 @@ impl Diff {
 
 /// Compares the committed text with the buffer.
 ///
-/// Lines keep their terminators, so a file that lost its final newline differs
-/// from one that has it — which is a real change, and one a reviewer will see.
+/// Lines keep their terminators, so a file without its final newline differs
+/// from one with it. This is a real change that also appears in a review diff.
 pub fn diff(head: &str, working: &str) -> Diff {
     let a: Vec<&str> = head.split_inclusive('\n').collect();
     let b: Vec<&str> = working.split_inclusive('\n').collect();
 
-    // The common ends come off before anything expensive happens. This is what
-    // makes an edit in a large file cost what the edit is worth rather than
-    // what the file is.
+    // Remove the common prefix and suffix before the expensive search, so the
+    // cost depends on the size of the edit rather than the size of the file.
     let prefix = a
         .iter()
         .zip(b.iter())
@@ -147,7 +142,7 @@ pub fn diff(head: &str, working: &str) -> Diff {
     if a_mid.is_empty() && b_mid.is_empty() {
         return Diff::same();
     }
-    // One side gone entirely: no search can say anything the ends have not.
+    // One side is empty, so the result is one hunk and no search is needed.
     if a_mid.is_empty() || b_mid.is_empty() {
         return Diff {
             hunks: vec![Hunk {
@@ -163,8 +158,8 @@ pub fn diff(head: &str, working: &str) -> Diff {
             hunks: hunks(&script, prefix),
             truncated: false,
         },
-        // Past the limit. One block, and `truncated` so nobody mistakes it for
-        // a file that really was rewritten line for line.
+        // Past the limit: one hunk, with `truncated` set to distinguish it from
+        // a file that was rewritten line by line.
         None => Diff {
             hunks: vec![Hunk {
                 head: prefix..prefix + a_mid.len(),
@@ -225,8 +220,8 @@ fn hunks(script: &[Step], offset: usize) -> Vec<Hunk> {
 /// Myers' greedy diff. `None` once the edit distance passes [`MAX_EDITS`].
 ///
 /// The `v` array holds, for each diagonal `k = x - y`, the furthest `x` reached
-/// with `d` edits. A copy is kept per `d` so the path can be walked back
-/// afterwards — which is the memory the limit is really bounding.
+/// with `d` edits. A copy is kept for each `d` so the path can be traced back
+/// afterwards. The limit mainly bounds this memory.
 fn myers(a: &[&str], b: &[&str]) -> Option<Vec<Step>> {
     let (n, m) = (a.len(), b.len());
     let limit = MAX_EDITS.min(n + m);
@@ -242,16 +237,16 @@ fn myers(a: &[&str], b: &[&str]) -> Option<Vec<Step>> {
         let mut k = -d;
         while k <= d {
             let at = (k + offset) as usize;
-            // Down (an insertion) when the diagonal below has got further, or
-            // when there is no diagonal above to come across from.
+            // Move down (an insertion) when the diagonal below has reached
+            // further, or when there is no diagonal above to move across from.
             let mut x = if k == -d || (k != d && v[at - 1] < v[at + 1]) {
                 v[at + 1]
             } else {
                 v[at - 1] + 1
             };
             let mut y = x - k;
-            // Then as far along the diagonal as the lines agree — the "greedy"
-            // part, and where the cost of a small edit stays small.
+            // Then follow the diagonal while the lines match. This is the
+            // greedy step, and it keeps the cost of a small edit low.
             while (x as usize) < n && (y as usize) < m && a[x as usize] == b[y as usize] {
                 x += 1;
                 y += 1;
@@ -266,10 +261,10 @@ fn myers(a: &[&str], b: &[&str]) -> Option<Vec<Step>> {
     None
 }
 
-/// Turns the recorded search into the script that produced it.
+/// Reconstructs the edit script from the recorded search.
 ///
-/// Walked from the end because that is where the answer was found; the result
-/// is reversed at the last moment.
+/// The trace is walked backwards from the end point, and the result is reversed
+/// at the end.
 fn walk_back(trace: &[Vec<isize>], offset: isize, n: usize, m: usize) -> Vec<Step> {
     let mut script = Vec::new();
     let (mut x, mut y) = (n as isize, m as isize);
@@ -310,9 +305,8 @@ fn walk_back(trace: &[Vec<isize>], offset: isize, n: usize, m: usize) -> Vec<Ste
 mod tests {
     use super::*;
 
-    /// The marks a gutter would draw, line by line, as a string — `.` for a
-    /// line with nothing beside it. Reads as the picture it describes, which
-    /// is what these tests are actually about.
+    /// The gutter marks, one character per line, with `.` for an unmarked
+    /// line. This makes the expected output easy to read in the tests.
     fn gutter(head: &str, working: &str) -> String {
         let diff = diff(head, working);
         let lines = working.split_inclusive('\n').count();
@@ -341,14 +335,14 @@ mod tests {
 
     #[test]
     fn a_replaced_line_is_modified_rather_than_both() {
-        // The thing a reader means by "I changed this line". Reported as an
-        // addition sitting on a deletion it would draw two marks for one edit.
+        // Reporting an addition plus a deletion would draw two marks for one
+        // edited line.
         assert_eq!(gutter("one\ntwo\nthree\n", "one\nTWO\nthree\n"), ".~..");
     }
 
     #[test]
     fn a_removed_line_marks_where_it_was() {
-        // Nothing is left to draw beside, so the mark belongs to the line that
+        // The removed line cannot be marked, so the mark goes on the line that
         // took its place.
         assert_eq!(gutter("one\ntwo\nthree\n", "one\nthree\n"), ".-.");
     }
@@ -360,8 +354,8 @@ mod tests {
 
     #[test]
     fn a_lost_final_newline_is_a_change() {
-        // Real, and the kind of thing a reviewer sees in a diff and the author
-        // did not mean to do.
+        // A real change that appears in a review diff and is often
+        // unintentional.
         assert_eq!(gutter("one\ntwo\n", "one\ntwo"), ".~.");
     }
 
@@ -384,9 +378,8 @@ mod tests {
 
     #[test]
     fn a_move_reads_as_a_removal_and_an_addition() {
-        // Myers has no notion of a moved line, and neither does `git diff`.
-        // Pinned so that a future change to say otherwise is a decision rather
-        // than a surprise.
+        // Neither Myers nor `git diff` detects moved lines. This test records
+        // that behaviour so that changing it is a deliberate decision.
         let diff = diff("a\nb\nc\n", "b\nc\na\n");
         assert!(!diff.is_empty());
         assert!(!diff.truncated);
@@ -395,8 +388,8 @@ mod tests {
     #[test]
     fn the_common_ends_are_not_searched() {
         // A thousand identical lines around a one-line edit. If the prefix and
-        // suffix were part of the search this would be a very different cost,
-        // and past `MAX_EDITS` it would come back truncated.
+        // suffix were searched, the cost would be much higher, and past
+        // `MAX_EDITS` the result would be truncated.
         let mut head = String::new();
         let mut working = String::new();
         for n in 0..4_000 {
@@ -419,9 +412,8 @@ mod tests {
 
     #[test]
     fn a_file_replaced_wholesale_says_so_rather_than_taking_forever() {
-        // Every line different, far past the limit. The answer is one block,
-        // and `truncated` is how a caller can tell that from a file that
-        // really was rewritten line for line.
+        // Every line differs, far past the limit. The result is one hunk, and
+        // `truncated` distinguishes it from a file rewritten line by line.
         let head: String = (0..MAX_EDITS + 500).map(|n| format!("old {n}\n")).collect();
         let working: String = (0..MAX_EDITS + 500).map(|n| format!("new {n}\n")).collect();
 

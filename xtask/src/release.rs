@@ -1,17 +1,16 @@
-//! Turning a tag into the body of its release.
+//! Generating a release's body from its tag.
 //!
-//! A release's notes are the section `CHANGELOG.md` already has for that
-//! version, rather than a second description written in the release UI. Two
-//! descriptions of one release drift, and the one in the repository is the one
-//! a person reads at the commit they are standing on.
+//! A release's notes are the version's section of `CHANGELOG.md`, not a
+//! separate description written in the release UI. Two descriptions of one
+//! release diverge over time, and the one in the repository is what a reader
+//! sees at a given commit.
 //!
-//! The tag is the source of the version: `v0.1.0` finds the `## 0.1.0` heading.
-//! A tag with no section is an error rather than an empty release — a release
-//! that says nothing is worse than a failed workflow, because the workflow can
-//! be run again and a published release cannot be unpublished.
+//! The version comes from the tag: `v0.1.0` selects the `## 0.1.0` heading. A
+//! tag without a section is an error rather than an empty release. A failed
+//! workflow can be run again, but a published release cannot be unpublished.
 //!
-//! The tag also decides whether the release is a pre-release, for the same
-//! reason: it is the one input the person cutting the release chose on purpose.
+//! The tag also determines whether the release is a pre-release, because the
+//! tag is the only input that the person creating the release sets explicitly.
 
 use std::path::Path;
 
@@ -24,23 +23,22 @@ pub fn version_of(tag: &str) -> &str {
 
 /// Whether `tag` names a pre-release, by semver's rule: a `-` after the version.
 ///
-/// Asked of the tag rather than left to whatever the release form happened to
-/// have checked. A release marked pre-release is skipped by
-/// `/releases/latest/`, which is the URL the README hands people — so getting
-/// this from a checkbox means the documented way to install can be switched off
-/// by a click, with the 404 turning up only for whoever tries it next.
+/// Derived from the tag rather than from the release form's checkbox.
+/// `/releases/latest/`, the URL in the README, skips pre-releases. If a checkbox
+/// controlled this, one click could break the documented installation, and the
+/// 404 would only be noticed by the next user.
 ///
-/// `0.1.0` is not a pre-release. Being early is what the version number and the
-/// notes are for; it is not the same claim as "this build is a candidate for a
-/// release that has not happened yet".
+/// `0.1.0` is not a pre-release. The version number and the notes indicate
+/// that the project is early; a pre-release means a candidate for a release that
+/// has not been published yet.
 pub fn is_prerelease(tag: &str) -> bool {
     version_of(tag).contains('-')
 }
 
 /// The changelog section for `version`, without its heading.
 ///
-/// Everything from that version's heading down to the next `##` of the same
-/// level, trimmed. A nested `###` belongs to the section and is kept.
+/// The text from that version's heading to the next `##` heading, trimmed. A
+/// nested `###` belongs to the section and is kept.
 pub fn section_for(changelog: &str, version: &str) -> Option<String> {
     let heading = format!("## {version}");
     let start = changelog.lines().position(|line| line.trim() == heading)?;
@@ -74,10 +72,9 @@ pub fn run(root: &Path, tag: &str, out: &Path) -> Result<()> {
         .with_context(|| format!("writing {}", out.display()))?;
     println!("{}", out.display());
 
-    // The workflow reads this back as the step's output. Decided here rather
-    // than in a YAML expression, for the reason the workflow's own header
-    // gives: what a release *is* should be ordinary Rust with tests, not a
-    // line that can only be exercised by pushing a tag.
+    // The workflow reads this as the step's output. It is decided here rather
+    // than in a YAML expression, so that the release logic is Rust with tests
+    // rather than a line that can only be tested by pushing a tag.
     let prerelease = is_prerelease(tag);
     println!("prerelease: {prerelease}");
     if let Some(path) = std::env::var_os("GITHUB_OUTPUT") {
@@ -126,16 +123,16 @@ Older.
 
     #[test]
     fn the_tag_says_whether_it_is_a_prerelease_and_an_ordinary_version_is_not_one() {
-        // The one this exists for. 0.1.0 shipped marked pre-release, and
-        // `/releases/latest/` skips those — so the README's own install
-        // commands returned 404 for anyone who ran them.
+        // The case this was added for. 0.1.0 was published as a pre-release,
+        // and `/releases/latest/` skips pre-releases, so the README's install
+        // commands returned 404.
         assert!(!is_prerelease("v0.1.0"));
         assert!(!is_prerelease("0.1.0"));
         assert!(!is_prerelease("v1.0.0"));
-        // Semver's rule, and the only thing that should switch it on.
+        // Semver's rule, which is the only condition for a pre-release.
         assert!(is_prerelease("v1.0.0-rc.1"));
         assert!(is_prerelease("v0.2.0-beta"));
-        // The `v` is a prefix, not a hyphen to find: stripping happens first.
+        // The `v` prefix is stripped before the hyphen check.
         assert!(!is_prerelease("v0.1.0"));
     }
 
@@ -144,9 +141,9 @@ Older.
         let section = section_for(CHANGELOG, "0.2.0").expect("a section");
         assert!(section.starts_with("Newer things."), "{section}");
         assert!(section.contains("### A subsection"), "{section}");
-        // The next release's heading is where it ends, and its body is not
-        // dragged in: notes that quietly include the previous release describe
-        // work that was already announced.
+        // The section ends at the next release's heading and does not include
+        // its body. Otherwise the notes would repeat work that was already
+        // announced.
         assert!(!section.contains("The first release"), "{section}");
 
         let section = section_for(CHANGELOG, "0.1.0").expect("a section");
@@ -156,15 +153,15 @@ Older.
     #[test]
     fn a_version_with_no_section_is_nothing_rather_than_something_empty() {
         assert!(section_for(CHANGELOG, "9.9.9").is_none());
-        // Present but empty is also nothing: a heading with no text under it
-        // would produce a release that says nothing.
+        // A heading with no text is also `None`, because it would produce an
+        // empty release.
         assert!(section_for("## 0.3.0\n\n## 0.2.0\nx\n", "0.3.0").is_none());
     }
 
     #[test]
     fn the_repositorys_own_changelog_has_a_section_for_its_own_version() {
-        // The check that matters at release time, run on every build rather than
-        // discovered by a workflow that has already started.
+        // The release-time check, run on every build so a missing section is
+        // found before the release workflow starts.
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("the repository root");

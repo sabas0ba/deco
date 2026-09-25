@@ -9,12 +9,12 @@
  *          --disallow-code-generation-from-strings \
  *          --max-old-space-size=<mb> bootstrap.js
  *
- * with an environment built from nothing but `DECO_EXTENSION_ID` and
+ * with an environment that contains only `DECO_EXTENSION_ID` and
  * `DECO_HOST_PROTOCOL`. See crates/deco-ext/src/host.rs.
  *
- * Order matters here: the sandbox is installed before any extension code can be
- * reached, and the `vscode` shim is registered before activation. Loading an
- * extension first would hand it an unguarded `require`.
+ * Order matters: the sandbox is installed before any extension code can run, and
+ * the `vscode` shim is registered before activation. Loading an extension first
+ * would give it an unguarded `require`.
  */
 
 const path = require('node:path');
@@ -44,8 +44,8 @@ function main() {
   const api = createApi(rpc, { extensionId });
 
   // Capture the loader before the sandbox replaces it, then register `vscode`
-  // so that extension `require('vscode')` resolves to the shim rather than
-  // failing to resolve at all.
+  // so that `require('vscode')` in an extension resolves to the shim instead of
+  // failing.
   const Module = require('node:module');
   const sandbox = install({ moduleRequire: require, globals: globalThis });
   const guardedLoad = Module._load;
@@ -62,8 +62,8 @@ function main() {
     if (activated) return { alreadyActive: true };
     activated = true;
 
-    // `--allow-fs-read` already limits which paths can be loaded at all; this
-    // check makes the failure legible rather than a permission trap.
+    // `--allow-fs-read` already limits which paths can be loaded. This check
+    // gives a clear error instead of a permission failure.
     const entry = path.resolve(extensionPath, main);
     if (!entry.startsWith(path.resolve(extensionPath))) {
       throw new Error(`entry point ${main} escapes the extension directory`);
@@ -100,15 +100,16 @@ function main() {
     process.exit(0);
   });
 
-  // Being asked to stop is the polite path; deco vanishing is the other one. An
-  // extension holding a timer would otherwise keep this process — and, in a
-  // container, the container — alive after the editor is gone.
+  // `$/shutdown` is the normal way to stop. This handles deco exiting without
+  // it. Otherwise an extension holding a timer would keep this process, and in
+  // a container the container, running after the editor has exited.
   rpc.onClosed(() => {
     sandbox.restore();
     process.exit(0);
   });
 
-  // An uncaught throw in extension code must not take the host down silently.
+  // Report uncaught errors from extension code to deco instead of letting them
+  // terminate the host without a message.
   process.on('uncaughtException', (error) => {
     rpc.notify('log.append', {
       level: 'error',

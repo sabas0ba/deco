@@ -1,20 +1,18 @@
-//! Files, tabs, and the moments an editor writes to the disk.
+//! Files, tabs, and writes to disk.
 //!
-//! Everything here is about a side effect: which path was written, whether an
-//! unnamed buffer can overwrite a named file, what an auto-save does while
-//! nobody is typing. These are the paths that only exist in the frontend — the
-//! core decides *that* a save should happen and this is the code that decides
-//! *where* — and until the event loop could be driven without a terminal, none
-//! of them had a test.
+//! These scenarios test side effects: which path was written, whether an
+//! unnamed buffer can overwrite a named file, and what auto-save does while the
+//! user is idle. This code exists only in the frontend: the core decides that
+//! a save should happen, and the frontend decides where. None of it was tested
+//! before the event loop could run without a terminal.
 
 use deco_e2e::Scenario;
 
-/// `text` followed by the line ending an untitled buffer gets on this platform.
+/// `text` followed by the line ending an untitled buffer uses on this platform.
 ///
-/// Not a choice these scenarios are making: with `files.eol` left at `auto` an
-/// untitled document takes the platform's ending, so a scenario about saving one
-/// has to expect whichever ending the runner has. Where the setting names an
-/// ending it is that one instead — see
+/// With `files.eol` set to `auto`, an untitled document uses the platform's
+/// line ending, so a scenario that saves one must expect the runner's ending.
+/// When the setting names an ending, that ending is used instead; see
 /// `files_eol_gives_a_new_untitled_buffer_its_ending` below.
 fn untitled_line(text: &str) -> String {
     let ending = if cfg!(windows) { "\r\n" } else { "\n" };
@@ -23,11 +21,10 @@ fn untitled_line(text: &str) -> String {
 
 #[test]
 fn files_eol_gives_a_new_untitled_buffer_its_ending() {
-    // The half of `files.eol` that VS Code documents: "the default end of line
-    // character" is what a *new* file gets. `Document::untitled` built a
-    // `Buffer::new()`, which took the platform's ending and never looked at the
-    // setting, so the key was wired to exactly the wrong half — it left new
-    // buffers alone and rewrote existing files instead.
+    // VS Code documents `files.eol` as "the default end of line character",
+    // which applies to new files. `Document::untitled` previously built a
+    // `Buffer::new()`, which used the platform's ending and ignored the setting.
+    // The key therefore affected existing files but not new buffers.
     let scenario = Scenario::new("eol-untitled").user_settings(r#"{ "files.eol": "\r\n" }"#);
     let mut editor = scenario.launch(&[]);
 
@@ -48,9 +45,8 @@ fn save_as_writes_the_file_the_prompt_was_given() {
     let scenario = Scenario::new("save-as").file("a.txt", "hello\n");
     let mut editor = scenario.launch(&["a.txt"]);
 
-    // The prompt is seeded with the path of the file being edited, so getting a
-    // different name into it means taking that one out first. This is what a
-    // person has to do, keystroke for keystroke.
+    // The prompt starts with the path of the current file, so it must be deleted
+    // before typing a different name, using the same keys as a user.
     editor.press("ctrl+shift+s");
     let seeded = editor
         .session()
@@ -94,8 +90,8 @@ fn save_as_takes_a_relative_path_against_the_workspace() {
     editor.type_text("sub/copy.txt");
     editor.press("enter");
 
-    // Either it wrote it or it said why. What it must not do is report a save
-    // and leave nothing on the disk.
+    // Either the file was written or the status explains why not. The editor
+    // must not report a save without writing the file.
     if editor.exists("sub/copy.txt") {
         assert_eq!(editor.on_disk("sub/copy.txt"), "hello\n");
     } else {
@@ -138,9 +134,9 @@ fn save_as_expands_a_leading_tilde_to_the_home_directory() {
 
 #[test]
 fn an_untitled_buffer_cannot_overwrite_the_file_deco_was_started_with() {
-    // The regression guard for a silent overwrite, driven the way it happened:
-    // open a file, press `ctrl+n`, type, press `ctrl+s`. The save prompt should
-    // appear rather than the original file changing under it.
+    // Regression test for an unreported overwrite, using the original steps:
+    // open a file, press `ctrl+n`, type, press `ctrl+s`. The save prompt must
+    // appear, and the original file must not change.
     let scenario = Scenario::new("untitled").file("important.txt", "do not lose me\n");
     let mut editor = scenario.launch(&["important.txt"]);
 
@@ -158,7 +154,7 @@ fn saving_an_untitled_buffer_asks_for_a_name_and_then_writes_it() {
 
     editor.type_text("scratch\n");
     editor.press("ctrl+s");
-    // The prompt is open; this is the name.
+    // The prompt is open; type the file name.
     editor.type_text("scratch.txt");
     editor.press("enter");
 
@@ -225,8 +221,8 @@ fn save_all_writes_every_changed_tab() {
 
 #[test]
 fn opening_the_same_file_twice_does_not_make_two_tabs_of_it() {
-    // Two buffers over one file means two undo histories and a save that
-    // silently discards the other one's work.
+    // Two buffers for one file would have two undo histories, and saving one
+    // would discard the other's changes without warning.
     let scenario = Scenario::new("same-file").file("a.txt", "hello\n");
     let mut editor = scenario.launch(&["a.txt"]);
     let before = editor.session().tab_count();
@@ -249,7 +245,7 @@ fn auto_save_writes_the_file_once_the_delay_has_passed() {
 
     editor.press("ctrl+end");
     editor.type_text("!");
-    // Not yet: nobody wants a write per keystroke.
+    // Not yet written, to avoid a write per keystroke.
     editor.wait(100);
     assert_eq!(editor.on_disk("a.txt"), "hello\n");
 
@@ -278,8 +274,8 @@ fn reverting_brings_back_what_is_on_the_disk() {
 
     editor.press("ctrl+end");
     editor.type_text(" edited");
-    // Another program changed the file in the meantime, which is the case that
-    // makes revert worth having.
+    // Another program changed the file in the meantime, which is the main use
+    // case for revert.
     editor.change_on_disk("a.txt", "changed by someone else\n");
 
     editor.palette("Revert File");
@@ -304,10 +300,10 @@ fn closing_a_tab_leaves_the_other_one_showing() {
 
 #[test]
 fn a_directory_given_where_a_file_was_expected_is_refused_rather_than_opened() {
-    // `deco src` is a thing people type, because that is how VS Code is opened.
-    // deco has no concept of an open folder, so it cannot do what was asked — but
-    // the one thing it must not do is present an empty buffer named after a
-    // directory, which a later `ctrl+s` would then try to write over.
+    // Users type `deco src` because VS Code is opened that way. deco has no
+    // concept of an open folder, so it cannot do this. It must not show an empty
+    // buffer named after the directory, which a later `ctrl+s` would try to
+    // write over.
     let scenario = Scenario::new("directory").file("src/a.txt", "x\n");
     let error = scenario.startup_error(&["src"]);
 
@@ -319,11 +315,11 @@ fn a_directory_given_where_a_file_was_expected_is_refused_rather_than_opened() {
 
 #[test]
 fn a_file_saved_under_a_new_name_is_not_then_opened_a_second_time() {
-    // The regression guard for a two-tabs-one-file aliasing bug: `deco` with no
-    // file, then `ctrl+s` and a name, used to store the name exactly as typed.
-    // Quick open hands over absolute paths, so the same file did not compare
-    // equal to itself and opened again in a second buffer with its own undo
-    // history — and whichever tab was saved last silently won.
+    // Regression test for a bug where one file was open in two tabs. Running
+    // `deco` with no file, then `ctrl+s` and a name, stored the name as typed.
+    // Quick open passes absolute paths, so the two paths for the same file did
+    // not compare equal, and the file opened again in a second buffer with its
+    // own undo history. The tab saved last overwrote the other without warning.
     let scenario = Scenario::new("save-then-reopen");
     let mut editor = scenario.launch(&[]);
 
@@ -363,7 +359,7 @@ fn quitting_with_unsaved_work_does_not_throw_it_away_silently() {
             editor.status()
         );
     }
-    // It stayed, so it has to say why.
+    // The editor did not quit, so it must show the reason.
     let screen = editor.screen();
     assert!(
         !screen.status_line().is_empty(),

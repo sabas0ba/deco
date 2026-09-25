@@ -81,8 +81,8 @@ impl Rule {
 /// A problem with a single entry, reported without abandoning the rest of
 /// the file.
 ///
-/// A typo in one binding must not cost the user every other binding in the
-/// file, so parsing is entry-by-entry and collects problems as it goes.
+/// A typo in one binding must not discard the other bindings in the file, so
+/// parsing is entry-by-entry and collects problems as it goes.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Problem {
     /// Zero-based index of the offending entry.
@@ -274,7 +274,7 @@ mod tests {
 
     #[test]
     fn a_platform_only_entry_is_skipped_elsewhere() {
-        // No `key` fallback means the entry simply does not exist on Linux.
+        // Without a `key` fallback, the entry has no key on Linux.
         let src = r#"[{ "mac": "cmd+p", "command": "quickOpen" }]"#;
         let linux = parse(src, Platform::Linux, Source::User).unwrap();
         assert!(linux.rules.is_empty());

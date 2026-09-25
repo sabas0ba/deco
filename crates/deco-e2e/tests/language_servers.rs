@@ -1,20 +1,20 @@
-//! A language server on the other end of a pipe, and the keys that reach it.
+//! A language server connected through a pipe, and the keys that use it.
 //!
-//! `deco-lsp` has 285 tests and `deco-tui::lsp` has its own; between them they
-//! cover the protocol and what an answer *does* to a session. What neither can
-//! say is whether the chain holds: a server definition in `settings.json`, a
-//! process started from it, a capability turned into a context key, a keybinding
-//! gated on that context key, a request, an answer arriving on a later poll, and
-//! something different on the screen. Six components have to agree, and each of
-//! them is tested against its own idea of the other five.
+//! `deco-lsp` has 285 tests and `deco-tui::lsp` has its own. Together they cover
+//! the protocol and the effect of a response on a session. They do not test the
+//! whole chain: a server definition in `settings.json`, a process started from
+//! it, a capability converted to a context key, a keybinding conditional on that
+//! key, a request, a response arriving on a later poll, and a change on the
+//! screen. Six components must work together, and each is tested only against
+//! its own assumptions about the other five.
 //!
-//! So these scenarios configure a real server the way a user would, press the
-//! key the feature is bound to, and wait for the answer the way the editor waits
-//! for it. The server is `examples/language_server.rs`.
+//! These scenarios configure a real server as a user would, press the key bound
+//! to the feature, and wait for the response as the editor does. The server is
+//! `examples/language_server.rs`.
 
 use deco_e2e::{Editor, Scenario};
 
-/// A file with something worth asking about in it, and a server for it.
+/// A file with symbols to query, and a server for it.
 fn project(name: &str, role: &str) -> Scenario {
     Scenario::new(name)
         .language_server("rust", role)
@@ -42,8 +42,8 @@ fn a_server_defined_in_settings_is_started_and_says_hello() {
         "starting a working server should be quiet: {:?}",
         editor.problems()
     );
-    // The capabilities it announced became context keys, which is what decides
-    // whether the keys below are bound to anything at all.
+    // The announced capabilities became context keys, which determine whether
+    // the keys below are bound.
     for key in [
         "editorHasDefinitionProvider",
         "editorHasReferenceProvider",
@@ -70,13 +70,14 @@ fn a_diagnostic_reaches_the_status_line() {
 
     let screen = editor.screen();
     screen.assert_fits();
-    // The count, where the editor puts counts.
+    // The error count, in the status line.
     screen.assert_status("×1");
 }
 
 #[test]
 fn editing_replaces_the_diagnostics_rather_than_adding_to_them() {
-    // A stale diagnostic is worse than none: it points at a line that has moved.
+    // A stale diagnostic is worse than none, because it points at a line that
+    // has moved.
     let scenario = project("lsp-restated", "diagnostics");
     let mut editor = started(&scenario);
     editor.settle_until("the first diagnostic", |editor| {
@@ -110,8 +111,8 @@ fn f12_goes_to_the_definition_the_server_named() {
         editor.session().view.selections.primary().active.line == 2
     });
 
-    // Line 3 on screen is line 2 to the protocol, which counts from zero — and
-    // the fact that those are different is exactly what this is checking.
+    // Line 3 on screen is line 2 in the protocol, which counts from zero. This
+    // checks the conversion between the two.
     editor.screen().assert_status("Ln 3");
 }
 
@@ -134,8 +135,8 @@ fn hover_shows_what_the_server_said() {
 #[test]
 fn a_server_offering_no_hover_leaves_the_key_doing_nothing_quietly() {
     // The context key is false, so `ctrl+k ctrl+i` is not bound. Nothing should
-    // happen — and nothing should be *said*, because a key that was never bound
-    // did not fail.
+    // happen and no message should be shown, because an unbound key is not a
+    // failure.
     let scenario = project("lsp-no-hover", "no-hover");
     let mut editor = started(&scenario);
 
@@ -170,9 +171,8 @@ fn references_are_listed_and_choosing_one_goes_there() {
 
 /// The same project, plus a second file that mentions `greet`.
 ///
-/// Never opened by any of these scenarios: it is there so that a rename has
-/// somewhere to reach that the user is not looking at, which is the case the
-/// whole workspace-edit path exists for.
+/// No scenario opens it. It gives a rename a file that is not open, which is
+/// the case the workspace-edit path is for.
 fn rename_project(name: &str, role: &str) -> Scenario {
     project(name, role).file("src/helper.rs", "fn call() {\n    greet(\"x\");\n}\n")
 }
@@ -204,13 +204,13 @@ fn f2_renames_across_files_and_one_undo_takes_it_back() {
             .is_some_and(|line| line.starts_with("Renamed"))
     });
 
-    // The file on screen: both occurrences, and nothing else touched.
+    // The open file: both occurrences changed, and nothing else.
     assert_eq!(
         editor.text(),
         "fn main() {\n    hello(\"world\");\n}\n\nfn hello(who: &str) {}\n"
     );
 
-    // The file nobody opened: changed, held unsaved, and *not* written.
+    // The file that was not open: changed, kept unsaved, and not written.
     let unsaved = editor.session().unsaved();
     let helper = unsaved
         .iter()
@@ -224,7 +224,7 @@ fn f2_renames_across_files_and_one_undo_takes_it_back() {
         "nothing should reach the disk until the user saves"
     );
 
-    // And one keystroke takes the whole thing back, in both files.
+    // One undo reverts the rename in both files.
     editor.press("ctrl+z");
     assert_eq!(
         editor.text(),
@@ -245,9 +245,9 @@ fn f2_renames_across_files_and_one_undo_takes_it_back() {
 
 #[test]
 fn renaming_to_the_same_name_asks_the_server_nothing() {
-    // The prompt opens with the current name selected, so enter on its own is an
-    // ordinary slip. Answering it with an edit per occurrence would mark every
-    // file that mentions the symbol dirty for no change at all.
+    // The prompt opens with the current name selected, so pressing enter
+    // immediately is a common mistake. Sending an edit per occurrence would
+    // mark every file that mentions the symbol dirty without changing it.
     let scenario = rename_project("lsp-rename-same", "full");
     let mut editor = started(&scenario);
     on_the_symbol(&mut editor);
@@ -267,8 +267,8 @@ fn a_server_offering_no_rename_leaves_f2_doing_nothing_quietly() {
 
     editor.press("f2");
 
-    // The `when` clause is `editorHasRenameProvider`, so the key resolves to
-    // nothing at all — not to a command that then apologises.
+    // The `when` clause is `editorHasRenameProvider`, so the key resolves to no
+    // command, rather than to a command that reports an error.
     assert!(
         editor.session().prompt.is_none(),
         "no prompt should open without a rename provider"
@@ -291,12 +291,12 @@ fn ctrl_dot_lists_what_the_server_offers_and_applies_the_one_chosen() {
     let screen = editor.screen();
     screen.assert_fits();
     screen.assert_shows("Prefix the name with an underscore");
-    // The second column: the kind for the ones that can run, and the reason for
-    // the one that cannot.
+    // The second column: the kind for available actions, and the reason for the
+    // unavailable one.
     screen.assert_shows("quickfix");
     screen.assert_shows("not on a variable");
 
-    // The first is selected, and it arrived with its edit already on it.
+    // The first action is selected, and it arrived with its edit.
     editor.press("enter");
     editor.settle_until("the edit to land", |editor| editor.is_dirty());
     assert_eq!(
@@ -307,9 +307,9 @@ fn ctrl_dot_lists_what_the_server_offers_and_applies_the_one_chosen() {
 
 #[test]
 fn an_action_with_no_edit_is_resolved_before_it_is_applied() {
-    // The second entry arrives with `data` and no edit. Choosing it has to send
-    // that action back and apply what comes home, rather than reporting that
-    // there is nothing to do.
+    // The second entry arrives with `data` and no edit. Choosing it must send
+    // the action to `codeAction/resolve` and apply the result, rather than
+    // report that there is nothing to do.
     let scenario = project("lsp-code-action-resolve", "full");
     let mut editor = started(&scenario);
 
@@ -356,8 +356,8 @@ fn an_action_that_only_runs_a_server_command_is_refused_by_name() {
 
 #[test]
 fn a_server_offering_no_code_actions_leaves_the_key_doing_nothing_quietly() {
-    // `codeActionProvider` is only sent by this example server, so a scenario
-    // without a server at all is the case where the context key is false.
+    // Only this example server sends `codeActionProvider`, so the context key is
+    // false in a scenario without a server.
     let scenario = Scenario::new("lsp-code-actions-absent").file("a.txt", "plain\n");
     let mut editor = scenario.launch(&["a.txt"]);
 
@@ -384,9 +384,9 @@ fn go_to_symbol_lists_what_the_server_classified() {
 
 #[test]
 fn completion_offers_what_the_server_sent_and_accepting_one_types_it() {
-    // Reached through a binding of this scenario's own, which also covers a
-    // `keybindings.json` entry reaching the command; the default `ctrl+space` is
-    // pressed by the scenario below.
+    // Uses a keybinding defined by this scenario, which also tests that a
+    // `keybindings.json` entry reaches the command. The scenario below presses
+    // the default `ctrl+space`.
     let scenario = project("lsp-completion", "full").user_keybindings(
         r#"[{ "key": "ctrl+e", "command": "editor.action.triggerSuggest", "when": "editorTextFocus" }]"#,
     );
@@ -413,16 +413,16 @@ fn completion_offers_what_the_server_sent_and_accepting_one_types_it() {
 
 #[test]
 fn ctrl_space_reaches_trigger_suggest_in_a_terminal() {
-    // `ctrl+space` is deco's default binding for `editor.action.triggerSuggest`,
-    // and it used to do nothing at all in a terminal. A terminal sends NUL for
-    // Ctrl+Space; crossterm parses that byte into `KeyCode::Char(' ')` with
-    // CONTROL, which became `Key::Char(' ')` — while the binding parsed to
-    // `Key::Named(Space)`, a key the terminal path only ever produced from
-    // `KeyCode::Null`, which crossterm's unix parser never emits. The two never
-    // met, and nothing was said, which is what made it hard to diagnose.
+    // `ctrl+space` is deco's default binding for `editor.action.triggerSuggest`.
+    // It previously had no effect in a terminal. A terminal sends NUL for
+    // Ctrl+Space, and crossterm parses that byte as `KeyCode::Char(' ')` with
+    // CONTROL, which became `Key::Char(' ')`. The binding parsed to
+    // `Key::Named(Space)`, which the terminal path produced only from
+    // `KeyCode::Null`, and crossterm's unix parser never emits that. The two
+    // keys never matched, and no error was shown, so the bug was hard to find.
     //
-    // Now `space` is one key in one representation, so the default binding is
-    // pressable and the scenario above no longer needs a binding of its own.
+    // `space` now has a single representation, so the default binding works
+    // and the scenario above does not need its own binding.
     let scenario = project("lsp-ctrl-space", "full");
     let mut editor = started(&scenario);
 
@@ -438,9 +438,9 @@ fn ctrl_space_reaches_trigger_suggest_in_a_terminal() {
 
 #[test]
 fn formatting_applies_the_edit_where_the_server_put_it() {
-    // A one-line insert at the top rather than a whole-document rewrite: an edit
-    // applied at the wrong offset still passes a test that only checks the file
-    // changed.
+    // A one-line insert at the top rather than a whole-document rewrite. An edit
+    // applied at the wrong offset would pass a test that only checks that the
+    // file changed.
     let scenario = project("lsp-format", "full");
     let mut editor = started(&scenario);
 
@@ -479,14 +479,13 @@ fn a_file_in_another_language_does_not_get_this_servers_answers() {
 
 #[test]
 fn a_server_a_cloned_repository_asks_for_is_not_run() {
-    // The one that matters most. `.vscode/settings.json` arrives with somebody
-    // else's repository, and a server definition is a command line. Cloning a
-    // repository and opening a file in it must not execute what that repository
-    // chose — and the refusal has to be said out loud, or it reads as the editor
-    // being broken.
+    // The most important case for security. `.vscode/settings.json` comes with
+    // a cloned repository, and a server definition is a command line. Opening a
+    // file in a cloned repository must not run a command the repository
+    // defines. The refusal must be reported, or the editor appears broken.
     //
-    // The language is one nothing else claims, so that the built-in registry has
-    // no candidate of its own here and the refusal is the only thing to report.
+    // No other server is registered for this language, so the built-in registry
+    // has no candidate and the refusal is the only thing to report.
     let program = std::env::current_exe()
         .expect("this test binary")
         .parent()
@@ -511,7 +510,7 @@ fn a_server_a_cloned_repository_asks_for_is_not_run() {
         .file("notes.md", "# hello\n");
     let mut editor = scenario.launch(&["notes.md"]);
 
-    // Given every chance to start, and it must not have.
+    // Allow time for the server to start, then check that it did not.
     for _ in 0..20 {
         std::thread::sleep(std::time::Duration::from_millis(5));
         editor.wait(5);
@@ -530,8 +529,8 @@ fn a_server_a_cloned_repository_asks_for_is_not_run() {
 
 #[test]
 fn a_document_the_server_never_saw_is_opened_when_it_becomes_current() {
-    // Two tabs, one server. Switching tabs has to close one document with the
-    // server and open the other, or the answers describe the wrong file.
+    // Two tabs, one server. Switching tabs must close one document on the
+    // server and open the other, or the responses describe the wrong file.
     let scenario = project("lsp-tabs", "diagnostics").file("src/other.rs", "fn other() {}\n");
     let mut editor = scenario.launch(&["src/main.rs", "src/other.rs"]);
     editor.settle_lsp();
@@ -550,16 +549,17 @@ fn a_document_the_server_never_saw_is_opened_when_it_becomes_current() {
 
 #[test]
 fn a_refused_server_is_named_even_when_the_users_own_one_starts() {
-    // The ordinary case: somebody who has configured a server of their own for a
-    // language clones a repository that defines its own. Their server starts,
-    // correctly, and the repository's is declined, also correctly — and the
-    // decline still has to be said, because "move it into your own settings if
-    // you do want it" is a decision the user cannot make without being told.
+    // The common case: a user with their own server for a language clones a
+    // repository that defines another. The user's server starts and the
+    // repository's is refused. The refusal must still be reported, because the
+    // user can only choose to move the definition into their own settings if
+    // they know about it.
     //
-    // `Lsp::attach` used to collect refusals as it walked the candidates and
-    // report them after the loop, and the loop `return`s as soon as a trusted
-    // candidate starts. So the report was reached only when *every* candidate had
-    // been refused — the one case where the user has no server of their own.
+    // `Lsp::attach` previously collected refusals while iterating over the
+    // candidates and reported them after the loop, but the loop `return`s as
+    // soon as a trusted candidate starts. The report was therefore reached only
+    // when every candidate was refused, which is the case where the user has no
+    // server of their own.
     let program = std::env::current_exe()
         .expect("this test binary")
         .parent()
@@ -581,7 +581,7 @@ fn a_refused_server_is_named_even_when_the_users_own_one_starts() {
         .workspace_settings(&serde_json::to_string(&hostile).expect("serialisable"));
     let editor = started(&scenario);
 
-    // The user's own server did start, which is the half that always worked.
+    // The user's own server started. This part already worked before the fix.
     assert!(editor.driver().lsp().is_ready());
 
     let problems = editor.problems();
@@ -589,9 +589,9 @@ fn a_refused_server_is_named_even_when_the_users_own_one_starts() {
         problems.iter().any(|problem| problem.contains("hostile")),
         "the refusal should be named in the problem list: {problems:?}"
     );
-    // The problem list and not the status bar: `attach` runs on every tab switch
-    // and language change, and a row that came back each time would push aside
-    // whatever the editor was saying about the server that *is* running.
+    // In the problem list, not the status bar. `attach` runs on every tab switch
+    // and language change, and a repeated status message would replace the
+    // status of the server that is running.
     assert!(
         !editor
             .status()
@@ -603,9 +603,9 @@ fn a_refused_server_is_named_even_when_the_users_own_one_starts() {
 
 #[test]
 fn a_refusal_is_recorded_once_however_often_attach_runs() {
-    // `attach` is called on every tab switch and language change. A disclosure
-    // that appended each time would fill the problem list with copies of itself
-    // and make `--print-config` unreadable.
+    // `attach` is called on every tab switch and language change. Appending the
+    // message each time would fill the problem list with duplicates and make
+    // `--print-config` unreadable.
     let program = std::env::current_exe()
         .expect("this test binary")
         .parent()

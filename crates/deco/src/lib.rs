@@ -2,11 +2,11 @@
 //!
 //! The binary in `src/main.rs` is a thin wrapper over this: it reads the process
 //! environment, calls [`startup::session`], and hands the result to a frontend.
-//! Everything that decides what the editor *is* when its first frame is drawn —
-//! which settings files were read and in which order, which keybindings won,
-//! which files ended up open and which one is showing — lives here, where it can
-//! be run against a directory a test built rather than only against the machine
-//! deco happens to be installed on.
+//! Everything that determines the editor's state when its first frame is drawn
+//! lives here: which settings files were read and in which order, which
+//! keybindings took precedence, which files were opened and which one is shown.
+//! A test can therefore run it against a directory it created, not only against
+//! the machine deco is installed on.
 //!
 //! ```no_run
 //! use deco::startup::{self, Boot};

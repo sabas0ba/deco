@@ -1,31 +1,30 @@
 //! Running the `git` binary.
 //!
-//! [`crate::status`] is a pure parser; this is the part that is not. It exists
-//! because deco does what VS Code does — it shells out to `git` rather than
-//! linking a library — and the reasons are the same three:
+//! [`crate::status`] is a pure parser; this module runs the process. Like VS
+//! Code, deco runs the `git` binary rather than linking a library, for three
+//! reasons:
 //!
-//! - **It inherits the user's git.** Their `includeIf` config, their
-//!   `credential.helper`, their hooks, their `core.fsmonitor`. A library
-//!   reimplements a subset of that and disagrees with the command line the
-//!   user checks their work with.
-//! - **It costs no dependency.** The binary is already on the machine of
-//!   anyone who has a repository to open; libgit2's subtree is not, and the
-//!   [README](https://github.com/sabas0ba/deco#readme) counts its crates in
-//!   public.
-//! - **Absent is a state it can be in.** No git on the machine, or a folder
-//!   that is not a repository, is [`ScmError::NoBinary`] or
-//!   [`ScmError::NotARepository`] — a feature that is not there, rather than a
-//!   broken one.
+//! - **It uses the user's git configuration.** This includes `includeIf`
+//!   config, `credential.helper`, hooks and `core.fsmonitor`. A library
+//!   implements only a subset of these and can disagree with the git command
+//!   line the user relies on.
+//! - **It adds no dependency.** Anyone with a repository to open already has
+//!   the binary; libgit2's dependency tree would be new, and the
+//!   [README](https://github.com/sabas0ba/deco#readme) publishes the crate
+//!   count.
+//! - **Absence is a supported state.** No git on the machine, or a folder that
+//!   is not a repository, is reported as [`ScmError::NoBinary`] or
+//!   [`ScmError::NotARepository`]: the feature is unavailable, not broken.
 //!
-//! Two rules this module keeps, and the failure each prevents:
+//! This module follows two rules:
 //!
-//! - **No shell, ever.** Arguments go as a vector, the way `deco-lsp` spawns a
-//!   language server. A repository is something a user cloned, and a branch
-//!   called `$(rm -rf ~)` is a legal branch name.
-//! - **Git itself cannot ask a question.** A child that decides to prompt for
-//!   a passphrase with the editor holding its pipes is a hang with no way out,
-//!   so stdin is closed and Git's terminal prompt is disabled. Commit hooks
-//!   are arbitrary programs and can still choose another prompt mechanism.
+//! - **No shell.** Arguments are passed as a vector, as `deco-lsp` does when it
+//!   spawns a language server. A cloned repository can contain a branch named
+//!   `$(rm -rf ~)`, which is a valid branch name.
+//! - **Git cannot prompt.** A child that prompts for a passphrase while the
+//!   editor holds its pipes would hang indefinitely, so stdin is closed and
+//!   Git's terminal prompt is disabled. Commit hooks are arbitrary programs and
+//!   can still use another prompt mechanism.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -38,48 +37,48 @@ use crate::change::{
 };
 use crate::status::{self, Malformed, Status};
 
-/// Why there is no status to show.
+/// Why a git operation failed.
 ///
-/// Split by what the user would have to do about it: install git, open a
-/// repository, or report a bug. A caller that renders these all the same way
-/// is throwing away the difference between "this folder has no git in it",
-/// which is normal, and "git said something incomprehensible", which is not.
+/// The variants correspond to the user's remedy: install git, open a
+/// repository, or report a bug. Callers should distinguish "this folder is not
+/// a repository", which is normal, from "git returned unexpected output", which
+/// is not.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ScmError {
-    /// There is no `git` to run.
+    /// The `git` binary was not found.
     #[error("`{}` is not on this machine", .0.to_string_lossy())]
     NoBinary(OsString),
     /// The folder is not in a working tree.
     #[error("`{}` is not inside a git repository", .0.display())]
     NotARepository(PathBuf),
-    /// git ran and refused.
+    /// git ran and exited with an error.
     #[error("git exited with {}: {message}", code.map(|c| c.to_string()).unwrap_or_else(|| "a signal".into()))]
     Refused {
-        /// Its exit status, when it had one rather than a signal.
+        /// The exit status, or `None` if git was killed by a signal.
         code: Option<i32>,
-        /// What it wrote to stderr, trimmed.
+        /// Its stderr output, trimmed.
         message: String,
     },
     /// git could not be run, or its output could not be read.
     #[error("could not run git: {0}")]
     Unusable(String),
-    /// A path that was not a plain name inside the working tree.
+    /// A path that is not a plain relative path inside the working tree.
     ///
-    /// Refused rather than passed to git: `HEAD:<path>` resolves an absolute
-    /// or `..`-bearing path against the working directory, so a caller that
-    /// handed one over would silently be shown a different file's contents.
+    /// Rejected rather than passed to git: `HEAD:<path>` resolves an absolute
+    /// or `..`-containing path against the working directory, so the caller
+    /// would be shown a different file's contents without any error.
     #[error("`{0}` is not a path inside the working tree")]
     NotInWorkingTree(String),
-    /// git ran, said something, and it was not the documented format.
+    /// git's output did not match the documented format.
     #[error(transparent)]
     Malformed(#[from] Malformed),
 }
 
 /// The `git` to run.
 ///
-/// A path rather than a hardcoded `"git"` so that VS Code's `git.path` setting
-/// means what it means there: a machine with git somewhere unusual is a
-/// machine the setting exists for.
+/// A configurable path rather than a hardcoded `"git"`, so that VS Code's
+/// `git.path` setting works as it does there, for git installed in a
+/// non-standard location.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Git {
     program: OsString,
@@ -92,40 +91,37 @@ impl Default for Git {
 }
 
 impl Git {
-    /// Whatever `git.path` said, or `git` to be found on `PATH`.
+    /// The `git.path` setting, or `git` to be looked up on `PATH`.
     pub fn new(program: impl Into<OsString>) -> Self {
         Self {
             program: program.into(),
         }
     }
 
-    /// What `git status` says about the working tree containing `directory`.
+    /// The `git status` of the working tree containing `directory`.
     ///
-    /// Blocking. On a repository with a very large working tree this is
-    /// hundreds of milliseconds, so a frontend calls it from somewhere it can
-    /// afford to wait — not from a render, and not on a keystroke.
+    /// Blocking. On a repository with a very large working tree this takes
+    /// hundreds of milliseconds, so a frontend must not call it during
+    /// rendering or on a keystroke.
     pub fn status(&self, directory: &Path) -> Result<Status, ScmError> {
         // `--branch` for the four header lines the status bar needs; `-z` so
         // paths arrive unquoted (see `status::parse`); `--porcelain=v2`
-        // because v1 cannot say which side of a change is staged.
+        // because v1 does not show which side of a change is staged.
         //
         // `--untracked-files=all` rather than git's default of `normal`, which
         // collapses a new directory into a single `? newdir/` record. The
-        // count is documented as one per *file*, and under `normal` a folder
-        // someone just added with a dozen files in it would read as `±1` — an
-        // undercount in the quiet direction, on one of the commonest things a
-        // person does.
+        // count is documented as one per file, and under `normal` a newly added
+        // folder with a dozen files would be counted as `±1`, an undercount in
+        // a very common case.
         //
-        // It is also named rather than left to the default because
-        // `status.showUntrackedFiles` can change that default out from under
-        // this, and what the bar counts should not depend on a setting deco
-        // does not read.
+        // The option is also set explicitly because `status.showUntrackedFiles`
+        // can change the default, and the count should not depend on a setting
+        // deco does not read.
         //
-        // What it costs: `all` descends into untracked directories, so a
-        // working tree with a large one that is *not* in `.gitignore` is
-        // slower to ask. Ignored files are still left out — nothing here
-        // passes `--ignored` — so the usual `target/` and `node_modules/` are
-        // not what is being walked.
+        // Cost: `all` descends into untracked directories, so a large untracked
+        // directory that is not in `.gitignore` makes status slower. Ignored
+        // files are still excluded, because `--ignored` is not passed, so
+        // `target/` and `node_modules/` are usually not walked.
         let output = self.run_bytes(
             directory,
             &[
@@ -144,13 +140,12 @@ impl Git {
         Ok(status::parse(&output)?)
     }
 
-    /// Where the repository containing `directory` begins.
+    /// The root of the repository containing `directory`.
     ///
-    /// Needed because every path git reports is relative to *this*, not to the
-    /// folder deco was started in — and those differ whenever someone opens a
-    /// subdirectory of a repository, which is an ordinary thing to do. Asking
-    /// once and keeping the answer is what lets [`Git::committed`] and
-    /// [`Status`] speak the same coordinates.
+    /// Every path git reports is relative to this root, not to the folder deco
+    /// was started in. The two differ when a subdirectory of a repository is
+    /// opened, which is common. Querying the root once lets [`Git::committed`]
+    /// and [`Status`] use the same relative paths.
     pub fn root(&self, directory: &Path) -> Result<PathBuf, ScmError> {
         let output = self.run_bytes(directory, &["rev-parse", "--show-toplevel"])?;
         // Remove the command's one record terminator, not every trailing
@@ -210,26 +205,23 @@ impl Git {
 
     /// The committed text of a file, to compare a buffer against.
     ///
-    /// `path` is relative to the **repository root** — the same coordinates
-    /// [`Status`] reports in, and what [`Git::root`] is for. Not relative to
-    /// `directory`: `git show HEAD:a` reads the repository's `a` however deep
-    /// in the tree it is run from, which is the property that makes one path
-    /// mean one file. (`HEAD:./a` would be the other thing, resolved against
-    /// the working directory — the two disagree the moment a workspace is a
-    /// subdirectory, and a gutter drawn from the wrong blob looks exactly like
-    /// a gutter drawn from the right one.)
+    /// `path` is relative to the **repository root**, as in [`Status`] and
+    /// [`Git::root`], not to `directory`. `git show HEAD:a` reads the
+    /// repository's `a` regardless of the directory it runs in, so each path
+    /// identifies one file. (`HEAD:./a` is resolved against the working
+    /// directory instead. The two differ when the workspace is a subdirectory,
+    /// and a gutter drawn from the wrong blob is not visibly wrong.)
     ///
-    /// An absolute path or one containing `..` is refused rather than passed
-    /// on, for the same reason: git would resolve it somewhere else entirely.
+    /// An absolute path or one containing `..` is rejected rather than passed
+    /// on, for the same reason: git would resolve it to a different file.
     ///
-    /// `Ok(None)` when the file is not in `HEAD`: it is new, or on an unborn
-    /// branch where nothing is. That is not an error, and the caller's answer
-    /// to it is "every line is an addition" rather than "no marks".
+    /// Returns `Ok(None)` when the file is not in `HEAD`, because it is new or
+    /// the branch has no commits. This is not an error; the caller marks every
+    /// line as added rather than showing no marks.
     pub fn committed(&self, directory: &Path, path: &Path) -> Result<Option<String>, ScmError> {
         let Some(path) = path.to_str() else {
-            // `HEAD:<path>` is a string to git, and a path that is not UTF-8
-            // cannot be spelled in one. Nothing to show rather than something
-            // wrong.
+            // `HEAD:<path>` is a string argument, and a non-UTF-8 path cannot be
+            // expressed in it. Return no content rather than wrong content.
             return Ok(None);
         };
         if path.is_empty()
@@ -239,23 +231,22 @@ impl Git {
             return Err(ScmError::NotInWorkingTree(path.to_owned()));
         }
 
-        // `--textconv` is deliberately *not* passed: a repository can configure
+        // `--textconv` is intentionally not passed. A repository can configure
         // a filter that runs an arbitrary program to render a file, and the
-        // gutter is not worth executing someone's `.gitattributes` for.
+        // gutter must not execute programs from `.gitattributes`.
         match self.run(directory, &["show", &format!("HEAD:{path}")]) {
             Ok(text) => Ok(Some(text)),
-            // The three ways git says "there is no committed text for this",
-            // none of them a failure. Quoted from git 2.43 rather than guessed:
+            // The three messages git uses when there is no committed text.
+            // None of them is a failure. Quoted from git 2.43:
             //
             //   fatal: path 'new.rs' exists on disk, but not in 'HEAD'
             //   fatal: path 'nosuch.rs' does not exist in 'HEAD'
             //   fatal: invalid object name 'HEAD'.        (nothing committed)
             //
-            // Matching English is why `LC_ALL=C` is set in `run`. Getting this
-            // wrong in the safe direction costs a gutter; the unsafe direction
-            // would be treating a real failure as an empty file and drawing
-            // every line as an addition, so anything unrecognised stays an
-            // error.
+            // `LC_ALL=C` is set in `run` so these English messages can be
+            // matched. Any unrecognised message remains an error: treating a
+            // real failure as an empty file would mark every line as added,
+            // while a missed match only loses the gutter.
             Err(ScmError::Refused { message, .. })
                 if message.contains("exists on disk, but not in")
                     || message.contains("does not exist in")
@@ -295,9 +286,9 @@ impl Git {
 
     /// Local branches, with the one `HEAD` names marked current.
     ///
-    /// Remote-tracking names are deliberately absent. Selecting one would
-    /// create a local branch, which is a second decision hidden inside the
-    /// first; checkout only switches among branches that already exist.
+    /// Remote-tracking branches are intentionally excluded. Selecting one would
+    /// also create a local branch, which is a separate action. Checkout only
+    /// switches between existing local branches.
     pub fn branches(&self, directory: &Path) -> Result<Vec<Branch>, ScmError> {
         let output = self.run_bytes(
             directory,
@@ -342,9 +333,9 @@ impl Git {
     /// Describes a checkout without changing the repository.
     ///
     /// The counts come from the same status parser the source-control view
-    /// uses. No claim is made that local changes will be applied cleanly: the
-    /// eventual checkout has no force flag, so Git remains the authority and
-    /// refuses rather than overwriting them.
+    /// uses. The plan does not guarantee that local changes carry over cleanly.
+    /// The checkout uses no force flag, so Git decides and rejects the switch
+    /// rather than overwriting local changes.
     pub fn checkout_plan(&self, directory: &Path, target: &str) -> Result<CheckoutPlan, ScmError> {
         self.require_local_branch(directory, target)?;
         let status = self.status(directory)?;
@@ -378,7 +369,7 @@ impl Git {
         })
     }
 
-    /// What the index holds for `path`, if it has a stage-zero entry.
+    /// The index contents of `path`, if it has a stage-zero entry.
     fn indexed(&self, directory: &Path, path: &Path) -> Result<Option<String>, ScmError> {
         let path = plain_path(path)?;
         match self.run(directory, &["show", &format!(":{path}")]) {
@@ -393,7 +384,7 @@ impl Git {
         }
     }
 
-    /// What the working tree holds for `path`, if the file still exists.
+    /// The working-tree contents of `path`, if the file still exists.
     fn working(&self, directory: &Path, path: &Path) -> Result<Option<String>, ScmError> {
         let path = plain_path(path)?;
         let full = directory.join(&path);
@@ -424,10 +415,10 @@ impl Git {
 
     /// Carries out a change to the repository.
     ///
-    /// Every path is repository-relative and goes after `--`, so a file called
-    /// `-f` or `HEAD` is a file rather than an option or a revision. The same
-    /// check [`Git::committed`] makes is made first, for the same reason: git
-    /// would resolve an absolute or `..`-bearing path somewhere else.
+    /// Every path is repository-relative and placed after `--`, so a file named
+    /// `-f` or `HEAD` is treated as a file rather than an option or a revision.
+    /// Paths are first validated as in [`Git::committed`], for the same reason:
+    /// git would resolve an absolute or `..`-containing path to another file.
     pub fn apply(&self, directory: &Path, operation: &Operation) -> Result<(), ScmError> {
         let path = |path: &Path| -> Result<String, ScmError> {
             let text = path
@@ -445,9 +436,9 @@ impl Git {
             Operation::Stage(one) => {
                 self.run(directory, &["add", "--", &path(one)?])?;
             }
-            // `git add -A` from the repository root rather than `.`, which
-            // would only reach what is below the working directory — and the
-            // view lists the whole repository.
+            // `git add --all` without a pathspec rather than `.`, which would
+            // only cover the working directory; the view lists the whole
+            // repository.
             Operation::StageAll => {
                 self.run(directory, &["add", "--all", "--"])?;
             }
@@ -455,16 +446,15 @@ impl Git {
                 path: one,
                 original,
             } => {
-                // Both halves of a staged rename, or it comes apart: see
+                // Both paths of a staged rename must be reset together; see
                 // `Operation::Unstage`.
                 let mut names = vec![path(one)?];
                 if let Some(original) = original {
                     names.push(path(original)?);
                 }
-                // `restore --staged` needs git 2.23. `reset` is older than
-                // anything still installed, and on a branch with no commit yet
-                // there is no `HEAD` to reset against — so that case takes the
-                // one command that works there.
+                // `restore --staged` requires git 2.23, while `reset` works
+                // with any git still in use. On a branch with no commit there is
+                // no `HEAD` to reset against, so `rm --cached` is used instead.
                 let mut args: Vec<&str> = match self.has_commit(directory) {
                     true => vec!["reset", "--quiet", "HEAD", "--"],
                     false => vec!["rm", "--cached", "--quiet", "--"],
@@ -472,27 +462,25 @@ impl Git {
                 args.extend(names.iter().map(String::as_str));
                 self.run(directory, &args)?;
             }
-            // No `-a`: a plain commit records exactly the index, which is
-            // exactly what the view was showing. (`--only` would be the way to
-            // say that explicitly, but it means "these paths only" and refuses
-            // when given none.)
+            // No `-a`: a plain commit records exactly the index, which is what
+            // the view shows. (`--only` restricts the commit to the given paths
+            // and fails when none are given, so it is not used.)
             //
-            // This runs the repository's hooks, which is the point of shelling
-            // out rather than linking a library — a `pre-commit` that reformats
-            // or refuses is the user's, and deco is not going to be the editor
-            // that quietly skips it. Their stdin is closed and
-            // `GIT_TERMINAL_PROMPT=0` is set, so one that decides to ask a
-            // question through stdin gets EOF. A hook is an arbitrary program
-            // and can still open a terminal or a graphical prompt; running it
-            // rather than bypassing it means inheriting that behaviour too.
+            // This runs the repository's hooks, which is one reason for running
+            // the binary instead of linking a library. A `pre-commit` hook that
+            // reformats or rejects is the user's choice, and deco does not skip
+            // it. Hook stdin is closed and `GIT_TERMINAL_PROMPT=0` is set, so a
+            // hook reading from stdin gets EOF. A hook is an arbitrary program
+            // and can still open a terminal or graphical prompt; running hooks
+            // means accepting that behaviour.
             Operation::Commit(message) => {
                 self.run(directory, &["commit", "--message", message])?;
             }
             Operation::Checkout(target) => {
-                // Checked again here rather than trusting a plan made earlier:
+                // Checked again here instead of relying on the earlier plan:
                 // another process may have deleted or replaced the branch while
-                // the confirmation was on screen. The name is then safe to pass
-                // as an argument, and no shell is involved.
+                // the confirmation was shown. After the check the name is safe
+                // to pass as an argument, and no shell is involved.
                 self.require_local_branch(directory, target)?;
                 self.run(directory, &["checkout", "--quiet", target])?;
             }
@@ -500,7 +488,7 @@ impl Git {
         Ok(())
     }
 
-    /// Refuses anything except the exact name of a branch that exists now.
+    /// Rejects anything except the exact name of an existing local branch.
     fn require_local_branch(&self, directory: &Path, target: &str) -> Result<(), ScmError> {
         if self
             .branches(directory)?
@@ -516,40 +504,38 @@ impl Git {
         }
     }
 
-    /// Whether `HEAD` names a commit — false on a branch with nothing on it.
+    /// Whether `HEAD` names a commit. False on a branch with no commits.
     fn has_commit(&self, directory: &Path) -> bool {
         self.run(directory, &["rev-parse", "--verify", "--quiet", "HEAD"])
             .is_ok_and(|out| !out.trim().is_empty())
     }
 
-    /// Runs git in the directory and hands back its stdout as text.
+    /// Runs git in the directory and returns its stdout as text.
     ///
-    /// Used where the answer itself is text or ignored. Status paths are
-    /// different: a lossy conversion there could turn one non-UTF-8 filename
-    /// into another valid filename and make a write command act on the wrong
-    /// file, so status uses run_bytes and refuses that case.
+    /// Used where the output is text or is ignored. Status paths are handled
+    /// differently: a lossy conversion could turn a non-UTF-8 filename into
+    /// another valid filename and make a write command act on the wrong file,
+    /// so status uses run_bytes and rejects that case.
     fn run(&self, directory: &Path, args: &[&str]) -> Result<String, ScmError> {
         Ok(String::from_utf8_lossy(&self.run_bytes(directory, args)?).into_owned())
     }
 
-    /// Runs git in the directory and hands back its stdout unchanged.
+    /// Runs git in the directory and returns its stdout unchanged.
     fn run_bytes(&self, directory: &Path, args: &[&str]) -> Result<Vec<u8>, ScmError> {
         let mut command = Command::new(&self.program);
         command
             .args(args)
             .current_dir(directory)
-            // Not `--no-optional-locks`: an unknown *flag* is a hard error on
-            // an older git, while an unknown environment variable is ignored.
-            // Either way the point is that showing a status must not take the
-            // index lock — a status bar refreshing on save should never be the
-            // reason a `git commit` in a terminal fails.
+            // Not `--no-optional-locks`: an unknown flag is a hard error on an
+            // older git, while an unknown environment variable is ignored.
+            // Both prevent status from taking the index lock, so a status bar
+            // refresh on save cannot make a `git commit` in a terminal fail.
             .env("GIT_OPTIONAL_LOCKS", "0")
-            // Nothing here can answer a question, so anything that would ask
-            // one must fail instead of waiting for an answer that is not
-            // coming.
+            // No prompt can be answered here, so any prompt must fail
+            // immediately instead of waiting.
             .env("GIT_TERMINAL_PROMPT", "0")
-            // The porcelain format is not translated, but the *errors* are,
-            // and one of them has to be told apart from the rest below.
+            // The porcelain format is not translated, but error messages are,
+            // and one of them is matched below.
             .env("LC_ALL", "C")
             .stdin(std::process::Stdio::null());
 
@@ -563,10 +549,10 @@ impl Git {
 
         if !output.status.success() {
             let message = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-            // Matching git's English is not something to be proud of, and it
-            // is why `LC_ALL=C` is set above. The alternative is a second
-            // process — `git rev-parse --show-toplevel` before every status —
-            // to learn something this run has already found out.
+            // Matching git's English message is why `LC_ALL=C` is set above.
+            // The alternative is a second process, `git rev-parse
+            // --show-toplevel` before every status, to obtain information this
+            // run already has.
             if message.contains("not a git repository") {
                 return Err(ScmError::NotARepository(directory.to_path_buf()));
             }
@@ -614,9 +600,9 @@ mod tests {
         assert_ne!(Git::default(), Git::new("/opt/homebrew/bin/git"));
     }
 
-    /// The rest of this module needs a real git, and CI has one — but a
-    /// contributor's machine may not, and a test that fails there for a reason
-    /// that is not their change is worse than one that says why it skipped.
+    /// The remaining tests need a real git. CI has one, but a contributor's
+    /// machine may not, so the tests skip with a message instead of failing
+    /// for a reason unrelated to the change.
     fn git_or_skip() -> Option<Git> {
         let git = Git::default();
         match git.status(Path::new(env!("CARGO_MANIFEST_DIR"))) {
@@ -631,10 +617,9 @@ mod tests {
     #[test]
     fn decos_own_checkout_reads_as_a_repository() {
         let Some(git) = git_or_skip() else { return };
-        // This crate is in deco's repository, so this is a working tree
-        // whatever else is true — and running against it rather than a
-        // fixture means the test exercises a real `git status`, with whatever
-        // the contributor's config does to it.
+        // This crate is in deco's repository, so the directory is always a
+        // working tree. Using it instead of a fixture exercises a real
+        // `git status` with the contributor's configuration.
         let status = git
             .status(Path::new(env!("CARGO_MANIFEST_DIR")))
             .expect("deco's own checkout");
@@ -644,9 +629,9 @@ mod tests {
         );
     }
 
-    /// A fresh repository in a directory of its own, removed when the test
-    /// ends. `git init` and nothing else: an unborn branch is a real state,
-    /// and one worth exercising against a real git.
+    /// A fresh repository in its own directory, removed when the test ends.
+    /// Only `git init` is run, because an unborn branch is a real state worth
+    /// testing against a real git.
     fn scratch_repo(git: &Git, name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("deco-scm-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -674,9 +659,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
 
         // Git's default of `--untracked-files=normal` reports one
-        // `? newdir/` record for the three inside it, which would make this
-        // 2 — an undercount of exactly the kind the count is supposed to
-        // rule out.
+        // `? newdir/` record for the three files inside it, which would make
+        // this 2, the undercount this option prevents.
         assert_eq!(
             status.changed(),
             4,
@@ -715,9 +699,8 @@ mod tests {
 
     /// Commits everything in `dir`, so there is a `HEAD` to read from.
     ///
-    /// Identity is set on the repository rather than read from the machine:
-    /// a contributor with no `user.email` configured would otherwise have this
-    /// fail for a reason that is not their change.
+    /// Identity is set on the repository rather than read from the machine,
+    /// so the test does not fail for a contributor with no `user.email`.
     fn commit(git: &Git, dir: &Path) {
         for args in [
             &["config", "user.email", "test@example.invalid"][..],
@@ -740,8 +723,8 @@ mod tests {
         let dir = scratch_repo(&git, "committed");
         std::fs::write(dir.join("a.rs"), "one\ntwo\n").expect("a file");
         commit(&git, &dir);
-        // Changed on disk *and* further in the buffer. Neither should reach
-        // the answer: `HEAD` is what was committed.
+        // Changed on disk. The result must still be the committed `HEAD`
+        // contents.
         std::fs::write(dir.join("a.rs"), "one\nEDITED\n").expect("a file");
 
         let head = git
@@ -860,14 +843,13 @@ mod tests {
         std::fs::write(dir.join("sub/a.txt"), "SUB\n").expect("a file");
         commit(&git, &dir);
 
-        // The same repository-relative path, asked from two depths. Opening a
-        // subdirectory of a repository is an ordinary thing to do, and the
-        // answer must not depend on where deco happened to be started.
+        // The same repository-relative path, requested from two depths. The
+        // result must not depend on the directory deco was started in.
         let from_root = git.committed(&dir, Path::new("sub/a.txt"));
         let from_sub = git.committed(&dir.join("sub"), Path::new("sub/a.txt"));
-        // And the root's own file, from inside the subdirectory — the case
-        // that `HEAD:./a.txt` gets wrong, because `./` is resolved against the
-        // working directory and would find `sub/a.txt` instead.
+        // The root's file, requested from the subdirectory. `HEAD:./a.txt`
+        // would resolve `./` against the working directory and find
+        // `sub/a.txt` instead.
         let root_file_from_sub = git.committed(&dir.join("sub"), Path::new("a.txt"));
         let _ = std::fs::remove_dir_all(&dir);
 
@@ -895,8 +877,8 @@ mod tests {
 
         let found = git.root(&dir.join("sub"));
         let _ = std::fs::remove_dir_all(&dir);
-        // Canonicalised on both sides: a temporary directory is a symlink on
-        // macOS, and git reports where the link goes.
+        // Canonicalised on both sides: the temporary directory is a symlink on
+        // macOS, and git reports the link target.
         let found = found.expect("a repository").canonicalize().ok();
         assert_eq!(found, dir.canonicalize().ok());
     }
@@ -910,14 +892,14 @@ mod tests {
         std::fs::write(dir.join("a.rs"), "two\n").expect("a file");
         std::fs::write(dir.join("new.rs"), "fresh\n").expect("a file");
 
-        // Stage one file. The other stays where it was.
+        // Stage one file. The other stays untracked.
         git.apply(&dir, &Operation::Stage(PathBuf::from("a.rs")))
             .expect("a stage");
         let status = git.status(&dir).expect("a status");
         assert_eq!(status.staged(), 1);
         assert_eq!(status.untracked(), 1);
 
-        // Unstage it again, leaving the working tree alone.
+        // Unstage it again, leaving the working tree unchanged.
         git.apply(
             &dir,
             &Operation::Unstage {
@@ -934,7 +916,7 @@ mod tests {
             "unstaging touches the index, never the file"
         );
 
-        // Everything, then a commit.
+        // Stage everything, then commit.
         git.apply(&dir, &Operation::StageAll).expect("a stage");
         assert_eq!(git.status(&dir).expect("a status").staged(), 2);
         git.apply(&dir, &Operation::Commit("a message".to_owned()))
@@ -1022,7 +1004,7 @@ mod tests {
         let dir = scratch_repo(&git, "rename-unstage");
         std::fs::create_dir_all(dir.join("old")).expect("a directory");
         std::fs::create_dir_all(dir.join("new")).expect("a directory");
-        // Long enough that git's rename detection is in no doubt.
+        // Long enough for git's rename detection to match reliably.
         std::fs::write(dir.join("old/name.rs"), "a line long enough to match\n").expect("a file");
         commit(&git, &dir);
         let moved = std::process::Command::new(&git.program)
@@ -1032,10 +1014,9 @@ mod tests {
             .expect("git mv");
         assert!(moved.success());
 
-        // Only the new path would leave `old/name.rs` staged as a *deletion*
-        // and `new/name.rs` untracked — so a command reporting that it
-        // unstaged the rename would have left a commit that still deletes the
-        // original file.
+        // Resetting only the new path would leave `old/name.rs` staged as a
+        // deletion and `new/name.rs` untracked, so the next commit would still
+        // delete the original file.
         git.apply(
             &dir,
             &Operation::Unstage {
@@ -1110,9 +1091,8 @@ mod tests {
         git.apply(&dir, &Operation::StageAll).expect("a stage");
         assert_eq!(git.status(&dir).expect("a status").staged(), 1);
 
-        // `git reset HEAD` has no HEAD to reset against here, which is why
-        // this case takes a different command rather than reporting a failure
-        // the user can do nothing about.
+        // `git reset HEAD` has no HEAD to reset against here, so this case uses
+        // a different command instead of failing.
         let undone = git.apply(
             &dir,
             &Operation::Unstage {
@@ -1155,9 +1135,9 @@ mod tests {
     #[test]
     fn a_path_that_could_escape_the_working_tree_is_refused() {
         let git = Git::default();
-        // Never reaches git: `HEAD:/etc/passwd` and `HEAD:../secrets` resolve
-        // against the working directory, so a caller handing one over would be
-        // shown a different file and told it was this one's history.
+        // These never reach git. `HEAD:/etc/passwd` and `HEAD:../secrets`
+        // resolve against the working directory, so the caller would receive
+        // another file's committed contents.
         for bad in ["/etc/passwd", "../secrets.rs", "a/../../b.rs", ""] {
             assert!(
                 matches!(
@@ -1172,13 +1152,13 @@ mod tests {
     #[test]
     fn a_folder_outside_a_repository_says_so() {
         let Some(git) = git_or_skip() else { return };
-        // The temporary directory is not inside deco's checkout, and creating
-        // nothing in it keeps the test from depending on what is.
+        // The temporary directory is not inside deco's checkout. Nothing is
+        // created in it, so the test does not depend on its contents.
         let outside = std::env::temp_dir();
         match git.status(&outside) {
             Err(ScmError::NotARepository(path)) => assert_eq!(path, outside),
-            // Somebody's `TMPDIR` is inside a repository. Unusual, not wrong,
-            // and not something to fail a build over.
+            // `TMPDIR` is inside a repository. This is unusual but valid, so
+            // the test is skipped.
             Ok(_) => eprintln!("skipped: {} is inside a working tree", outside.display()),
             Err(other) => panic!("expected a plain refusal, got {other}"),
         }

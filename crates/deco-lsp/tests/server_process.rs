@@ -1,16 +1,16 @@
 //! End-to-end tests against a real child process.
 //!
-//! The unit tests in `process` and `supervisor` drive in-memory streams, which
-//! covers the parsing and the state machine but not the parts that only exist
-//! once an operating system is involved: whether the handshake actually
-//! completes across a pipe, whether a server that dies is noticed, whether a
-//! stopped server leaves anything behind.
+//! The unit tests in `process` and `supervisor` use in-memory streams. They
+//! cover parsing and the state machine, but not behaviour that depends on the
+//! operating system: whether the handshake completes across a pipe, whether a
+//! server exit is detected, and whether a stopped server leaves anything
+//! behind.
 //!
 //! The server used here is this test binary re-executed with an environment
-//! variable set, so the tests need no language server installed and work
-//! identically on every platform CI runs. `cargo test` builds one binary per
-//! integration test file and `current_exe` points at it, so re-execing is both
-//! cheap and hermetic.
+//! variable set, so the tests need no installed language server and behave the
+//! same on every CI platform. `cargo test` builds one binary per integration
+//! test file and `current_exe` points at it, so re-executing it is cheap and
+//! hermetic.
 
 use std::time::Duration;
 
@@ -19,15 +19,14 @@ use deco_lsp::server::{Command, ServerConfig, Trust};
 use deco_lsp::supervisor::{Supervisor, SupervisorError, Update};
 use deco_lsp::uri::{PathMap, PathStyle};
 
-/// The variable the fake server reads to decide how to misbehave.
+/// The variable the fake server reads to select its behaviour.
 const ROLE: &str = "DECO_TEST_LSP_ROLE";
 
 /// Path to the `fake_language_server` example.
 ///
 /// `cargo test` builds examples into `target/<profile>/examples/`, and the test
-/// binary itself lives in `target/<profile>/deps/`, so it is two levels up and
-/// across. There is no `CARGO_BIN_EXE_*` for examples, which is why this is
-/// derived rather than looked up.
+/// binary is in `target/<profile>/deps/`. There is no `CARGO_BIN_EXE_*` for
+/// examples, so the path is derived from the test binary's path.
 fn fake_server() -> std::path::PathBuf {
     let test_binary = std::env::current_exe().expect("the test binary's own path");
     let profile_dir = test_binary
@@ -73,8 +72,8 @@ fn start(role: &str) -> Result<Supervisor, SupervisorError> {
 
 /// Polls until a predicate matches or the deadline passes.
 ///
-/// Necessary because the child is a real process: the reply exists when it
-/// exists, and asserting immediately after a write would be a race.
+/// The child is a real process, so the reply arrives at an unknown time.
+/// Asserting immediately after a write would be a race.
 fn poll_until(
     supervisor: &mut Supervisor,
     limit: Duration,
@@ -133,7 +132,7 @@ fn a_diagnostic_published_by_the_server_reaches_the_editor() {
 
 #[test]
 fn a_server_that_dies_at_startup_reports_its_stderr() {
-    // The only explanation a user gets when a server will not run.
+    // stderr is the only information a user gets when a server does not run.
     let Err(error) = start("die-immediately") else {
         panic!("a server that exits immediately cannot complete a handshake");
     };
@@ -146,18 +145,18 @@ fn a_server_that_dies_at_startup_reports_its_stderr() {
 
 #[test]
 fn a_server_that_dies_after_reading_the_request_still_reports_its_stderr() {
-    // The sibling of the test above, and the one that actually caught a bug.
-    // There are two ways a server can fail at startup, and they take different
-    // code paths:
+    // Companion to the test above. This one found a bug. A server can fail at
+    // startup in two ways, which take different code paths:
     //
-    //   * it dies before reading — the editor's write fails with a broken pipe;
-    //   * it dies after reading — the write succeeds and the only signal is
+    //   * it exits before reading: the editor's write fails with a broken pipe;
+    //   * it exits after reading: the write succeeds and the only signal is
     //     stdout closing.
     //
-    // Only the first was covered, and it is the one that happens to occur on a
-    // developer machine, so the second path reported "the server wrote nothing
-    // to stderr" until CI disagreed. stdout closing and stderr being collected
-    // are separate threads, and the reason has to survive that race either way.
+    // Only the first case was tested, and it is the one that usually occurs on
+    // a developer machine. The second path reported "the server wrote nothing
+    // to stderr" until it failed in CI. Detecting stdout closing and collecting
+    // stderr run on separate threads, and the stderr message must be reported
+    // regardless of which finishes first.
     let Err(error) = start("die-after-reading") else {
         panic!("a server that never answers cannot complete a handshake");
     };
@@ -170,10 +169,10 @@ fn a_server_that_dies_after_reading_the_request_still_reports_its_stderr() {
 
 #[test]
 fn a_slow_explanation_is_still_waited_for() {
-    // The adverse-timing version: this server writes its reason 120ms after the
-    // editor has already learned that stdout closed. Any implementation that
-    // samples "is there output yet" reports nothing here; waiting for the pump
-    // thread to finish reports the reason.
+    // Worst-case timing: this server writes to stderr 120ms after the editor
+    // detects that stdout closed. An implementation that only checks whether
+    // output is available reports nothing. Waiting for the pump thread to
+    // finish reports the message.
     let Err(error) = start("die-slowly") else {
         panic!("a server that never answers cannot complete a handshake");
     };
@@ -186,7 +185,7 @@ fn a_slow_explanation_is_still_waited_for() {
 
 #[test]
 fn a_server_that_never_answers_hits_the_startup_timeout() {
-    // Without this, a broken server hangs the editor at launch.
+    // Without the timeout, a broken server blocks the editor at launch.
     let started = std::time::Instant::now();
     let result = Supervisor::start(
         &config("silent", Trust::User),
@@ -222,8 +221,8 @@ fn a_protocol_error_across_the_pipe_is_a_startup_failure_not_a_hang() {
 
 #[test]
 fn a_workspace_server_is_not_launched_without_consent() {
-    // Asserted against a program that *would* run, so the refusal cannot be
-    // mistaken for the program being missing.
+    // Uses a program that *would* run, so the rejection cannot be caused by a
+    // missing program.
     let result = Supervisor::start(
         &config("plain", Trust::Workspace),
         Consent::NotAsked,
@@ -236,7 +235,7 @@ fn a_workspace_server_is_not_launched_without_consent() {
     };
     assert!(error.to_string().contains("approved"), "{error}");
 
-    // And starts once approved, proving the refusal was about consent.
+    // It starts once approved, so the rejection was caused by missing consent.
     let mut supervisor = Supervisor::start(
         &config("plain", Trust::Workspace),
         Consent::Granted,
@@ -270,8 +269,8 @@ fn a_server_that_exits_mid_session_is_noticed() {
     );
     assert!(!supervisor.is_ready());
 
-    // And a later edit to the still-open document is a named error rather than
-    // a panic, a hang, or a silent success.
+    // A later edit to the still-open document returns a named error. It does
+    // not panic, hang, or succeed silently.
     assert!(matches!(
         supervisor.did_change(std::path::Path::new("/w/a.rs"), &[], "y"),
         Err(SupervisorError::NotRunning { .. })
@@ -283,16 +282,16 @@ fn stopping_leaves_no_process_behind() {
     let mut supervisor = start("plain").expect("the fake server should start");
     supervisor.stop();
     assert!(!supervisor.is_ready());
-    // Idempotent: quitting the editor should not depend on stop being called
+    // Idempotent, so quitting the editor does not depend on stop being called
     // exactly once.
     supervisor.stop();
 }
 
 #[test]
 fn dropping_a_supervisor_stops_its_server() {
-    // A server that is only dropped becomes an orphan holding a build lock.
-    // There is no portable way to assert the process is gone from here, so what
-    // is asserted is that the drop completes rather than blocking forever.
+    // A server that is not stopped on drop becomes an orphan process holding a
+    // build lock. There is no portable way to check here that the process has
+    // exited, so the test only checks that the drop completes without blocking.
     let supervisor = start("plain").expect("the fake server should start");
     assert!(supervisor.is_ready());
     drop(supervisor);
@@ -300,7 +299,7 @@ fn dropping_a_supervisor_stops_its_server() {
 
 #[test]
 fn a_process_can_be_driven_directly_without_a_supervisor() {
-    // The lower layer on its own, since a frontend may want to own the loop.
+    // Tests the lower layer alone, because a frontend may run its own loop.
     let mut process =
         ServerProcess::spawn(&config("plain", Trust::User), Consent::Granted).expect("spawn");
 
@@ -335,11 +334,10 @@ fn a_process_can_be_driven_directly_without_a_supervisor() {
 
 #[test]
 fn a_remote_session_puts_the_far_ends_paths_on_the_wire() {
-    // The whole of remote language support, checked where it can actually be
-    // wrong: what the editor holds is `src/main.rs`, relative to a workspace on
-    // another machine, and what the server has to be told is the absolute path
-    // over there. Nothing but a real server can say which one arrived, so this
-    // one is asked to repeat it back.
+    // Tests the path mapping for remote language support. The editor holds
+    // `src/main.rs`, relative to a workspace on another machine, and the
+    // server must receive the absolute path on that machine. Only a real
+    // server can show which path was sent, so this one echoes it back.
     let mut supervisor = Supervisor::start(
         &config("echo-uri-on-open", Trust::User),
         Consent::Granted,
@@ -364,14 +362,14 @@ fn a_remote_session_puts_the_far_ends_paths_on_the_wire() {
         std::thread::sleep(Duration::from_millis(10));
     }
 
-    // Found under the path the *editor* uses, which is the half that would break
-    // if the prefix were added and not taken off again.
+    // The diagnostic is found under the path the *editor* uses. This fails if
+    // the prefix is added but not removed again.
     let uri = supervisor.uri_for(path).expect("a uri");
     assert_eq!(uri.as_str(), "file:///home/u/project/src/main.rs");
     let diagnostics = supervisor.diagnostics(&uri);
     assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
-    // And the server really was told the remote's absolute path, rather than a
-    // relative one it would have resolved against its own working directory.
+    // The server received the absolute remote path, not a relative path that
+    // it would resolve against its own working directory.
     assert_eq!(
         diagnostics[0].message,
         "opened file:///home/u/project/src/main.rs"

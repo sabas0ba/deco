@@ -1,21 +1,21 @@
 //! The quick-open prompt: go to line, and the command palette.
 //!
-//! One type for both, because they are the same interaction — a line of text at
-//! the bottom of the screen, optionally over a filtered list — and the only thing
-//! that differs is what accepting it means.
+//! Both use one type because the interaction is the same: a line of text at the
+//! bottom of the screen, optionally above a filtered list. Only the action on
+//! accept differs.
 //!
-//! State only, as with [`crate::find`]: what was typed and which choice is
-//! selected are the same in a terminal and in a window.
+//! This module holds state only, as does [`crate::find`]. The typed text and
+//! the selected choice are the same in a terminal and in a window.
 //!
 //! # Why the palette is assembled from two lists
 //!
-//! A palette that offers a command the editor cannot run is worse than one that
-//! is short. But whether a command works depends partly on the frontend: the
-//! terminal frontend can format a document because it has a language server
-//! client, and the GPU frontend cannot because it has neither. So the core
-//! contributes the commands it implements itself, and the frontend adds the ones
-//! it implements — [`Session::frontend_commands`](crate::Session::frontend_commands).
-//! Nothing is listed on the assumption that somebody downstream will handle it.
+//! The palette lists only commands the editor can run. Whether a command works
+//! depends partly on the frontend: the terminal frontend can format a document
+//! because it has a language server client, and the GPU frontend cannot because
+//! it has none. The core therefore contributes the commands it implements, and
+//! the frontend adds the ones it implements through
+//! [`Session::frontend_commands`](crate::Session::frontend_commands). No command
+//! is listed on the assumption that another component will handle it.
 
 use crate::commands::PaletteEntry;
 use crate::input::Input;
@@ -45,22 +45,22 @@ pub enum PromptKind {
     SearchQuery,
     /// `ctrl+shift+h`: what to put in place of it, everywhere.
     ///
-    /// The second half of a replace across files. The first half is a
-    /// [`PromptKind::SearchQuery`], which is why the query is not here: it has
-    /// already been answered by the time this opens.
+    /// The second step of a replace across files. The first step is a
+    /// [`PromptKind::SearchQuery`], so the query is already known when this
+    /// opens.
     ReplaceQuery,
     /// `F2`: what to call the symbol under the cursor instead.
     Rename,
     /// `ctrl+.`: what the language server offers to do about the selection.
     CodeActions,
-    /// An extension asked for a capability nobody has decided about yet.
+    /// An extension requested a capability that has no recorded decision.
     ///
-    /// Not opened by a key: it appears because an extension asked, which is the
-    /// only prompt here that the user did not start. The question itself is in
-    /// the choices, because a label is one static string and a permission is
-    /// about a particular extension and a particular thing.
+    /// This is not opened by a key. It is the only prompt here that opens in
+    /// response to an extension rather than the user. The question is in the
+    /// choices, because the label is a static string and each request concerns
+    /// a specific extension and capability.
     ExtensionConsent,
-    /// A decision already made about an extension, to be taken back.
+    /// A recorded decision about an extension, to be revoked.
     ExtensionPermissions,
     /// `explorer.newFile`: what to call the new file.
     NewFile,
@@ -69,15 +69,15 @@ pub enum PromptKind {
     /// `F2` in the tree: what to call the selected file instead.
     ///
     /// Distinct from [`PromptKind::Rename`], which renames a *symbol* through
-    /// the language server. Same key, different thing, told apart by what has
-    /// the keyboard — and worth two kinds rather than one, because accepting
-    /// them does entirely different work.
+    /// the language server. Both use the same key and are distinguished by
+    /// focus. They are separate kinds because accepting them performs different
+    /// operations.
     RenameFile,
-    /// `git.commit`: what to say about what is staged.
+    /// `git.commit`: the message for the staged changes.
     ///
-    /// The message *is* the confirmation. A commit is not destructive — it can
-    /// be undone with `git reset --soft` — so it does not need a second
-    /// question on top of the one it already asks.
+    /// Entering the message is the confirmation. A commit is not destructive
+    /// and can be undone with `git reset --soft`, so no additional confirmation
+    /// is required.
     CommitMessage,
     /// `git.checkout`: an existing local branch to switch to.
     Branches,
@@ -85,8 +85,8 @@ pub enum PromptKind {
     ConfirmCheckout,
     /// `delete` in the tree: whether to really remove it.
     ///
-    /// A prompt rather than a bare key because there is no trash to take it out
-    /// of afterwards, and no undo entry either.
+    /// A confirmation is required because there is no trash to restore from and
+    /// no undo entry.
     ConfirmDelete,
 }
 
@@ -121,16 +121,15 @@ impl PromptKind {
 
     /// What the choices are called, for the `3 commands` readout.
     ///
-    /// Empty for a prompt with no list, which has nothing to count. Singular for
-    /// one, because `1 matches` is the kind of detail that makes a careful reader
-    /// distrust everything else on the screen.
+    /// Empty for a prompt with no list. Singular for a count of one, so the
+    /// readout does not show `1 matches`.
     pub fn noun(self, count: usize) -> &'static str {
         match (self, count) {
             (Self::GoToLine, _) => "",
-            // Nothing to count: a path is typed, not chosen from a list.
+            // No list: a path is typed, not chosen.
             (Self::SaveAs, _) | (Self::OpenPath, _) | (Self::SearchQuery, _) => "",
             (Self::ReplaceQuery, _) => "",
-            // Typed, not chosen: a new name is not on any list.
+            // No list: a new name is typed, not chosen.
             (Self::Rename, _) => "",
             (Self::CodeActions, 1) => "action",
             (Self::CodeActions, _) => "actions",
@@ -148,11 +147,11 @@ impl PromptKind {
             (Self::Themes, _) => "themes",
             (Self::Branches, 1) => "branch",
             (Self::Branches, _) => "branches",
-            // Two, always, and counting them tells nobody anything.
+            // Always two choices, so the count is not shown.
             (Self::ExtensionConsent, _) => "",
             (Self::ExtensionPermissions, 1) => "decision",
             (Self::ExtensionPermissions, _) => "decisions",
-            // All typed, or answered with a key: nothing to count.
+            // Typed or answered with a key: no list.
             (Self::NewFile, _)
             | (Self::NewFolder, _)
             | (Self::RenameFile, _)
@@ -164,9 +163,9 @@ impl PromptKind {
 
     /// What to call this prompt in a sentence.
     ///
-    /// For a frontend that has to refuse it: "the command palette is only in the
-    /// terminal frontend" is the wrong thing to say about a save-as prompt, and a
-    /// message that names the wrong widget is worse than a vague one.
+    /// Used by a frontend that does not support the prompt, so that the error
+    /// names the correct widget. For example, "the command palette is only in
+    /// the terminal frontend" would be wrong for a save-as prompt.
     pub fn describe(self) -> &'static str {
         match self {
             Self::GoToLine => "go to line",
@@ -196,23 +195,21 @@ impl PromptKind {
 
     /// Whether the order the choices arrived in carries meaning.
     ///
-    /// True for symbols, which arrive in document order — the order the file
-    /// reads in, and the order VS Code's own picker shows. False for a command,
-    /// whose order is however the registry happened to be written, and for a file
-    /// or a search result, whose title is a path and so sorts to the same place
-    /// either way. Where it is false, equal matches are ordered by title, so the
-    /// list is stable rather than incidental.
+    /// True for symbols, which arrive in document order, as in VS Code's
+    /// picker. False for a command, whose order is the arbitrary order of the
+    /// registry, and for a file or a search result, whose title is a path and
+    /// sorts to the same place either way. Where it is false, equal matches are
+    /// ordered by title so the order is deterministic.
     pub fn keeps_source_order(self) -> bool {
-        // Themes as well as symbols: the built-in ones are listed first because
-        // they are the ones that always work, and a title sort would bury them
-        // under whatever is installed.
+        // Themes: the built-in themes are listed first because they are always
+        // available, and a title sort would mix them with installed themes.
         //
-        // And files, whose supplied order puts the ones you have had open first —
-        // which a sort by name would throw away, taking the whole point of it.
+        // Files: the supplied order puts previously opened files first, and a
+        // sort by name would discard that.
         //
-        // And code actions, where the server's order is its opinion: the fix for
-        // the error you are sitting on comes before the refactorings that happen
-        // to be available, and sorting by title would interleave them.
+        // Code actions: the server orders them by relevance, with the fix for
+        // the diagnostic at the cursor before generally available refactorings.
+        // Sorting by title would interleave them.
         matches!(
             self,
             Self::Symbols
@@ -225,10 +222,10 @@ impl PromptKind {
     }
 }
 
-/// Compares two titles the way a reader scans a list: without regard to case.
+/// Compares two titles case-insensitively.
 ///
-/// Character by character rather than by lowercasing both first, which would
-/// allocate a pair of strings for every comparison in every sort.
+/// Compares character by character rather than lowercasing both strings first,
+/// which would allocate two strings for every comparison.
 fn compare_titles(left: &str, right: &str) -> std::cmp::Ordering {
     left.chars()
         .flat_map(char::to_lowercase)
@@ -250,9 +247,8 @@ pub struct Prompt {
 
 /// How many choices are offered at once.
 ///
-/// The list costs rows of the file, and a prompt that covered half the screen
-/// would hide the thing being navigated. Eight is the same limit the completion
-/// list uses.
+/// The list takes rows from the text area, and a larger prompt would hide the
+/// content being navigated. The completion list uses the same limit of eight.
 pub const MAX_ROWS: usize = 8;
 
 impl Prompt {
@@ -269,12 +265,12 @@ impl Prompt {
 
     /// A prompt with no list, pre-filled with `text` and all of it selected.
     ///
-    /// For the prompts that stand in for a file dialog: typing a whole path from
-    /// nothing is worse than editing the one you are already in. Selected because
-    /// the seed is an *answer* — the path you are in, the word you are on — so
-    /// the first key typed is either the start of a different answer or an edit
-    /// to this one, and appending to it silently is never what was meant. See
-    /// [`Prompt::prefixed`] for the other kind of seed.
+    /// Used for prompts that replace a file dialog, so the user can edit the
+    /// current path instead of typing a full path. The text is selected because
+    /// the seed is a candidate answer, such as the current path or the word at
+    /// the cursor. The first key either starts a different answer or edits this
+    /// one, and never appends to it. See [`Prompt::prefixed`] for the other kind
+    /// of seed.
     pub fn seeded(kind: PromptKind, text: String) -> Self {
         let mut input = Input::new();
         input.seed(text);
@@ -289,9 +285,9 @@ impl Prompt {
 
     /// A prompt with no list, pre-filled with `text` and the caret at its end.
     ///
-    /// For a seed that is a *prefix* the user is meant to continue — the
-    /// directory `ctrl+o` opens with — where the first keystroke belongs at the
-    /// end and selecting the seed would throw away the part that was the point.
+    /// Used for a seed that is a *prefix* to continue, such as the directory
+    /// `ctrl+o` opens with. The first keystroke is added at the end. Selecting
+    /// the seed would cause it to be replaced.
     pub fn prefixed(kind: PromptKind, text: String) -> Self {
         let mut input = Input::new();
         input.set(text);
@@ -375,8 +371,8 @@ impl Prompt {
 
     /// First visible index, chosen so the selection is always on screen.
     fn scroll_top(&self) -> usize {
-        // Keep the selection in the window by scrolling only as much as needed,
-        // which is what makes holding `down` feel like a list rather than pages.
+        // Scroll only as much as needed to keep the selection visible, so holding
+        // `down` scrolls one row at a time rather than by pages.
         self.selected.saturating_sub(MAX_ROWS - 1)
     }
 
@@ -419,9 +415,8 @@ impl Prompt {
     /// Recomputes which choices match, keeping the selection on the same choice
     /// where it survives the narrowing.
     ///
-    /// Following the choice rather than the row index is what stops a keystroke
-    /// from silently moving the selection onto something else — the thing that
-    /// makes a palette dangerous, since the next key runs it.
+    /// Following the choice rather than the row index prevents a keystroke from
+    /// moving the selection to a different entry, which the next key would run.
     fn refilter(&mut self) {
         let query = self.input.text();
 
@@ -431,47 +426,45 @@ impl Prompt {
             .enumerate()
             .filter_map(|(index, entry)| rank(entry, query).map(|rank| (rank, index)))
             .collect();
-        // By rank first, always. The tie-break depends on whether the supplied
-        // order means anything — see `PromptKind::keeps_source_order`. The sort is
-        // stable, so leaving the comparison at the rank keeps that order.
+        // Always sorted by rank first. The tie-break depends on whether the
+        // supplied order is meaningful (see `PromptKind::keeps_source_order`).
+        // The sort is stable, so comparing by rank alone preserves that order.
         if self.kind.keeps_source_order() {
             scored.sort_by_key(|(rank, _)| *rank);
         } else {
             scored.sort_by(|a, b| {
                 let (left, right) = (&self.choices[a.1].title, &self.choices[b.1].title);
                 a.0.cmp(&b.0)
-                    // Case-insensitively, because byte order puts `JSON` before
-                    // `Java` — every capital sorts below every lowercase letter —
-                    // and a list nobody can predict the order of is one nobody can
-                    // scan. The byte comparison remains as the tie-break so the
-                    // order is still total, and so two titles differing only in
-                    // case do not swap between presses.
+                    // Case-insensitive, because byte order puts `JSON` before
+                    // `Java` (every capital sorts below every lowercase letter),
+                    // which is hard to scan. The byte comparison remains as the
+                    // tie-break so the order is total and titles that differ
+                    // only in case do not swap between keystrokes.
                     .then_with(|| compare_titles(left, right))
                     .then_with(|| left.cmp(right))
             });
         }
 
         self.matching = scored.into_iter().map(|(_, index)| index).collect();
-        // The best match, which is what `enter` should run: type a few letters and
-        // press it, as a fuzzy picker is used everywhere else.
+        // Select the best match, which `enter` runs. This matches how fuzzy
+        // pickers are used elsewhere: type a few letters and press `enter`.
         //
-        // This used to follow whichever entry was selected before, to keep a
-        // keystroke from moving the selection onto a different command. It cut the
-        // other way: the selection starts on row 0, which nobody chose — it is
-        // whatever the registry listed first — and if that entry still matched the
-        // narrowed query at all it stayed selected however badly it now ranked. So
-        // `enter` ran an entry the user never looked at while the one they were
-        // typing towards sat at the top.
+        // This previously kept the previously selected entry, to prevent a
+        // keystroke from moving the selection to a different command. That had
+        // the opposite effect. The initial selection is row 0, which is the
+        // registry's first entry and was not chosen by the user. If that entry
+        // still matched the narrowed query, it stayed selected regardless of its
+        // rank, so `enter` ran it instead of the best match at the top.
         self.selected = 0;
     }
 }
 
 /// How well a choice matched, best first.
 ///
-/// Deliberately not shared with the completion list's ranking. That one matches
-/// identifiers typed one character at a time; this one matches phrases with
-/// spaces in them, where "what a word in the title starts with" is the useful
-/// middle ground and has no equivalent for a single identifier.
+/// Intentionally separate from the completion list's ranking, which matches
+/// identifiers typed one character at a time. This ranking matches phrases
+/// with spaces, where matching the start of a word in the title is useful and
+/// has no equivalent for a single identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Rank {
     /// The title starts with what was typed.
@@ -576,8 +569,8 @@ mod tests {
 
     #[test]
     fn a_word_in_the_middle_of_a_title_is_found() {
-        // The reason `WordPrefix` exists: nobody types the first word of
-        // "Toggle Line Comment" to find it.
+        // `WordPrefix` exists for this case: users do not type the first word
+        // of "Toggle Line Comment" to find it.
         let mut prompt = palette();
         typed(&mut prompt, "line");
         let titles: Vec<&str> = prompt
@@ -621,8 +614,8 @@ mod tests {
 
     #[test]
     fn the_selection_follows_the_same_choice_as_the_list_narrows() {
-        // The important one. If the selection stayed on row 0, a keystroke would
-        // silently move it onto a different command — and the next key runs it.
+        // If the selection stayed on row 0, a keystroke could move it to a
+        // different command, which the next key would run.
         let mut prompt = palette();
         typed(&mut prompt, "line");
         prompt.next();
@@ -716,9 +709,8 @@ mod tests {
     }
     #[test]
     fn symbols_keep_document_order_while_commands_sort_by_title() {
-        // A symbol list arrives in the order the file reads in, and re-sorting it
-        // alphabetically would put `bump` above `new` in a file where `new` comes
-        // first — an outline that does not match the outline.
+        // A symbol list arrives in document order. Sorting it alphabetically
+        // would put `bump` above `new` in a file where `new` comes first.
         let choices = vec![
             PaletteEntry::at("/w/a.rs", "Counter", deco_core::Position::new(0, 7)),
             PaletteEntry::at("/w/a.rs", "Counter.value", deco_core::Position::new(1, 4)),
@@ -731,8 +723,8 @@ mod tests {
             ["Counter", "Counter.value", "Counter.new", "Counter.bump"]
         );
 
-        // The same list as commands sorts, because there the order is however the
-        // registry happened to be written.
+        // The same list as commands is sorted, because the registry order is
+        // arbitrary.
         let commands = Prompt::list(PromptKind::Commands, choices);
         assert_eq!(
             titles(&commands),

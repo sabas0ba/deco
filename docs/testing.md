@@ -2,20 +2,9 @@
 
 deco uses unit tests for individual components and end-to-end scenarios for interactions between components.
 
-**Unit tests** sit next to the code, one per crate, and there are about 1,700 of
-them. They build the struct they are about, call the function they are about, and
-assert on what came back. That is where most of the confidence in this codebase
-comes from: `deco-keymap` resolves a chord correctly, `deco-config` layers a
-`settings.json` correctly, `deco_tui::render` lays a session out correctly.
+**Unit tests** are next to the code in each crate, and there are about 1,700 of them. Each builds the struct under test, calls the function under test, and asserts on the result. Most of the confidence in this codebase comes from them: they check, for example, that `deco-keymap` resolves a chord, `deco-config` layers a `settings.json`, and `deco_tui::render` lays out a session correctly.
 
-**End-to-end scenarios** live in [`crates/deco-e2e`](../crates/deco-e2e) and
-there are about a hundred and twenty. They start the editor on a machine the test built, press
-keys, and look at the screen and the disk. They exist because the way an editor
-breaks in practice is rarely one function returning the wrong value. It is a
-`settings.json` read from the wrong directory, a keybinding that resolved but
-never reached the command, a file saved to a path nobody meant, a frame drawn
-taller than the terminal it was painted into. Each of the parts is right and the
-editor is wrong.
+**End-to-end scenarios** are in [`crates/deco-e2e`](../crates/deco-e2e), and there are about a hundred and twenty. They start the editor on a machine that the test set up, press keys, and check the screen and the disk. Editor defects in practice are rarely one function returning a wrong value. More often, a `settings.json` is read from the wrong directory, a keybinding resolves but never reaches its command, a file is saved to an unintended path, or a frame is drawn taller than the terminal. In these cases each component is correct, but the editor as a whole is not.
 
 ```console
 $ cargo test --workspace          # both, and what CI runs
@@ -43,49 +32,21 @@ fn a_workspace_settings_file_beats_the_users_own() {
 
 Scenarios exercise four parts of the editor:
 
-- **The configuration directory.** `user_settings`, `vscode_settings`,
-  `workspace_settings` and `user_keybindings` write JSON to a temporary home in
-  the layout the platform really uses, and the session is built by
-  `deco::startup::session` — the same call the binary makes. Nothing is handed a
-  pre-built `Settings`.
-- **The workspace.** `file` writes files to disk. Quick open walks them,
-  search-in-files greps them, saving overwrites them, and `editor.on_disk(…)` is
-  what a `cat` would show.
-- **The keystrokes.** `press("ctrl+shift+p")` builds the crossterm `KeyEvent` a
-  terminal would send, hands it to `deco_tui::keys::chord_from_event`, and then
-  to `deco_tui::Driver` — the editor's own event loop with the terminal taken out
-  of it. A scenario cannot reach a command except by pressing keys bound to it.
-- **The screen.** `editor.screen()` renders a frame at the terminal size the
-  scenario asked for and applies the same substitution `paint` applies on the way
-  to a terminal. `assert_shows`, `assert_status` and `assert_fits` print the whole
-  screen when they fail, framed, because the useful question about a missing
-  string is never "is it missing" but "what is there instead".
+- **The configuration directory.** `user_settings`, `vscode_settings`, `workspace_settings` and `user_keybindings` write JSON to a temporary home directory in the platform's actual layout, and the session is built by `deco::startup::session`, the same call the binary makes. No test code passes a pre-built `Settings`.
+- **The workspace.** `file` writes files to disk. Quick open lists them, search-in-files searches them, saving overwrites them, and `editor.on_disk(…)` returns what `cat` would show.
+- **The keystrokes.** `press("ctrl+shift+p")` builds the crossterm `KeyEvent` a terminal would send, passes it to `deco_tui::keys::chord_from_event`, and then to `deco_tui::Driver`, the editor's own event loop without the terminal. A scenario can run a command only by pressing keys bound to it.
+- **The screen.** `editor.screen()` renders a frame at the terminal size the scenario requested and applies the same substitution that `paint` applies before output to a terminal. `assert_shows`, `assert_status` and `assert_fits` print the whole screen, framed, when they fail, because when an expected string is missing, the useful information is what is shown instead.
 
 ## What it deliberately does not do
 
-- **No terminal.** Nothing here proves crossterm writes what it is queued.
-  `paint` has its own unit tests for that.
-- **No process environment.** It is shared by every test thread, so mutating it
-  cannot be done safely. Home, the platform's configuration layout, which
-  platform's keybindings win and the working directory are all fields on
-  `Scenario` — which is also why a scenario can be a Mac while running on Linux.
-- **No line-ending default.** With `files.eol` left at `auto` a new file's ending
-  follows the platform, so a scenario asserting the bytes of a file it created
-  names the ending it expects. A scenario that cares sets `files.eol` itself.
-- **No language servers, unless asked.** A machine with `rust-analyzer` installed
-  is a different machine from one without, and a scenario about saving a file
-  should not start failing because of something it never mentioned. The default
-  machine has none, said the way a user would say it —
-  `"deco.lsp.enabled": false`.
+- **No terminal.** These tests do not verify that crossterm writes what is queued. `paint` has its own unit tests for that.
+- **No process environment.** The process environment is shared by all test threads, so it cannot be modified safely. The home directory, the platform's configuration layout, the platform whose keybindings apply and the working directory are all fields on `Scenario`, so a scenario can simulate a Mac while running on Linux.
+- **No line-ending default.** With `files.eol` left at `auto`, a new file's line ending follows the platform, so a scenario that asserts the bytes of a file it created specifies the ending it expects. A scenario that depends on the ending sets `files.eol` itself.
+- **No language servers, unless requested.** A machine with `rust-analyzer` installed behaves differently from one without it, and a scenario about saving a file should not fail because of something it does not mention. The default machine has none, configured the way a user would configure it: `"deco.lsp.enabled": false`.
 
-  A scenario that *is* about a language server asks for one with
-  `Scenario::language_server("rust", "full")`, which writes a `deco.lsp.servers`
-  definition pointing at `examples/language_server.rs`, a test server subprocess communicating over LSP pipes. The fake server in `deco-lsp` instead exercises protocol and process failure handling.
+  A scenario that tests a language server requests one with `Scenario::language_server("rust", "full")`, which writes a `deco.lsp.servers` definition pointing at `examples/language_server.rs`, a test server subprocess communicating over LSP pipes. The fake server in `deco-lsp` instead exercises protocol and process failure handling.
 
-  Waiting on one needs real time, so `Editor::settle_until` sleeps and polls the
-  editor's own idle path. `Editor::wait` does not — it advances only the clock
-  the editor is handed, which is right for `files.autoSave` and useless for a
-  subprocess.
+  Waiting for a server requires real time, so `Editor::settle_until` sleeps and polls the editor's idle path. `Editor::wait` does not sleep; it only advances the clock passed to the editor, which works for `files.autoSave` but not for a subprocess.
 
 ## Where the scenarios are
 
@@ -103,78 +64,30 @@ Scenarios exercise four parts of the editor:
 Remote sessions have scenarios of their own in
 [`crates/deco/tests/remote_editor.rs`](../crates/deco/tests/remote_editor.rs),
 where `CARGO_BIN_EXE_deco` names the binary to run as the remote environment.
-`Scenario::remote_file` puts files on a directory this machine does not have, so
-that a file arriving over the connection is one the local disk could not have
-supplied.
+`Scenario::remote_file` places files in a directory that the local side does not have, so a file that opens must have arrived over the connection.
 
-A scenario that fails leaves its directory on disk and prints where it is, so the
-first question — what was actually in that home directory — can be answered by
-looking.
+A failing scenario keeps its directory on disk and prints its location, so you can inspect what the home directory actually contained.
 
 ## What this found
 
-The suite was written against an editor whose parts were already well tested, and
-it still turned up five defects that no unit test could have seen, because each
-one is a disagreement between two components rather than a fault in either:
+The suite was written for an editor whose components already had good unit test coverage, and it still found five defects that unit tests could not detect, because each was a mismatch between two components rather than a fault in one:
 
-- **Workspace settings were never loaded for a relative path on the command
-  line.** The walk that looks for a `.git` or a `.vscode` above the file asked the
-  filesystem about a relative path, so every question it asked was a question
-  about the process's working directory. It reached the right answer only for as
-  long as that directory and the one the path was relative to were the same.
-- **Save-as could open the same file twice.** A relative path typed into the save
-  prompt was stored unresolved, and every other way of opening a file produces an
-  absolute one — so saving an untitled buffer as `notes.txt` and then choosing
-  `notes.txt` from quick open opened it again, in a second buffer with a second
-  undo history, and whichever tab was saved last won.
-- **The frame could be taller than the terminal.** Eight palette choices, an input
-  line and a status bar are ten rows; a terminal can be five. Painting ten rows
-  into five scrolls a real terminal and walks the editor off the screen. The
-  prompt's list now gives up the rows it does not have.
-- **A one-row terminal drew two rows.** The unit test for it said in a comment
-  that the status bar wins, and then asserted that both were drawn.
-- **A seeded prompt appended to its seed instead of replacing it.** Save As and
-  Find in Files open with an answer already in them, and the one-line input had
-  no selection — so the next key appended: `ctrl+shift+f` on `fn` and typing
-  `println` searched for `fnprintln`. The unit tests for the input and for the
-  seeding each passed; only pressing the keys in order shows what they add up
-  to. Fixed by giving the field the one selection it needs, all of it.
+- **Workspace settings were never loaded for a relative path on the command line.** The search for a `.git` or `.vscode` directory above the file queried the filesystem with a relative path, so every lookup was resolved against the process's working directory. It found the correct result only when that directory was the one the path was relative to.
+- **Save-as could open the same file twice.** A relative path entered in the save prompt was stored unresolved, while every other way of opening a file produces an absolute path. Saving an untitled buffer as `notes.txt` and then choosing `notes.txt` from quick open therefore opened it again, in a second buffer with a second undo history, and the tab saved last overwrote the other.
+- **The frame could be taller than the terminal.** Eight palette choices, an input line and a status bar take ten rows, but a terminal can have five. Drawing ten rows into five scrolls a real terminal and moves the editor off the screen. The prompt's list now shrinks to the rows available.
+- **A one-row terminal drew two rows.** A comment in the unit test stated that the status bar takes priority, but the test asserted that both were drawn.
+- **A seeded prompt appended to its initial text instead of replacing it.** Save As and Find in Files open with initial text, and the one-line input had no selection, so the next key appended to it: `ctrl+shift+f` on `fn` followed by typing `println` searched for `fnprintln`. The unit tests for the input and for the seeding each passed; only pressing the keys in sequence showed the defect. Fixed by giving the field a selection that covers all of its text.
 
-And one it found while the suite was being made to run on Windows:
+One more was found while making the suite run on Windows:
 
-- **`files.eol` changed existing line endings but was ignored for new files.** VS Code treats it
-  as the ending a *new* file gets, leaving existing files with the ending they
-  already had. deco applied it in `Document::from_file`, so opening a CRLF file
-  with `"files.eol": "\n"` converted it and the next save wrote every line back
-  changed — while `Document::untitled` built a `Buffer::new()` and never looked at
-  the setting at all, so the one file it *should* have decided for ignored it.
-  Fixed: the setting now applies where a buffer has no ending of its own to keep.
+- **`files.eol` changed existing line endings but was ignored for new files.** VS Code applies it only to *new* files and keeps the existing ending of other files. deco applied it in `Document::from_file`, so opening a CRLF file with `"files.eol": "\n"` converted it and the next save rewrote every line. Meanwhile, `Document::untitled` built a `Buffer::new()` without reading the setting, so the setting was ignored in the one case it should control. Fixed: the setting now applies where a buffer has no existing ending to keep.
 
 ## What the second round found
 
-The scenarios above deliberately turned language servers off and left remote
-sessions to their own protocol tests. Both gaps were where the next defects were:
+The scenarios above deliberately disabled language servers and left remote sessions to their own protocol tests. The next defects were in those two areas:
 
-- **The completion list was never drawn.** `overlay_suggest` renders one beside
-  the cursor and has seven unit tests; the event loop asked the renderer for a
-  frame with a *hover* in it, and there is no way to mention a completion list to
-  that function. The list was fetched, filtered, navigable and invisible. Fixed.
-- **`ctrl+space` cannot reach Trigger Suggest in a terminal.** A terminal sends
-  NUL for it; crossterm turns that into `Char(' ')` with Control; deco mapped
-  only `KeyCode::Null` to `space`, and the binding parsed to `Named(Space)`. The
-  two never met. The GUI mapped its space bar the other way, so the frontends
-  disagreed about what a `keybindings.json` meant — and an unbound space typed
-  nothing there, because typing is decided by matching `Key::Char`. Fixed:
-  `space` is one key with one representation, the character.
-- **A refused server is not mentioned when the user has one of their own.**
-  `Lsp::attach` collected refusals and reported them after the loop, and the loop
-  returns as soon as a trusted candidate starts — so the disclosure was reached
-  only when there was nothing else to try. Fixed: the refusals are named before
-  anything is tried, and they go in the problem list, which `attach` running on
-  every tab switch cannot make repeat.
-- **Save-as in a remote session renames the document to a local path**, which
-  every later save then asks the server to write, outside the workspace it
-  serves. Fixed: the typed name is the remote environment's and the write goes through the
-  connection.
-- **Revert in a remote session reads this machine**, at the remote environment's relative
-  path. Fixed: it reads through the connection too.
+- **The completion list was never drawn.** `overlay_suggest` renders the list beside the cursor and has seven unit tests, but the event loop requested frames containing only a *hover*, and that function had no way to receive a completion list. The list was fetched, filtered and navigable, but not visible. Fixed.
+- **`ctrl+space` cannot reach Trigger Suggest in a terminal.** A terminal sends NUL for it, crossterm converts that to `Char(' ')` with Control, deco mapped only `KeyCode::Null` to `space`, and the binding parsed to `Named(Space)`, so the two never matched. The GUI mapped its space bar the other way, so the frontends interpreted a `keybindings.json` differently, and an unbound space typed nothing in the GUI, because typing is decided by matching `Key::Char`. Fixed: `space` is one key with one representation, the character.
+- **A refused server is not mentioned when the user has one of their own.** `Lsp::attach` collected refusals and reported them after the loop, but the loop returns as soon as a trusted candidate starts, so refusals were reported only when no other candidate was available. Fixed: refusals are reported before any candidate is tried, and they go into the problem list, so `attach` running on every tab switch does not repeat them.
+- **Save-as in a remote session renames the document to a local path**, and every later save then asks the server to write that path, outside the workspace it serves. Fixed: the entered name is interpreted on the remote environment and the write goes through the connection.
+- **Revert in a remote session reads this machine**, at the remote environment's relative path. Fixed: it also reads through the connection.

@@ -2,12 +2,12 @@
 //!
 //! Like the terminal frontend's renderer, this is a pure function of the
 //! session and the window size. The GPU code in [`crate::app`] only uploads
-//! what this produces, which keeps the parts that can be tested in CI separate
-//! from the parts that need a graphics device.
+//! what this produces. This separates the code that can be tested in CI from
+//! the code that needs a graphics device.
 //!
 //! Positions assume a monospace font, so a column is a fixed number of pixels.
-//! Proportional fonts need the shaper's own advances; glyphon can supply them,
-//! and this module is where that would go.
+//! Proportional fonts need the shaper's advances. glyphon can supply them, and
+//! that support would be added in this module.
 
 use deco_core::movement::display_column;
 use deco_editor::Session;
@@ -66,12 +66,12 @@ pub struct LaidOutLine {
     pub y: f32,
     /// The gutter label, already padded.
     pub gutter: String,
-    /// What git says about this line, if anything.
+    /// The git status of this line, if any.
     ///
-    /// Computed rather than painted, like the selection rectangles beside it:
-    /// this frontend draws text and a caret so far. Kept here so that when it
-    /// grows the rest, the marks are already the same answer the terminal
-    /// draws rather than a second implementation of the question.
+    /// Computed but not yet drawn, like the selection rectangles. This frontend
+    /// currently draws only text and a caret. The marks are computed here so
+    /// that, once this frontend draws them, they match the terminal without a
+    /// second implementation.
     pub mark: Option<deco_scm::Mark>,
     /// The line's text, tabs expanded.
     pub text: String,
@@ -94,11 +94,10 @@ pub struct Layout {
     pub text_left: f32,
     /// The side bar and panel, as text.
     ///
-    /// Text because text is all this frontend can paint: there is no quad
-    /// pipeline here yet, so the rules are drawn with the same box-drawing
-    /// characters the terminal uses rather than as filled rectangles. It looks
-    /// like the terminal's chrome because it *is* the terminal's chrome, which
-    /// is a better answer than nothing until this frontend can fill a rectangle.
+    /// This frontend can only draw text because it has no quad pipeline yet.
+    /// The rules therefore use the same box-drawing characters as the terminal
+    /// instead of filled rectangles, and the chrome matches the terminal's until
+    /// this frontend can fill rectangles.
     pub chrome: Vec<ChromeLine>,
     /// Colours resolved from the theme.
     pub colors: Colors,
@@ -134,7 +133,7 @@ pub struct Colors {
     pub cursor: Rgba,
     /// A line that is not in the committed file.
     pub added: Rgba,
-    /// A line that is there and says something else.
+    /// A line that differs from the committed file.
     pub modified: Rgba,
     /// Where lines were removed.
     pub deleted: Rgba,
@@ -155,9 +154,9 @@ impl Colors {
             gutter_active: theme
                 .color("editorLineNumber.activeForeground")
                 .unwrap_or(foreground),
-            // The git marks, through `deco-theme`'s fallback chain — a theme
-            // that says nothing about them lands on its own diagnostic colours
-            // before it ever reaches this default.
+            // The git marks use `deco-theme`'s fallback chain. A theme that
+            // does not define them falls back to its diagnostic colours before
+            // this default is used.
             added: theme
                 .color("editorGutter.addedBackground")
                 .unwrap_or(foreground),
@@ -206,9 +205,8 @@ pub fn layout(session: &Session, width: f32, height: f32, metrics: Metrics) -> L
     let tab_size = session.document.settings.tab_size;
     let colors = Colors::from_session(session);
 
-    // Looked up once rather than per line: the answer is one diff for the
-    // whole document, and asking it per row would be the same lookup repeated
-    // for every row on screen.
+    // Looked up once rather than per line, because there is one diff for the
+    // whole document.
     let marks = session
         .document
         .path
@@ -222,8 +220,8 @@ pub fn layout(session: &Session, width: f32, height: f32, metrics: Metrics) -> L
     } else {
         digits + 2
     };
-    // The window in cells, so the session can divide it the same way the
-    // terminal's is divided — the arithmetic is shared, only the units differ.
+    // The window size in cells, so the session divides it the same way as the
+    // terminal. The arithmetic is shared; only the units differ.
     let columns = (width / metrics.cell_width).floor().max(0.0) as usize;
     let cell_rows = (height / metrics.line_height).floor().max(0.0) as usize;
     let regions = session.regions_for(columns, cell_rows);
@@ -306,7 +304,7 @@ pub fn layout(session: &Session, width: f32, height: f32, metrics: Metrics) -> L
     }
 
     let cursor_row = cursor_line.checked_sub(session.view.scroll_top);
-    // A region with the keyboard means the text does not have it.
+    // No caret is drawn when another region has keyboard focus.
     let in_editor = session.focus() == deco_editor::Focus::Editor;
     let on_screen = in_editor && cursor_row.is_some_and(|row| row < rows);
     let caret = on_screen.then(|| {
@@ -318,7 +316,7 @@ pub fn layout(session: &Session, width: f32, height: f32, metrics: Metrics) -> L
         Rect {
             x: text_left + column * metrics.cell_width,
             y: origin_y + cursor_row.unwrap_or(0) as f32 * metrics.line_height,
-            // A thin caret regardless of DPI; block cursors are a setting away.
+            // A thin caret regardless of DPI. A block cursor would be a setting.
             width: (metrics.cell_width * 0.12).max(1.0),
             height: metrics.line_height,
         }
@@ -368,8 +366,8 @@ fn chrome_lines(
             y,
         });
         // The same rows the terminal draws, positioned by this frontend's
-        // metrics — the model decided what they say, and two frontends
-        // disagreeing about that is the thing keeping it in the session avoids.
+        // metrics. The session decides their content, so both frontends show
+        // the same rows.
         if let Some(explorer) = explorer {
             let head = deco_editor::session::EXPLORER_CHROME_ROWS;
             for (index, row) in explorer
@@ -399,8 +397,8 @@ fn chrome_lines(
             y,
         });
     }
-    // One line per row rather than one tall glyph: a box-drawing character is a
-    // cell, and stretching it would be a different shape.
+    // One glyph per row rather than one tall glyph, because a box-drawing
+    // character fills one cell and stretching it would change its shape.
     if let Some(column) = regions.side_bar_rule {
         let height = regions.side_bar.map(|rect| rect.height).unwrap_or_default();
         for row in 0..height {
@@ -469,8 +467,8 @@ mod tests {
             laid.text_left,
             plain.text_left
         );
-        // The window is divided in cells and painted in pixels, and the two have
-        // to agree about where the edge is.
+        // The window is divided in cells and drawn in pixels. Both must place
+        // the edge at the same position.
         let bar = with_chrome(true, false)
             .regions()
             .side_bar
@@ -483,8 +481,8 @@ mod tests {
 
     #[test]
     fn the_panel_takes_rows_off_the_bottom() {
-        // A file long enough to fill the window, so what stops the layout is the
-        // editor's height rather than the end of the document.
+        // The file is long enough to fill the window, so the layout is limited
+        // by the editor's height rather than the end of the document.
         let mut session = session(&"x\n".repeat(100));
         session.resize(100, 20);
         session.run("workbench.action.togglePanel", None, 0);
@@ -594,10 +592,9 @@ mod tests {
 
     #[test]
     fn the_git_marks_are_worked_out_even_though_they_are_not_painted_yet() {
-        // Computed, like the selection rectangles beside them. When this
-        // frontend grows the rest of its drawing, the marks are already the
-        // same answer the terminal shows rather than a second implementation
-        // of the question.
+        // Computed but not drawn, like the selection rectangles. Once this
+        // frontend draws them, they match the terminal without a second
+        // implementation.
         let mut session = session("one\nTWO\nthree\nnew\n");
         session.fill_committed(
             session.document.path.clone().expect("a path"),

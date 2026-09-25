@@ -1,17 +1,17 @@
-//! Which settings file wins, and what happens when one of them is wrong.
+//! Which settings file takes precedence, and what happens when one is invalid.
 //!
-//! deco's headline claim is that an existing VS Code configuration means the
-//! same thing here. That claim is about files in directories, so these scenarios
-//! put files in directories rather than building a [`deco_config::Settings`] by
-//! hand — the layering is only true if the reading is.
+//! deco reads an existing VS Code configuration with the same meaning. That
+//! configuration consists of files in directories, so these scenarios write
+//! files to directories rather than building a [`deco_config::Settings`] by
+//! hand. Correct layering depends on correct reading of the files.
 
 use deco_config::paths::Layout;
 use deco_e2e::Scenario;
 
 #[test]
 fn a_vs_code_configuration_is_read_when_deco_has_none_of_its_own() {
-    // Nothing copied, nothing migrated: a user who has never run deco before
-    // gets their own editor's settings.
+    // Without copying or migration, a user who has never run deco gets their
+    // VS Code settings.
     let scenario = Scenario::new("vscode-import")
         .language_servers(true)
         .vscode_settings(r#"{ "editor.tabSize": 3, "editor.insertSpaces": true }"#)
@@ -25,10 +25,10 @@ fn a_vs_code_configuration_is_read_when_deco_has_none_of_its_own() {
 
 #[test]
 fn decos_own_settings_file_replaces_vs_codes_rather_than_merging_with_it() {
-    // The rule is "deco's directory is preferred", not "the two are merged". A
-    // key VS Code sets and deco's file does not is therefore *not* inherited, and
-    // that is worth pinning: merging would be a defensible design, and silently
-    // half-merging would not.
+    // deco's directory is preferred; the two files are not merged. A key set by
+    // VS Code but not by deco's file is therefore not inherited. This test
+    // records that behaviour: a full merge would be a valid design, but a
+    // partial merge would not.
     let scenario = Scenario::new("shadowing")
         .vscode_settings(r#"{ "editor.tabSize": 3, "editor.insertSpaces": true }"#)
         .user_settings(r#"{ "editor.insertSpaces": true }"#)
@@ -45,8 +45,8 @@ fn decos_own_settings_file_replaces_vs_codes_rather_than_merging_with_it() {
 
 #[test]
 fn a_workspace_settings_file_beats_the_users_own() {
-    // A repository that indents by two indents by two, whatever the person
-    // cloning it prefers globally.
+    // A repository's indentation setting applies regardless of the user's
+    // global setting.
     let scenario = Scenario::new("workspace-layer")
         .user_settings(r#"{ "editor.tabSize": 8, "editor.insertSpaces": true }"#)
         .workspace_settings(r#"{ "editor.tabSize": 2 }"#)
@@ -72,8 +72,8 @@ fn a_deco_workspace_file_shadows_a_vs_code_one() {
 
 #[test]
 fn the_workspace_is_found_by_walking_up_to_a_marker() {
-    // The file is three directories down and the settings are at the root, which
-    // is the shape of every real project.
+    // The file is three directories deep and the settings are at the root, as in
+    // a typical project.
     let scenario = Scenario::new("workspace-walk")
         .user_settings(r#"{ "editor.insertSpaces": true }"#)
         .workspace_settings(r#"{ "editor.tabSize": 2 }"#)
@@ -86,7 +86,7 @@ fn the_workspace_is_found_by_walking_up_to_a_marker() {
 
 #[test]
 fn comments_and_trailing_commas_in_a_settings_file_are_not_errors() {
-    // Every real `settings.json` has them, because VS Code writes them.
+    // VS Code writes both, so real `settings.json` files contain them.
     let scenario = Scenario::new("jsonc")
         .user_settings(
             r#"{
@@ -106,8 +106,7 @@ fn comments_and_trailing_commas_in_a_settings_file_are_not_errors() {
 
 #[test]
 fn a_broken_settings_file_is_reported_and_the_editor_still_opens_the_file() {
-    // The failure mode that matters: a typo in `settings.json` must not be the
-    // difference between having an editor and not having one.
+    // A typo in `settings.json` must not prevent the editor from starting.
     let scenario = Scenario::new("broken-settings")
         .user_settings(r#"{ "editor.tabSize": }"#)
         .file("a.txt", "hello\n");
@@ -122,7 +121,7 @@ fn a_broken_settings_file_is_reported_and_the_editor_still_opens_the_file() {
         editor.problems()
     );
     editor.screen().assert_row_shows(0, "hello");
-    // And the built-in defaults are still in force.
+    // The built-in defaults still apply.
     editor.press("tab");
     assert_eq!(editor.text(), "    hello\n");
 }
@@ -136,16 +135,16 @@ fn a_setting_with_the_wrong_type_does_not_take_the_editor_down_with_it() {
 
     editor.press("tab");
     editor.press("ctrl+s");
-    // Whatever it decides, it has to decide something and say so rather than
-    // panicking or writing nothing.
+    // The exact behaviour is not specified, but the editor must not panic and
+    // must write the file.
     assert!(editor.exists("a.txt"));
     editor.screen().assert_fits();
 }
 
 #[test]
 fn clean_ignores_every_settings_file_on_the_machine() {
-    // `--clean` is the flag someone is told to try when deco misbehaves, so it
-    // has to genuinely bypass the configuration rather than merely most of it.
+    // `--clean` is used for troubleshooting, so it must bypass all
+    // configuration, not only part of it.
     let scenario = Scenario::new("clean")
         .language_servers(true)
         .user_settings(r#"{ "editor.tabSize": 2, "editor.insertSpaces": true }"#)
@@ -159,8 +158,8 @@ fn clean_ignores_every_settings_file_on_the_machine() {
 
 #[test]
 fn print_config_says_where_the_answer_came_from() {
-    // The flag exists to answer "why is my setting not applying", so the answer
-    // has to include the value that actually won.
+    // The flag is for finding out why a setting is not applied, so the report
+    // must include the effective value.
     let scenario = Scenario::new("print-config")
         .user_settings(r#"{ "editor.tabSize": 8, "editor.insertSpaces": true }"#)
         .workspace_settings(r#"{ "editor.tabSize": 2 }"#)
@@ -174,9 +173,8 @@ fn print_config_says_where_the_answer_came_from() {
 
 #[test]
 fn a_macos_machine_reads_its_own_configuration_directory() {
-    // The layouts differ per platform, and a scenario can be any of them —
-    // otherwise this rule is only ever exercised on the runner that happens to
-    // be that platform.
+    // The layouts differ per platform, and a scenario can select any of them.
+    // Otherwise this rule would only be tested on a runner of that platform.
     let scenario = Scenario::new("macos-layout")
         .layout(Layout::MacOs)
         .user_settings(r#"{ "editor.tabSize": 2, "editor.insertSpaces": true }"#)
@@ -201,10 +199,10 @@ fn a_machine_with_no_configuration_at_all_starts_on_the_defaults() {
 
 #[test]
 fn a_new_file_gets_the_platforms_own_ending_when_the_setting_says_auto() {
-    // `files.eol: "auto"` is the default, and what it means depends on the
-    // machine — LF on Unix, CRLF on Windows. Every other scenario pins the key so
-    // that it can assert bytes without asserting about the runner; this is the one
-    // that is about the runner, and it says so.
+    // `files.eol: "auto"` is the default, and its meaning depends on the
+    // platform: LF on Unix, CRLF on Windows. Other scenarios set the key so that
+    // their byte assertions do not depend on the runner. This scenario tests
+    // the platform-dependent behaviour.
     let scenario = Scenario::new("eol-auto").user_settings(r#"{ "files.eol": "auto" }"#);
     let mut editor = scenario.launch(&["new.txt"]);
 
@@ -244,8 +242,8 @@ fn word_wrap_from_the_settings_file_wraps_a_long_line_on_screen() {
 
     let screen = editor.screen();
     screen.assert_fits();
-    // Wrapped means the text occupies several rows rather than being cut off at
-    // the right-hand edge.
+    // When wrapped, the text continues on the following rows instead of being
+    // cut off at the right edge.
     assert!(
         screen.line(1).contains("word"),
         "the line should continue onto the next row{}",

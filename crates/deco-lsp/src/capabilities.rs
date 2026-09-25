@@ -1,23 +1,21 @@
 //! What the editor tells a server it can do, and what the server answers.
 //!
-//! Two things here are worth more attention than their size suggests.
+//! Two parts of this module need particular care.
 //!
-//! **Position encoding.** LSP counts a `character` in UTF-16 code units by
-//! default — a decision inherited from VS Code being written in JavaScript —
-//! and [`deco_core::Position`] counts the same way, so the default costs
-//! nothing. Servers may negotiate UTF-8 instead, and a mismatch is invisible
-//! until it is not: every position is right until the first line containing an
-//! emoji or a CJK character, and then hovers land one character off and edits
-//! land in the wrong place. deco therefore advertises exactly what it can
-//! honour and treats a server that answers with something else as an error
-//! rather than guessing. See [`negotiate_encoding`].
+//! **Position encoding.** By default LSP counts a `character` in UTF-16 code
+//! units, because VS Code is written in JavaScript. [`deco_core::Position`]
+//! counts the same way, so the default needs no conversion. Servers may
+//! negotiate UTF-8 instead. A mismatch is not visible at first: positions are
+//! correct until the first line containing an emoji or a CJK character, after
+//! which hovers are off by one character and edits are applied in the wrong
+//! place. deco therefore advertises only the encodings it supports and treats
+//! any other server choice as an error. See [`negotiate_encoding`].
 //!
-//! **Polymorphic capability fields.** The specification lets a server answer
-//! most provider fields with either a boolean or an options object, and
-//! `textDocumentSync` with either a number or a struct. Real servers use every
-//! combination. Reading `hoverProvider` as a bool alone means silently
-//! disabling hover for every server that sends `{"workDoneProgress": true}`,
-//! which is a large fraction of them.
+//! **Polymorphic capability fields.** The specification allows most provider
+//! fields to be either a boolean or an options object, and `textDocumentSync`
+//! to be either a number or a struct. Servers use every combination. Reading
+//! `hoverProvider` only as a bool would disable hover for every server that
+//! sends `{"workDoneProgress": true}`, which many servers do.
 
 use serde::{Deserialize, Serialize};
 
@@ -52,10 +50,10 @@ impl PositionEncoding {
 pub enum NegotiationError {
     /// The server chose an encoding the client never offered.
     ///
-    /// Fatal on purpose. Continuing would mean every position sent to or
-    /// received from this server is wrong on any line containing a character
-    /// outside the Basic Multilingual Plane — which is a corruption bug, and
-    /// one that only shows up in other people's languages.
+    /// This error is fatal. Otherwise every position sent to or received from
+    /// this server would be wrong on any line containing a character outside
+    /// the Basic Multilingual Plane, which corrupts documents. The problem
+    /// does not appear with ASCII-only text.
     #[error("server chose position encoding {chosen:?}, which was not offered ({offered})")]
     UnofferedEncoding {
         /// What the server asked for.
@@ -67,10 +65,10 @@ pub enum NegotiationError {
 
 /// The encodings deco can speak, most preferred first.
 ///
-/// One entry, because [`deco_core::Buffer`] indexes in UTF-16 and anything else
-/// would need a conversion on every position in both directions. The list shape
-/// is kept so that adding UTF-8 later is a change to this constant rather than
-/// to the negotiation logic.
+/// One entry, because [`deco_core::Buffer`] indexes in UTF-16 and any other
+/// encoding would need a conversion on every position in both directions. It
+/// is still a list so that adding UTF-8 later only changes this constant, not
+/// the negotiation logic.
 pub const SUPPORTED_ENCODINGS: &[PositionEncoding] = &[PositionEncoding::Utf16];
 
 /// Resolves the encoding from what a server put in its `initialize` result.
@@ -102,8 +100,8 @@ pub fn negotiate_encoding(
 pub enum TextDocumentSyncKind {
     /// The server wants no change notifications at all.
     None,
-    /// The whole document on every change. Simple, and the safe default for a
-    /// server that did not say.
+    /// The whole document on every change. This is the safe default when the
+    /// server does not specify a kind.
     #[default]
     Full,
     /// Only the ranges that changed.
@@ -157,18 +155,18 @@ pub struct ServerCapabilities {
 pub struct CodeActionOptions {
     /// Whether `codeAction/resolve` can fill in an action's edit.
     ///
-    /// Servers that compute expensive refactorings send the titles first and the
-    /// edits only for the one that is chosen. Without this the actions that
-    /// arrive without an edit are ones deco can only decline.
+    /// Servers that compute expensive refactorings send the titles first and
+    /// the edit only for the chosen action. Without resolve support, deco
+    /// cannot apply actions that arrive without an edit.
     pub resolve_provider: bool,
 }
 
 /// What a server offers for semantic tokens.
 ///
-/// The legend is not optional in practice: the wire format is integers, and
-/// without the server's own lists there is no way to turn a `3` into
-/// `"function"`. A server that offers the feature without a legend is offering
-/// something unreadable, and is treated as offering nothing.
+/// The legend is required in practice. The wire format uses integers, and the
+/// server's lists are needed to map a `3` to `"function"`. If a server offers
+/// the feature without a legend, the tokens cannot be interpreted, so the
+/// feature is treated as not offered.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SemanticTokensOptions {
     /// Token type names, indexed by the integer on the wire.
@@ -187,8 +185,8 @@ pub struct SaveOptions {
 /// How completion is triggered.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CompletionOptions {
-    /// Characters that open a completion list without the user asking, e.g.
-    /// `.` and `::`.
+    /// Characters that open a completion list automatically, e.g. `.` and
+    /// `::`.
     pub trigger_characters: Vec<String>,
     /// Whether a selected item must be sent back to `completionItem/resolve`
     /// before its documentation and edits are known.
@@ -206,11 +204,11 @@ pub struct RenameOptions {
 impl ServerCapabilities {
     /// Reads the `capabilities` object of an `initialize` result.
     ///
-    /// Never fails: an unrecognised or malformed field means "the server did
-    /// not offer this", and a missing feature degrades the editor rather than
-    /// refusing the connection. The one thing that *can* fail —
-    /// [`negotiate_encoding`] — is checked separately by the caller, because
-    /// getting it wrong corrupts documents rather than merely disabling a menu.
+    /// Never fails. An unrecognised or malformed field is treated as not
+    /// offered, and a missing feature disables only that feature instead of
+    /// rejecting the connection. The caller checks [`negotiate_encoding`], the
+    /// only part that *can* fail, separately, because an encoding error
+    /// corrupts documents instead of only disabling a feature.
     pub fn from_json(value: &serde_json::Value) -> Self {
         let sync = value.get("textDocumentSync");
         let (sync_kind, open_close, save) = read_sync(sync);
@@ -227,8 +225,8 @@ impl ServerCapabilities {
             hover: is_provider(value.get("hoverProvider")),
             definition: is_provider(value.get("definitionProvider")),
             references: is_provider(value.get("referencesProvider")),
-            // `.map` over the raw lookup would be wrong: `"completionProvider":
-            // null` is present-but-disabled, and would otherwise be read as an
+            // `.map` over the raw lookup would be wrong. `"completionProvider":
+            // null` is present but disabled, and would otherwise be read as an
             // offer with no options.
             completion: value
                 .get("completionProvider")
@@ -261,9 +259,9 @@ impl ServerCapabilities {
 /// Reads `semanticTokensProvider`.
 ///
 /// `None` unless the server offers the **full** document request and a legend.
-/// deco has no use for `range`-only support: it highlights the visible lines of a
-/// document it has already lexed, and asking per range would mean a request per
-/// scroll.
+/// deco does not use `range`-only support. It highlights the visible lines of a
+/// document it has already lexed, and range requests would require a request
+/// on every scroll.
 fn read_semantic_tokens(value: Option<&serde_json::Value>) -> Option<SemanticTokensOptions> {
     let options = value.filter(|v| !v.is_null())?;
     // `full` is `boolean | { delta?: boolean }`, and absent means not offered.
@@ -290,8 +288,8 @@ fn read_semantic_tokens(value: Option<&serde_json::Value>) -> Option<SemanticTok
     };
     let token_types = names("tokenTypes");
     if token_types.is_empty() {
-        // Nothing could be resolved, so the feature would produce spans with no
-        // type. Better to report it as unavailable than to colour by index.
+        // No type could be resolved, so the feature would produce spans with no
+        // type. Report it as unavailable instead of colouring by index.
         return None;
     }
     Some(SemanticTokensOptions {
@@ -305,8 +303,8 @@ fn is_provider(value: Option<&serde_json::Value>) -> bool {
     match value {
         None | Some(serde_json::Value::Null) => false,
         Some(serde_json::Value::Bool(enabled)) => *enabled,
-        // An options object means the feature is on and configured. Reading
-        // only the boolean form here is the bug this function exists to avoid.
+        // An options object means the feature is enabled with options. This
+        // function exists so that callers do not read only the boolean form.
         Some(serde_json::Value::Object(_)) => true,
         Some(_) => false,
     }
@@ -351,9 +349,8 @@ fn read_sync(
                 .as_i64()
                 .and_then(TextDocumentSyncKind::from_number)
                 .unwrap_or_default();
-            // The short form says nothing about open/close or save. The
-            // specification's answer is that open and close are still sent;
-            // save is not.
+            // The short form does not specify open/close or save. Per the
+            // specification, open and close are still sent and save is not.
             (kind, kind != TextDocumentSyncKind::None, None)
         }
         Some(serde_json::Value::Object(options)) => {
@@ -378,18 +375,19 @@ fn read_sync(
             };
             (kind, open_close, save)
         }
-        // A server that says nothing gets full syncs. Sending too much text is
-        // slow; sending too little means it is reasoning about stale source.
+        // A server that does not specify a kind gets full syncs. Sending too
+        // much text is slow, but sending too little leaves the server with
+        // stale source.
         _ => (TextDocumentSyncKind::Full, true, None),
     }
 }
 
 /// The `capabilities` object deco sends in `initialize`.
 ///
-/// Only features that are actually implemented are advertised. Claiming more
-/// invites a server to send messages the editor will drop — a server told the
-/// client handles `workspace/applyEdit` will apply refactorings by sending one,
-/// and silently nothing happens.
+/// Only implemented features are advertised. Advertising more causes servers
+/// to send messages the editor drops. For example, a server told that the
+/// client handles `workspace/applyEdit` applies refactorings by sending that
+/// request, and nothing happens.
 pub fn client_capabilities() -> serde_json::Value {
     serde_json::json!({
         "general": {
@@ -407,8 +405,8 @@ pub fn client_capabilities() -> serde_json::Value {
             },
             "hover": {
                 "dynamicRegistration": false,
-                // Plain text only: deco has no Markdown renderer yet, and a
-                // server told otherwise sends unrendered syntax to display.
+                // Plain text only. deco has no Markdown renderer yet, and
+                // Markdown content would be displayed as unrendered syntax.
                 "contentFormat": ["plaintext"],
             },
             "completion": {
@@ -423,8 +421,8 @@ pub fn client_capabilities() -> serde_json::Value {
             "references": { "dynamicRegistration": false },
             "publishDiagnostics": {
                 "relatedInformation": true,
-                // Asked for because it is what makes a stale diagnostic
-                // detectable; see the diagnostics module.
+                // Requested because it is needed to detect stale
+                // diagnostics; see the diagnostics module.
                 "versionSupport": true,
             },
         },
@@ -455,8 +453,8 @@ mod tests {
 
     #[test]
     fn an_encoding_that_was_never_offered_is_fatal() {
-        // Not a fallback: accepting utf-8 while indexing in utf-16 misplaces
-        // every position past the first non-BMP character on a line.
+        // No fallback. Accepting utf-8 while indexing in utf-16 misplaces
+        // every position after the first non-BMP character on a line.
         let Err(NegotiationError::UnofferedEncoding { chosen, offered }) =
             negotiate_encoding(Some("utf-8"))
         else {
@@ -476,8 +474,8 @@ mod tests {
 
     #[test]
     fn the_advertised_encodings_match_what_is_accepted() {
-        // The two must not drift: advertising an encoding that negotiation then
-        // refuses would break every server that takes the offer.
+        // The two lists must stay consistent. Advertising an encoding that
+        // negotiation rejects would break every server that selects it.
         let advertised = client_capabilities()["general"]["positionEncodings"].clone();
         for value in advertised.as_array().unwrap() {
             assert!(
@@ -489,8 +487,8 @@ mod tests {
 
     #[test]
     fn a_provider_object_counts_as_enabled() {
-        // The common failure: many servers answer `{"workDoneProgress": true}`
-        // instead of `true`, and reading only the boolean disables the feature.
+        // Many servers send `{"workDoneProgress": true}` instead of `true`, and
+        // reading only the boolean would disable the feature.
         let caps = ServerCapabilities::from_json(&json!({
             "hoverProvider": {"workDoneProgress": true},
             "definitionProvider": true,
@@ -545,8 +543,8 @@ mod tests {
 
     #[test]
     fn a_server_that_says_nothing_gets_full_syncs() {
-        // Erring towards sending too much: the alternative is a server
-        // answering questions about source that no longer exists.
+        // Sending too much is preferred. Otherwise the server would answer
+        // requests about source that no longer exists.
         let caps = ServerCapabilities::from_json(&json!({}));
         assert_eq!(caps.sync_kind, TextDocumentSyncKind::Full);
         assert!(caps.open_close);
@@ -554,8 +552,8 @@ mod tests {
 
     #[test]
     fn an_object_form_without_change_means_no_change_notifications() {
-        // Unlike an absent `textDocumentSync` entirely: here the server did
-        // answer, and it did not ask for changes.
+        // Unlike an absent `textDocumentSync`, the server did specify sync
+        // options here and did not request changes.
         let caps = ServerCapabilities::from_json(&json!({
             "textDocumentSync": {"openClose": true}
         }));
@@ -606,8 +604,8 @@ mod tests {
                 resolve_provider: true
             })
         );
-        // An object that only lists kinds still offers code actions; it just
-        // sends every edit up front.
+        // An object that only lists kinds still offers code actions. The
+        // server sends every edit up front.
         assert_eq!(
             ServerCapabilities::from_json(&json!({
                 "codeActionProvider": {"codeActionKinds": ["quickfix"]}
@@ -653,8 +651,8 @@ mod tests {
 
     #[test]
     fn a_malformed_capabilities_object_disables_features_rather_than_failing() {
-        // A server sending nonsense should cost its own features, not the
-        // editor's ability to open a file.
+        // Invalid capabilities disable only that server's features. Opening
+        // files is unaffected.
         let caps = ServerCapabilities::from_json(&json!({
             "hoverProvider": "yes please",
             "textDocumentSync": "full",
@@ -667,9 +665,8 @@ mod tests {
 
     #[test]
     fn nothing_unimplemented_is_advertised() {
-        // Advertising a feature deco does not implement invites messages it
-        // will drop on the floor, which looks to the user like the server is
-        // broken.
+        // Advertising a feature deco does not implement causes servers to send
+        // messages that deco drops. To the user, the server appears broken.
         let caps = client_capabilities();
         assert_eq!(
             caps["textDocument"]["synchronization"]["willSave"],
@@ -698,8 +695,9 @@ mod tests {
 
     #[test]
     fn diagnostic_version_support_is_requested() {
-        // Without it a server need not stamp diagnostics with a version, and
-        // stale results cannot be told from fresh ones.
+        // Without it a server is not required to include a version in
+        // diagnostics, and stale results cannot be distinguished from current
+        // ones.
         assert_eq!(
             client_capabilities()["textDocument"]["publishDiagnostics"]["versionSupport"],
             json!(true)

@@ -1,39 +1,38 @@
 //! Conversion between filesystem paths and `file:` URIs.
 //!
 //! Every LSP message identifies a document by URI, never by path, so this
-//! conversion sits on the boundary of every request the editor sends and every
-//! diagnostic it receives. Getting it wrong is not cosmetic: a server that is
-//! told about `file:///c%3A/src/main.rs` when it expected `file:///c:/src/main.rs`
-//! reports diagnostics against a document the editor does not believe it has
-//! open, and they silently never appear.
+//! conversion applies to every request the editor sends and every diagnostic it
+//! receives. Errors here have visible effects. If a server receives
+//! `file:///c%3A/src/main.rs` when it expected `file:///c:/src/main.rs`, it
+//! reports diagnostics for a document the editor does not consider open, and
+//! the diagnostics are never shown.
 //!
-//! The rules implemented here are VS Code's, because the servers people already
-//! run were tested against VS Code:
+//! The rules implemented here are VS Code's, because language servers are
+//! tested against VS Code:
 //!
 //! - The drive letter is lower-cased, and its colon is *not* percent-encoded.
-//!   `C:\src` is `file:///c:/src`, which is legal — a colon is a `pchar` under
-//!   RFC 3986 and needs no escape inside a path.
+//!   `C:\src` is `file:///c:/src`. This is valid because a colon is a `pchar`
+//!   under RFC 3986 and needs no escape inside a path.
 //! - Backslashes become forward slashes.
-//! - A UNC path `\\server\share` becomes `file://server/share`, putting the
-//!   host where a host belongs rather than in the path.
+//! - A UNC path `\\server\share` becomes `file://server/share`, so the host is
+//!   in the authority, not in the path.
 //! - Everything outside RFC 3986's `pchar` set is percent-encoded as UTF-8,
 //!   which covers spaces, `#`, `?` and every non-ASCII character.
 //!
-//! Written by hand rather than pulled from a URL crate: this needs one scheme
-//! and one direction of ambiguity, and a general URL parser is a much larger
-//! dependency than the roughly two hundred lines below. See the repository's
-//! Dependencies section for the wider policy.
+//! This is implemented by hand instead of with a URL crate. Only one scheme is
+//! needed, and a general URL parser is a much larger dependency than the
+//! roughly two hundred lines below. See the repository's Dependencies section
+//! for the general policy.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
 
 /// Which set of path rules to apply.
 ///
-/// Explicit rather than read from `cfg!(windows)` so that both sets are
-/// exercised by the test suite on every platform CI runs. A Windows path
-/// arriving on a Linux machine is not hypothetical either — it happens over
-/// remote development, where the editor and the server disagree about which
-/// operating system they are on.
+/// Explicit rather than read from `cfg!(windows)` so that the test suite
+/// covers both sets on every CI platform. A Windows path can also reach a
+/// Linux machine in remote development, where the editor and the server run on
+/// different operating systems.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PathStyle {
     /// `/` separators, no drive letters.
@@ -55,17 +54,16 @@ impl PathStyle {
 
 /// How the editor's paths relate to the ones a language server sees.
 ///
-/// On one machine they are the same path and this is nothing. In a remote
-/// session they are not: the editor holds paths relative to the workspace the
-/// remote serves — that is what its quick open lists and what its documents are
-/// keyed by — while the server, running over there, knows them as absolute paths
-/// under that workspace. Something has to add and remove the prefix, and doing it
-/// at the one place paths become URIs is what keeps it from being done in
-/// eleven.
+/// On one machine the paths are the same and no mapping is applied. In a
+/// remote session the editor holds paths relative to the remote workspace.
+/// Quick open lists these paths and documents are keyed by them. The server
+/// runs on the remote machine and uses absolute paths under that workspace.
+/// The prefix is added and removed here, where paths are converted to URIs,
+/// so no other code has to handle it.
 ///
-/// The style travels with it for a reason the [`PathStyle`] comment gives: in a
-/// remote session the two ends can disagree about which operating system they
-/// are on, and it is the *server's* rules that decide what its URIs look like.
+/// The map also stores the path style. As described for [`PathStyle`], the
+/// two sides of a remote session can run different operating systems, and the
+/// *server's* rules determine the form of its URIs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PathMap {
     style: PathStyle,
@@ -75,15 +73,15 @@ pub struct PathMap {
 }
 
 impl PathMap {
-    /// The server runs here, so a path is already the path it will see.
+    /// The server runs on this machine, so paths are passed through unchanged.
     pub fn host() -> Self {
         Self::local(PathStyle::host())
     }
 
-    /// The same, with the style named rather than taken from this machine.
+    /// The same, with an explicit style instead of this machine's style.
     ///
-    /// Tests want both sets of rules exercised wherever they run, which is the
-    /// same reason [`PathStyle`] is an enum rather than a `cfg!`.
+    /// This lets tests cover both sets of rules on any platform, which is also
+    /// why [`PathStyle`] is an enum rather than a `cfg!`.
     pub fn local(style: PathStyle) -> Self {
         Self { style, root: None }
     }
@@ -91,9 +89,9 @@ impl PathMap {
     /// The server runs on a remote serving `root`, and the editor's paths are
     /// relative to it.
     ///
-    /// The style is Unix because everything else about deco's remote support
-    /// assumes a POSIX remote — the server is started through a POSIX shell and
-    /// provisioned with `dd` and `chmod`. A Windows remote would need more than
+    /// The style is Unix because deco's remote support assumes a POSIX remote:
+    /// the server is started through a POSIX shell and provisioned with `dd`
+    /// and `chmod`. Supporting a Windows remote would require more changes than
     /// a different style here.
     pub fn remote(root: PathBuf) -> Self {
         Self {
@@ -113,9 +111,9 @@ impl PathMap {
             return Uri::from_path(path, self.style);
         };
         let path = path.to_string_lossy();
-        // An absolute path is left alone: one the editor already holds in
-        // absolute form is one the server named, and re-rooting it would move
-        // it somewhere that does not exist.
+        // An absolute path is left unchanged. The editor holds a path in
+        // absolute form only when the server supplied it, and prefixing the
+        // root would produce a path that does not exist.
         if is_absolute_in(self.style, &path) {
             return Uri::from_path(Path::new(path.as_ref()), self.style);
         }
@@ -137,10 +135,10 @@ impl PathMap {
         let text = path.to_string_lossy();
         let root = root.to_string_lossy();
         let root = root.trim_end_matches(['/', '\\']);
-        // Text rather than `Path::strip_prefix` for the same reason as above:
-        // that compares components under *this* machine's rules. Requiring a
-        // separator after the root is what stops `/home/u/project-secrets` being
-        // read as something inside `/home/u/project`.
+        // Compared as text rather than with `Path::strip_prefix`, which
+        // compares components under *this* machine's rules. Requiring a
+        // separator after the root prevents `/home/u/project-secrets` from being
+        // treated as a path inside `/home/u/project`.
         match text
             .strip_prefix(root)
             .and_then(|rest| rest.strip_prefix(['/', '\\']))
@@ -153,9 +151,9 @@ impl PathMap {
 
 /// Whether `path` is absolute under `style`, rather than under this machine.
 ///
-/// `Path::is_absolute` answers for the host, which is the wrong question when
-/// the path belongs to another one: on Windows it calls `/home/u` relative, and
-/// on Unix it calls `C:\\code` relative.
+/// `Path::is_absolute` uses the host's rules, which is wrong for a path from
+/// another machine: on Windows it treats `/home/u` as relative, and on Unix it
+/// treats `C:\\code` as relative.
 fn is_absolute_in(style: PathStyle, path: &str) -> bool {
     match style {
         PathStyle::Unix => path.starts_with('/'),
@@ -169,12 +167,11 @@ fn is_absolute_in(style: PathStyle, path: &str) -> bool {
 
 /// Joins a relative path onto a root using `style`'s separator.
 ///
-/// Written out rather than `PathBuf::join`, whose separator is this machine's.
-/// A Windows editor joining `src/main.rs` onto a Linux remote's
-/// `/home/u/project` produced `/home/u/project\\src/main.rs`, and the backslash
-/// then percent-encoded into the URI as `%5C` — a path the server had never
-/// heard of. Nothing on one machine could notice, which is what the Windows
-/// target in CI is for.
+/// Not `PathBuf::join`, which uses this machine's separator. A Windows editor
+/// joining `src/main.rs` onto a Linux remote's `/home/u/project` produced
+/// `/home/u/project\\src/main.rs`. The backslash was then percent-encoded in
+/// the URI as `%5C`, which is a path unknown to the server. This cannot be
+/// detected on a single platform, so CI includes a Windows target.
 fn join_in(style: PathStyle, root: &str, path: &str) -> String {
     let separator = match style {
         PathStyle::Unix => '/',
@@ -185,24 +182,23 @@ fn join_in(style: PathStyle, root: &str, path: &str) -> String {
 
 /// A `file:` URI, kept as the exact string that goes on the wire.
 ///
-/// Stored rather than re-derived because a server is free to hand back a URI
-/// spelled differently from the one it was given — a different escaping of the
-/// same characters, say — and comparisons must be made against what was
-/// actually exchanged.
+/// Stored rather than re-derived because a server may return a URI spelled
+/// differently from the one it received, for example with different escaping
+/// of the same characters. Comparisons must use the exact exchanged string.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Uri(String);
 
 /// Why a path or URI could not be converted.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum UriError {
-    /// A relative path was given. LSP has no notion of a working directory, so
-    /// a relative path cannot be made into a URI without inventing one.
+    /// A relative path was given. LSP has no working directory, so a relative
+    /// path cannot be converted to a URI without assuming one.
     #[error("`{0}` is relative; a file URI needs an absolute path")]
     NotAbsolute(String),
     /// The scheme was not `file:`.
     ///
-    /// deco does not reject these on receipt — a server may legitimately point
-    /// at `untitled:` or `jdt:` — but they cannot become paths.
+    /// deco accepts these on receipt, because a server may legitimately refer
+    /// to `untitled:` or `jdt:` URIs. They cannot be converted to paths.
     #[error("`{0}` is not a file: URI")]
     NotAFileUri(String),
     /// A `%` escape was truncated or not hexadecimal.
@@ -211,8 +207,8 @@ pub enum UriError {
     /// The decoded bytes were not UTF-8.
     #[error("`{0}` does not decode to valid UTF-8")]
     NotUtf8(String),
-    /// The path contained a NUL, which no filesystem accepts and which would be
-    /// silently truncated by the C APIs underneath.
+    /// The path contained a NUL. No filesystem accepts it, and the underlying C
+    /// APIs would truncate the path at that point.
     #[error("path contains a NUL byte")]
     InteriorNul,
 }
@@ -226,9 +222,9 @@ impl fmt::Display for Uri {
 impl Uri {
     /// Wraps a URI string that came from a server, without interpreting it.
     ///
-    /// Non-`file:` schemes are accepted here on purpose: a server may report
-    /// diagnostics for a document the editor cannot open, and dropping the
-    /// message would be worse than carrying a URI it cannot convert.
+    /// Non-`file:` schemes are accepted intentionally. A server may report
+    /// diagnostics for a document the editor cannot open, and keeping a URI
+    /// that cannot be converted is preferable to dropping the message.
     pub fn from_string(uri: impl Into<String>) -> Self {
         Self(uri.into())
     }
@@ -265,10 +261,10 @@ impl Uri {
     fn from_windows_path(path: &str) -> Result<Self, UriError> {
         let path = path.replace('\\', "/");
 
-        // UNC: `//server/share/...` puts the server in the authority, which is
-        // both what VS Code emits and the only spelling that survives a round
-        // trip — `file:////server/share` would decode to a path with four
-        // leading slashes.
+        // UNC: `//server/share/...` puts the server in the authority. This is
+        // what VS Code emits, and it is the only form that round-trips:
+        // `file:////server/share` would decode to a path with four leading
+        // slashes.
         if let Some(rest) = path.strip_prefix("//") {
             let (host, tail) = match rest.split_once('/') {
                 Some((host, tail)) => (host, format!("/{tail}")),
@@ -296,9 +292,9 @@ impl Uri {
         }
 
         if path.starts_with('/') {
-            // A rooted path with no drive, e.g. `\src\main.rs`. Ambiguous
-            // without knowing the current drive, but a URI can still be formed
-            // and is better than refusing.
+            // A rooted path with no drive, e.g. `\src\main.rs`. It is ambiguous
+            // without the current drive, but a URI can still be formed, which
+            // is preferable to rejecting it.
             return Ok(Self(format!("file://{}", encode_path(&path))));
         }
 
@@ -312,8 +308,8 @@ impl Uri {
         }
         let rest = &self.0[5..];
 
-        // `file:/x`, `file://x` and `file:///x` all occur in the wild. Only the
-        // third has an empty authority; the second means the text up to the
+        // `file:/x`, `file://x` and `file:///x` are all used in practice. Only
+        // the third has an empty authority. In the second, the text up to the
         // next `/` is a host.
         let (authority, path) = if let Some(after) = rest.strip_prefix("//") {
             match after.find('/') {
@@ -332,8 +328,8 @@ impl Uri {
 
         Ok(match style {
             PathStyle::Unix => {
-                // A host on a Unix target has nowhere to go; `localhost` is the
-                // one spelling that means "this machine" and is safe to drop.
+                // A Unix path cannot represent a host. `localhost` is the only
+                // host that means "this machine" and is safe to drop.
                 PathBuf::from(if path.is_empty() { "/" } else { &path })
             }
             PathStyle::Windows => {
@@ -363,8 +359,8 @@ fn drive_letter(path: &str) -> Option<char> {
     if !letter.is_ascii_alphabetic() {
         return None;
     }
-    // `C:` is a drive; `C:foo` without a separator is drive-relative, and
-    // treating it as absolute would silently invent a root.
+    // `C:` is a drive. `C:foo` without a separator is drive-relative, and
+    // treating it as absolute would assume a root directory.
     match (chars.next(), chars.next()) {
         (Some(':'), None) | (Some(':'), Some('/')) => Some(letter),
         _ => None,
@@ -492,8 +488,8 @@ mod tests {
 
     #[test]
     fn a_remote_map_adds_the_workspace_and_takes_it_off_again() {
-        // What the editor holds in a remote session is relative to the workspace
-        // the far end serves; what the server sees is the absolute path there.
+        // In a remote session the editor holds paths relative to the remote
+        // workspace, and the server sees the absolute path on the remote side.
         let map = PathMap::remote(PathBuf::from("/home/u/project"));
         let uri = map.to_uri(Path::new("src/main.rs")).expect("a uri");
         assert_eq!(uri.as_str(), "file:///home/u/project/src/main.rs");
@@ -514,8 +510,8 @@ mod tests {
             PathBuf::from("/home/u/.cargo/registry/src/lib.rs")
         );
 
-        // And an absolute path on the way out is not re-rooted into
-        // `/home/u/project/home/u/...`, which is what a plain join would do.
+        // An absolute outgoing path is not prefixed to become
+        // `/home/u/project/home/u/...`, as a plain join would do.
         let uri = map
             .to_uri(Path::new("/home/u/.cargo/registry/src/lib.rs"))
             .expect("a uri");
@@ -524,11 +520,12 @@ mod tests {
 
     #[test]
     fn a_path_is_joined_and_judged_by_the_far_ends_rules() {
-        // The bug this pins was invisible on Linux and broke every Windows
-        // client talking to a Unix remote: `PathBuf::join` uses *this* machine's
-        // separator, so the URI came out as `…/project%5Csrc/main.rs`. Asserting
-        // it through `to_uri` alone left the only failing platform as the one CI
-        // runs under Wine, so the rules are checked directly here as well.
+        // Regression test for a bug that did not occur on Linux and broke every
+        // Windows client connected to a Unix remote. `PathBuf::join` uses
+        // *this* machine's separator, so the URI became
+        // `…/project%5Csrc/main.rs`. Testing only through `to_uri` would detect
+        // the bug only on the platform CI runs under Wine, so the rules are also
+        // checked directly here.
         assert_eq!(
             join_in(PathStyle::Unix, "/home/u/project", "src/main.rs"),
             "/home/u/project/src/main.rs"
@@ -543,9 +540,9 @@ mod tests {
             "/home/u/project/src/main.rs"
         );
 
-        // And absolute means what the *server* means by it: a leading slash is
-        // absolute on Unix and a drive letter is absolute on Windows, whichever
-        // machine is asking.
+        // Absoluteness follows the *server's* rules: a leading slash is
+        // absolute on Unix and a drive letter is absolute on Windows,
+        // regardless of the machine performing the check.
         assert!(is_absolute_in(PathStyle::Unix, "/home/u"));
         assert!(!is_absolute_in(PathStyle::Unix, r"C:\code"));
         assert!(is_absolute_in(PathStyle::Windows, r"C:\code"));
@@ -555,8 +552,8 @@ mod tests {
 
     #[test]
     fn a_remote_map_does_not_confuse_a_sibling_for_a_child() {
-        // `/home/u/project-secrets` merely starts with the same text, and
-        // stripping by text alone would report it as `-secrets/notes.txt`
+        // `/home/u/project-secrets` only starts with the same text. Stripping
+        // the prefix as text alone would report it as `-secrets/notes.txt`
         // *inside* the workspace.
         let map = PathMap::remote(PathBuf::from("/home/u/project"));
         let sibling = Uri::from_string("file:///home/u/project-secrets/notes.txt");
@@ -568,9 +565,9 @@ mod tests {
 
     #[test]
     fn a_remote_map_uses_the_remotes_rules_not_this_machines() {
-        // On a Windows client talking to a Linux remote, a backslash is a
-        // character in a filename rather than a separator, and a drive letter is
-        // nothing at all. The style has to be the server's.
+        // For a Windows client connected to a Linux remote, a backslash is a
+        // filename character rather than a separator, and drive letters do not
+        // exist. The style must be the server's.
         let map = PathMap::remote(PathBuf::from("/home/u/project"));
         assert_eq!(map.style(), PathStyle::Unix);
         assert_eq!(
@@ -607,8 +604,8 @@ mod tests {
 
     #[test]
     fn both_spellings_of_a_drive_produce_one_uri() {
-        // Otherwise the same file opened two ways becomes two documents, and
-        // the second didOpen is a protocol error.
+        // Otherwise the same file opened with two spellings becomes two
+        // documents, and the second didOpen is a protocol error.
         assert_eq!(windows(r"c:\a"), windows(r"C:\a"));
     }
 
@@ -622,8 +619,8 @@ mod tests {
 
     #[test]
     fn spaces_and_hashes_are_escaped() {
-        // `#` unescaped would truncate the URI at a fragment, silently pointing
-        // the server at the wrong file.
+        // An unescaped `#` would start a fragment and truncate the path, so the
+        // server would receive the wrong file.
         assert_eq!(unix("/a b/c#d"), "file:///a%20b/c%23d");
         assert_eq!(unix("/q?x"), "file:///q%3Fx");
     }
@@ -647,8 +644,8 @@ mod tests {
 
     #[test]
     fn characters_that_are_legal_in_a_path_stay_literal() {
-        // Over-escaping is not merely ugly: a server comparing URI strings sees
-        // a document it was never told about.
+        // Over-escaping changes the URI string, so a server comparing URI
+        // strings would see a document it was never told about.
         assert_eq!(unix("/a+b,c;d=e@f!g"), "file:///a+b,c;d=e@f!g");
     }
 
@@ -741,8 +738,8 @@ mod tests {
 
     #[test]
     fn an_over_escaped_drive_colon_still_decodes() {
-        // Some servers escape the colon even though they need not. The editor
-        // has to accept what it is given.
+        // Some servers escape the colon although it is not required. The
+        // editor must accept both forms.
         assert_eq!(
             Uri::from_string("file:///c%3A/src/main.rs")
                 .to_path(PathStyle::Windows)
@@ -754,7 +751,7 @@ mod tests {
     #[test]
     fn a_non_file_scheme_is_carried_but_not_converted() {
         // `jdt:` (Eclipse JDT) and `untitled:` both appear on the wire. The
-        // URI must survive being received; only the conversion fails.
+        // URI must be accepted on receipt; only the conversion fails.
         let uri = Uri::from_string("jdt://contents/rt.jar/java.lang/String.class");
         assert!(!uri.is_file());
         assert_eq!(uri.as_str(), "jdt://contents/rt.jar/java.lang/String.class");

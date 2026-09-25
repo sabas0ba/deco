@@ -7,34 +7,35 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-# Nothing here is linked into a shipped binary; it exists so that the editor can
-# be driven the way it is used. Publishing it would put a test harness on
-# crates.io under a name that reads like part of the editor.
+# Nothing here is linked into a shipped binary. The crate drives the editor as a
+# user does. It is not published because a test harness on crates.io would have
+# a name that looks like part of the editor.
 publish = false
 
 [dependencies]
 # The startup path under test: argument parsing, configuration loading, and the
-# session both of them produce. Depended on as a library so that a scenario runs
-# the same code `deco notes.md` runs rather than a second copy of it.
+# resulting session. Used as a library so that a scenario runs the same code as
+# `deco notes.md` instead of a copy of it.
 deco = { path = "../deco", version = "0.1.0" }
 deco-config.workspace = true
 deco-core.workspace = true
 deco-editor.workspace = true
 deco-keymap.workspace = true
-# Scenarios about a language server assert on the positions and diagnostics it
-# sent, which are this crate's types.
+# Language server scenarios assert on the positions and diagnostics the server
+# sent, which use this crate's types.
 deco-lsp.workspace = true
-# For `launch_remote`: a scenario about a remote session starts a real server and
-# talks to it, rather than standing in a fake for the half being tested.
+# For `launch_remote`: a remote session scenario starts a real server and
+# connects to it instead of using a fake server.
 deco-remote.workspace = true
 deco-theme.workspace = true
 deco-tui.workspace = true
-# Keystrokes are delivered as the terminal delivers them, so the harness builds
-# crossterm's own events rather than the chords they translate into.
+# Keystrokes are delivered in the same form as from the terminal, so the harness
+# builds crossterm events rather than the chords they are translated into.
 crossterm.workspace = true
-# Startup returns one, and a scenario about a startup that fails has to hold it.
+# Startup returns an `anyhow::Result`, and a scenario about a failed startup
+# must hold its error.
 anyhow.workspace = true
-# The scenario knob that installs a language server writes its definition into
-# `settings.json`, and a Windows path is full of backslashes that have to be
-# escaped to survive being read back.
+# The scenario option that installs a language server writes its definition into
+# `settings.json`. Backslashes in a Windows path must be escaped so the path
+# reads back correctly.
 serde_json.workspace = true

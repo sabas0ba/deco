@@ -1,24 +1,24 @@
 //! The editor against a remote workspace, driven by keystrokes.
 //!
 //! Every other remote test in this repository calls a method: the client's
-//! `search`, the server's handler, the installer's `ensure`. What none of them
-//! can say is whether pressing the key that is bound to a command reaches the
-//! remote at all — and that gap is where the two bugs in this feature's history
-//! lived, both of them in the dispatch rather than in anything a unit test
-//! covers.
+//! `search`, the server's handler, the installer's `ensure`. None of them checks
+//! whether pressing the key bound to a command reaches the remote. Both earlier
+//! bugs in this feature were in that dispatch path, which unit tests do not
+//! cover.
 //!
-//! So these press keys. The far end is a real `deco --server` process serving a
-//! directory the scenario built, and the only thing left out is `ssh host` in
-//! front of it — an argument vector tested where it is constructed.
+//! These tests therefore press keys. The remote side is a real `deco --server`
+//! process serving a directory the scenario built. Only the `ssh host` prefix is
+//! omitted; that argument vector is tested where it is constructed.
 
 use std::path::Path;
 
 use deco_e2e::Scenario;
 
-/// The binary to run as the far end.
+/// The binary to run as the remote side.
 ///
-/// Available here and not inside the harness: `CARGO_BIN_EXE_*` is defined for
-/// integration tests of the package that builds the binary, which is this one.
+/// Defined here rather than in the harness because `CARGO_BIN_EXE_*` is only
+/// available to integration tests of the package that builds the binary, which
+/// is this one.
 fn server() -> &'static Path {
     Path::new(env!("CARGO_BIN_EXE_deco"))
 }
@@ -26,19 +26,19 @@ fn server() -> &'static Path {
 /// A workspace with something to find in more than one file.
 ///
 /// Returned rather than launched from, because a `Scenario` deletes its
-/// directory when it is dropped: `scenario(name).launch_remote(…)` leaves the
-/// editor talking to a server whose workspace has just been removed, and a
-/// search that finds nothing looks exactly like a search that is broken.
+/// directory when it is dropped. `scenario(name).launch_remote(…)` would leave
+/// the editor connected to a server whose workspace has been removed, and a
+/// search that finds nothing would look the same as a broken search.
 fn scenario(name: &str) -> Scenario {
     Scenario::new(name)
-        // On the far end's own directory rather than this machine's, so that a
-        // file arriving over the connection is one this machine does not have —
-        // which is the only way a scenario can tell the connection is being used
-        // at all. `remote_file` rather than `file` for exactly that reason.
+        // In the remote side's directory rather than this machine's, so that a
+        // file received over the connection does not exist on this machine.
+        // That is the only way a scenario can confirm the connection is used,
+        // and the reason for `remote_file` rather than `file`.
         //
-        // `.txt` and `.md` deliberately: `rust` has a built-in server definition,
-        // and a scenario using it would try to start `rust-analyzer` over a
-        // transport that has no `docker` behind it.
+        // `.txt` and `.md` are used intentionally: `rust` has a built-in server
+        // definition, and a scenario using it would try to start
+        // `rust-analyzer` over a transport that has no `docker` behind it.
         .remote_file("notes.txt", "the needle is here\nand not here\n")
         .remote_file("src/deep/more.txt", "another needle further down\n")
         .remote_file("README.md", "# nothing to find\n")
@@ -50,27 +50,27 @@ fn a_file_opened_over_the_connection_is_the_file_on_the_far_end() {
     let mut editor = scenario.launch_remote(&["notes.txt"], server());
 
     editor.screen().assert_shows("the needle is here");
-    // Named by the path the far end knows it by, which is what makes the rest of
-    // the session's paths mean anything.
+    // Named by its path on the remote side, which the rest of the session's
+    // paths depend on.
     editor.screen().assert_shows("notes.txt");
 }
 
 #[test]
 fn find_in_files_searches_the_far_end_and_offers_what_it_found() {
-    // The feature, through the keys that reach it. Before this, the same press
-    // set a status line saying search was local and did nothing else.
+    // The feature, through its key bindings. Previously the same key only set a
+    // status line saying search was local.
     let scenario = scenario("remote-search");
     let mut editor = scenario.launch_remote(&["notes.txt"], server());
 
     editor.press("ctrl+shift+f");
-    // The prompt opens seeded with the word under the cursor and typing appends,
-    // so a query has to be cleared first — same as the local scenario next door.
+    // The prompt opens with the word under the cursor and typing appends, so
+    // the query must be cleared first, as in the local scenario.
     editor.press("ctrl+x");
     editor.type_text("needle");
     editor.press("enter");
 
     let screen = editor.screen();
-    // Both files, each named the way the server spells it — relative to the
+    // Both files, each named as the server reports it: relative to the
     // workspace it serves, with `/` separators.
     screen.assert_shows("notes.txt:1");
     screen.assert_shows("src/deep/more.txt:1");
@@ -80,14 +80,15 @@ fn find_in_files_searches_the_far_end_and_offers_what_it_found() {
 
 #[test]
 fn a_search_result_opens_the_file_it_named() {
-    // The pair that matters: a result the same connection cannot then read is a
-    // search whose results do not work, and neither half would look wrong alone.
+    // Search and open must work together: if the connection cannot read a
+    // result, the search results are unusable, and neither step alone would
+    // show the problem.
     let scenario = scenario("remote-search-open");
     let mut editor = scenario.launch_remote(&["notes.txt"], server());
 
     editor.press("ctrl+shift+f");
-    // The prompt opens seeded with the word under the cursor and typing appends,
-    // so a query has to be cleared first — same as the local scenario next door.
+    // The prompt opens with the word under the cursor and typing appends, so
+    // the query must be cleared first, as in the local scenario.
     editor.press("ctrl+x");
     editor.type_text("another needle");
     editor.press("enter");
@@ -103,10 +104,10 @@ fn a_search_result_opens_the_file_it_named() {
 
 #[test]
 fn replace_in_files_reaches_the_far_end_rather_than_this_machine() {
-    // The one that would pass by accident if the editor read the local disk:
-    // these paths do not exist here, so a replacement that reads `std::fs`
-    // finds nothing and reports a file it could not read. What it has to do is
-    // read the far end, through the same connection everything else uses.
+    // These paths do not exist on this machine, so a replacement that reads
+    // `std::fs` finds nothing and reports a file it could not read. The
+    // replacement must read the remote side through the same connection that
+    // everything else uses.
     let scenario = scenario("remote-replace");
     let mut editor = scenario.launch_remote(&["notes.txt"], server());
 
@@ -132,7 +133,7 @@ fn replace_in_files_reaches_the_far_end_rather_than_this_machine() {
         .expect("the file on the far end should have been opened and changed");
     assert_eq!(deep, "another pin further down\n");
 
-    // And one keystroke takes all of it back, exactly as it does locally.
+    // One undo reverts all of it, as it does locally.
     editor.press("ctrl+z");
     assert_eq!(editor.text(), "the needle is here\nand not here\n");
 }
@@ -143,8 +144,8 @@ fn a_term_that_is_in_no_file_says_so_rather_than_offering_nothing() {
     let mut editor = scenario.launch_remote(&["notes.txt"], server());
 
     editor.press("ctrl+shift+f");
-    // The prompt opens seeded with the word under the cursor and typing appends,
-    // so a query has to be cleared first — same as the local scenario next door.
+    // The prompt opens with the word under the cursor and typing appends, so
+    // the query must be cleared first, as in the local scenario.
     editor.press("ctrl+x");
     editor.type_text("haystack");
     editor.press("enter");
@@ -155,17 +156,16 @@ fn a_term_that_is_in_no_file_says_so_rather_than_offering_nothing() {
 
 #[test]
 fn a_file_excluded_by_settings_is_not_offered_even_though_the_server_found_it() {
-    // The server reads no settings — deliberately — so `files.exclude` can only
-    // be applied by the end that has it. Which means this filtering is the
-    // client's, and it either happens or the setting silently stops working in
-    // remote sessions.
+    // The server intentionally reads no settings, so `files.exclude` can only be
+    // applied by the client, which has the setting. If the client does not
+    // filter, the setting has no effect in remote sessions.
     let scenario = scenario("remote-search-excluded")
         .user_settings(r#"{ "files.exclude": { "**/deep/**": true } }"#);
     let mut editor = scenario.launch_remote(&["notes.txt"], server());
 
     editor.press("ctrl+shift+f");
-    // The prompt opens seeded with the word under the cursor and typing appends,
-    // so a query has to be cleared first — same as the local scenario next door.
+    // The prompt opens with the word under the cursor and typing appends, so
+    // the query must be cleared first, as in the local scenario.
     editor.press("ctrl+x");
     editor.type_text("needle");
     editor.press("enter");
@@ -181,10 +181,9 @@ fn a_file_excluded_by_settings_is_not_offered_even_though_the_server_found_it() 
 
 #[test]
 fn saving_over_the_connection_puts_the_bytes_on_the_far_end() {
-    // The other half of opening: `Outcome::Save` consults the connection, and so
-    // now do save-as and revert below. This is the arm the other two were
-    // measured against — what made their omission a surprise is that this one
-    // was right all along.
+    // The counterpart of opening: `Outcome::Save` uses the connection, and
+    // save-as and revert below now do too. Save was already correct and is the
+    // reference for the other two.
     let scenario = scenario("remote-save");
     let mut editor = scenario.launch_remote(&["notes.txt"], server());
 
@@ -220,20 +219,19 @@ fn quick_open_lists_the_far_ends_files() {
 
 #[test]
 fn save_as_in_a_remote_session_writes_the_far_end_and_keeps_its_names() {
-    // `Outcome::Save` asks the connection; `Outcome::SaveAs` did not look at it
-    // at all. It resolved the typed name against *this* machine and called the
-    // local `write_file`, then renamed the open document to that local absolute
-    // path — one the far end has never heard of.
+    // `Outcome::Save` uses the connection; `Outcome::SaveAs` previously did not.
+    // It resolved the typed name against *this* machine, called the local
+    // `write_file`, and renamed the open document to that local absolute path,
+    // which does not exist on the remote side.
     //
-    // The damage was the rename: every later save asked the server to write a
-    // path outside the workspace it serves, and the server refuses everything
-    // outside it. So "save a copy under another name" quietly converted a
-    // working remote session into one that could not save at all, while the
-    // status line reported a successful save throughout.
+    // The rename caused the failure: every later save asked the server to write
+    // a path outside the workspace it serves, and the server rejects all such
+    // paths. After a save-as, the remote session could no longer save at all,
+    // while the status line still reported successful saves.
     let scenario = scenario("remote-save-as");
     let mut editor = scenario.launch_remote(&["notes.txt"], server());
 
-    // Before: the document is known by the name the far end knows it by.
+    // Before: the document has its name on the remote side.
     assert_eq!(
         editor.path().map(Path::to_path_buf),
         Some("notes.txt".into())
@@ -252,21 +250,21 @@ fn save_as_in_a_remote_session_writes_the_far_end_and_keeps_its_names() {
     editor.type_text("copy.txt");
     editor.press("enter");
 
-    // The copy is on the far end, which is the only place `on_disk` looks in a
-    // remote scenario — a local write would have gone to this process's working
+    // The copy is on the remote side, the only place `on_disk` looks in a
+    // remote scenario. A local write would have gone to this process's working
     // directory and left nothing here.
     assert_eq!(
         editor.on_disk("copy.txt"),
         "the needle is here\nand not here\n"
     );
-    // And the document is still named the way the far end spells it, so the
-    // session's paths stay in one namespace.
+    // The document is still named by its remote path, so the session's paths
+    // stay in one namespace.
     assert_eq!(
         editor.path().map(Path::to_path_buf),
         Some("copy.txt".into())
     );
 
-    // Which is what keeps saving working afterwards.
+    // Therefore saving still works afterwards.
     editor.press("ctrl+end");
     editor.type_text("more\n");
     editor.press("ctrl+s");
@@ -284,10 +282,10 @@ fn save_as_in_a_remote_session_writes_the_far_end_and_keeps_its_names() {
 
 #[test]
 fn save_as_onto_this_machine_is_refused_rather_than_splitting_the_workspace() {
-    // The workspace is one place — `run_with` says so — and half of one would
-    // make every path ambiguous. A name that points off the far end is the
-    // server's to refuse, which it does for everything outside what it serves,
-    // and the refusal is reported rather than quietly writing a file here.
+    // The workspace is in one place, as documented on `run_with`; splitting it
+    // would make every path ambiguous. The server rejects a name outside the
+    // workspace it serves, and the rejection is reported instead of writing a
+    // file on this machine.
     let scenario = scenario("remote-save-as-local");
     let mut editor = scenario.launch_remote(&["notes.txt"], server());
 
@@ -309,8 +307,8 @@ fn save_as_onto_this_machine_is_refused_rather_than_splitting_the_workspace() {
         status.contains("outside the workspace"),
         "the refusal should say why: {status:?}"
     );
-    // And the document is still the one it was, so nothing was renamed to a
-    // path that cannot be saved.
+    // The document keeps its original path, so it was not renamed to a path
+    // that cannot be saved.
     assert_eq!(
         editor.path().map(Path::to_path_buf),
         Some("notes.txt".into())
@@ -321,11 +319,11 @@ fn save_as_onto_this_machine_is_refused_rather_than_splitting_the_workspace() {
 fn reverting_in_a_remote_session_reads_the_far_end() {
     // The more dangerous of the two: `Outcome::Revert` called
     // `std::fs::read_to_string` on the document's path, which in a remote
-    // session is relative to the *far end's* workspace. On this machine that
-    // resolves against the process's working directory — so reverting threw the
-    // edits away, which is what revert is for, and then filled the buffer with
-    // whatever this machine happened to have at that relative path, or reported
-    // a read error for a file that exists perfectly well over there.
+    // session is relative to the *remote* workspace. On this machine that path
+    // resolves against the process's working directory. Reverting discarded the
+    // edits, as intended, and then filled the buffer with whatever this machine
+    // had at that relative path, or reported a read error for a file that
+    // exists on the remote.
     let scenario = scenario("remote-revert");
     let mut editor = scenario.launch_remote(&["notes.txt"], server());
 
@@ -333,13 +331,13 @@ fn reverting_in_a_remote_session_reads_the_far_end() {
     editor.type_text("unsaved work\n");
     editor.palette("Revert File");
 
-    // The far end's copy is untouched and still says what it said.
+    // The remote copy is unchanged.
     assert!(
         editor.on_disk("notes.txt").contains("the needle is here"),
         "the file on the far end should not have changed"
     );
-    // And the buffer is now that file, rather than a read error or something
-    // local that happened to be at the same relative path.
+    // The buffer now contains that file, not a read error or a local file at
+    // the same relative path.
     assert_eq!(
         editor.text(),
         "the needle is here\nand not here\n",
@@ -351,9 +349,8 @@ fn reverting_in_a_remote_session_reads_the_far_end() {
 
 #[test]
 fn reverting_reports_a_far_end_read_failure_without_losing_the_edits() {
-    // The edits stay when the read fails: throwing them away because the file
-    // could not be read would lose work to a failure that had nothing to do
-    // with it.
+    // The edits are kept when the read fails. Discarding them would lose work
+    // because of an unrelated failure.
     let scenario = scenario("remote-revert-missing");
     let mut editor = scenario.launch_remote(&["notes.txt"], server());
 
@@ -374,10 +371,10 @@ fn reverting_reports_a_far_end_read_failure_without_losing_the_edits() {
 
 #[test]
 fn the_far_ends_own_settings_reach_the_session() {
-    // The wiring, end to end: a real `deco --server` reads its machine settings,
-    // the client fetches them over the connection, and the editor resolves them
-    // as a layer. Every part of this was unit-tested separately and none of
-    // those tests could tell whether the layer was ever applied.
+    // End-to-end check: a real `deco --server` reads its machine settings, the
+    // client fetches them over the connection, and the editor resolves them as a
+    // layer. Each part has unit tests, but none of them verifies that the layer
+    // is applied.
     //
     // `editor.tabSize` because it is unambiguous and visible from the session.
     let scenario =
@@ -393,28 +390,27 @@ fn the_far_ends_own_settings_reach_the_session() {
 
 #[test]
 fn this_machines_settings_beat_the_far_ends_where_a_project_disagrees() {
-    // The layer's position, which is the other half of getting it right: VS
-    // Code puts `remote` above the user's own and below the workspace's, and a
-    // layer applied in the wrong place is worse than one not applied at all —
-    // it changes settings the user thought they had decided.
+    // The layer's position: VS Code puts `remote` above the user's layer and
+    // below the workspace's. A layer applied in the wrong position is worse than
+    // one not applied, because it overrides settings the user chose.
     let scenario = scenario("remote-machine-settings-order")
         .user_settings(r#"{ "editor.tabSize": 2, "editor.insertSpaces": false }"#)
         .remote_machine_settings(r#"{ "editor.tabSize": 7 }"#);
     let editor = scenario.launch_remote(&["notes.txt"], server());
 
     let settings = &editor.session().settings;
-    // The remote is above the user, so it wins where both speak.
+    // The remote layer is above the user's, so it wins where both set a value.
     assert_eq!(settings.get_u64("editor.tabSize", None), Some(7));
-    // And says nothing about the rest, which the user's own file still decides.
+    // Settings the remote does not set still come from the user's file.
     assert_eq!(settings.get_bool("editor.insertSpaces", None), Some(false));
 }
 
 #[test]
 fn a_language_server_the_far_end_defines_is_not_launched_on_its_word() {
-    // The reason the layer is untrusted. A machine-settings file sits where
-    // anyone with an account on that machine can write it, and a server
-    // definition is a program to run — so connecting must not be enough to
-    // execute one, exactly as cloning a repository is not.
+    // This is why the layer is untrusted. Anyone with an account on that
+    // machine may be able to write the machine-settings file, and a server
+    // definition names a program to run. Connecting must not be enough to run
+    // it, just as cloning a repository is not.
     let scenario = scenario("remote-machine-settings-lsp").remote_machine_settings(
         r#"{ "deco.lsp.servers": { "theirs": { "languages": ["plaintext"], "command": "./evil" } } }"#,
     );
@@ -431,8 +427,8 @@ fn a_language_server_the_far_end_defines_is_not_launched_on_its_word() {
 
 #[test]
 fn a_far_end_with_no_settings_of_its_own_changes_nothing() {
-    // The ordinary case, and the one that must not become an error: most
-    // machines have no machine-settings.json at all.
+    // The common case, which must not be an error: most machines have no
+    // machine-settings.json.
     let scenario =
         scenario("remote-machine-settings-absent").user_settings(r#"{ "editor.tabSize": 3 }"#);
     let mut editor = scenario.launch_remote(&["notes.txt"], server());

@@ -19,8 +19,8 @@ use crate::prompt::{Prompt, PromptKind};
 /// The two answers a permission prompt offers, as the identifiers its choices
 /// carry.
 ///
-/// Constants rather than literals in two places: the prompt builds them and the
-/// submit reads them, and a typo in either would silently mean "deny".
+/// The prompt builds these identifiers and the submit handler reads them. Shared
+/// constants prevent a typo in either place from being treated as "deny".
 const CONSENT_ALLOW: &str = "allow";
 const CONSENT_DENY: &str = "deny";
 const CHECKOUT_CANCEL: &str = "cancel";
@@ -43,16 +43,16 @@ pub enum EditError {
 
 /// Rows the side bar spends on its heading before the tree starts.
 ///
-/// The title and the blank line under it. Here rather than in a renderer
-/// because the session subtracts them to know how many rows the tree can scroll
-/// within, and two frontends drawing the same heading have to agree with it.
+/// The title and the blank line under it. Defined here rather than in a renderer
+/// because the session subtracts these rows to compute how many rows the tree can
+/// scroll within. Every frontend that draws the heading must use the same value.
 pub const EXPLORER_CHROME_ROWS: usize = 2;
 
 /// Which region of the window has the keyboard.
 ///
-/// VS Code's own division, and the reason its `when` clauses can say
-/// `sideBarFocus`: a key means one thing in the text and another in a tree, and
-/// the keymap is where that is decided rather than in each command.
+/// This follows VS Code's division, which its `when` clauses expose as
+/// `sideBarFocus`. A key can mean one thing in the text and another in a tree. The
+/// keymap resolves that difference, not each command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Focus {
     /// The text.
@@ -64,12 +64,12 @@ pub enum Focus {
     Panel,
 }
 
-/// Which tenant the side bar is showing.
+/// Which view the side bar is showing.
 ///
 /// VS Code calls these viewlets and switches between them with
-/// `workbench.view.*`: the container is one region, and what is in it is a
-/// choice. Two so far — search is the third the [chrome](crate::layout) names
-/// as waiting.
+/// `workbench.view.*`. The side bar is one region that shows one of several views.
+/// Two are implemented. Search is the third view that the [chrome](crate::layout)
+/// lists as not yet implemented.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SideBarView {
     /// The [file tree](crate::explorer). What the side bar opens on.
@@ -90,11 +90,11 @@ enum Direction {
 
 /// One open document that is not on screen.
 ///
-/// Everything that must survive a tab switch and come back intact: the text and
-/// its history, the cursor and scroll position, and the diagnostics a server has
-/// published for it. The find bar deliberately does not — it closes on a switch,
-/// exactly as it does when a file replaces the document, because its match list
-/// describes text that is no longer on screen.
+/// Holds the state that must be preserved across a tab switch: the text and its
+/// history, the cursor and scroll position, and the diagnostics a server has
+/// published for it. The find bar is not preserved. It closes on a switch, as it
+/// does when a file replaces the document, because its match list describes text
+/// that is no longer on screen.
 #[derive(Debug)]
 struct Tab {
     document: Document,
@@ -103,10 +103,10 @@ struct Tab {
     semantic: Vec<deco_lsp::requests::SemanticSpan>,
     /// The find bar as this tab left it.
     ///
-    /// Per tab rather than per session, so switching away parks the bar with the
-    /// document it describes instead of throwing it away. A match list is stale
-    /// only when it belongs to a *different* document; one match list shared by
-    /// every tab was what made every switch discard it.
+    /// Stored per tab rather than per session, so switching away keeps the bar
+    /// with the document it describes instead of discarding it. A match list is
+    /// stale only when it belongs to a *different* document. A single match list
+    /// shared by all tabs had to be discarded on every switch.
     find: Find,
 }
 
@@ -114,18 +114,17 @@ struct Tab {
 ///
 /// # Why the renderer is given this rather than the session
 ///
-/// A renderer that reaches into `session.document` can only ever draw the group
-/// with the keyboard, because that is the only one the session exposes directly.
-/// Naming what one group *is* — its document, its own view onto it, and the tabs
-/// it holds — is what lets a second group be drawn beside the first.
+/// A renderer that reads `session.document` can only draw the focused group,
+/// because that is the only group the session exposes directly. This type
+/// describes one group: its document, its own view onto it, and its tabs. That
+/// allows a second group to be drawn beside the first.
 ///
-/// Borrowed rather than owned: this is a description of state the session keeps,
-/// built on demand, and it must not be a second copy that can disagree.
+/// Borrowed rather than owned. It is built on demand from state the session keeps,
+/// and must not be a second copy that can diverge.
 pub struct Pane<'a> {
     /// The document showing in this group.
     pub document: &'a Document,
-    /// This group's own view onto it. Scroll position and cursor are per group,
-    /// which is the point of splitting.
+    /// This group's own view onto it. Scroll position and cursor are per group.
     pub view: &'a View,
     /// The server's classification of that document, if any.
     pub semantic: &'a [deco_lsp::requests::SemanticSpan],
@@ -135,8 +134,8 @@ pub struct Pane<'a> {
     pub tabs: Vec<TabLabel>,
     /// Whether this is the group with the keyboard.
     ///
-    /// The renderer needs it for more than decoration: the caret, and the find
-    /// bar's match highlighting, belong to the group being typed into.
+    /// The renderer draws the caret and the find bar's match highlighting only
+    /// in the focused group.
     pub focused: bool,
     /// Diff-specific labels and line decoration, for a source-control comparison.
     pub comparison: Option<ComparisonPane<'a>>,
@@ -197,36 +196,35 @@ pub struct TabLabel {
 
 /// How many paths the recency list keeps.
 ///
-/// Enough that every file of an ordinary session's worth of work is in it. Past that
-/// the tail of the list falls back to the alphabetical order the walk produced, which
-/// is what quick open did for every file before this existed.
+/// Large enough to hold every file used in a typical session. Files beyond the
+/// limit keep the alphabetical order produced by the directory walk.
 const MAX_RECENT: usize = 64;
 
 /// The picker row that means "work it out from the file name" rather than naming
 /// a language.
 ///
-/// deco's own namespace, because VS Code has no identifier for it: the choice is
-/// not a language, and giving it one would make `[deco.language.auto]` look like
-/// a settings key that does something.
+/// Uses deco's own namespace because VS Code has no identifier for this choice.
+/// It is not a language ID, so a language-style ID would make
+/// `[deco.language.auto]` look like a working settings key.
 const AUTO_LANGUAGE: &str = "deco.language.auto";
 
 /// A path with its `.` and `..` segments resolved, without touching the disk.
 ///
-/// Enough to tell `/w/src/main.rs` from `/w/./src/../src/main.rs`, which is what
-/// decides whether two tabs are one file. Deliberately **not**
-/// `fs::canonicalize`: the core has no filesystem, and a path that does not exist
-/// yet — a file being created — has to normalise too.
+/// Treats `/w/src/main.rs` and `/w/./src/../src/main.rs` as the same path, which
+/// decides whether two tabs are one file. This is **not** `fs::canonicalize`: the
+/// core has no filesystem, and a path that does not exist yet (a file being
+/// created) must also normalise.
 ///
-/// Symlinks therefore still defeat it. Two names for one file through a link are
-/// two tabs, which is the same answer VS Code gives.
+/// Symlinks are not resolved. Two names for one file through a link open two
+/// tabs, as in VS Code.
 fn normalise(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for component in path.components() {
         match component {
             std::path::Component::CurDir => {}
             std::path::Component::ParentDir => {
-                // Only when there is something to pop: a leading `..` is part of
-                // the path's meaning and dropping it would change where it points.
+                // Pop only a normal segment. A leading `..` is part of the path,
+                // and dropping it would change where the path points.
                 if matches!(
                     out.components().next_back(),
                     Some(std::path::Component::Normal(_))
@@ -359,8 +357,9 @@ fn comparison_rows(
 
 /// Exactly the bytes to write for `document`.
 ///
-/// Its *own* settings, not the session's: `files.insertFinalNewline` can differ
-/// per language, and saving every tab must respect each one.
+/// Uses the document's *own* settings, not the session's.
+/// `files.insertFinalNewline` can differ per language, and saving all tabs must
+/// apply each document's value.
 fn contents_of(document: &Document) -> String {
     let mut text = document.buffer.to_disk_string();
     if document.settings.insert_final_newline && !text.ends_with('\n') {
@@ -385,55 +384,54 @@ pub struct Session {
     /// The other editor group's view onto the same document, when the editor is
     /// split.
     ///
-    /// A second *view*, not a second document: `ctrl+\` in VS Code shows one file
-    /// in two groups, and one buffer with two views is what that is. Two documents
-    /// would be two divergent copies of one file, which is exactly what
-    /// [`Session::open`] refuses for tabs.
+    /// A second *view*, not a second document. `ctrl+\` in VS Code shows one file
+    /// in two groups, which is one buffer with two views. Two documents would be
+    /// two divergent copies of one file, which [`Session::open`] also prevents for
+    /// tabs.
     ///
-    /// [`Session::view`] is always the view of the group with the keyboard, and
-    /// this is the other one — the same zipper the tabs use, so every command that
-    /// reads `session.view` keeps working without knowing that groups exist.
+    /// [`Session::view`] is always the view of the focused group, and this is the
+    /// other one. This is the same zipper layout the tabs use, so commands that
+    /// read `session.view` work without knowing that groups exist.
     /// Whether the revert now in flight should close the tab when it lands.
     ///
-    /// The frontend answers a `Revert` with the file's text and nothing else, so
-    /// which of the two revert commands asked has to be remembered here.
+    /// The frontend answers a `Revert` with only the file's text, so the session
+    /// records which of the two revert commands made the request.
     pending_close: bool,
     /// How a project-wide search matches.
     ///
-    /// Its own, not the find bar's. They were one pair of booleans, so
-    /// case-sensitivity set for a search across the workspace changed what the
-    /// next `ctrl+f` matched — and VS Code keeps the two apart.
+    /// Separate from the find bar's options, as in VS Code. Sharing them would
+    /// let case sensitivity set for a workspace search change what the next
+    /// `ctrl+f` matches.
     search_options: deco_core::search::SearchOptions,
     /// Whether the last command was a quit that was refused for unsaved work.
     ///
-    /// Cleared by anything else, so "again" means the next keystroke rather than
-    /// the next quit whenever that happens to be.
+    /// Cleared by any other command, so "quit again" applies only to the next
+    /// keystroke, not to a later quit.
     quit_refused: bool,
     split_view: Option<View>,
     /// Whether the group with the keyboard is the second one.
     ///
-    /// Only meaningful while split. Kept so that the panes can be listed in the
-    /// order they sit on screen while `view` stays the active one.
+    /// Only meaningful while split. Used to list the panes in screen order while
+    /// `view` remains the active one.
     split_focused: bool,
     /// A read-only, side-by-side source-control comparison over the active tab.
     comparison: Option<ComparisonView>,
     /// Paths that have been on screen, most recently first.
     ///
-    /// What makes `ctrl+p` fast: the file you want is usually one you just had open,
-    /// and an alphabetical list buries it. VS Code orders quick open the same way.
+    /// Quick open (`ctrl+p`) lists these first, because the wanted file is
+    /// usually one that was recently open. VS Code orders quick open the same way.
     ///
-    /// **This session only.** VS Code keeps its history in workspace storage; deco
+    /// **This session only.** VS Code keeps its history in workspace storage. deco
     /// [writes no files](../../../docs/configuration.md), so the list starts empty
-    /// each time rather than being persisted somewhere the user did not ask for.
+    /// in each session and is not persisted.
     recent: Vec<PathBuf>,
     /// Tabs to the left of the active one, in display order.
     ///
     /// The active tab's state lives directly in [`Session::document`],
-    /// [`Session::view`] and [`Session::diagnostics`] — a zipper, not an indexed
-    /// list. That shape is what let tabs arrive without touching the hundreds of
-    /// places that already read `session.document`: the active tab is where it
-    /// always was, and switching moves whole structs rather than re-pointing
-    /// every reader through an index.
+    /// [`Session::view`] and [`Session::diagnostics`]. This is a zipper, not an
+    /// indexed list. Code that reads `session.document` always sees the active
+    /// tab, and switching tabs moves whole structs instead of redirecting every
+    /// reader through an index.
     left: Vec<Tab>,
     /// Tabs to the right of the active one, in display order.
     right: Vec<Tab>,
@@ -449,19 +447,18 @@ pub struct Session {
     /// core's own.
     ///
     /// Filled in by the frontend at startup. The core cannot know whether a
-    /// command it routes onward will be handled: the terminal frontend can format
-    /// a document because it has a language-server client, and the GPU frontend
-    /// cannot because it has neither. Listing something on the assumption that
-    /// somebody downstream will handle it is how a palette comes to offer what
-    /// the editor cannot do.
+    /// command it forwards will be handled. For example, the terminal frontend
+    /// can format a document because it has a language-server client, and the
+    /// GPU frontend cannot. Listing a command without knowing that it is handled
+    /// would make the palette offer actions the editor cannot perform.
     pub frontend_commands: Vec<crate::commands::PaletteEntry>,
     /// Whether the frontend can draw a line broken across several rows.
     ///
-    /// Declared by the frontend for the same reason [`Session::frontend_commands`]
-    /// is: the core cannot know what the thing drawing it is capable of. The GPU
-    /// frontend lays out one document line per row, and a session that wrapped
-    /// anyway would scroll and move the caret by rows that frontend never draws —
-    /// putting the caret in one place and the text it is on in another.
+    /// Declared by the frontend for the same reason as
+    /// [`Session::frontend_commands`]: the core cannot know the frontend's
+    /// capabilities. The GPU frontend lays out one document line per row. If the
+    /// session wrapped lines anyway, it would scroll and move the caret by rows
+    /// that frontend never draws, and the caret would not match the text.
     ///
     /// True by default, which is the terminal frontend and every test.
     pub frontend_wraps: bool,
@@ -473,16 +470,16 @@ pub struct Session {
     /// Semantic tokens for the open document, as the language server classified
     /// them.
     ///
-    /// Beside the diagnostics and for the same reason: the frontends need one
-    /// place to read from, whatever produced it. Empty when no server is running,
-    /// when the server does not offer them, or when the answer has not arrived —
-    /// and the lexer's own colouring stands in all three cases.
+    /// Kept beside the diagnostics for the same reason: frontends read them from
+    /// one place regardless of the source. Empty when no server is running, when
+    /// the server does not provide them, or when the response has not arrived. In
+    /// all three cases the lexer's colouring is used.
     pub semantic_tokens: Vec<deco_lsp::requests::SemanticSpan>,
     /// Diagnostics for the open document, newest publication wins.
     ///
-    /// Owned by the session rather than by the LSP client so that the frontends
-    /// have one place to read from no matter where a diagnostic came from — a
-    /// language server today, an extension or a linter later.
+    /// Owned by the session rather than by the LSP client, so frontends read
+    /// diagnostics from one place regardless of the source: currently a language
+    /// server, and later an extension or a linter.
     pub diagnostics: Vec<deco_lsp::Diagnostic>,
     /// Problems found while loading the user's configuration, kept so the
     /// frontend can show them rather than failing to start.
@@ -490,8 +487,7 @@ pub struct Session {
     /// Whether the query being typed is the first half of a replace.
     ///
     /// `ctrl+shift+f` and `ctrl+shift+h` open the same prompt and differ only in
-    /// what accepting it does, so which key was pressed has to survive until
-    /// then.
+    /// what accepting it does, so the session records which key was pressed.
     replacing_in_files: bool,
     /// The query a replace-in-files is waiting to be given a replacement for.
     replace_query: String,
@@ -499,10 +495,9 @@ pub struct Session {
     checkout_completed: bool,
     /// Whether the side bar is showing.
     ///
-    /// Whether it *fits* is a different question, answered by
-    /// [`crate::layout::regions`] against the size of the window — so a toggle
-    /// on a narrow terminal is remembered and takes effect when the window
-    /// grows, rather than being silently refused.
+    /// Whether it *fits* is decided separately by [`crate::layout::regions`]
+    /// from the window size. A toggle on a narrow terminal is remembered and
+    /// takes effect when the window grows.
     side_bar: bool,
     /// Whether the panel is showing.
     panel: bool,
@@ -510,88 +505,85 @@ pub struct Session {
     focus: Focus,
     /// File operations that can be taken back, most recent last.
     ///
-    /// The explorer's own undo, separate from the text's — which is what VS Code
-    /// does too, and the only arrangement that makes sense here: `ctrl+z` in a
-    /// buffer means "put my characters back", and having it also move files
-    /// because the last thing you did happened to be in the tree would make it
-    /// unpredictable in both places. Focus decides which stack a press reaches,
-    /// the same way it decides everything else.
+    /// The explorer's own undo stack, separate from the text's, as in VS Code.
+    /// `ctrl+z` in a buffer restores text and must not move files because the
+    /// last action happened in the tree. Focus decides which stack a key press
+    /// reaches.
     ///
-    /// Holds the *inverse* of what was done, so undoing is running what is on
-    /// top. A delete contributes nothing — it has no inverse — so it clears the
-    /// stack rather than leaving entries below it that `ctrl+z` would jump to.
+    /// Holds the *inverse* of each operation, so undo runs the top entry. A
+    /// delete has no inverse, so it clears the stack instead of leaving older
+    /// entries that `ctrl+z` would skip to.
     explorer_undo: Vec<crate::files::Operation>,
     /// The undo the frontend is carrying out, if one is in flight.
     ///
     /// Popped off [`Session::explorer_undo`] and held here until the frontend
-    /// says whether it worked, so that a refusal can put it back. Without it a
-    /// transient failure — undoing `a → b` while another program has just made
-    /// an `a` — would eat the entry and leave nothing to retry.
+    /// reports the result, so a failure can restore it. Otherwise a transient
+    /// failure, such as undoing `a → b` after another program has created `a`,
+    /// would lose the entry and leave nothing to retry.
     pending_undo: Option<crate::files::Operation>,
     /// Files a delete took away that a language server still has open.
     closed_documents: Vec<PathBuf>,
     /// The workspace tree, once a frontend has said where the workspace is.
     ///
-    /// `None` until then, because the session does not derive the root itself:
-    /// working it out needs a working directory and the path deco was started
-    /// with, neither of which the core has. Making the root a full session
-    /// concept is the first step of the roadmap's workspace-switching chapter;
-    /// this is the tree's own copy of it, not that.
+    /// `None` until then, because the session does not derive the root itself.
+    /// That requires a working directory and the path deco was started with, and
+    /// the core has neither. Making the root a full session concept is the first
+    /// step of the roadmap's workspace-switching chapter. This field is only the
+    /// tree's own copy of the root.
     explorer: Option<crate::Explorer>,
     /// The rectangle the frontend last handed over.
     ///
-    /// Kept because toggling a region has to re-divide the same window, and the
-    /// session is the only one that knows the division changed. Without it a
-    /// toggle would have to wait for the next resize to take effect.
+    /// Toggling a region re-divides the same window, and only the session knows
+    /// that the division changed. Without this, a toggle would take effect only
+    /// on the next resize.
     screen: (usize, usize),
     /// The number the next multi-document edit will be tagged with.
     ///
-    /// Handed out here because this is the layer that can see more than one
-    /// document; a buffer's history only holds the number it was given.
+    /// Allocated here because this layer can see more than one document. A
+    /// buffer's history only stores the number it was given.
     next_group: u64,
-    /// What `git status` last said, if anyone has run it.
+    /// The last `git status` result, if it has been run.
     ///
-    /// Fed, exactly as directory listings are, and for the same reason: the
-    /// core has no filesystem and no way to spawn a process. `None` covers
-    /// three different situations that look the same from here — nobody has
-    /// asked yet, there is no git, this is not a repository — and the frontend
-    /// that ran the command is the one that can tell them apart.
+    /// Supplied by the frontend, like directory listings, because the core has
+    /// no filesystem and cannot spawn processes. `None` covers three cases that
+    /// the session cannot distinguish: not yet requested, git not available, or
+    /// not a repository. Only the frontend that ran the command can tell them
+    /// apart.
     scm: Option<deco_scm::Status>,
     /// Whether the status is stale.
     ///
-    /// The same shape as [`Session::directory_wanted`]: the session says what
-    /// it would like to know, and whoever can find out does. Set when
-    /// something has happened that a `git status` would report differently —
-    /// not on a keystroke, because running git on every key would be a
-    /// process per character.
+    /// Works like [`Session::directory_wanted`]: the session records what it
+    /// needs, and the frontend fetches it. Set when something happens that would
+    /// change the `git status` output. Not set on keystrokes, because that would
+    /// run one git process per character.
     scm_wanted: bool,
-    /// Which tenant the side bar is showing.
+    /// Which view the side bar is showing.
     side_bar_view: SideBarView,
     /// Where the repository begins, once a frontend has said. See
     /// [`Session::set_repository_root`].
     repository_root: Option<PathBuf>,
     /// The source-control view, rebuilt whenever a status arrives.
     ///
-    /// Kept rather than derived per render because it holds a *selection*, and
-    /// a selection that was recomputed from the status every frame would forget
-    /// which file the user was standing on the moment anything changed.
+    /// Stored rather than derived per render because it holds a *selection*. A
+    /// selection recomputed from the status every frame would lose the selected
+    /// file whenever the status changed.
     source_control: crate::scm::SourceControl,
     /// What `HEAD` had for each open file, and the marks derived from it.
     ///
-    /// Split in two because the halves change at wildly different rates. The
-    /// committed text costs a process and changes only when someone commits;
-    /// the buffer changes on every keystroke and comparing them is pure. So
-    /// the text is fetched once and kept, and the diff is recomputed here as
-    /// the file is typed into — which is what makes the marks track an edit
-    /// live without a `git` per character.
+    /// Split in two because the parts change at different rates. Fetching the
+    /// committed text requires a process, and it changes only on commit. The
+    /// buffer changes on every keystroke, and the comparison is a pure
+    /// computation. The text is fetched once and cached, and the diff is
+    /// recomputed here as the file is edited. The marks follow edits without
+    /// running `git` per character.
     committed: std::collections::HashMap<PathBuf, Committed>,
 }
 
 /// The path an operation *emptied*, if it emptied one.
 ///
-/// The counterpart to [`crate::files::Operation::arriving`]: a rename leaves
-/// its source behind and a delete leaves its path behind, and anything cached
-/// about either is now about a file that is not there.
+/// The counterpart to [`crate::files::Operation::arriving`]. A rename empties
+/// its source path and a delete empties its path. Cached data about either path
+/// now refers to a file that does not exist.
 fn moved_from(operation: &crate::files::Operation) -> Option<&Path> {
     match operation {
         crate::files::Operation::Rename { from, .. } => Some(from),
@@ -609,17 +601,16 @@ struct Committed {
     text: Option<String>,
     /// The marks, and the buffer version they were computed from.
     ///
-    /// The version is the whole point: without it every render would diff the
-    /// file again, and with it the work happens once per edit.
+    /// The version limits diffing to once per edit instead of once per render.
     marks: Option<(i32, deco_scm::Diff)>,
 }
 
 /// Applies `edits` to one document and its view.
 ///
-/// A free function because both callers reach a different pair: the active
-/// document and its view, and a background tab's. Everything it does — clamping,
-/// refusing overlaps, recording one undo step, marking dirty — belongs to the
-/// document rather than to whichever of them is on screen.
+/// A free function because the callers pass different pairs: the active document
+/// and its view, or a background tab's. Everything it does (clamping, rejecting
+/// overlaps, recording one undo step, marking dirty) applies to the document,
+/// whether or not it is on screen.
 fn apply_edits_to(
     document: &mut Document,
     view: &mut View,
@@ -632,23 +623,21 @@ fn apply_edits_to(
     Ok(commit(document, view, &transaction, now_ms, None))
 }
 
-/// Turns a server's edits into the one transaction that performs them, or says
-/// why they cannot be performed at all.
+/// Turns a server's edits into one transaction that performs them, or returns
+/// why they cannot be applied.
 ///
-/// `Ok(None)` means there was nothing to do. Separated from [`commit`] so that a
-/// caller changing several documents can find out whether *all* of them can be
-/// changed before changing any: everything that can refuse an edit — a range
-/// that is not there, two edits over the same text — refuses here, with every
-/// buffer still untouched.
+/// `Ok(None)` means there was nothing to do. Separate from [`commit`] so that a
+/// caller changing several documents can check that *all* of them can be changed
+/// before changing any. Every rejection (a range that does not exist, two edits
+/// over the same text) happens here, before any buffer is modified.
 fn build_transaction(
     document: &Document,
     edits: &[deco_lsp::TextEdit],
 ) -> Result<Option<deco_core::Transaction>, EditError> {
     use deco_core::{Change, Transaction};
 
-    // A server routinely answers an already-formatted document with a no-op
-    // edit. Applying one would mark the file dirty and add an undo step for
-    // nothing.
+    // Servers often answer an already-formatted document with a no-op edit.
+    // Applying it would mark the file dirty and add an empty undo step.
     let changes: Vec<Change> = edits
         .iter()
         .filter(|edit| !edit.is_noop())
@@ -667,10 +656,8 @@ fn build_transaction(
         return Ok(None);
     }
 
-    // Overlapping edits have no well-defined result. The specification
-    // forbids them, so a server sending them is broken — and guessing which
-    // to honour would corrupt the file silently, which is worse than
-    // refusing and saying so.
+    // Overlapping edits have no well-defined result, and the specification
+    // forbids them. Reject the batch with an error instead of choosing one.
     Transaction::new(changes)
         .map(Some)
         .map_err(|_| EditError::Overlapping)
@@ -706,8 +693,8 @@ fn commit(
             .record(inverse, EditKind::Discrete, before, after, now_ms),
     }
     document.dirty = true;
-    // Revealed even for a background tab: when it is switched to, the cursor
-    // should be where the edit left it rather than wherever it was parked.
+    // Reveal the cursor even for a background tab, so that switching to it shows
+    // the cursor where the edit left it.
     view.reveal_cursor(&document.buffer, &document.settings);
     applied
 }
@@ -715,10 +702,10 @@ fn commit(
 impl Session {
     /// Builds a session from the user's configuration.
     ///
-    /// Neither a broken `keybindings.json` nor a missing theme stops the editor
-    /// from opening: both are reported through [`Session::problems`] and the
-    /// defaults are used instead. An editor that refuses to start because of a
-    /// typo in a config file cannot be used to fix that typo.
+    /// A broken `keybindings.json` or a missing theme does not stop the editor
+    /// from opening. Both are reported through [`Session::problems`] and the
+    /// defaults are used instead, so the editor can still be used to fix the
+    /// configuration.
     pub fn new(settings: Settings, user_keybindings: Option<&str>, platform: Platform) -> Self {
         let (keymap, keymap_problems) = resolver::build(platform, user_keybindings);
         let mut problems: Vec<String> = keymap_problems
@@ -775,17 +762,16 @@ impl Session {
             explorer_undo: Vec::new(),
             pending_undo: None,
             closed_documents: Vec::new(),
-            // Replaced by the first `resize`, which every frontend does before
-            // it draws. The default matches `View`'s so a session nobody sized
-            // still lays out sensibly under test.
+            // Replaced by the first `resize`, which every frontend calls before
+            // drawing. The default matches `View`'s, so an unsized session in a
+            // test still has a usable layout.
             screen: (80, 24),
             next_group: 0,
             scm: None,
             side_bar_view: SideBarView::default(),
             repository_root: None,
             source_control: crate::scm::SourceControl::default(),
-            // Wanted from the start: the branch is worth showing before the
-            // first save, not after it.
+            // Requested at startup so the branch is shown before the first save.
             scm_wanted: true,
             committed: std::collections::HashMap::new(),
             replacing_in_files: false,
@@ -804,9 +790,9 @@ impl Session {
 
     /// Replaces the open document.
     pub fn open(&mut self, path: PathBuf, text: &str) {
-        // A file already open in some tab is switched to, not opened twice: two
-        // tabs onto one file would be two divergent copies of it, and whichever
-        // was saved last would silently win.
+        // Switch to a file that is already open instead of opening it twice. Two
+        // tabs for one file would be two divergent copies, and the last save
+        // would overwrite the other without warning.
         if let Some(index) = self.tab_of(&path) {
             self.switch_to(index);
             self.refresh_context();
@@ -825,9 +811,9 @@ impl Session {
         // Shared across tabs even though the bar is not — see `switch_to`.
         let carried_query = self.find.query().to_owned();
 
-        // Into a fresh tab — unless the active tab is a pristine untitled
-        // document, which is replaced. That is VS Code's rule, and it is what
-        // keeps `deco file.rs` from starting with an empty tab beside the file.
+        // Open in a new tab, unless the active tab is an unmodified untitled
+        // document, which is replaced. This is VS Code's rule, and it prevents
+        // `deco file.rs` from starting with an empty tab beside the file.
         if !self.is_pristine_untitled() {
             let previous = Tab {
                 document: std::mem::replace(
@@ -843,20 +829,20 @@ impl Session {
         }
         self.document = document;
         self.view = view;
-        // The previous document's diagnostics point at line numbers in a file
-        // that is no longer on screen. Carrying them over would decorate the
-        // new one with the old one's errors.
+        // The previous document's diagnostics refer to line numbers in another
+        // file. Keeping them would show the old file's errors in the new one.
         self.diagnostics.clear();
-        // And the token list, which describes the other file's text.
+        // The token list also describes the other file's text.
         self.semantic_tokens.clear();
-        // Same reasoning for the match list: this is a *different* document, so
-        // the matches really are stale. The query survives, since searching the
-        // next file for the same thing is a reasonable thing to want.
+        // The match list is stale for the same reason: this is a *different*
+        // document. The query is kept so the next file can be searched for the
+        // same text.
         self.find.close();
         if !carried_query.is_empty() {
             self.find.set_query(carried_query);
         }
-        // A different file is a different gutter, so a different width for text.
+        // A different file can have a different gutter width, which changes the
+        // text width.
         self.relayout();
         self.refresh_context();
     }
@@ -870,14 +856,14 @@ impl Session {
 
     /// The display index of the tab holding `path`, if any tab does.
     fn tab_of(&self, path: &Path) -> Option<usize> {
-        // Compared after normalising rather than as spelled. `src/main.rs` from
-        // the command line and `/w/src/main.rs` from quick open are one file, and
-        // an exact comparison made them two tabs — two buffers, two undo
-        // histories, and whichever was saved last winning silently.
+        // Compare normalised paths, not the paths as written. `src/main.rs` from
+        // the command line and `/w/src/main.rs` from quick open are one file. An
+        // exact comparison would open two tabs, with two buffers and two undo
+        // histories, and the last save would overwrite the other.
         //
-        // Callers are expected to hand over absolute paths, and every one does;
-        // normalising here as well is what keeps that from being a rule each new
-        // caller has to remember.
+        // Callers are expected to pass absolute paths, and all current callers
+        // do. Normalising here as well means new callers do not have to follow
+        // that rule.
         let wanted = normalise(path);
         let matches =
             |document: &Document| document.path.as_deref().map(normalise) == Some(wanted.clone());
@@ -896,8 +882,8 @@ impl Session {
     /// How many tabs are open. Never zero: the session always shows a document.
     /// Every editor group, in the order they sit on screen.
     ///
-    /// One today. The shape is here so that a renderer is written against groups
-    /// from the start rather than against the one the session happens to expose.
+    /// One today. Renderers are written against a list of groups rather than
+    /// against the single group the session exposes directly.
     pub fn panes(&self) -> Vec<Pane<'_>> {
         if let Some(comparison) = &self.comparison {
             return vec![
@@ -939,8 +925,8 @@ impl Session {
         if let Some(other) = &self.split_view {
             let other = self.pane(other, false);
             if self.split_focused {
-                // The active view is the second group's, so it goes second on
-                // screen and the stored one goes first.
+                // The active view belongs to the second group, so it is listed
+                // second and the stored view first.
                 panes.insert(0, other);
             } else {
                 panes.push(other);
@@ -998,9 +984,9 @@ impl Session {
 
     /// Makes the tab at display index `index` active.
     ///
-    /// The whole list is collected and re-split around the new index — O(n) in
-    /// the number of tabs, which is single digits, in exchange for one obviously
-    /// correct implementation instead of four rotation cases.
+    /// Collects all tabs into one list and splits it again around the new index.
+    /// This is O(n) in the number of tabs, which is small, and avoids four
+    /// separate rotation cases.
     fn switch_to(&mut self, index: usize) {
         if index == self.active_tab() {
             return;
@@ -1013,9 +999,9 @@ impl Session {
             semantic: std::mem::take(&mut self.semantic_tokens),
             find: std::mem::replace(&mut self.find, Find::new()),
         };
-        // The search string is shared even though the bar is not, as it is in VS
-        // Code: opening find in another file shows the same query, and `F3` in a
-        // tab you have not searched yet looks for the last thing you looked for.
+        // The search string is shared across tabs, but the bar is not, as in VS
+        // Code. Opening find in another file shows the same query, and `F3` in a
+        // tab that has not been searched uses the last query.
         let carried_query = active.find.query().to_owned();
         let mut all: Vec<Tab> = std::mem::take(&mut self.left);
         all.push(active);
@@ -1027,8 +1013,8 @@ impl Session {
         // but the background tab's view remembers the size it last had.
         chosen.view.width = sizes.0;
         chosen.view.height = sizes.1;
-        // Its text width is not carried across: the gutter belongs to whichever
-        // document is on screen, so `relayout` below asks again once this one is.
+        // The text width is not restored. It depends on the gutter of the
+        // document on screen, so `relayout` below recomputes it.
 
         self.right = all.split_off(index);
         self.left = all;
@@ -1036,14 +1022,14 @@ impl Session {
         self.view = chosen.view;
         self.diagnostics = chosen.diagnostics;
         self.semantic_tokens = chosen.semantic;
-        // Carried rather than closed. It describes *this* tab's text, which is
-        // what is on screen again — switching away and back finds the bar as it
-        // was left, matches and all, which is what VS Code does.
+        // Restored rather than closed, because it describes *this* tab's text.
+        // Switching away and back shows the bar as it was left, including
+        // matches, as in VS Code.
         self.find = chosen.find;
         if self.find.query().is_empty() && !carried_query.is_empty() {
             self.find.set_query(carried_query);
         }
-        // This document's gutter, then this document's caret.
+        // Recompute the layout for this document's gutter, then reveal its caret.
         self.relayout();
         self.view
             .reveal_cursor(&self.document.buffer, &self.document.settings);
@@ -1066,29 +1052,27 @@ impl Session {
 
     /// `ctrl+w`: closes the active tab.
     ///
-    /// A dirty document is refused rather than dropped — deco has no dialog to
-    /// ask with, and losing edits to a keystroke is the worst thing an editor
-    /// can do. Closing the last tab leaves an untitled document, because the
-    /// session always shows something.
+    /// A dirty document is not closed, because deco has no confirmation dialog
+    /// and a keystroke must not discard edits. Closing the last tab leaves an
+    /// untitled document, because the session always shows a document.
     /// Splits the editor, giving the same document a second view.
     ///
-    /// The new group starts where the old one is looking and takes the keyboard,
-    /// which is what VS Code does — you split in order to work in the new one.
-    /// Scrolling it afterwards leaves the first group where it was, which is the
-    /// whole point: two places in one file, at once.
+    /// The new group starts at the same position as the current one and takes
+    /// the keyboard, as in VS Code. Scrolling it afterwards does not move the
+    /// first group, so two places in one file are visible at once.
     fn split(&mut self) -> Outcome {
         if self.comparison.is_some() {
             return Outcome::Message("close the diff before splitting the editor".to_owned());
         }
         if self.split_view.is_some() {
-            // A third group would need a third view and a narrower column each;
-            // saying so beats a key that silently does nothing.
+            // A third group is not supported. Report it instead of ignoring the
+            // key.
             return Outcome::Message("the editor is already split".to_owned());
         }
         self.split_view = Some(self.view.clone());
         self.split_focused = true;
-        // Two columns where there was one, so both are narrower and a wrapped line
-        // breaks sooner in each.
+        // Two columns replace one, so both are narrower and wrapped lines break
+        // earlier.
         self.relayout();
         self.refresh_context();
         Outcome::Message("Split editor — ctrl+1 and ctrl+2 move between them".to_owned())
@@ -1110,19 +1094,19 @@ impl Session {
         }
         let wanted = index == 1;
         if wanted != self.split_focused {
-            // The active view is always `self.view`, so moving the keyboard is a
-            // swap rather than an index change — the same trick the tabs use.
+            // The active view is always `self.view`, so moving the keyboard swaps
+            // views instead of changing an index, as the tabs do.
             if let Some(other) = self.split_view.as_mut() {
                 std::mem::swap(other, &mut self.view);
             }
             self.split_focused = wanted;
-            // Closed, because the find state belongs to the tab and both groups
-            // are showing the same one: its current match is where the *other*
-            // group's cursor is. A find bar per group needs a tab list per group,
-            // which is the other half of splitting.
+            // Close the find bar. The find state belongs to the tab, and both
+            // groups show the same tab, so its current match is at the *other*
+            // group's cursor. A find bar per group requires a tab list per group,
+            // which is not implemented.
             self.find.close();
-            // The two columns can differ by a cell, so the view that just took the
-            // keyboard needs the width of the column it is now in.
+            // The two columns can differ by one cell, so the newly focused view
+            // needs the width of its column.
             self.relayout();
         }
         self.refresh_context();
@@ -1131,12 +1115,10 @@ impl Session {
 
     /// Refuses to quit while anything is unsaved, and names what.
     ///
-    /// The editor already refuses to close *one* unsaved document with `ctrl+w`;
-    /// dropping all of them on `ctrl+q` applied that principle to the narrower of
-    /// the two paths. A second press quits anyway, because a refusal with no way
-    /// past it is a trap rather than a safeguard — and it has to be the very next
-    /// keystroke, so that a `ctrl+q` typed minutes later starts the conversation
-    /// again rather than acting on an answer nobody remembers giving.
+    /// `ctrl+w` does not close *one* unsaved document, so `ctrl+q` must not
+    /// discard all of them. A second press quits anyway, so the user is never
+    /// prevented from quitting. It must be the very next keystroke. A `ctrl+q`
+    /// pressed later starts the check again.
     fn quit(&mut self) -> Outcome {
         if std::mem::take(&mut self.quit_refused) {
             return Outcome::Quit;
@@ -1164,12 +1146,11 @@ impl Session {
 
     /// Throws away this document's edits, optionally closing it afterwards.
     ///
-    /// An untitled document reverts to empty, which is also what makes one
-    /// closable: there is no file to re-read, and empty is what it was.
+    /// An untitled document reverts to empty, because there is no file to re-read
+    /// and it started empty. This also makes it closable.
     ///
-    /// The replacement goes through the undo history, so `ctrl+z` brings the edits
-    /// back. A command whose whole purpose is to destroy work should not be the one
-    /// command that cannot be taken back.
+    /// The replacement is recorded in the undo history, so `ctrl+z` restores the
+    /// discarded edits.
     fn revert(&mut self, and_close: bool) -> Outcome {
         if !self.document.dirty {
             return Outcome::Message(format!("{} has no changes", self.document.title()));
@@ -1217,8 +1198,8 @@ impl Session {
 
     /// `ctrl+w`: closes the group when the editor is split, and the tab otherwise.
     ///
-    /// VS Code's rule, and the useful one: having split, the first thing you want
-    /// that key to do is put the screen back.
+    /// This is VS Code's rule. After a split, the key first restores the single
+    /// group.
     fn close_editor(&mut self) -> Outcome {
         if self.comparison.take().is_some() {
             self.relayout();
@@ -1288,8 +1269,8 @@ impl Session {
         self.left.push(previous);
         self.view.width = sizes.0;
         self.view.height = sizes.1;
-        // A new tab has no matches to show, and the parked one belongs to the tab
-        // it was parked with.
+        // A new tab has no matches. The previous find state stays with the
+        // previous tab.
         self.find = Find::new();
         self.relayout();
         self.refresh_context();
@@ -1298,9 +1279,9 @@ impl Session {
 
     /// Replaces the diagnostics for the open document.
     ///
-    /// Replace rather than append, matching the protocol: a server publishes
-    /// the complete set for a document each time, and an empty set is how it
-    /// says the problems are fixed.
+    /// Replaces rather than appends, as the protocol requires. A server publishes
+    /// the complete set for a document each time, and an empty set means there
+    /// are no problems.
     pub fn set_diagnostics(&mut self, diagnostics: Vec<deco_lsp::Diagnostic>) {
         self.diagnostics = diagnostics;
         self.refresh_context();
@@ -1344,14 +1325,14 @@ impl Session {
         self.resolve_document_settings();
     }
 
-    /// Resolves the open document's settings again, keeping what the file and the
-    /// keyboard have said about it.
+    /// Resolves the open document's settings again, keeping the overrides from the
+    /// file and from the keyboard.
     ///
-    /// Three things re-resolve: a workspace layer arriving, a rename, and a language
-    /// change. Each replaces the whole `EditorSettings`, and two of the values in
-    /// there did not come from `settings.json` — the indentation read from the file,
-    /// and `alt+z`. Re-applied here rather than at each call site, because a fourth
-    /// caller would otherwise silently lose them again.
+    /// Three events re-resolve: a workspace layer arriving, a rename, and a
+    /// language change. Each replaces the whole `EditorSettings`, but two values do
+    /// not come from `settings.json`: the indentation detected from the file, and
+    /// the `alt+z` toggle. They are re-applied here rather than at each call site,
+    /// so a new caller cannot lose them.
     fn resolve_document_settings(&mut self) {
         self.document.settings = EditorSettings::resolve(&self.settings, self.document.language());
         self.document.apply_overrides();
@@ -1360,8 +1341,8 @@ impl Session {
 
     /// Adds anything the resolved settings ask for that deco does not do.
     ///
-    /// Once each: re-resolving the same settings must not fill the problem list with
-    /// copies of one complaint, and the frontend shows every entry.
+    /// Each problem is added once. The frontend shows every entry, so re-resolving
+    /// the same settings must not add duplicates.
     fn report_unsupported(&mut self) {
         if let Some(problem) = self.document.settings.unsupported() {
             if !self.problems.contains(&problem) {
@@ -1398,26 +1379,25 @@ impl Session {
                 }
             })
             .unwrap_or(&self.view.selections);
-        // VS Code's own distinction, and the find bar depends on it:
-        // `editorTextFocus` is the text area, `textInputFocus` is any text input
-        // including the find box, and `editorFocus` covers the editor as a whole.
-        // So with the find bar open, `tab` and `ctrl+space` stop resolving while
-        // `left` and `backspace` keep doing so — and `Find::consume` claims them.
+        // VS Code's distinction, which the find bar depends on: `editorTextFocus`
+        // is the text area, `textInputFocus` is any text input including the find
+        // box, and `editorFocus` covers the whole editor. With the find bar open,
+        // `tab` and `ctrl+space` stop resolving, while `left` and `backspace`
+        // still resolve and `Find::consume` handles them.
         let find_focus = self.find.visible();
         let on_replace = find_focus && self.find.field() == crate::find::Field::Replace;
-        // VS Code's key for "a quick-open widget has the keyboard". It takes
-        // `editorTextFocus` away for the same reason the find bar does.
+        // VS Code's key for "a quick-open widget has the keyboard". It clears
+        // `editorTextFocus` for the same reason the find bar does.
         let in_quick_open = self.prompt.is_some();
         self.context.set("inQuickOpen", in_quick_open);
-        // VS Code's own name for its search view being up. The widget is a prompt
-        // here rather than a viewlet, but a `when` clause copied out of somebody's
-        // keybindings.json should gate on the same thing.
+        // VS Code's key for the search view being open. deco uses a prompt rather
+        // than a viewlet, but a `when` clause copied from a VS Code
+        // keybindings.json should behave the same.
         self.context
             .set("searchViewletVisible", self.searching_project());
-        // VS Code's own keys for the chrome. Visible and focused are separate:
-        // `ctrl+b` shows the side bar without taking the keyboard into it, so a
-        // clause gated on `sideBarVisible` and one gated on `sideBarFocus` are
-        // asking different questions.
+        // VS Code's keys for the chrome. Visible and focused are separate:
+        // `ctrl+b` shows the side bar without moving the keyboard into it, so
+        // `sideBarVisible` and `sideBarFocus` can differ.
         let regions = self.regions();
         self.context
             .set("sideBarVisible", regions.side_bar.is_some());
@@ -1425,26 +1405,27 @@ impl Session {
         self.context
             .set("sideBarFocus", self.focus == Focus::SideBar);
         self.context.set("panelFocus", self.focus == Focus::Panel);
-        // The tree's own keys. `filesExplorerFocus` is VS Code's name for the
-        // explorer having the keyboard, and `listFocus` for any list having it —
-        // the explorer is the only list here, so today they agree, and a `when`
-        // clause copied from VS Code that uses either one resolves.
+        // The tree's keys. `filesExplorerFocus` is VS Code's key for the explorer
+        // having the keyboard, and `listFocus` is for any list having it. The
+        // explorer is the only list here, so both currently have the same value,
+        // and a `when` clause copied from VS Code that uses either one resolves.
         let in_side_bar = self.focus == Focus::SideBar;
         let explorer_focus =
             in_side_bar && self.explorer.is_some() && self.side_bar_view == SideBarView::Explorer;
         self.context.set("filesExplorerFocus", explorer_focus);
-        // Every list, not just the tree — which is what VS Code means by it,
-        // and why the source-control view answers the same `list.*` keys.
+        // Every list, not just the tree, as in VS Code. This is why the
+        // source-control view responds to the same `list.*` keys.
         let scm_focus = in_side_bar && self.side_bar_view == SideBarView::SourceControl;
         self.context.set("listFocus", explorer_focus || scm_focus);
-        // deco's own, because VS Code has no `when` key for "the source-control
-        // view has the keyboard" — its own bindings there are contributed by
-        // the view rather than gated on a context key. The `deco.` prefix is
-        // the rule for exactly this case: a name VS Code does not have.
+        // A deco key, because VS Code has no `when` key for "the source-control
+        // view has the keyboard". VS Code's bindings there are contributed by the
+        // view rather than gated on a context key. The `deco.` prefix is used for
+        // names that VS Code does not have.
         self.context.set("deco.sourceControlFocus", scm_focus);
-        // VS Code sets `scmProvider` to the active provider's id. deco has one
-        // kind, so the presence of a repository is the whole of it: a `when`
-        // clause asking for `scmProvider == 'git'` resolves when git answered.
+        // VS Code sets `scmProvider` to the active provider's id. deco has only
+        // git, so the value depends only on whether a repository was found. A
+        // `when` clause with `scmProvider == 'git'` resolves when git returned a
+        // status.
         self.context.set(
             "scmProvider",
             match self.scm.is_some() {
@@ -1454,9 +1435,9 @@ impl Session {
         );
         self.context
             .set("explorerViewletVisible", regions.side_bar.is_some());
-        // Everything below describes the text, and while a region has the
-        // keyboard the text does not have it — which is what stops a binding
-        // gated on `editorTextFocus` from resolving in a tree.
+        // The keys below describe the text. While another region has the
+        // keyboard the text does not, so a binding gated on `editorTextFocus`
+        // does not resolve in a tree.
         let in_editor = self.focus == Focus::Editor;
         self.context.set(
             "editorTextFocus",
@@ -1465,8 +1446,8 @@ impl Session {
         self.context.set("editorFocus", in_editor);
         self.context.set("textInputFocus", in_editor);
         self.context.set("findWidgetVisible", find_focus);
-        // Exactly one of the two inputs holds the keyboard, which is what lets
-        // `enter` mean "next match" in one and "replace" in the other.
+        // Exactly one of the two inputs has the keyboard, so `enter` can mean
+        // "next match" in one and "replace" in the other.
         self.context
             .set("findInputFocussed", find_focus && !on_replace);
         self.context.set("replaceInputFocussed", on_replace);
@@ -1479,8 +1460,8 @@ impl Session {
         self.context
             .set("editorHasMultipleSelections", selections.is_multi());
         self.context.set("dirty", self.document.dirty);
-        // VS Code's own key, so a `when` clause copied from an existing
-        // keybindings.json means the same thing here. `gotoNextError` is bound
+        // VS Code's key, so a `when` clause copied from an existing
+        // keybindings.json behaves the same here. `gotoNextError` is bound
         // to it by default.
         self.context
             .set("editorHasDiagnostics", !self.diagnostics.is_empty());
@@ -1492,8 +1473,8 @@ impl Session {
 
     /// Feeds one keypress through the keymap and runs whatever it resolves to.
     ///
-    /// `now_ms` is a monotonic timestamp used for undo grouping; the frontend
-    /// owns the clock so that this whole path stays testable.
+    /// `now_ms` is a monotonic timestamp used for undo grouping. The frontend
+    /// owns the clock so that this path stays testable.
     pub fn handle_chord(&mut self, chord: Chord, now_ms: u64) -> Outcome {
         let resolution = self
             .keymap
@@ -1503,9 +1484,8 @@ impl Session {
             Resolution::Pending { .. } => Outcome::Handled,
             Resolution::Match { command, args } => self.dispatch(&command, args.as_ref(), now_ms),
             Resolution::NoMatch => {
-                // An unbound printable key types itself. Modifiers other than
-                // Shift mean the user was reaching for a command, so those are
-                // left alone rather than inserting stray characters.
+                // An unbound printable key inserts its character. Modifiers other
+                // than Shift indicate a command, so those keys insert nothing.
                 match chord.key {
                     Key::Char(c)
                         if !chord.modifiers.ctrl
@@ -1528,21 +1508,20 @@ impl Session {
         outcome
     }
 
-    /// Runs a command, giving the find input first refusal on it.
+    /// Runs a command, letting the find input handle it first.
     ///
-    /// The find input is a text input, so while it holds the keyboard the
-    /// text-editing commands belong to it — see the [`crate::find`] module for
-    /// why that cannot be expressed as a `when` clause. Everything else, and
-    /// everything at all when the bar is closed, goes to [`Session::run`].
+    /// The find input is a text input, so while it has the keyboard it handles
+    /// the text-editing commands. The [`crate::find`] module explains why this
+    /// cannot be expressed as a `when` clause. All other commands, and all
+    /// commands while the bar is closed, go to [`Session::run`].
     fn dispatch(
         &mut self,
         command: &str,
         args: Option<&serde_json::Value>,
         now_ms: u64,
     ) -> Outcome {
-        // "ctrl+q again" means the very next keystroke. Anything else in between
-        // is a user who went back to work, and acting on their earlier answer
-        // minutes later would be acting on one nobody remembers giving.
+        // "ctrl+q again" means the very next keystroke. Any other command in
+        // between resets the confirmation.
         if !matches!(
             command,
             "workbench.action.quit" | "workbench.action.closeWindow"
@@ -1550,8 +1529,8 @@ impl Session {
             self.quit_refused = false;
         }
 
-        // The prompt first: it is drawn over the find bar, so it is what holds the
-        // keyboard when both are open.
+        // The prompt first. It is drawn over the find bar, so it has the keyboard
+        // when both are open.
         if let Some(prompt) = &mut self.prompt {
             if prompt.consume(command, args, self.clipboard.as_mut()) {
                 return Outcome::Handled;
@@ -1569,8 +1548,8 @@ impl Session {
             return self.run_in_comparison(command, args, now_ms);
         }
         // Diagnostic navigation is handled here rather than in `commands`
-        // because it needs the diagnostic list, which belongs to the session —
-        // a command sees only the document, the view and the clipboard.
+        // because it needs the diagnostic list, which belongs to the session. A
+        // command sees only the document, the view and the clipboard.
         let outcome = match command {
             "jumpToNextSnippetPlaceholder" => self.move_snippet(false),
             "jumpToPrevSnippetPlaceholder" => self.move_snippet(true),
@@ -1584,14 +1563,12 @@ impl Session {
             "editor.action.marker.prev" | "editor.action.marker.prevInFiles" => {
                 self.goto_marker(Direction::Prev)
             }
-            // An undo of something that happened to several documents at once
-            // has to reach all of them. Intercepted here rather than in
-            // `commands` for the usual reason: a command there sees one document
-            // and this is the layer that can see the rest.
+            // Undoing a change made to several documents must reach all of
+            // them. Handled here rather than in `commands`, because a command
+            // there sees one document and this layer sees all of them.
             //
-            // Only when the step on top is a shared one. Ordinary editing —
-            // which is almost every `ctrl+z` — falls through to the same
-            // single-document undo it always used.
+            // Only when the top step is a shared one. Ordinary editing falls
+            // through to the single-document undo.
             "undo"
                 if self.focus == Focus::Editor && self.document.history.undo_group().is_some() =>
             {
@@ -1604,8 +1581,9 @@ impl Session {
                 let group = self.document.history.redo_group().expect("just checked");
                 self.undo_group(group, true)
             }
-            // The chrome. Session-level because a region changes how much of
-            // the window the text has, which every group and the wrap depend on.
+            // The chrome. Handled at session level because a region changes how
+            // much of the window the text has, which affects every group and the
+            // wrap width.
             "workbench.action.toggleSidebarVisibility" => self.toggle_side_bar(),
             "workbench.action.togglePanel" => self.toggle_panel(),
             "workbench.action.closeSidebar" => self.show_side_bar(false),
@@ -1614,9 +1592,9 @@ impl Session {
                 self.show_side_bar_view(SideBarView::Explorer)
             }
             "workbench.view.scm" => self.show_side_bar_view(SideBarView::SourceControl),
-            // The repository's own commands. Like the tree's `list.*`, these
-            // exist whatever has the keyboard and decide inside — an arm that
-            // stopped matching would report a working binding as unknown.
+            // Repository commands. Like the tree's `list.*`, they match
+            // regardless of focus and check the state inside. An arm that did not
+            // match would report a working binding as unknown.
             "git.stage" => self.stage_selected(),
             "git.stageAll" => self.stage_all(),
             "git.unstage" => self.unstage_selected(),
@@ -1627,28 +1605,26 @@ impl Session {
                 Outcome::Handled
             }
             "revealInExplorer" => self.reveal_active_file(),
-            // The tree's own keys. Routed before the focus guard below, because
-            // unlike the editor's commands these are *for* whatever has the
-            // keyboard. Whether the tree is what has it is decided inside, not
-            // by a guard here: these commands exist whatever has focus, and an
-            // arm that stopped matching would report them as unknown — which is
-            // what the frontend says when a binding is a typo.
+            // The tree's keys. Routed before the focus guard below, because
+            // unlike the editor's commands they act on whatever has the keyboard.
+            // Whether the tree has focus is checked inside, not by a guard here.
+            // These commands exist regardless of focus, and an arm that did not
+            // match would report them as unknown, which the frontend reports for
+            // a mistyped binding.
             "list.focusDown" | "list.focusUp" | "list.focusFirst" | "list.focusLast"
             | "list.expand" | "list.collapse" | "list.select" => self.explorer_key(command),
-            // The tree's undo, reached by the same key as the text's and told
-            // apart by what has the keyboard. The workspace-edit arms above are
-            // gated on editor focus for the same reason: after a project-wide
-            // replace the document has a shared step waiting, and `ctrl+z` in
-            // the tree must still mean the tree's undo rather than reaching past
-            // it into the text.
+            // The tree's undo uses the same key as the text's, and focus decides
+            // which one runs. The workspace-edit arms above are gated on editor
+            // focus for the same reason: after a project-wide replace the
+            // document has a shared undo step, and `ctrl+z` in the tree must
+            // still run the tree's undo, not the text's.
             "undo" if self.focus == Focus::SideBar => self.undo_file_operation(),
-            // The prompts the tree's mutations ask through. They act on what is
-            // *selected* in the tree, which is model state and exists whether or
-            // not the tree has the keyboard — so no focus guard here, and
-            // invoking one from the palette works. The keys are what needs
-            // telling apart, and the keymap does it: `F2` and `delete` are bound
-            // to these only under `sideBarFocus`, so in the text they still
-            // rename a symbol and delete a character.
+            // Prompts for the tree's file operations. They act on the tree's
+            // *selection*, which is model state and exists whether or not the
+            // tree has the keyboard. There is no focus guard, so they also work
+            // from the palette. The keymap separates the keys: `F2` and `delete`
+            // are bound to these only under `sideBarFocus`, so in the text they
+            // still rename a symbol and delete a character.
             "explorer.newFile" => self.open_tree_prompt(PromptKind::NewFile),
             "explorer.newFolder" => self.open_tree_prompt(PromptKind::NewFolder),
             "renameFile" => self.open_rename_file(),
@@ -1657,11 +1633,12 @@ impl Session {
             "workbench.action.focusPanel" => self.focus_region(Focus::Panel),
             // VS Code's way back to the text from anywhere in the chrome.
             "workbench.action.focusActiveEditorGroup" => self.focus_region(Focus::Editor),
-            // Needs the view as well as the document: whether the editor is
-            // wrapping depends on how wide the window is, which is the view's.
+            // Needs the view as well as the document, because wrapping depends on
+            // the window width, which the view stores.
             "editor.action.toggleWordWrap" => self.toggle_word_wrap(),
-            // The find bar, for the same reason: it needs the whole document and
-            // its own state, neither of which a command in `commands` can see.
+            // The find bar is handled here for the same reason. It needs the
+            // whole document and its own state, and a command in `commands` can
+            // see neither.
             "actions.find" => self.open_find(false),
             "closeFindWidget" => {
                 self.find.close();
@@ -1669,15 +1646,15 @@ impl Session {
             }
             "editor.action.nextMatchFindAction" => self.step_find(Direction::Next),
             "editor.action.previousMatchFindAction" => self.step_find(Direction::Prev),
-            // Whichever search is being typed into. The two are separate: the find
-            // bar's options belong to the document on screen, and a project
-            // search's belong to the project search.
+            // Applies to the search currently being typed. The two option sets
+            // are separate: the find bar's belong to the document on screen, and
+            // the project search has its own.
             "toggleFindCaseSensitive" => {
                 if self.searching_project() {
                     self.search_options.case_sensitive = !self.search_options.case_sensitive;
-                    // Not an early `return`: the tail of this function is what
-                    // puts an `Outcome::Message` on the status bar, and a toggle
-                    // that reports nothing is one nobody can tell they pressed.
+                    // Not an early `return`. The end of this function shows an
+                    // `Outcome::Message` on the status bar, so the toggle is
+                    // visible to the user.
                     self.report_search_options()
                 } else {
                     self.find.toggle_case_sensitive();
@@ -1693,16 +1670,16 @@ impl Session {
                     self.find_query_changed()
                 }
             }
-            // Recognised so the key says what is missing. `deco_core::search` is
-            // literal, and a regex mode needs its own escaping and its own error
-            // reporting for an invalid pattern.
+            // Recognised so the key reports that the feature is missing.
+            // `deco_core::search` is literal. A regex mode needs its own escaping
+            // and error reporting for invalid patterns.
             "toggleFindRegex" => {
                 Outcome::Message("regular-expression search is not implemented yet".to_owned())
             }
             "editor.action.startFindReplaceAction" => self.open_find(true),
-            // The quick-open prompt. Same reasoning as the find bar: it needs the
-            // whole session, not the document and view a command in `commands`
-            // sees.
+            // The quick-open prompt. Like the find bar, it needs the whole
+            // session, not only the document and view that a command in
+            // `commands` sees.
             "workbench.action.gotoLine" => {
                 self.prompt = Some(Prompt::plain(PromptKind::GoToLine));
                 Outcome::Handled
@@ -1711,12 +1688,11 @@ impl Session {
                 self.prompt = Some(Prompt::list(PromptKind::Commands, self.palette()));
                 Outcome::Handled
             }
-            // The list of files has to be walked from disk, which only a frontend
-            // can do; it calls `offer_files` when it has one.
+            // The file list must be read from disk, which only a frontend can do.
+            // It calls `offer_files` with the result.
             "workbench.action.quickOpen" => Outcome::Frontend(command.to_owned()),
-            // Asks what to look for first. It used to search for the seed straight
-            // away, which meant a project search could only ever look for what the
-            // cursor happened to be on.
+            // Prompts for the query first, seeded from the cursor, so the search
+            // is not limited to the text at the cursor.
             "workbench.action.findInFiles" => {
                 self.replacing_in_files = false;
                 self.prompt = Some(Prompt::seeded(
@@ -1726,10 +1702,10 @@ impl Session {
                 self.refresh_context();
                 Outcome::Handled
             }
-            // The same first question, remembered as the first half of a
-            // different one. VS Code opens its search view with the replace box
-            // showing; deco has one prompt at a time, so it asks in the order
-            // the answers are needed.
+            // The same query prompt, recorded as the first step of a replace. VS
+            // Code opens its search view with the replace box visible. deco shows
+            // one prompt at a time, so it asks for the query and then the
+            // replacement.
             "workbench.action.replaceInFiles" => {
                 self.replacing_in_files = true;
                 self.prompt = Some(Prompt::seeded(
@@ -1756,8 +1732,8 @@ impl Session {
                 Outcome::Handled
             }
             "workbench.action.acceptSelectedQuickOpenItem" => self.accept_prompt(now_ms),
-            // Tabs. Session-level because they move whole documents around,
-            // which a command in `commands` cannot see past.
+            // Tabs. Handled at session level because they move whole documents,
+            // and a command in `commands` sees only one.
             "workbench.action.nextEditor" => self.cycle_tab(Direction::Next),
             "workbench.action.previousEditor" => self.cycle_tab(Direction::Prev),
             "workbench.action.closeActiveEditor" => self.close_editor(),
@@ -1771,10 +1747,10 @@ impl Session {
                 Outcome::Handled
             }
             "workbench.action.editor.changeLanguageMode" => self.offer_languages(),
-            // Before `commands::execute` can answer `Outcome::Save`: a document
-            // with no path cannot be written, and VS Code's `ctrl+s` opens Save As
-            // rather than reporting a dead end. Saying "save it first" and then
-            // refusing to save is how an untitled tab became impossible to close.
+            // Checked before `commands::execute` returns `Outcome::Save`. A
+            // document with no path cannot be written, so `ctrl+s` opens Save As,
+            // as in VS Code. Otherwise an untitled tab could not be saved, and so
+            // could not be closed.
             "workbench.action.files.save" if self.document.path.is_none() => self.offer_save_as(),
             "workbench.action.files.saveAs" => self.offer_save_as(),
             "workbench.action.quit" | "workbench.action.closeWindow" => self.quit(),
@@ -1783,9 +1759,9 @@ impl Session {
             "workbench.action.files.openFile" => self.offer_open_path(),
             "editor.action.replaceOne" => self.replace_one(now_ms),
             "editor.action.replaceAll" => self.replace_all(now_ms),
-            // Commands that need something the core has no concept of. Named
-            // here rather than left to fall through as `NotFound`, so a typo in
-            // a keybinding is still reported as unknown.
+            // Commands that need something the core does not have. They are
+            // listed by name rather than forwarding every unknown command, so a
+            // typo in a keybinding is still reported as unknown.
             "editor.action.showHover"
             | "editor.action.rename"
             | "editor.action.quickFix"
@@ -1801,14 +1777,14 @@ impl Session {
             | "selectPrevSuggestion"
             | "hideSuggestWidget"
             | "closeHoverWidget" => Outcome::Frontend(command.to_owned()),
-            // The editor's own commands belong to the editor. While a region has
-            // the keyboard they are swallowed rather than run: `commands` is
-            // where typing, motion, undo and the clipboard live, and every one
-            // of them acts on the document — which is not what has focus.
+            // Editor commands apply only to the editor. While another region has
+            // the keyboard they are ignored. `commands` implements typing,
+            // motion, undo and the clipboard, and all of them act on the
+            // document, which does not have focus.
             //
             // A guard here rather than a `when` clause on each binding, because
-            // the fallback that types an unbound printable key never went
-            // through the keymap at all, and a clause cannot reach it.
+            // the fallback that types an unbound printable key does not go
+            // through the keymap, so a clause cannot apply to it.
             _ if self.focus != Focus::Editor => Outcome::Handled,
             _ => {
                 let mut ctx = Context {
@@ -1820,17 +1796,16 @@ impl Session {
                 commands::execute(&mut ctx, command, args)
             }
         };
-        // A command that resolved from a binding but that nothing handles would
-        // otherwise do nothing at all, which is indistinguishable from an editor
-        // that has stopped responding. Named rather than silent — and named
-        // differently for a feature deco means to build than for an identifier
-        // that does not exist here, because those call for different reactions.
+        // A bound command that nothing handles would otherwise do nothing, which
+        // looks like an unresponsive editor. Report it instead, with different
+        // messages for a planned feature and for an identifier that does not
+        // exist.
         let outcome = match outcome {
-            // A command the frontend declared is the frontend's, whatever its
-            // name. The identifiers above are written down because they are
-            // deco's own and fixed; an extension's are neither — they are
-            // whatever is installed — so this is the only way one can be routed
-            // at all, and it is what `frontend_commands` is for.
+            // A command the frontend declared is routed to the frontend,
+            // regardless of its name. The identifiers above are deco's own and
+            // fixed. Extension commands depend on what is installed, so this is
+            // the only way to route them, and it is the purpose of
+            // `frontend_commands`.
             Outcome::NotFound if self.frontend_owns(command) => {
                 Outcome::Frontend(command.to_owned())
             }
@@ -1843,9 +1818,9 @@ impl Session {
             },
             other => other,
         };
-        // Shared deliberately: a command handled above must report to the
-        // status bar the same way every other one does, or F8 lands on an error
-        // and says nothing about it.
+        // Shared by all commands, so a command handled above reports to the
+        // status bar like any other. Otherwise F8 would move to an error without
+        // showing its message.
         if let Outcome::Message(message) = &outcome {
             self.status = Some(message.clone());
         }
@@ -1913,9 +1888,8 @@ impl Session {
     /// Opens the quick-open prompt over `files`.
     ///
     /// Called by the frontend once it has walked the workspace. Each entry's `id`
-    /// is the path to open and its `title` is what to show, so typing matches the
-    /// file name first and the rest of the path second — which is the order people
-    /// think in.
+    /// is the path to open and its `title` is the displayed text, so typing matches
+    /// the file name first and the rest of the path second.
     pub fn offer_files(&mut self, mut files: Vec<crate::commands::PaletteEntry>) {
         if files.is_empty() {
             self.status = Some("no files found here".to_owned());
@@ -1928,19 +1902,18 @@ impl Session {
 
     /// Puts the files that have been on screen first, most recent first.
     ///
-    /// The rest keep the order the frontend supplied, which is alphabetical. Stable,
-    /// so a file the session has never seen sits exactly where it did before — the
-    /// list only ever gains a preferred prefix.
+    /// The rest keep the order the frontend supplied, which is alphabetical. The
+    /// sort is stable, so files not in the recency list keep their relative order
+    /// after the recent files.
     fn order_by_recency(&mut self, files: &mut [crate::commands::PaletteEntry]) {
         if self.recent.is_empty() {
             return;
         }
-        // Compared lexically rather than as strings, because the walk and `ctrl+o`
-        // spell a path differently — `src/main.rs` against `./src/main.rs` — and a
-        // recent file the list failed to recognise would silently sink back into the
-        // alphabet.
+        // Compare normalised paths rather than strings, because the walk and
+        // `ctrl+o` can write a path differently (`src/main.rs` and
+        // `./src/main.rs`). An unrecognised recent file would lose its position.
         let recent: Vec<PathBuf> = self.recent.iter().map(|path| normalise(path)).collect();
-        // Cached, so a path is normalised once per row and not once per comparison.
+        // Cached, so each path is normalised once per row, not once per comparison.
         files.sort_by_cached_key(|entry| {
             let path = normalise(Path::new(&entry.id));
             recent
@@ -1952,14 +1925,12 @@ impl Session {
 
     /// Opens the search-results prompt over `results`.
     ///
-    /// Separate from [`Session::offer_files`] only in what it says when there is
-    /// nothing: an empty file list means the workspace is empty, and an empty
-    /// result list means the term is not in it — different facts, and reporting
-    /// one as the other would send the reader looking in the wrong place.
-    /// Offers the decisions already made, so one can be taken back.
+    /// Differs from [`Session::offer_files`] only in the message for an empty
+    /// list. An empty file list means the workspace is empty, and an empty result
+    /// list means the term was not found. The messages must not be confused.
+    /// Offers the decisions already made, so one can be revoked.
     ///
-    /// Empty says so rather than opening a list with nothing in it: "no decisions
-    /// to forget" is an answer, and an empty picker is a puzzle.
+    /// When there are none, shows a message instead of opening an empty list.
     pub fn offer_extension_permissions(
         &mut self,
         decisions: Vec<crate::commands::PaletteEntry>,
@@ -1975,9 +1946,9 @@ impl Session {
 
     /// Asks the user about a capability an extension wants.
     ///
-    /// `what` describes the request in the words the user will read — the
-    /// extension's name and what it is asking for — because a permission prompt
-    /// that does not say who is asking is not a decision anyone can make.
+    /// `what` describes the request as shown to the user: the extension's name
+    /// and the capability it requests. The user cannot decide without knowing
+    /// which extension is asking.
     pub fn ask_extension_consent(&mut self, what: &str) {
         self.prompt = Some(Prompt::list(
             PromptKind::ExtensionConsent,
@@ -2006,13 +1977,13 @@ impl Session {
 
     /// Opens the language-mode picker.
     ///
-    /// Owned by the core rather than a frontend: every language deco knows is
-    /// compiled in, so there is nothing to walk and nothing to read.
+    /// Owned by the core rather than a frontend, because every language deco
+    /// supports is compiled in and nothing needs to be read from disk.
     fn offer_languages(&mut self) -> Outcome {
         let mut entries = vec![
-            // Detection rather than a choice, which is what VS Code offers first
-            // and the only way back once a language has been picked by hand. The
-            // detail says what it would decide, so the row is not a mystery.
+            // Automatic detection rather than a fixed language. VS Code lists it
+            // first, and it is the only way to undo a manual choice. The detail
+            // shows the language detection would select.
             crate::commands::PaletteEntry::new(AUTO_LANGUAGE, "Auto Detect").with_detail(
                 self.document
                     .path
@@ -2033,8 +2004,8 @@ impl Session {
 
     /// Opens the save-as prompt, seeded with this document's own path.
     ///
-    /// Editing the path you are already in beats typing a whole one: "save this
-    /// next to itself under another name" is what save-as is usually for.
+    /// Save As is usually used to save next to the current file under another
+    /// name, so editing the current path is faster than typing a full one.
     fn offer_save_as(&mut self) -> Outcome {
         let seed = self
             .document
@@ -2049,8 +2020,8 @@ impl Session {
 
     /// Opens the open-file prompt, seeded with this document's directory.
     ///
-    /// The directory and not the file: the point is to open something *else*, and
-    /// a seed you have to delete the last component of is a seed that cost you.
+    /// Seeded with the directory, not the file, because the user wants to open a
+    /// *different* file and would otherwise have to delete the file name.
     fn offer_open_path(&mut self) -> Outcome {
         let seed = self
             .document
@@ -2072,14 +2043,13 @@ impl Session {
 
     /// Adopts `path` as this document's, after the frontend has written it there.
     ///
-    /// Everything the path decides is redone: the language, and so the lexer and
-    /// the `[language]` settings, since `notes.txt` saved as `notes.toml` is a TOML
-    /// file now. The document is clean, because what is on disk is what is in the
-    /// buffer.
+    /// Everything derived from the path is recomputed: the language, and with it
+    /// the lexer and the `[language]` settings. `notes.txt` saved as `notes.toml`
+    /// is now a TOML file. The document is clean, because the disk contents match
+    /// the buffer.
     ///
-    /// A language the user chose by hand is **kept**. Having said "this is TOML"
-    /// and then saved it, being told it is now plain text would undo a decision
-    /// nobody revisited.
+    /// A language chosen manually is **kept**. Saving under a new name must not
+    /// override the user's explicit choice.
     pub fn rename_to(&mut self, path: PathBuf) -> Outcome {
         let chosen_by_hand = self.document.language_pinned;
         self.document.path = Some(path.clone());
@@ -2093,9 +2063,9 @@ impl Session {
 
     /// Opens the colour-theme picker over `themes`.
     ///
-    /// Called by the frontend once it has found what is installed: the built-in
-    /// themes are compiled in, but a marketplace theme is a file in an extension
-    /// directory and the core has no filesystem.
+    /// Called by the frontend after it has found the installed themes. The
+    /// built-in themes are compiled in, but a marketplace theme is a file in an
+    /// extension directory, and the core has no filesystem.
     pub fn offer_themes(&mut self, themes: Vec<crate::commands::PaletteEntry>) {
         if themes.is_empty() {
             self.status = Some("no themes found".to_owned());
@@ -2107,13 +2077,12 @@ impl Session {
 
     /// Uses `theme` from now on.
     ///
-    /// Everything drawn is a function of the theme at render time, so there is
-    /// nothing to invalidate — the next frame is already in the new colours.
+    /// Colours are read from the theme at render time, so nothing needs to be
+    /// invalidated. The next frame uses the new colours.
     ///
-    /// The choice lasts the session. Making it stick means `workbench.colorTheme`
-    /// in your settings, which deco reads and never writes: an editor that edits
-    /// your configuration behind you is worse than one that tells you what to put
-    /// in it.
+    /// The choice lasts for the session. To keep it, set `workbench.colorTheme` in
+    /// the settings. deco reads that setting but never writes it, so the message
+    /// tells the user which setting to change.
     pub fn set_theme(&mut self, theme: ColorTheme) -> Outcome {
         let report = format!(
             "Theme: {} — set `workbench.colorTheme` to keep it",
@@ -2125,12 +2094,12 @@ impl Session {
 
     /// Makes this document `language`, or `None` to go back to detecting it.
     ///
-    /// Everything downstream of the identifier is rebuilt: the lexer, and the
-    /// settings, which can be overridden per language. The context key follows
-    /// too, so a `when` clause on `editorLangId` means what it says.
+    /// Everything that depends on the identifier is rebuilt: the lexer and the
+    /// settings, which can be overridden per language. The `editorLangId` context
+    /// key is also updated.
     ///
-    /// The text is untouched. Nothing about a document's bytes depends on which
-    /// language it is said to be — only on how it is read.
+    /// The text is not changed. The language affects only how the text is
+    /// interpreted.
     pub fn set_language(&mut self, language: Option<&str>) -> Outcome {
         let resolved = match language {
             Some(language) => Some(language.to_owned()),
@@ -2142,8 +2111,8 @@ impl Session {
                 .map(str::to_owned),
         };
         self.document.language_id = resolved;
-        // `Some` is a choice; `None` is "work it out from the name again", which
-        // is what unpinning means.
+        // `Some` is a manual choice. `None` means "detect from the file name
+        // again", which unpins the language.
         self.document.language_pinned = language.is_some();
         self.document.syntax = deco_syntax::Syntax::new(self.document.language());
         self.resolve_document_settings();
@@ -2159,10 +2128,9 @@ impl Session {
 
     /// Opens the go-to-symbol prompt over `symbols`.
     ///
-    /// Each entry's `id` is the document's own path, so accepting one goes through
-    /// the same open-a-file-at-a-position path a search result does — which is
-    /// what makes it land in the right tab even if the user switched tabs while
-    /// the server was still answering.
+    /// Each entry's `id` is the document's path, so accepting one uses the same
+    /// open-file-at-position path as a search result. The cursor lands in the
+    /// correct tab even if the user switched tabs before the server responded.
     pub fn offer_symbols(&mut self, symbols: Vec<crate::commands::PaletteEntry>) {
         if symbols.is_empty() {
             self.status = Some("this server found no symbols in this file".to_owned());
@@ -2174,16 +2142,15 @@ impl Session {
 
     /// `alt+z`: wraps this document's long lines, or stops.
     ///
-    /// Per document, because that is where the resolved settings live — so it is
-    /// also per tab, and turning it on to read one Markdown file leaves the code in
-    /// the next tab alone. It is not written anywhere: deco
-    /// [does not write settings files](../../../docs/configuration.md), and a
-    /// keystroke that silently edited one would be the wrong way to find that out.
+    /// Per document, because the resolved settings are stored there. It is
+    /// therefore also per tab: enabling it for one Markdown file does not affect
+    /// the code in the next tab. The change is not saved: deco
+    /// [does not write settings files](../../../docs/configuration.md).
     ///
-    /// Turning it back on restores whatever `editor.wordWrap` says — including a
-    /// `[language]` override of it — rather than assuming `"on"`. Somebody who
-    /// configured `"bounded"` and pressed the key twice asked to get back what they
-    /// had, not the viewport width.
+    /// Turning it back on restores the `editor.wordWrap` value, including a
+    /// `[language]` override, rather than assuming `"on"`. A user who configured
+    /// `"bounded"` and pressed the key twice gets `"bounded"` back, not wrapping at
+    /// the viewport width.
     fn toggle_word_wrap(&mut self) -> Outcome {
         let wrapping = self.view.wrap_column(&self.document.settings) > 0;
         let configured =
@@ -2195,13 +2162,13 @@ impl Session {
         } else {
             configured
         };
-        // Recorded on the document as well as applied, so that changing the language
-        // — which resolves these settings from scratch — does not un-press the key.
+        // Recorded on the document as well as applied, so that a language change,
+        // which resolves these settings from scratch, does not undo the toggle.
         self.document.wrap_override = Some(wanted);
         self.document.settings.word_wrap = wanted;
 
-        // The anchor and the caret both mean something different now: the rows a
-        // window holds have changed under it.
+        // The rows in the window have changed, so the scroll anchor and the caret
+        // must be revealed again.
         self.view
             .reveal_cursor(&self.document.buffer, &self.document.settings);
         if let Some(mut other) = self.split_view.take() {
@@ -2222,8 +2189,8 @@ impl Session {
             .is_some_and(|prompt| prompt.kind() == PromptKind::SearchQuery)
     }
 
-    /// Says which options a project search will use, since the prompt has no room
-    /// to draw them and a toggle nobody can see is a toggle nobody trusts.
+    /// Reports which options a project search will use, because the prompt has no
+    /// room to show them.
     fn report_search_options(&mut self) -> Outcome {
         let describe = |on: bool| if on { "on" } else { "off" };
         Outcome::Message(format!(
@@ -2235,9 +2202,8 @@ impl Session {
 
     /// What a project-wide search should look for.
     ///
-    /// The selection, the word under the cursor, or whatever the find bar was last
-    /// searching for — in that order, because that is the order of how recently the
-    /// user said it.
+    /// The selection, the word under the cursor, or the find bar's last query, in
+    /// that order, from most to least recently indicated by the user.
     pub fn search_seed(&self) -> Option<String> {
         if let Some((text, _)) = self.seed_from_document() {
             return Some(text);
@@ -2264,13 +2230,11 @@ impl Session {
             .map(|(id, title)| crate::commands::PaletteEntry::new(id, title))
             .collect();
         entries.extend(self.frontend_commands.iter().cloned());
-        // The identifier is worth a column of its own here: it is what a
-        // `keybindings.json` refers to, and the title does not tell you it.
+        // Show the identifier as the detail, because `keybindings.json` refers to
+        // it and the title does not show it.
         //
-        // Unless the frontend already said something, which it does for a command
-        // that came from an extension: there the useful fact is *which* extension,
-        // and an identifier the reader has no reason to have seen before is not a
-        // reason to throw that away.
+        // Keep a detail the frontend already set. For extension commands it names
+        // the extension, which is more useful than the identifier.
         for entry in &mut entries {
             if entry.detail.is_none() {
                 entry.detail = Some(entry.id.clone());
@@ -2281,9 +2245,9 @@ impl Session {
 
     /// Runs whatever the open prompt was asking for.
     fn accept_prompt(&mut self, now_ms: u64) -> Outcome {
-        // Taken rather than borrowed: running a command needs `&mut self`, and a
-        // command may open a prompt of its own — `Go to Line` chosen from the
-        // palette does exactly that.
+        // Taken rather than borrowed. Running a command needs `&mut self`, and a
+        // command may open its own prompt, as `Go to Line` chosen from the
+        // palette does.
         let Some(prompt) = self.prompt.take() else {
             return Outcome::Handled;
         };
@@ -2319,9 +2283,9 @@ impl Session {
                 None => Outcome::Message("branch switch cancelled".to_owned()),
             },
             PromptKind::ConfirmDelete => {
-                // Only a typed `y` goes through. Enter on an empty box is what
-                // happens when somebody dismisses a prompt they did not read,
-                // and it must not be the answer that deletes their file.
+                // Only a typed `y` deletes. Enter on an empty input is a common
+                // way to dismiss an unread prompt, so it must not delete the
+                // file.
                 if prompt.text().trim().eq_ignore_ascii_case("y") {
                     self.delete_in_tree()
                 } else {
@@ -2333,22 +2297,22 @@ impl Session {
                     let id = entry.id.clone();
                     self.run(&id, None, now_ms)
                 }
-                // Nothing matched what was typed. Closing without saying so would
-                // look like the command had run.
+                // Nothing matched the typed text. Report it, because closing
+                // silently would look as if the command had run.
                 None => Outcome::Message(format!("no command matches `{}`", prompt.text())),
             },
             PromptKind::SearchQuery => {
-                // Not trimmed away entirely: a query of spaces is a real thing
-                // to look for, and only an *empty* one has nothing to do.
+                // Not trimmed. A query of spaces is a valid search, and only an
+                // *empty* query is rejected.
                 let typed = prompt.text();
                 if typed.is_empty() {
                     self.replacing_in_files = false;
                     return Outcome::Message("nothing to search for".to_owned());
                 }
                 if self.replacing_in_files {
-                    // The second half. The query is parked rather than carried
-                    // in the prompt, because a prompt is a line of text and this
-                    // one is about to be a different line of text.
+                    // The second step. The query is stored in the session, not in
+                    // the prompt, because the prompt is replaced by the
+                    // replacement prompt.
                     self.replace_query = typed.to_owned();
                     self.prompt = Some(Prompt::plain(PromptKind::ReplaceQuery));
                     self.refresh_context();
@@ -2366,9 +2330,7 @@ impl Session {
                     // Only reachable if the prompt was opened out of order.
                     return Outcome::Message("nothing to replace".to_owned());
                 }
-                // The replacement itself may be empty: "delete every occurrence
-                // of this" is a thing people mean, and refusing it would make
-                // the one destructive-looking case the one you cannot do.
+                // The replacement may be empty, which deletes every occurrence.
                 Outcome::ReplaceInFiles {
                     query,
                     replacement: prompt.text().to_owned(),
@@ -2380,12 +2342,11 @@ impl Session {
                 if typed.is_empty() {
                     return Outcome::Message("no new name given".to_owned());
                 }
-                // The prompt opens with the current name in it, so accepting it
-                // unchanged is what happens when somebody presses F2 and then
-                // enter. A round trip to the server for a rename to the same
-                // name would come back as a diff of nothing, or — from a server
-                // that does not check — as an edit per occurrence, marking every
-                // file that mentions it dirty for no change at all.
+                // The prompt opens with the current name, so pressing F2 and
+                // then enter submits it unchanged. A rename to the same name
+                // would return an empty diff, or, from a server that does not
+                // check, an edit per occurrence that marks every file using the
+                // name as dirty without changing anything.
                 if self
                     .seed_from_document()
                     .is_some_and(|(name, _)| name == typed)
@@ -2425,14 +2386,13 @@ impl Session {
                 Some(entry) => Outcome::ExtensionConsent {
                     allow: entry.id == CONSENT_ALLOW,
                 },
-                // Nothing matched what was typed, which for a two-choice prompt
-                // means the filter hid both. Treated as no decision rather than
-                // as a refusal: the extension is still waiting, and the prompt
-                // can be opened again.
+                // Nothing matched the typed text, so the filter hid both choices.
+                // This is treated as no decision rather than as a denial. The
+                // extension is still waiting, and the prompt can be opened again.
                 None => Outcome::Message("no answer chosen".to_owned()),
             },
             PromptKind::Themes => match prompt.selected() {
-                // The identifier is the file to read, empty for one compiled in.
+                // The identifier is the file to read, or empty for a built-in theme.
                 Some(entry) => Outcome::LoadTheme {
                     label: entry.title.clone(),
                     path: (!entry.id.is_empty()).then(|| PathBuf::from(&entry.id)),
@@ -2449,7 +2409,8 @@ impl Session {
             },
             PromptKind::Files | PromptKind::SearchResults | PromptKind::Symbols => {
                 match prompt.selected() {
-                    // The frontend reads it: the core has no filesystem.
+                    // The frontend reads the file, because the core has no
+                    // filesystem.
                     Some(entry) => Outcome::OpenFile {
                         path: PathBuf::from(&entry.id),
                         at: entry.at,
@@ -2469,8 +2430,8 @@ impl Session {
     /// Moves the cursor to a line the user typed, one-based as the status bar
     /// shows it.
     ///
-    /// Accepts `12` and `12:5` — VS Code's `line:column` — because the status bar
-    /// reports both and a reader who has one has usually read the other.
+    /// Accepts `12` and VS Code's `line:column` form `12:5`, because the status bar
+    /// shows both.
     fn go_to_line(&mut self, text: &str) -> Outcome {
         let text = text.trim();
         if text.is_empty() {
@@ -2491,13 +2452,12 @@ impl Session {
 
         let lines = self.document.buffer.line_count() as u32;
         if line == 0 || line > lines {
-            // The count is part of the message: "out of range" without it leaves
-            // the user guessing what the range was.
+            // Include the line count so the message states the valid range.
             return Outcome::Message(format!("line {line} is outside 1-{lines}"));
         }
 
-        // Clamped rather than refused: a column past the end of the line is a
-        // reasonable thing to ask for, and the end of the line is what was meant.
+        // Clamped rather than rejected. A column past the end of the line moves
+        // to the end of the line.
         let target = self
             .document
             .buffer
@@ -2513,16 +2473,15 @@ impl Session {
 
     /// Opens the find bar, seeding it from the selection.
     ///
-    /// `editor.find.seedSearchStringFromSelection` is on by default in VS Code,
-    /// and the reason is that selecting a word and pressing `ctrl+f` is how the
-    /// find bar is usually reached.
+    /// Matches VS Code, where `editor.find.seedSearchStringFromSelection` is on by
+    /// default, because the find bar is usually opened by selecting a word and
+    /// pressing `ctrl+f`.
     fn open_find(&mut self, replacing: bool) -> Outcome {
         let primary = *self.view.selections.primary();
         let seed =
             (!primary.is_empty()).then(|| self.document.buffer.text_in_range(primary.range()));
-        // The start of the selection, not the cursor: seeding from a selection
-        // must leave that same occurrence as the current match rather than
-        // skipping to the next one.
+        // The start of the selection, not the cursor, so the selected occurrence
+        // becomes the current match instead of the next one.
         let origin = primary.start();
         if replacing {
             self.find.open_replace(seed, origin);
@@ -2534,10 +2493,10 @@ impl Session {
 
     /// Re-finds the matches and moves to the first one from the search origin.
     ///
-    /// Called after anything that changes what matches: a keystroke in the query,
-    /// a toggled option. Searching from the origin rather than from the cursor is
-    /// what stops typing `f`, `o`, `o` from walking down the file one match at a
-    /// time.
+    /// Called after anything that changes the matches, such as a keystroke in the
+    /// query or a toggled option. Searching from the origin rather than from the
+    /// cursor prevents typing `f`, `o`, `o` from moving down the file one match per
+    /// keystroke.
     fn find_query_changed(&mut self) -> Outcome {
         self.find.refresh(&self.document.buffer);
         if let Some(range) = self.find.first_at_or_after(self.find.origin()) {
@@ -2548,17 +2507,16 @@ impl Session {
 
     /// `F3` and `shift+F3`: the next or previous match, wrapping.
     fn step_find(&mut self, direction: Direction) -> Outcome {
-        // `F3` with nothing typed yet searches for the selection, or for the word
-        // under the cursor — which is what makes it useful without `ctrl+f`
-        // first.
+        // `F3` with an empty query searches for the selection, or for the word
+        // under the cursor, so it works without opening find first.
         if self.find.query().is_empty() {
             let Some((seed, range)) = self.seed_from_document() else {
                 return Outcome::Message("nothing to search for".to_owned());
             };
             self.find.set_query(seed);
-            // Select the seed, so that the step below moves off it. Without this
-            // the search starts at a bare caret sitting inside the very word it
-            // just seeded from, finds that word, and appears to do nothing.
+            // Select the seed so that the step below moves past it. Otherwise the
+            // search starts from a caret inside the seed word, finds that word,
+            // and appears to do nothing.
             self.select_match(range);
         }
         self.find.refresh(&self.document.buffer);
@@ -2567,9 +2525,9 @@ impl Session {
         }
 
         let primary = *self.view.selections.primary();
-        // From the far end of the selection in the direction of travel, so that
-        // pressing the key while sitting on a match moves off it instead of
-        // finding it again.
+        // Search from the end of the selection in the direction of travel, so
+        // pressing the key on a match moves to another match instead of finding
+        // the same one.
         let found = match direction {
             Direction::Next => self.find.first_at_or_after(primary.end()),
             Direction::Prev => self.find.last_at_or_before(primary.start()),
@@ -2578,8 +2536,8 @@ impl Session {
             return Outcome::Handled;
         };
         self.select_match(range);
-        // The bar shows the count when it is open; when it is closed this is the
-        // only place the user learns whether the search wrapped or found nothing.
+        // The bar shows the count when it is open. When it is closed, this
+        // message is the only indication of whether the search wrapped.
         match self.find.ordinal(range) {
             Some(ordinal) if !self.find.visible() => Outcome::Message(format!(
                 "{ordinal} of {} for `{}`",
@@ -2592,10 +2550,9 @@ impl Session {
 
     /// `ctrl+h`'s `enter`: replaces the current match and moves to the next.
     ///
-    /// A press that is not sitting on a match steps onto one instead of changing
-    /// anything, which is VS Code's behaviour and the safe reading of an
-    /// ambiguous keypress: replacing text the user cannot see would be worse than
-    /// making them press the key twice.
+    /// If the selection is not on a match, the press moves to the next match
+    /// without replacing anything, as in VS Code. This avoids replacing text the
+    /// user has not seen.
     fn replace_one(&mut self, now_ms: u64) -> Outcome {
         if self.find.query().is_empty() {
             return Outcome::Message("nothing to replace".to_owned());
@@ -2613,8 +2570,7 @@ impl Session {
 
         let replacement = self.find.replace().to_owned();
         let after = self.replace_range(current, &replacement, now_ms);
-        // The document moved under the match list, so it has to be rebuilt before
-        // anything is looked up in it.
+        // The document changed, so rebuild the match list before using it.
         self.find.refresh(&self.document.buffer);
         if let Some(range) = self.find.first_at_or_after(after) {
             self.select_match(range);
@@ -2624,8 +2580,8 @@ impl Session {
 
     /// `ctrl+alt+enter`: replaces every match, in one undo step.
     ///
-    /// One step because that is what the user asked for — one action — and
-    /// because undoing a hundred replacements one at a time is not a recovery.
+    /// One undo step for one user action, so a single `ctrl+z` reverts all
+    /// replacements.
     fn replace_all(&mut self, now_ms: u64) -> Outcome {
         if self.find.query().is_empty() {
             return Outcome::Message("nothing to replace".to_owned());
@@ -2636,9 +2592,10 @@ impl Session {
         }
 
         let replacement = self.find.replace().to_owned();
-        // A match that already reads as the replacement is left out: replacing
-        // `foo` with `foo` should not dirty the file or add an undo step. It is
-        // reachable — a case-insensitive search for `foo` finds `FOO` too.
+        // Skip matches that already equal the replacement, so replacing `foo`
+        // with `foo` does not dirty the file or add an undo step. A match can
+        // differ from the query, because a case-insensitive search for `foo` also
+        // finds `FOO`.
         let edits: Vec<deco_lsp::TextEdit> = self
             .find
             .matches()
@@ -2654,8 +2611,8 @@ impl Session {
         }
 
         // `TextEdit` is a range and a string, and `apply_edits` already turns a
-        // batch of them into one transaction with one undo step. A second,
-        // identical path would be a second place for that to be wrong.
+        // batch of them into one transaction with one undo step. Reuse it instead
+        // of duplicating that logic.
         let count = match self.apply_edits(&edits, now_ms) {
             Ok(count) => count,
             Err(error) => return Outcome::Message(error.to_string()),
@@ -2674,8 +2631,8 @@ impl Session {
     /// The text `F3` should search for when the query is still empty, and where
     /// in the document it came from.
     ///
-    /// The range matters as much as the text: it is the match the cursor is
-    /// already on, and `F3` has to step off it rather than onto it.
+    /// The range is needed as well as the text. It is the match the cursor is
+    /// already on, and `F3` must move past it.
     fn seed_from_document(&self) -> Option<(String, deco_core::position::Range)> {
         let primary = *self.view.selections.primary();
         if !primary.is_empty() {
@@ -2697,17 +2654,16 @@ impl Session {
 
     /// Moves the cursor to the next or previous diagnostic.
     ///
-    /// Wraps around, as VS Code's does: reaching the last error and pressing F8
-    /// again returns to the first rather than doing nothing, which is what
-    /// makes it usable for walking a file repeatedly.
+    /// Wraps around, as in VS Code. Pressing F8 on the last error returns to the
+    /// first.
     fn goto_marker(&mut self, direction: Direction) -> Outcome {
         if self.diagnostics.is_empty() {
             return Outcome::Message("no problems in this file".into());
         }
 
-        // Sorted rather than taken in publication order: servers emit in
-        // whatever order analysis finished, and "next" has to mean next in the
-        // file or the cursor jumps around unpredictably.
+        // Sorted by position rather than kept in publication order. Servers
+        // publish in the order analysis finished, and "next" must mean next in
+        // the file.
         let mut starts: Vec<deco_core::position::Position> =
             self.diagnostics.iter().map(|d| d.range.start).collect();
         starts.sort();
@@ -2728,9 +2684,9 @@ impl Session {
                 .unwrap_or(starts[starts.len() - 1]),
         };
 
-        // Clamped because a diagnostic can outlive the text it describes: the
-        // user may have deleted the offending lines before the server caught
-        // up, and an unclamped position would panic or scroll past the end.
+        // Clamped because a diagnostic can refer to text that no longer exists.
+        // The user may have deleted the lines before the server updated, and an
+        // unclamped position would panic or scroll past the end.
         let target = self.document.buffer.clamp_position(target);
         self.view.selections = deco_core::selection::SelectionSet::single(
             deco_core::selection::Selection::caret(target),
@@ -2747,15 +2703,14 @@ impl Session {
 
     /// Replaces a range with `text`, leaving the cursor after it.
     ///
-    /// The seam a frontend needs to apply an edit it computed itself — accepting
-    /// a completion, applying a formatting result — rather than through a
-    /// command. It goes through the same transaction and history machinery as
-    /// every other edit, so the result is one undo step and the document's dirty
-    /// flag is correct.
+    /// Lets a frontend apply an edit it computed itself, such as an accepted
+    /// completion or a formatting result, without a command. It uses the same
+    /// transaction and history code as every other edit, so the result is one
+    /// undo step and the dirty flag is correct.
     ///
-    /// `Discrete` rather than typed: accepting a completion is one decision, and
-    /// coalescing it with the characters typed just before would make a single
-    /// undo throw away the word as well as the completion.
+    /// `Discrete` rather than typed. Accepting a completion is one action. Merging
+    /// it with the characters typed just before would make one undo remove the
+    /// typed word as well as the completion.
     pub fn replace_range(
         &mut self,
         range: deco_core::position::Range,
@@ -2768,7 +2723,7 @@ impl Session {
 
         let before = self.view.selections.clone();
         // Clamped because the range may have been computed against text the user
-        // has since changed — a completion answered while they kept typing.
+        // has since changed, such as a completion returned while typing continued.
         let range = deco_core::position::Range::new(
             self.document.buffer.clamp_position(range.start),
             self.document.buffer.clamp_position(range.end),
@@ -2777,9 +2732,9 @@ impl Session {
         let transaction = Transaction::single(Change::replace(range, text.to_owned()));
         let inverse = self.document.apply(&transaction);
 
-        // Where the inserted text ends, which is where a caret belongs after an
-        // insertion — computed from the text rather than by re-searching the
-        // buffer, so it is right even when the text contains newlines.
+        // The end of the inserted text, where the caret goes after an insertion.
+        // Computed from the text rather than by searching the buffer, so it is
+        // correct when the text contains newlines.
         let end = match text.rfind('\n') {
             Some(last_break) => {
                 let lines_added = text.matches('\n').count() as u32;
@@ -2909,17 +2864,16 @@ impl Session {
     /// Applies a batch of server-computed replacements as one undo step.
     ///
     /// Every range refers to the document as the server saw it, and the protocol
-    /// says nothing about the order they arrive in — so applying them front to
-    /// back would corrupt the file, because the first edit shifts every position
-    /// after it. [`deco_core::Transaction`] sorts them and applies back to front,
-    /// which is why they are handed over as one batch rather than looped over.
+    /// does not define the order of the edits. Applying them front to back would
+    /// corrupt the file, because each edit shifts the positions after it.
+    /// [`deco_core::Transaction`] sorts them and applies them back to front, so
+    /// they are passed as one batch rather than applied in a loop.
     ///
-    /// Returns how many edits were applied, or an error naming the reason when
-    /// none could be.
+    /// Returns how many edits were applied, or an error with the reason when none
+    /// could be applied.
     ///
-    /// The cursor is kept where it was, clamped into the new text. A formatting
-    /// run that moved the caret to the end of the file would be correct by the
-    /// letter of the edits and useless in practice.
+    /// The cursor stays where it was, clamped into the new text, so formatting
+    /// does not move the caret to the end of the file.
     pub fn apply_edits(
         &mut self,
         edits: &[deco_lsp::TextEdit],
@@ -2934,11 +2888,10 @@ impl Session {
 
     /// The same, for whichever open tab holds `path`.
     ///
-    /// `None` when no tab does, which is the caller's cue that the file has to be
-    /// changed on disk instead. Edits must reach the *buffer* of an open document
-    /// rather than its file: a document with unsaved changes would overwrite them
-    /// the next time it was saved, so an edit written past it is an edit that
-    /// silently did not happen.
+    /// `None` when no tab holds it, which tells the caller to change the file on
+    /// disk instead. Edits to an open document must go to its *buffer*, not its
+    /// file. Otherwise saving the document would overwrite the edit on disk and
+    /// the edit would be lost.
     pub fn apply_edits_to_path(
         &mut self,
         path: &Path,
@@ -2955,19 +2908,18 @@ impl Session {
             .find(|tab| tab.document.path.as_deref() == Some(path))?;
         let applied = apply_edits_to(&mut tab.document, &mut tab.view, edits, now_ms);
         // No `refresh_context`: the context keys describe the document on screen,
-        // and this one is not it.
+        // and this document is in the background.
         Some(applied)
     }
 
-    /// Offers what a language server said it could do about the selection.
+    /// Offers the code actions a language server returned for the selection.
     ///
-    /// Called by the frontend once the answer arrives, like
-    /// [`Session::offer_symbols`]. Each entry's `id` is the frontend's own
-    /// handle on the action, since the frontend is the one holding it.
+    /// Called by the frontend when the response arrives, like
+    /// [`Session::offer_symbols`]. Each entry's `id` is the frontend's own handle
+    /// for the action, because the frontend stores the actions.
     ///
-    /// An empty list is reported rather than opening an empty prompt: `ctrl+.`
-    /// on a line with nothing wrong with it is a reasonable thing to press, and
-    /// a menu of nothing is a worse answer than a sentence.
+    /// An empty list is reported as a message rather than opening an empty
+    /// prompt. `ctrl+.` on a line without problems is a normal action.
     pub fn offer_code_actions(&mut self, actions: Vec<crate::commands::PaletteEntry>) {
         if actions.is_empty() {
             self.status = Some("no code actions here".to_owned());
@@ -2977,16 +2929,14 @@ impl Session {
         self.refresh_context();
     }
 
-    /// Asks what to call the symbol under the cursor instead.
+    /// Prompts for a new name for the symbol under the cursor.
     ///
-    /// Opened by the frontend rather than by `editor.action.rename` reaching
-    /// here, because whether a rename is possible at all depends on a language
-    /// server, which the frontend owns: a prompt that appears and then reports
-    /// that this server cannot rename is a worse answer than not appearing.
+    /// Opened by the frontend rather than by `editor.action.rename` in the core,
+    /// because whether a rename is possible depends on the language server, which
+    /// the frontend owns. The prompt is not shown if the server cannot rename.
     ///
-    /// Seeded with the current name and with all of it selected, the way VS
-    /// Code's rename box opens — so typing replaces it, and `end` keeps it to
-    /// add a suffix.
+    /// Seeded with the current name, fully selected, as VS Code's rename box
+    /// opens. Typing replaces the name, and `end` keeps it to add a suffix.
     pub fn offer_rename(&mut self) -> Outcome {
         let Some((name, _)) = self.seed_from_document() else {
             return Outcome::Message("put the cursor on a name to rename it".to_owned());
@@ -2996,18 +2946,17 @@ impl Session {
         Outcome::Handled
     }
 
-    /// Resolves a server's [`deco_lsp::WorkspaceEdit`] against what is open.
+    /// Resolves a server's [`deco_lsp::WorkspaceEdit`] against the open documents.
     ///
-    /// Nothing is changed. The plan that comes back names the files it still
-    /// needs read — see [`crate::workspace::Plan::missing`] — and it is
-    /// [`Session::apply_workspace_edit`] that acts on it.
+    /// Nothing is changed. The returned plan lists the files that still need to
+    /// be read (see [`crate::workspace::Plan::missing`]), and
+    /// [`Session::apply_workspace_edit`] applies it.
     ///
-    /// `resolve` turns one of the server's URIs into a path on the machine
-    /// holding the files, and `version_of` answers with the version last sent to
-    /// that server for a path. Both are callbacks because both belong to the LSP
-    /// client, which lives in a frontend; the rules about what an unresolvable
-    /// URI and a mismatched version *mean* live here, so that every frontend
-    /// gets the same ones.
+    /// `resolve` converts a server URI into a path on the machine holding the
+    /// files, and `version_of` returns the version last sent to that server for a
+    /// path. Both are callbacks because they belong to the LSP client, which is in
+    /// a frontend. The rules for an unresolvable URI and a mismatched version are
+    /// defined here, so every frontend uses the same rules.
     pub fn plan_workspace_edit(
         &self,
         edit: &deco_lsp::WorkspaceEdit,
@@ -3024,30 +2973,29 @@ impl Session {
 
     /// Plans a replacement of every occurrence of `needle` in `paths`.
     ///
-    /// The result goes to [`Session::apply_workspace_edit`] like any other, so a
-    /// replace across the workspace is one undoable action and files no tab
-    /// holds are opened rather than written — the same rules a rename gets, for
-    /// the same reasons.
+    /// The result goes to [`Session::apply_workspace_edit`] like any other plan,
+    /// so a workspace-wide replace is one undoable action, and files not open in
+    /// a tab are opened rather than written. These are the same rules as for a
+    /// rename.
     ///
     /// # The matches are found again here, not carried over
     ///
-    /// The caller found these files by searching them, and it would be shorter
-    /// to hand the positions along. It would also be wrong twice over. A search
-    /// result names where a match *started*, and replacing needs where it ended;
-    /// deriving the end from the needle's length assumes the fold that matched
-    /// it was length-preserving, which case-insensitive matching does not
-    /// promise. And a file the search read from disk may be open here with
-    /// unsaved changes, in which case the buffer is the text that matters and
-    /// the positions from disk point into a document that no longer exists.
+    /// The caller already searched these files, but its positions cannot be
+    /// reused, for two reasons. First, a search result gives where a match
+    /// *started*, and replacing needs where it ended. Deriving the end from the
+    /// needle's length assumes that case folding preserves length, which
+    /// case-insensitive matching does not guarantee. Second, a file the search
+    /// read from disk may be open with unsaved changes. The buffer is then the
+    /// relevant text, and positions from disk do not match it.
     ///
-    /// So each file is searched again, against the buffer when a tab holds one,
-    /// by the same [`deco_core::search::find_all`] the find bar uses. Which also
-    /// means the count reported afterwards is a count of what was replaced,
-    /// rather than of what was found a moment earlier.
+    /// Each file is therefore searched again, against the buffer when a tab holds
+    /// one, with the same [`deco_core::search::find_all`] the find bar uses. The
+    /// count reported afterwards is therefore the number of replacements, not
+    /// the number of earlier search results.
     ///
-    /// `read` supplies the text of a file no tab holds, and is the caller's
-    /// business because reading one is I/O — in a remote session, on another
-    /// machine.
+    /// `read` supplies the text of a file not open in a tab. It is provided by
+    /// the caller because reading is I/O, which happens on another machine in a
+    /// remote session.
     pub fn plan_replacements(
         &self,
         paths: &[PathBuf],
@@ -3059,9 +3007,9 @@ impl Session {
         let mut documents = Vec::with_capacity(paths.len());
         for path in paths {
             let open = self.document_at_path(path);
-            // Borrowed from the tab, or owned from the caller. The buffer is
-            // built only in the second case: an open document already has one,
-            // and rebuilding it would be the file's length of work per file.
+            // Borrowed from the tab, or built from the caller's text. An open
+            // document already has a buffer, so one is built only for files that
+            // are not open.
             let (buffer, contents) = match open {
                 Some(document) => (std::borrow::Cow::Borrowed(&document.buffer), None),
                 None => {
@@ -3087,8 +3035,8 @@ impl Session {
                     })
                     .collect();
 
-            // A file whose matches were all in text that has since changed is
-            // left out rather than opened for nothing.
+            // Skip a file with no remaining matches (for example, because the
+            // matched text has since changed) instead of opening it.
             if edits.is_empty() {
                 continue;
             }
@@ -3107,18 +3055,17 @@ impl Session {
     ///
     /// # Order
     ///
-    /// Every transaction is built before any is applied. Building is where an
-    /// edit can still be refused — overlapping ranges are caught there — so a
-    /// refusal happens with every buffer still as it was. Only once all of them
-    /// have been built does anything get written, and from that point nothing
-    /// can fail.
+    /// Every transaction is built before any is applied. Building is the only
+    /// step that can reject an edit (for example, overlapping ranges), so a
+    /// rejection leaves every buffer unchanged. Changes are applied only after
+    /// all transactions are built, and that step cannot fail.
     ///
-    /// Files no tab holds are opened as background tabs from the text
-    /// [`crate::workspace::Plan::with_contents`] supplied, and they are opened
-    /// *after* the same check, so a refusal does not leave tabs behind either.
+    /// Files not open in a tab are opened as background tabs from the text
+    /// supplied by [`crate::workspace::Plan::with_contents`]. They are opened
+    /// *after* the same check, so a rejection does not leave new tabs either.
     ///
-    /// Every document records its step under one shared group, which is what
-    /// [`Session::run`] reads to undo the whole change at once.
+    /// Every document records its step under one shared group, which
+    /// [`Session::run`] uses to undo the whole change at once.
     pub fn apply_workspace_edit(
         &mut self,
         mut plan: crate::workspace::Plan,
@@ -3126,8 +3073,8 @@ impl Session {
     ) -> Result<crate::workspace::Applied, crate::workspace::WorkspaceError> {
         use crate::workspace::WorkspaceError;
 
-        // Documents this edit brings in, built here rather than opened, so that
-        // a refusal below leaves the session with the tabs it started with.
+        // Documents this edit adds. They are built here but not yet opened, so a
+        // rejection below leaves the session's tabs unchanged.
         let mut opened: Vec<(Document, View)> = Vec::new();
         // For each planned document: where to find it when committing, and the
         // transaction to commit. `None` for a document with nothing to do.
@@ -3169,7 +3116,7 @@ impl Session {
             prepared.push((index, transaction));
         }
 
-        // Past here nothing can refuse.
+        // Nothing after this point can fail.
         let group = self.take_group();
         let mut applied = crate::workspace::Applied {
             documents: 0,
@@ -3190,10 +3137,10 @@ impl Session {
                 let (document, view) = newly_opened
                     .next()
                     .expect("one was built for every document that was not open");
-                // Pushed even when it had nothing to change: the file the server
-                // named is part of what the user asked about, and a tab that
-                // appears only sometimes is harder to reason about than one that
-                // always does. `edits` below counts the real work.
+                // Opened even when it has nothing to change. The server named the
+                // file, and a tab that always appears is more predictable than one
+                // that appears only sometimes. `edits` below counts the actual
+                // changes.
                 self.right.push(Tab {
                     document,
                     view,
@@ -3218,13 +3165,12 @@ impl Session {
         Ok(applied)
     }
 
-    /// The next group number, and never this one again.
+    /// Returns the next group number and advances the counter.
     fn take_group(&mut self) -> deco_core::Group {
         let group = deco_core::Group(self.next_group);
-        // Saturating rather than wrapping: reusing a number would join two
-        // unrelated changes into one undo step. At one group per refactor,
-        // reaching the end of a `u64` is not a case that arises — but wrapping
-        // silently into a *wrong* answer is not the way to handle it if it did.
+        // Saturating rather than wrapping, because reusing a number would join two
+        // unrelated changes into one undo step. Exhausting a `u64` at one group
+        // per refactor does not happen in practice.
         self.next_group = self.next_group.saturating_add(1);
         group
     }
@@ -3261,12 +3207,11 @@ impl Session {
 
     /// Undoes a change several documents share, in every document that took part.
     ///
-    /// Called instead of the ordinary undo when the step on top of the active
-    /// document's history is tagged. Every other document whose *next* step
-    /// carries the same tag is undone with it — "next" being the point: a file
-    /// edited by hand since the rename keeps that edit, and its share of the
-    /// rename stays where it is in its own history, to come out when the edits
-    /// on top of it have.
+    /// Called instead of the ordinary undo when the top step of the active
+    /// document's history is tagged. Every other document whose *next* step has
+    /// the same tag is undone with it. A file edited manually since the rename
+    /// keeps that edit. Its part of the rename stays in its own history and is
+    /// undone after the later edits are undone.
     fn undo_group(&mut self, group: deco_core::Group, redo: bool) -> Outcome {
         let mut documents = 0usize;
         for (document, view) in self.documents_and_views() {
@@ -3279,7 +3224,7 @@ impl Session {
                 continue;
             }
             // The history applies its own transaction rather than going through
-            // `Document::apply`, so the caches have to be dropped wholesale.
+            // `Document::apply`, so all caches must be invalidated.
             document.invalidate();
             let selections = if redo {
                 document.history.redo(&mut document.buffer)
@@ -3318,8 +3263,9 @@ impl Session {
 
     /// The formatting options a language server should be told about.
     ///
-    /// The user's own, resolved for the open document's language — so a server
-    /// formats to the project's indentation rather than to its own defaults.
+    /// The user's settings, resolved for the open document's language, so a
+    /// server formats with the project's indentation rather than its own
+    /// defaults.
     pub fn formatting_options(&self) -> deco_lsp::FormattingOptions {
         let settings = &self.document.settings;
         deco_lsp::FormattingOptions {
@@ -3337,19 +3283,18 @@ impl Session {
 
     /// Writes every unsaved document, using `write` for the bytes.
     ///
-    /// The loop and its reporting live here so both frontends behave identically,
-    /// and so the behaviour is testable with an in-memory `write`. The core still
-    /// performs no I/O of its own: a path and the bytes go out, a result comes
-    /// back, and what to do with them is the caller's business.
+    /// The loop and its reporting are here so both frontends behave identically,
+    /// and so the behaviour can be tested with an in-memory `write`. The core
+    /// still performs no I/O: it passes a path and the bytes to `write`, and the
+    /// caller performs the write and returns the result.
     ///
-    /// Each write is reported individually, so one failure leaves that document
-    /// dirty rather than marking the batch saved — a tab that looks saved and is
-    /// not is how work gets lost. A failure does not stop the rest: the other
-    /// documents still deserve to be written.
+    /// Each write result is handled individually. A failed write leaves that
+    /// document dirty instead of marking the whole batch saved, so a tab never
+    /// appears saved when it is not. A failure does not stop the remaining
+    /// writes.
     ///
-    /// A dirty *untitled* document is counted and skipped. There is no filename to
-    /// write to, and inventing one would put the user's work somewhere they did not
-    /// ask for.
+    /// A dirty *untitled* document is counted and skipped. It has no filename,
+    /// and deco does not choose one for the user.
     pub fn save_all(
         &mut self,
         mut write: impl FnMut(&Path, &str) -> Result<(), String>,
@@ -3388,8 +3333,8 @@ impl Session {
         }
         if !failures.is_empty() {
             report.push_str(&format!("; {} could not be written", failures.len()));
-            // The reason belongs where a reader can go and find it: a status bar
-            // has one line and several failures would each shorten the last.
+            // The reasons go to the problem list, because the status bar has one
+            // line and cannot show several failures.
             self.problems.extend(failures);
         }
         Outcome::Message(report)
@@ -3398,13 +3343,13 @@ impl Session {
     /// Every document with unsaved changes and a filename, in tab order.
     ///
     /// For `workbench.action.files.saveAll`. Each pair is the path to write and
-    /// exactly the bytes to write there, resolved through that document's own
-    /// settings — a tab holding a `.md` file gets its own
-    /// `files.insertFinalNewline` rather than the active document's.
+    /// the exact bytes to write, resolved through that document's own settings.
+    /// A tab holding a `.md` file uses its own `files.insertFinalNewline`, not
+    /// the active document's.
     ///
-    /// A dirty *untitled* document is left out: there is no filename to write to,
-    /// and inventing one would put the user's work somewhere they did not ask for.
-    /// [`Session::unsaved_untitled`] counts those so the frontend can say so.
+    /// A dirty *untitled* document is left out, because it has no filename and
+    /// deco does not choose one. [`Session::unsaved_untitled`] counts those so the
+    /// frontend can report them.
     pub fn unsaved(&self) -> Vec<(PathBuf, String)> {
         self.documents()
             .filter(|document| document.dirty)
@@ -3486,8 +3431,8 @@ impl Session {
 
     /// Marks the document at `path` as saved, wherever it is.
     ///
-    /// Per-path rather than "all of them" so that a write which failed leaves that
-    /// document dirty: a tab that looks saved and is not is how work gets lost.
+    /// Per path rather than for all documents, so a failed write leaves that
+    /// document dirty and it does not appear saved.
     pub fn mark_saved_at(&mut self, path: &Path) {
         let holds = |document: &Document| document.path.as_deref() == Some(path);
         if holds(&self.document) {
@@ -3508,23 +3453,22 @@ impl Session {
     pub fn mark_saved(&mut self) {
         self.document.dirty = false;
         self.document.history.break_group();
-        // A write is the commonest reason `git status` now says something
-        // else. Set on the *active* path only, which `mark_saved_at` reaches
-        // through here for the active document and below for the rest.
+        // A write is the most common reason for `git status` to change. This
+        // handles the *active* document. `mark_saved_at` calls this for the
+        // active document and sets the flag itself for the others.
         self.scm_changed();
         self.refresh_context();
     }
 
     /// Tells the session how large the text area is.
     ///
-    /// `width` is the whole area, gutters and separators included; the session
-    /// works out from [`crate::layout`] how many columns each group leaves for
-    /// text, because that is what decides where a wrapped line breaks. Doing the
-    /// arithmetic here rather than in the frontend is what keeps the wrap and the
-    /// drawing from disagreeing about the width.
+    /// `width` is the whole area, including gutters and separators. The session
+    /// uses [`crate::layout`] to compute how many columns each group has for text,
+    /// which determines where wrapped lines break. Computing this here rather than
+    /// in the frontend keeps the wrap width and the drawn width consistent.
     pub fn resize(&mut self, width: usize, height: usize) {
         self.lay_out(width, height);
-        // A window that is a different shape may no longer hold the caret.
+        // After a size change the caret may be outside the window.
         self.view
             .reveal_cursor(&self.document.buffer, &self.document.settings);
         if let Some(mut other) = self.split_view.take() {
@@ -3545,7 +3489,7 @@ impl Session {
 
     fn show_side_bar(&mut self, showing: bool) -> Outcome {
         self.side_bar = showing;
-        // Hiding what has the keyboard would leave the keyboard nowhere.
+        // Move focus to the editor when hiding the focused region.
         if !showing && self.focus == Focus::SideBar {
             self.focus = Focus::Editor;
         }
@@ -3560,12 +3504,11 @@ impl Session {
         self.report_region("Panel", showing, self.regions().panel.is_some())
     }
 
-    /// Re-divides the window and says what happened, if anything needs saying.
+    /// Re-divides the window and reports the result when needed.
     ///
-    /// Showing a region that does not fit is the one case worth a sentence: the
-    /// key was pressed, nothing appeared, and without this that reads as an
-    /// editor that ignored it. The state is kept all the same, so widening the
-    /// window shows what was asked for.
+    /// The only reported case is showing a region that does not fit. Without a
+    /// message, the key would appear to be ignored. The state is still kept, so
+    /// widening the window shows the region.
     fn report_region(&mut self, what: &str, wanted: bool, fits: bool) -> Outcome {
         let (width, height) = self.screen;
         self.resize(width, height);
@@ -3578,8 +3521,7 @@ impl Session {
         Outcome::Handled
     }
 
-    /// Opens one of the tree's prompts, refusing when there is nothing to ask
-    /// about.
+    /// Opens one of the tree's prompts, or reports why it cannot be opened.
     fn open_tree_prompt(&mut self, kind: PromptKind) -> Outcome {
         if self.explorer.is_none() {
             return Outcome::Message("there is no workspace open".to_owned());
@@ -3588,16 +3530,15 @@ impl Session {
             let Some(row) = self.explorer.as_ref().and_then(crate::Explorer::selection) else {
                 return Outcome::Message(crate::files::FileError::NoSelection.to_string());
             };
-            // The name is in the question, so "delete permanently?" is never
-            // asked about a file the reader has to go and look up.
+            // Include the name in the question so the user can see what will be
+            // deleted.
             let what = if row.is_dir {
                 format!("{} and everything in it", row.name)
             } else {
                 row.name
             };
-            // The box opens empty and the name goes in the status line: what is
-            // typed is only the answer, and the thing being deleted is named
-            // where it can be read without retyping it.
+            // The input opens empty and the name is shown in the status line.
+            // The input holds only the answer.
             self.prompt = Some(Prompt::seeded(kind, String::new()));
             self.status = Some(format!("delete {what}? this cannot be undone"));
             self.refresh_context();
@@ -3620,10 +3561,9 @@ impl Session {
 
     /// Builds the operation a typed name means, against what is selected.
     ///
-    /// The directory a new file goes in is the selected row when it is a
-    /// directory, and the selected row's parent when it is a file — which is
-    /// what VS Code does, and what makes "new file" mean "next to this one"
-    /// without a second question.
+    /// A new file goes in the selected row when it is a directory, and in the
+    /// selected row's parent when it is a file, as in VS Code. "New file"
+    /// therefore creates the file next to the selected one.
     fn target_dir(&self) -> Option<std::path::PathBuf> {
         let explorer = self.explorer.as_ref()?;
         match explorer.selection() {
@@ -3636,8 +3576,7 @@ impl Session {
 
     /// `explorer.newFile` / `explorer.newFolder`: the name having been typed.
     ///
-    /// Separate from opening the prompt, which is a frontend's job — this is the
-    /// half that decides whether the answer is allowed.
+    /// Separate from opening the prompt. This step validates the typed name.
     pub fn create_in_tree(&mut self, name: &str, folder: bool) -> Outcome {
         let Some(explorer) = self.explorer.as_ref() else {
             return Outcome::Message("no workspace to create anything in".to_owned());
@@ -3654,19 +3593,18 @@ impl Session {
         if let Err(error) = crate::files::check_inside(&root, &path) {
             return Outcome::Message(error.to_string());
         }
-        // Whether it exists is a question for the filesystem, and the tree's
-        // answer is good enough to refuse on without asking: it lists what is
-        // there. A race with another program is caught by the frontend, which
-        // reports back and takes the undo entry off again.
+        // Existence is checked against the tree's listing, which is sufficient
+        // to reject a name without querying the filesystem. A race with another
+        // program is detected by the frontend, which reports the failure and
+        // removes the undo entry.
         if explorer.rows().iter().any(|row| row.path == path) {
             return Outcome::Message(crate::files::FileError::Exists(name.to_owned()).to_string());
         }
-        // The same check renaming makes, for the same reason: a tab can hold a
-        // path the tree does not show, when another program deleted the file and
-        // nothing here has noticed. Creating it again would succeed on disk and
-        // then `Session::open` would switch to the *old* buffer rather than the
-        // empty file — leaving the two disagreeing, and a save putting the old
-        // contents back.
+        // The same check as for renaming. A tab can hold a path the tree does not
+        // show, when another program deleted the file and the session has not
+        // detected it. Creating the file would succeed on disk, but
+        // `Session::open` would then switch to the *old* buffer instead of the
+        // empty file, and saving would write the old contents back.
         let name = name.to_owned();
         if self.tab_of(&path).is_some() {
             return Outcome::Message(format!(
@@ -3693,10 +3631,10 @@ impl Session {
         let Some(row) = explorer.selection() else {
             return Outcome::Message(crate::files::FileError::NoSelection.to_string());
         };
-        // Before trimming. The prompt opens seeded with the current name, so
-        // accepting it unchanged must change nothing — and on a filesystem that
-        // allows a name like `" report "`, trimming first would turn pressing
-        // enter into a rename nobody asked for.
+        // Checked before trimming. The prompt opens with the current name, so
+        // accepting it unchanged must do nothing. On a filesystem that allows a
+        // name like `" report "`, trimming first would turn enter into an
+        // unintended rename.
         if name == row.name {
             return Outcome::Handled;
         }
@@ -3709,8 +3647,8 @@ impl Session {
         };
         let to = dir.join(name);
         if to == row.path {
-            // Not an error, and not worth doing: renaming a file to what it is
-            // called would still hit the disk and still invalidate the listing.
+            // Not an error, but skipped. Renaming a file to its current name
+            // would still access the disk and invalidate the listing.
             return Outcome::Handled;
         }
         if let Err(error) = crate::files::check_inside(&root, &to) {
@@ -3720,17 +3658,16 @@ impl Session {
             return Outcome::Message(crate::files::FileError::Exists(name.to_owned()).to_string());
         }
         // A tab can hold a path the tree does not show: a file deleted by
-        // another program stays open here until something notices. Renaming onto
-        // it would leave two buffers for one path, and whichever was saved last
-        // would silently win — which is what `Session::open` exists to prevent,
-        // reached by a different road.
+        // another program stays open until the session detects it. Renaming onto
+        // it would leave two buffers for one path, and the last save would
+        // overwrite the other. `Session::open` prevents the same situation.
         //
-        // At *or under* it, because renaming a directory moves its whole
-        // subtree: with `/w/b/x` open and `/w/a` renamed to `/w/b`, an exact
-        // comparison against `/w/b` passes and then `/w/a/x` retargets onto the
-        // path `/w/b/x` already holds — two buffers for one file by a longer
-        // route. `open_paths_under` catches both, since a file path is its own
-        // only descendant.
+        // Checks paths at *or under* the target, because renaming a directory
+        // moves its whole subtree. With `/w/b/x` open and `/w/a` renamed to
+        // `/w/b`, an exact comparison against `/w/b` passes, and `/w/a/x` would
+        // then be retargeted onto `/w/b/x`, which another tab already holds.
+        // `open_paths_under` handles both cases, because a file path matches only
+        // itself.
         let name = name.to_owned();
         if !self.open_paths_under(&to).is_empty() {
             return Outcome::Message(format!(
@@ -3760,8 +3697,8 @@ impl Session {
         if let Err(error) = crate::files::check_inside(&root, &row.path) {
             return Outcome::Message(error.to_string());
         }
-        // The root itself is not a row, so this cannot delete the workspace —
-        // checked anyway, because the cost of being wrong is the whole project.
+        // The root is not a row, so this should not delete the workspace. It is
+        // checked anyway, because an error would delete the whole project.
         if row.path == root {
             return Outcome::Message("the workspace itself cannot be deleted".to_owned());
         }
@@ -3774,16 +3711,16 @@ impl Session {
         Outcome::FileOperation(operation)
     }
 
-    /// Lets go of every tab holding something under `gone`, and says how many.
+    /// Detaches every tab holding a path under `gone`, and returns how many.
     ///
-    /// The buffers stay and their paths are dropped: the text is still the
-    /// user's, and where it should live is a question only they can answer. A
-    /// tab left pointing at a deleted path would recreate the file on the next
-    /// save, or fail when its directory had gone too.
+    /// The buffers are kept and their paths are cleared. The text still belongs
+    /// to the user, who decides where to save it. A tab still pointing at a
+    /// deleted path would recreate the file on the next save, or fail if its
+    /// directory was also deleted.
     ///
-    /// Public because a *failed* recursive delete needs it as much as a
-    /// successful one: `remove_dir_all` can remove half a tree and then stop,
-    /// and the half that went is as gone as if it had all worked.
+    /// Public because a *failed* recursive delete also needs it.
+    /// `remove_dir_all` can remove part of a tree and then stop, and the removed
+    /// part is gone as if the delete had succeeded.
     pub fn detach_tabs_under(&mut self, gone: &Path) -> usize {
         let gone = normalise(gone);
         let affected = self.tabs_under(&gone);
@@ -3791,8 +3728,8 @@ impl Session {
             .iter()
             .filter_map(|index| self.path_of_tab(*index))
             .collect();
-        // The paths first, while the tabs still have them: the server is holding
-        // these open under URIs that no longer name anything.
+        // Record the paths first, while the tabs still have them. The server has
+        // these documents open under URIs that no longer exist.
         self.closed_documents.extend(held);
 
         let mut detached = 0usize;
@@ -3802,10 +3739,10 @@ impl Session {
             };
             document.path = None;
             document.dirty = true;
-            // Diagnostics and semantic tokens describe a file that is not there.
-            // Every path that would refresh them returns early once the path is
-            // `None`, so leaving them would keep squiggles from a deleted file on
-            // screen for as long as the buffer lived.
+            // Diagnostics and semantic tokens describe a file that no longer
+            // exists. Every code path that refreshes them returns early when the
+            // path is `None`, so they would otherwise stay on screen for the
+            // lifetime of the buffer.
             self.clear_analysis_of_tab(index);
             detached += 1;
         }
@@ -3814,9 +3751,9 @@ impl Session {
 
     /// The paths of every open tab holding something under `path`.
     ///
-    /// For a caller that has a filesystem and wants to ask about each one — a
-    /// recursive delete that failed part way has removed some of these and not
-    /// others, and only the disk knows which.
+    /// For a caller with filesystem access that needs to check each path. A
+    /// recursive delete that failed part way has removed some of these paths,
+    /// and only the filesystem can tell which.
     pub fn open_paths_under(&self, path: &Path) -> Vec<PathBuf> {
         let under = normalise(path);
         self.tabs_under(&under)
@@ -3827,8 +3764,8 @@ impl Session {
 
     /// Every path the tree knows about at or under `path`.
     ///
-    /// For a caller that has a filesystem and needs to find out whether a delete
-    /// that reported failure removed anything after all.
+    /// For a caller with filesystem access that needs to check whether a delete
+    /// that reported failure removed anything.
     pub fn known_paths_under(&self, path: &Path) -> Vec<PathBuf> {
         self.explorer
             .as_ref()
@@ -3845,9 +3782,9 @@ impl Session {
 
     /// Drops what the tree remembers about `dir` and everything below it.
     ///
-    /// For a path that is no longer the directory it was: invalidating would
-    /// leave it in the map to be read again and answered as an empty folder,
-    /// which is what it will look like from now on.
+    /// For a path that no longer refers to the same directory. Invalidating would
+    /// keep it in the map to be read again, and it would then appear as an empty
+    /// folder.
     pub fn forget_subtree(&mut self, dir: &Path) {
         if let Some(explorer) = self.explorer.as_mut() {
             explorer.forget_under(dir);
@@ -3861,18 +3798,18 @@ impl Session {
         }
     }
 
-    /// Throws away the tree's undo history.
+    /// Clears the tree's undo history.
     ///
-    /// For a recursive delete that may have half happened: something
-    /// irreversible went, so every inverse below it describes a state that never
-    /// existed. The same barrier a completed delete puts up, reached from the
-    /// path where the delete reported failure.
+    /// For a recursive delete that may have partly completed. An irreversible
+    /// change happened, so the older inverses no longer describe a valid state.
+    /// A completed delete clears the history in the same way. This is the
+    /// equivalent for a delete that reported failure.
     pub fn clear_file_undo(&mut self) {
         self.explorer_undo.clear();
         self.pending_undo = None;
     }
 
-    /// Throws away the analysis attached to one tab.
+    /// Clears the analysis attached to one tab.
     fn clear_analysis_of_tab(&mut self, index: usize) {
         let active = self.active_tab();
         if index == active {
@@ -3889,11 +3826,12 @@ impl Session {
         }
     }
 
-    /// Files the language server should be told are closed, and forgets them.
+    /// Returns and clears the files the language server should be told are
+    /// closed.
     ///
-    /// Filled when a delete detaches a tab: the server has the file open under a
-    /// URI that no longer names anything, and only a frontend can tell it. Drained
-    /// rather than read, so one delete produces one `didClose` per file.
+    /// Filled when a delete detaches a tab. The server has the file open under a
+    /// URI that no longer exists, and only a frontend can notify it. The list is
+    /// drained, so one delete produces one `didClose` per file.
     pub fn take_closed_documents(&mut self) -> Vec<PathBuf> {
         std::mem::take(&mut self.closed_documents)
     }
@@ -3913,10 +3851,10 @@ impl Session {
 
     /// Every tab holding `path` or something inside it, in display order.
     ///
-    /// A file compares equal to itself; a directory catches its whole subtree.
-    /// Normalised on both sides for the reason [`Session::tab_of`] gives: the
-    /// same file can be spelled two ways, and a tab missed here keeps pointing
-    /// at a path that no longer exists.
+    /// A file matches itself, and a directory matches its whole subtree. Both
+    /// sides are normalised for the reason given in [`Session::tab_of`]: the same
+    /// file can be written two ways, and a missed tab would keep pointing at a
+    /// path that no longer exists.
     fn tabs_under(&self, path: &Path) -> Vec<usize> {
         let wanted = normalise(path);
         (0..self.tab_count())
@@ -3930,25 +3868,24 @@ impl Session {
 
     /// Points the tab at `index` at a different path.
     ///
-    /// The buffer, its history and its unsaved changes all stay: the file moved,
-    /// the document did not. Re-resolving the settings is what makes renaming
-    /// `notes.txt` to `notes.md` start highlighting it as Markdown, unless the
-    /// language was chosen by hand — in which case the choice outranks the
-    /// extension, the same rule [`Session::rename_to`] follows for save-as.
+    /// The buffer, its history and its unsaved changes are kept. Only the path
+    /// changes. Settings are re-resolved, so renaming `notes.txt` to `notes.md`
+    /// highlights it as Markdown. A manually chosen language takes precedence
+    /// over the extension, the same rule [`Session::rename_to`] follows for Save
+    /// As.
     fn retarget_tab(&mut self, index: usize, to: PathBuf) {
         let Some(document) = self.document_at_index_mut(index) else {
-            // An index no tab has: nothing to retarget, and inventing one would
-            // be worse than doing nothing.
+            // No tab has this index, so there is nothing to retarget.
             return;
         };
 
-        // Set when the inferred language changed, to whether there was one
-        // before — a rename *away* from a recognised extension has to take the
-        // server's work with it, and the server itself.
+        // Set when the inferred language changed, to whether there was a
+        // language before. A rename *away* from a recognised extension must
+        // discard the server's results and close the document on the server.
         let mut language_changed: Option<bool> = None;
 
-        // A language the user picked by hand outranks the new extension, which
-        // is the rule save-as follows too.
+        // A manually chosen language takes precedence over the new extension, as
+        // in Save As.
         let chosen_by_hand = document.language_pinned;
         let previous_path = document.path.clone();
         document.path = Some(to);
@@ -3961,29 +3898,29 @@ impl Session {
             if inferred != document.language_id {
                 let had_language = document.language_id.is_some();
                 document.language_id = inferred;
-                // The lexer goes with it. `set_language` rebuilds this and
-                // `retarget_tab` did not, so a file renamed across languages
-                // reported the new one and kept being highlighted as the old.
+                // Rebuild the lexer as `set_language` does. Otherwise a file
+                // renamed to another language would report the new language but
+                // keep the old highlighting.
                 document.syntax = deco_syntax::Syntax::new(document.language());
                 language_changed = Some(had_language);
             }
         }
         let language = document.language().map(str::to_owned);
 
-        // Re-resolved whatever tab this is. Doing it only for the active one
-        // left a background tab renamed from `notes.txt` to `notes.md` still
-        // treated as plain text for as long as the session lasted — switching to
-        // a tab lays it out again, but does not re-resolve it.
+        // Re-resolve for every tab, not only the active one. Switching to a tab
+        // lays it out again but does not re-resolve its settings, so a background
+        // tab renamed from `notes.txt` to `notes.md` would otherwise stay plain
+        // text for the rest of the session.
         let settings = EditorSettings::resolve(&self.settings, language.as_deref());
         if let Some(document) = self.document_at_index_mut(index) {
             document.settings = settings;
             document.apply_overrides();
         }
-        // Semantic tokens and diagnostics came from a server that was told about
-        // the old path and the old language. When the rename takes the language
-        // away entirely there is no server to correct them either — `attach`
-        // returns early for a document with no language — so tokens from before
-        // would keep overriding the freshly rebuilt lexer for good.
+        // Semantic tokens and diagnostics came from a server that knew the old
+        // path and language. When the rename removes the language, no server
+        // replaces them, because `attach` returns early for a document with no
+        // language. The old tokens would then override the rebuilt lexer
+        // permanently.
         if let Some(had_language) = language_changed {
             self.clear_analysis_of_tab(index);
             if had_language {
@@ -4013,28 +3950,28 @@ impl Session {
 
     /// Puts an operation's inverse on the explorer's stack, if it has one.
     ///
-    /// An operation with no inverse — a delete — does *not* clear the stack
-    /// here. Recording happens before the frontend has tried, and a delete the
-    /// filesystem refuses would otherwise throw away every earlier undo for a
-    /// change that never happened. The clearing is in
-    /// [`Session::file_operation_done`], where the delete is a fact.
+    /// An operation with no inverse (a delete) does *not* clear the stack here.
+    /// Recording happens before the frontend attempts the operation, so a delete
+    /// the filesystem rejects would otherwise discard all earlier undo entries.
+    /// The stack is cleared in [`Session::file_operation_done`], after the delete
+    /// has succeeded.
     fn record_file_operation(&mut self, operation: &crate::files::Operation) {
         if let Some(inverse) = operation.inverse() {
             self.explorer_undo.push(inverse);
         }
     }
 
-    /// Attaches what the moved file looks like to the undo waiting for it.
+    /// Attaches the moved file's stamp to its pending undo entry.
     ///
-    /// Called by the frontend after a rename it has just carried out, because
-    /// only it can look at the file. Undoing a rename otherwise names a path and
-    /// trusts it — and a path is not a file: another program can remove the one
-    /// that was renamed and leave something else where it was.
+    /// Called by the frontend after it performs a rename, because only the
+    /// frontend can inspect the file. Without a stamp, undoing a rename relies
+    /// on the path alone, and another program may have replaced the renamed
+    /// file with a different one at that path.
     pub fn stamp_last_undo(&mut self, stamp: crate::files::Stamp) {
-        // Not while an undo is being carried out. That operation was *popped*
-        // into `pending_undo`, so the top of the stack is the entry before it —
-        // stamping there would describe the wrong file, and the next `ctrl+z`
-        // would refuse to undo a rename that was perfectly undoable.
+        // Skip while an undo is in progress. That operation was *popped* into
+        // `pending_undo`, so the top of the stack is the previous entry.
+        // Stamping it would describe the wrong file, and the next `ctrl+z` would
+        // reject a valid rename undo.
         if self.pending_undo.is_some() {
             return;
         }
@@ -4052,27 +3989,24 @@ impl Session {
         !self.explorer_undo.is_empty()
     }
 
-    /// `undo` while the tree has the keyboard: takes back the last operation.
+    /// `undo` while the tree has the keyboard: reverts the last operation.
     ///
-    /// The undone operation's own inverse is **not** put back on. Doing that
-    /// made `ctrl+z` a toggle: undo a rename, press it again, and the rename
-    /// came back rather than the operation before it being undone — so every
-    /// older entry was unreachable and the stack was one step deep in practice.
-    /// Pressing it repeatedly now walks back through the history, and there is
-    /// no redo for the tree.
+    /// The undone operation's inverse is **not** pushed back. Pushing it would
+    /// make `ctrl+z` a toggle: a second press would redo the rename instead of
+    /// undoing the operation before it, so older entries would be unreachable.
+    /// Repeated presses move back through the history. The tree has no redo.
     fn undo_file_operation(&mut self) -> Outcome {
         let Some(operation) = self.explorer_undo.last().cloned() else {
             return Outcome::Message("nothing in the tree to undo".to_owned());
         };
-        // The same collision `rename_in_tree` refuses, asked again here. The
-        // entry was recorded when the destination was free, and it need not
-        // still be: rename `a` to `b`, open a new `a`, let something remove it,
-        // and undoing would move `b` back onto the path that tab still holds —
-        // two buffers for one file, from the key that is supposed to put things
-        // as they were.
+        // The same collision check as `rename_in_tree`. The entry was recorded
+        // when the destination was free, but it may no longer be. For example:
+        // rename `a` to `b`, open a new `a`, and let another program remove it.
+        // Undoing would move `b` back onto the path that tab still holds, giving
+        // two buffers for one file.
         //
-        // Checked before popping, so a refusal leaves the undo where it is to be
-        // tried again once the tab is closed.
+        // Checked before popping, so a rejected undo stays on the stack and can
+        // be retried after the tab is closed.
         if let crate::files::Operation::Rename { to, .. } = &operation {
             if !self.open_paths_under(to).is_empty() {
                 let name = to
@@ -4089,16 +4023,15 @@ impl Session {
         Outcome::FileOperation(operation)
     }
 
-    /// Takes an operation back off the stack after the disk refused it.
+    /// Removes an operation's undo entry after the filesystem rejected it.
     ///
-    /// The core recorded it before the frontend tried, because the frontend has
-    /// to be told what to do before it can do it. When it does not work, the
-    /// stack has to forget it — otherwise `ctrl+z` would offer to undo something
-    /// that never happened.
+    /// The core records the entry before the frontend attempts the operation. If
+    /// the operation fails, the entry is removed, so `ctrl+z` does not undo an
+    /// operation that never happened.
     pub fn file_operation_failed(&mut self, operation: &crate::files::Operation, reason: &str) {
         match self.pending_undo.take() {
-            // An undo that did not happen goes back on the stack, so it can be
-            // tried again once whatever blocked it is out of the way.
+            // A failed undo goes back on the stack, so it can be retried after
+            // the cause is resolved.
             Some(pending) if &pending == operation => self.explorer_undo.push(pending),
             _ => {
                 if let Some(inverse) = operation.inverse() {
@@ -4108,16 +4041,15 @@ impl Session {
                 }
             }
         }
-        // The path it was going to put something at is not what the tree
-        // thinks it is: the attempt only happened because the tree believed
-        // the name was free, so whatever it remembers there is a directory
-        // that is gone. Forgotten rather than invalidated, because the
-        // expansion is as stale as the listing — this is a different thing
-        // under the same name, not the same thing with different contents.
+        // The tree's state for the destination path is wrong. The operation was
+        // attempted because the tree showed the name as free, so anything the
+        // tree remembers at that path is a directory that no longer exists. It
+        // is forgotten rather than invalidated, because the expansion state is
+        // also stale: the path now refers to a different entry.
         //
-        // The success path does exactly this, for exactly this reason. Without
-        // it here, the commonest way to *reach* the bug — a create refused
-        // because another program took the name — is the one case not covered.
+        // The success path does the same for the same reason. The most common
+        // case is a create that failed because another program took the name,
+        // so it must also be handled here.
         if let (Some(explorer), Some(path)) = (self.explorer.as_mut(), operation.arriving()) {
             explorer.forget_under(path);
         }
@@ -4126,23 +4058,22 @@ impl Session {
 
     /// Retargets an open tab after its file moved, and re-reads the tree.
     ///
-    /// Called by the frontend once the rename has actually happened. The tab and
-    /// the file move together — that is the whole reason renaming goes through
-    /// the session rather than being something the tree does on its own.
+    /// Called by the frontend after the rename has succeeded. Renaming goes
+    /// through the session, not only the tree, so that the tab and the file move
+    /// together.
     pub fn file_operation_done(&mut self, operation: &crate::files::Operation) {
         self.pending_undo = None;
-        // The keyboard follows a created file into the editor — the contract on
-        // `Outcome::FileOperation` is that a created file is opened, and typing
-        // into a tree that swallows the keys is an editor that ignores you.
-        // Here rather than when the create was asked for, so a create the disk
-        // refuses leaves the keyboard in the tree to try again.
+        // Focus moves to the editor for a created file, because
+        // `Outcome::FileOperation` specifies that a created file is opened, and
+        // keys typed into the tree would be ignored. Done here rather than when
+        // the create was requested, so a failed create leaves focus in the tree
+        // for a retry.
         if matches!(operation, crate::files::Operation::CreateFile(_)) {
             self.focus = Focus::Editor;
         }
-        // A tab pointing at something that has just been deleted would recreate
-        // it on the next save, or fail fatally when its directory has gone too.
-        // The buffer is kept and its path let go: the text is still the user's,
-        // and where it should live is now a question only they can answer.
+        // A tab pointing at a deleted path would recreate the file on the next
+        // save, or fail if its directory was also deleted. The buffer is kept
+        // and its path cleared, so the user decides where to save the text.
         let mut detached_tabs = 0usize;
         if let crate::files::Operation::Delete { path, .. }
         | crate::files::Operation::DeleteIfEmpty { path, .. } = operation
@@ -4150,27 +4081,27 @@ impl Session {
             detached_tabs = self.detach_tabs_under(path);
         }
 
-        // Nothing below a delete can be undone either: running an older inverse
-        // would put a file back beside one that is now gone, which is not the
-        // state anything was ever in. Here rather than when the delete was
-        // recorded, so a refusal costs nothing.
+        // Entries older than a delete cannot be undone either. Running an older
+        // inverse would restore a file without the deleted one, a state that
+        // never existed. Cleared here rather than when the delete was recorded,
+        // so a failed delete keeps the history.
         if matches!(operation, crate::files::Operation::Delete { .. }) {
             self.explorer_undo.clear();
         }
         if let crate::files::Operation::Rename { from, to, .. } = operation {
-            // Every tab *under* `from`, not just one whose path equals it.
+            // Every tab *under* `from`, not only one whose path equals it.
             // Renaming a directory moves its whole subtree on disk, and a tab
-            // still pointing into the old tree would save to a path that is no
-            // longer there — recreating the old directory, or failing.
+            // still pointing into the old tree would save to a path that no
+            // longer exists, recreating the old directory or failing.
             let from = normalise(from);
             for index in self.tabs_under(&from) {
                 let path = self
                     .path_of_tab(index)
                     .expect("tabs_under only returns tabs with paths");
-                // Stripped from the *normalised* path, which is what
-                // `tabs_under` matched on. Against the raw one a tab spelled
-                // `/w/./src/a.rs` is selected and then fails to strip, and is
-                // left pointing into a directory that has moved.
+                // Strip from the *normalised* path, which `tabs_under` matched.
+                // With the raw path, a tab written as `/w/./src/a.rs` would be
+                // selected but fail to strip, and would keep pointing into the
+                // moved directory.
                 let moved = match normalise(&path).strip_prefix(&from) {
                     Ok(rest) if rest.as_os_str().is_empty() => to.clone(),
                     Ok(rest) => to.join(rest),
@@ -4179,13 +4110,11 @@ impl Session {
                 self.retarget_tab(index, moved);
             }
         }
-        // A file that now exists, or no longer does, is a line `git status`
-        // did not have before.
+        // A created or removed file changes the `git status` output.
         self.scm_changed();
-        // And whatever was cached about the paths it touched is about a file
-        // that is no longer there — or, at the destination, about one that
-        // never was. Both sides, because a rename empties one and fills the
-        // other.
+        // Cached data for the affected paths now describes a file that no
+        // longer exists, or, at the destination, a different file. Both sides
+        // are cleared, because a rename empties one path and fills the other.
         for path in [operation.arriving(), moved_from(operation)]
             .into_iter()
             .flatten()
@@ -4194,13 +4123,13 @@ impl Session {
         }
         if let (Some(explorer), Some(parent)) = (self.explorer.as_mut(), operation.parent()) {
             explorer.invalidate(parent);
-            // What the tree remembered about the thing that moved or went. The
-            // parent alone is not enough: a deleted directory keeps its cached
-            // listing and its expansion, so creating one with the same name
-            // later would show the old one's rows, already open.
+            // Forget the tree's state for the moved or deleted entry. The parent
+            // alone is not enough: a deleted directory keeps its cached listing
+            // and expansion, so a new directory with the same name would show
+            // the old rows, already expanded.
             //
-            // This half is only what *left* a path. What arrives at one is
-            // below, in one place rather than per-operation.
+            // This handles only the path that was *left*. The path that
+            // receives an entry is handled below, once for all operations.
             if let crate::files::Operation::Delete {
                 path,
                 directory: true,
@@ -4213,32 +4142,30 @@ impl Session {
             {
                 explorer.forget_under(path);
             }
-            // The selection follows what was just made or moved. Without this,
-            // creating a file leaves the selection on whatever was highlighted
-            // before, and the next key — `F2`, `delete` — acts on *that*, which
-            // is the wrong file and a destructive kind of wrong.
+            // The selection moves to the created or moved entry. Otherwise the
+            // selection stays on the previously highlighted row, and the next
+            // key (`F2`, `delete`) would act on the wrong file.
             //
-            // `reveal` rather than a direct selection because the row does not
-            // exist yet: the directory has just been invalidated and is read
-            // again on the next turn. Landing the selection when the listing
-            // arrives is exactly what `reveal` is for.
-            // One rule, at every place something new arrives at a path: forget
-            // what the tree remembered there first.
+            // `reveal` is used rather than a direct selection because the row
+            // does not exist yet: the directory has just been invalidated and is
+            // read again on the next turn. `reveal` sets the selection when the
+            // listing arrives.
+            // Wherever an entry arrives at a path, first forget what the tree
+            // remembered there.
             //
-            // A directory removed outside deco leaves its listing and its
-            // expansion behind when a later mutation refreshes only the parent —
-            // the row goes, the memory does not. Whatever then takes that name
-            // inherits it: an empty folder rendering the old one's children, a
-            // renamed directory showing a stranger's, a file with a subtree
-            // hanging off it. In each case the tree never asks for a listing,
-            // because it believes it already has one.
+            // A directory removed outside deco keeps its listing and expansion
+            // when a later operation refreshes only the parent: the row is
+            // removed, but the cached state is not. Whatever later takes that
+            // name inherits the state: an empty folder shows the old children, a
+            // renamed directory shows another directory's children, or a file
+            // shows a subtree. In each case the tree does not request a listing,
+            // because it has a cached one.
             //
-            // Stated once, on the operation itself, having now been four
-            // separate findings — created folder, renamed destination, the
-            // created *file* nobody reported, and the same three again on the
-            // path where the operation *failed*. See
+            // The rule is defined once, on the operation, because it applies to
+            // a created folder, a rename destination, a created file, and the
+            // same three cases when the operation fails. See
             // [`crate::files::Operation::arriving`], which both this and
-            // [`Session::file_operation_failed`] ask.
+            // [`Session::file_operation_failed`] use.
             if let Some(path) = operation.arriving() {
                 explorer.forget_under(path);
             }
@@ -4246,21 +4173,21 @@ impl Session {
             match operation {
                 crate::files::Operation::CreateFile(path)
                 | crate::files::Operation::CreateFolder(path) => explorer.reveal(path),
-                // After the forget above, so the source's own listings and
-                // expansion land on a name with nothing left under it.
+                // After the forget above, so the source's listings and
+                // expansion move to a path with no remaining state.
                 crate::files::Operation::Rename { from, to, .. } => {
                     explorer.rekey_under(from, to);
                     explorer.reveal(to);
                 }
-                // Nothing to select: it is gone, and the clamp inside `fill`
-                // puts the selection on a row that still exists.
+                // Nothing to select, because the entry is gone. The clamp in
+                // `fill` moves the selection to a row that still exists.
                 crate::files::Operation::Delete { .. }
                 | crate::files::Operation::DeleteIfEmpty { .. } => {}
             }
         }
-        // A file that was deleted or renamed away is no longer where the tree
-        // has its selection; re-reading the directory is what fixes that, and
-        // the clamp inside `fill` keeps the selection on a row that exists.
+        // If the selected file was deleted or renamed, re-reading the directory
+        // updates the rows, and the clamp in `fill` keeps the selection on a row
+        // that exists.
         self.status = Some(match detached_tabs {
             0 => operation.describe(),
             1 => format!(
@@ -4279,15 +4206,14 @@ impl Session {
 
     /// Tells the session where the workspace is, creating the tree.
     ///
-    /// The frontend works the root out — it needs a working directory and the
-    /// path deco was started with — and hands it over. Called again for a
-    /// different root, the tree starts over rather than merging: expansion state
-    /// from one workspace means nothing in another.
+    /// The frontend determines the root from the working directory and the path
+    /// deco was started with. When called again with a different root, the tree
+    /// is recreated rather than merged, because expansion state from one
+    /// workspace does not apply to another.
     pub fn set_workspace_root(&mut self, root: impl Into<std::path::PathBuf>) {
         self.explorer = Some(crate::Explorer::new(root));
-        // The stack holds absolute paths in the workspace being left. Undoing
-        // one while looking at another would move or delete a file outside what
-        // is on screen, which is the worst kind of surprise this can produce.
+        // The stack holds absolute paths in the previous workspace. Undoing one
+        // in another workspace would move or delete a file that is not shown.
         self.explorer_undo.clear();
         self.refresh_context();
     }
@@ -4295,9 +4221,9 @@ impl Session {
     /// A `list.*` key, with the source-control view showing.
     ///
     /// Expanding and collapsing do nothing: the list is flat, and its headings
-    /// are drawn from the rows rather than being rows themselves. Handled
-    /// rather than refused, because the key is bound to `list.*` for every
-    /// list and refusing here would report a working binding as unknown.
+    /// are drawn from the rows rather than being rows. They return `Handled`
+    /// rather than an error, because the key is bound to `list.*` for every list
+    /// and an error would report a working binding as unknown.
     fn source_control_key(&mut self, command: &str) -> Outcome {
         match command {
             "list.focusDown" => self.source_control.select_next(),
@@ -4334,8 +4260,8 @@ impl Session {
             }
             _ => {}
         }
-        // The same care the tree gets, and reached separately because
-        // `explorer_key` hands over to this before it gets to its own call.
+        // Keep the selection visible, as the tree does. Done here because
+        // `explorer_key` delegates to this function before its own call.
         let height = self.side_bar_rows();
         self.source_control.scroll_into_view(height);
         self.refresh_context();
@@ -4344,10 +4270,9 @@ impl Session {
 
     /// `git.stage`: add the selected file's working-tree state to the index.
     ///
-    /// Refuses a row that is already staged rather than running `git add` on
-    /// it: the command would succeed and do nothing, and a status message
-    /// saying it staged something it did not is worse than one saying it could
-    /// not.
+    /// Rejects a row that is already staged instead of running `git add`. The
+    /// command would succeed without effect, and the status message would
+    /// incorrectly report that something was staged.
     fn stage_selected(&mut self) -> Outcome {
         let Some(row) = self.source_control.selection() else {
             return Outcome::Message("nothing is selected in source control".to_owned());
@@ -4360,8 +4285,7 @@ impl Session {
 
     /// `git.stageAll`: everything git reported.
     fn stage_all(&mut self) -> Outcome {
-        // Nothing staged and nothing to stage are different answers, and the
-        // second is the one worth saying out loud.
+        // Report when there is nothing left to stage.
         let unstaged = self
             .source_control
             .rows()
@@ -4395,10 +4319,8 @@ impl Session {
 
     /// `git.commit`: ask for a message.
     ///
-    /// Refused before the box opens when there is nothing staged, rather than
-    /// after the message has been typed. Asking someone to write a commit
-    /// message and then telling them there was nothing to commit is the kind
-    /// of thing that loses the message.
+    /// Rejected before the prompt opens when nothing is staged, rather than after
+    /// the message has been typed, so a typed message is not lost.
     fn ask_commit_message(&mut self) -> Outcome {
         if self.scm.is_none() {
             return Outcome::Message("this is not a git repository".to_owned());
@@ -4419,9 +4341,9 @@ impl Session {
     /// The commit itself, once a message has been typed.
     fn commit(&mut self, message: String) -> Outcome {
         if message.is_empty() {
-            // Enter on an empty box is what happens when somebody dismisses a
-            // prompt they did not mean to open. Git would refuse this too, but
-            // saying so here costs no process.
+            // Enter on an empty input usually dismisses a prompt opened by
+            // mistake. Git would also reject this, but checking here avoids
+            // starting a process.
             return Outcome::Message("a commit needs a message".to_owned());
         }
         Outcome::GitOperation(deco_scm::Operation::Commit(message))
@@ -4429,8 +4351,8 @@ impl Session {
 
     /// `git.checkout`: ask the frontend for local branches.
     ///
-    /// Git cannot see an editor buffer. Refusing before the picker opens is
-    /// what prevents a successful checkout followed by a save from writing the
+    /// Git cannot see editor buffers. Rejecting unsaved documents before the
+    /// picker opens prevents a save after a successful checkout from writing the
     /// old branch's buffer over the new branch.
     fn ask_checkout(&mut self) -> Outcome {
         if self.scm.is_none() {
@@ -4506,13 +4428,11 @@ impl Session {
         self.refresh_context();
     }
 
-    /// Reports that a repository change happened, so what is on screen catches
-    /// up.
+    /// Reports that a repository change happened, so the display is updated.
     ///
-    /// The status is asked for again rather than being adjusted here: git is
-    /// the thing that knows what the index looks like now, and a view that
-    /// predicted the answer would drift from it the first time a hook changed
-    /// something.
+    /// The status is requested again rather than adjusted here. Only git knows
+    /// the current index, and a predicted state would diverge as soon as a hook
+    /// changed something.
     pub fn git_operation_done(&mut self, operation: &deco_scm::Operation) {
         self.status = Some(operation.describe());
         if matches!(operation, deco_scm::Operation::Checkout(_)) {
@@ -4531,8 +4451,8 @@ impl Session {
     /// Reports that one could not be carried out.
     pub fn git_operation_failed(&mut self, operation: &deco_scm::Operation, reason: &str) {
         self.status = Some(format!("could not {}: {reason}", operation.describe()));
-        // Asked for again even so: a refusal usually means the index is not
-        // what the view thought, and the view being wrong is what caused it.
+        // Request the status again anyway. A failure usually means the view's
+        // state of the index was out of date.
         self.scm_changed();
         self.refresh_context();
     }
@@ -4595,10 +4515,10 @@ impl Session {
 
     /// Says where the repository begins.
     ///
-    /// Not the same as the workspace root: opening a subdirectory of a
-    /// repository is ordinary, and every path the source-control view holds is
-    /// relative to the *repository*. Told rather than worked out, because
-    /// finding it means running `git rev-parse` and the core cannot.
+    /// Not the same as the workspace root. A subdirectory of a repository can be
+    /// opened, and every path in the source-control view is relative to the
+    /// *repository*. Supplied by the frontend, because finding it requires
+    /// running `git rev-parse`, which the core cannot do.
     pub fn set_repository_root(&mut self, root: Option<PathBuf>) {
         self.repository_root = root;
     }
@@ -4615,9 +4535,10 @@ impl Session {
 
     /// A directory the tree needs read, if any.
     ///
-    /// The frontend asks after anything that could have expanded something, and
-    /// keeps asking until it answers `None` — one listing per turn, so a deep
-    /// reveal arrives a level at a time rather than in one blocking walk.
+    /// The frontend calls this after anything that could have expanded a
+    /// directory, and repeats until it returns `None`. One listing is read per
+    /// turn, so a deep reveal loads one level at a time rather than in one
+    /// blocking walk.
     pub fn directory_wanted(&self) -> Option<std::path::PathBuf> {
         self.explorer.as_ref().and_then(crate::Explorer::wanted)
     }
@@ -4625,54 +4546,48 @@ impl Session {
     /// Whether `git.enabled` leaves the feature on.
     ///
     /// VS Code's setting, with VS Code's default of `true`. Read here rather
-    /// than in a frontend so that the two cannot disagree about it, and so
-    /// that turning git off is one answer rather than one per frontend.
+    /// than in a frontend so that all frontends interpret it the same way.
     pub fn git_enabled(&self) -> bool {
         self.settings.get_bool("git.enabled", None).unwrap_or(true)
     }
 
     /// Whether a fresh `git status` would be worth running.
     ///
-    /// Always `false` when `git.enabled` is off: a setting that turns the
-    /// feature off has to stop the process from being spawned, not just hide
-    /// what it found.
+    /// Always `false` when `git.enabled` is off, so no git process is spawned,
+    /// not only hidden.
     pub fn scm_wanted(&self) -> bool {
         self.scm_wanted && self.git_enabled()
     }
 
     /// What `git status` last said, if anything.
     ///
-    /// Nothing at all once `git.enabled` is off, whatever was found before it
-    /// was: a setting that turns the feature off has to take what is on screen
-    /// with it, not only stop the next run.
+    /// `None` when `git.enabled` is off, even if a status was found before. The
+    /// setting hides existing results as well as stopping new runs.
     pub fn scm_status(&self) -> Option<&deco_scm::Status> {
         self.git_enabled().then_some(self.scm.as_ref()).flatten()
     }
 
-    /// Says a run has begun, so the question does not need asking again.
+    /// Records that a run has started, so another run is not requested.
     ///
-    /// Separate from [`Session::fill_scm`] and called *first*, which is what
-    /// makes a change during a run survive it: something saved while git is
-    /// still thinking sets the flag again, the answer arrives and is stored
-    /// without clearing it, and the next poll starts a fresh run. Clearing on
-    /// the answer instead would drop that save silently, and the status bar
-    /// would sit there being wrong until the one after it.
+    /// Separate from [`Session::fill_scm`] and called *first*, so a change during
+    /// a run is not lost. A save while git is running sets the flag again, the
+    /// result is stored without clearing it, and the next poll starts a new run.
+    /// Clearing the flag when the result arrives would lose that save, and the
+    /// status bar would stay out of date until the next change.
     pub fn scm_started(&mut self) {
         self.scm_wanted = false;
     }
 
-    /// Hands over what `git status` said.
+    /// Stores the `git status` result.
     ///
-    /// `None` is a real answer, not "keep what you had": there is no git, or
-    /// this is not a repository, or git refused. Keeping a stale branch name on
-    /// screen after the repository went away would be worse than showing
-    /// nothing.
+    /// `None` replaces the previous status rather than keeping it. It means git
+    /// is not available, this is not a repository, or git failed. A stale branch
+    /// name must not stay on screen after the repository is gone.
     pub fn fill_scm(&mut self, status: Option<deco_scm::Status>) {
-        // A different commit means every file's committed text may be
-        // different too, so what is cached is thrown away rather than kept.
-        // This is what makes a `git commit` in another terminal clear the
-        // gutter instead of leaving every open file drawing against the
-        // version before it.
+        // A different commit means every file's committed text may have
+        // changed, so the cache is cleared. A `git commit` in another terminal
+        // therefore clears the gutter instead of leaving open files compared
+        // against the previous commit.
         let was = self.scm.as_ref().and_then(|status| status.commit.clone());
         let now = status.as_ref().and_then(|status| status.commit.clone());
         if was != now {
@@ -4680,16 +4595,16 @@ impl Session {
         }
         match &status {
             Some(status) => self.source_control.refresh(status),
-            // No repository, or git is gone. An empty view rather than the
-            // last one it had: a list of files to stage in a folder that is no
-            // longer a working tree is worse than nothing.
+            // No repository, or git is unavailable. Show an empty view rather
+            // than the previous one, which would list files to stage in a folder
+            // that is no longer a working tree.
             None => self.source_control = crate::scm::SourceControl::default(),
         }
         self.scm = status;
         self.refresh_context();
     }
 
-    /// Which tenant the side bar is showing.
+    /// Which view the side bar is showing.
     pub fn side_bar_view(&self) -> SideBarView {
         self.side_bar_view
     }
@@ -4701,9 +4616,8 @@ impl Session {
 
     /// Shows the side bar with `view` in it, and gives it the keyboard.
     ///
-    /// VS Code's `workbench.view.*` do all three: a viewlet command opens the
-    /// container if it is closed, switches to that view, and focuses it. One
-    /// key to reach a thing you want to act on, rather than three.
+    /// VS Code's `workbench.view.*` commands do all three: open the container if
+    /// it is closed, switch to that view, and focus it.
     fn show_side_bar_view(&mut self, view: SideBarView) -> Outcome {
         self.side_bar_view = view;
         if !self.side_bar {
@@ -4712,11 +4626,11 @@ impl Session {
         self.focus_region(Focus::SideBar)
     }
 
-    /// A file whose committed text nobody has fetched yet.
+    /// A file whose committed text has not been fetched yet.
     ///
-    /// The same shape as [`Session::directory_wanted`]: one at a time, and the
-    /// frontend answers with [`Session::fill_committed`]. Only open documents,
-    /// because only an open document has a gutter to draw.
+    /// Works like [`Session::directory_wanted`]: one file at a time, and the
+    /// frontend responds with [`Session::fill_committed`]. Only open documents
+    /// are returned, because only they have a gutter.
     pub fn committed_wanted(&self) -> Option<PathBuf> {
         if !self.git_enabled() || !self.gutter_marks_enabled() {
             return None;
@@ -4726,19 +4640,19 @@ impl Session {
             .find(|path| !self.committed.contains_key(path))
     }
 
-    /// Hands over what `HEAD` had for a file.
+    /// Stores a file's text from `HEAD`.
     ///
-    /// `None` means it is not in `HEAD` — added since the last commit, or on a
-    /// branch with nothing committed. That is an answer: every line of the file
-    /// is new. Stored either way, so the question is not asked again on every
-    /// poll.
+    /// `None` means the file is not in `HEAD`: it was added since the last
+    /// commit, or the branch has no commits. Every line of the file is then new.
+    /// The result is stored in both cases, so it is not requested again on
+    /// every poll.
     pub fn fill_committed(&mut self, path: PathBuf, text: Option<String>) {
         self.committed.insert(
             path,
             Committed {
                 text,
-                // Computed on first use rather than here: the buffer may not
-                // even be the one this is about yet.
+                // Computed on first use rather than here, because the buffer
+                // may change before then.
                 marks: None,
             },
         );
@@ -4746,10 +4660,9 @@ impl Session {
 
     /// Whether `git.decorations.enabled` leaves the gutter marks on.
     ///
-    /// VS Code's setting and VS Code's default of `true`. Separate from
-    /// `git.enabled`, which turns the whole feature off — someone who wants the
-    /// branch in the bar but no marks beside their lines has said so with this
-    /// one.
+    /// VS Code's setting, with VS Code's default of `true`. Separate from
+    /// `git.enabled`, which turns off the whole feature. This setting hides the
+    /// gutter marks while keeping the branch in the status bar.
     pub fn gutter_marks_enabled(&self) -> bool {
         self.settings
             .get_bool("git.decorations.enabled", None)
@@ -4758,10 +4671,10 @@ impl Session {
 
     /// Brings every open file's marks up to date with its buffer.
     ///
-    /// Called by a frontend before it draws, which is why this is separate from
-    /// [`Session::diff_marks`]: a renderer holds the session by shared
-    /// reference, and computing on demand there would mean either a diff per
-    /// frame or interior mutability. Cheap when nothing has changed — one
+    /// Called by a frontend before drawing. It is separate from
+    /// [`Session::diff_marks`] because a renderer holds the session by shared
+    /// reference, and computing on demand there would require either a diff per
+    /// frame or interior mutability. When nothing has changed, the cost is one
     /// version comparison per open document.
     pub fn refresh_diffs(&mut self) {
         if !self.git_enabled() || !self.gutter_marks_enabled() {
@@ -4781,8 +4694,8 @@ impl Session {
             if entry.marks.as_ref().map(|(at, _)| *at) == Some(version) {
                 continue;
             }
-            // A file with no committed text is not "no marks": every line of
-            // it is an addition, which is what an empty left-hand side gives.
+            // A file with no committed text has every line marked as added,
+            // which a diff against empty text produces.
             let head = entry.text.clone().unwrap_or_default();
             let diff = deco_scm::diff(&head, &text);
             if let Some(entry) = self.committed.get_mut(&path) {
@@ -4808,23 +4721,23 @@ impl Session {
 
     /// Forgets what was cached for everything at or under `path`.
     ///
-    /// A file that moved or went takes its committed text with it: the entry is
-    /// keyed by path, and leaving it would hand the *next* file to take that
-    /// name a diff against a stranger's history.
+    /// A moved or deleted file's committed text is removed. The entry is keyed by
+    /// path, so keeping it would make the *next* file with that name diff against
+    /// another file's history.
     fn forget_committed_under(&mut self, path: &Path) {
         self.committed.retain(|held, _| !held.starts_with(path));
     }
 
-    /// Says the status is stale.
+    /// Marks the status as stale.
     ///
-    /// Called for the things git would report differently: a save, a file
-    /// created, renamed or deleted, and coming back to a window that may have
-    /// been left while a commit happened in a terminal.
+    /// Called for events that change the git status: a save, a file created,
+    /// renamed or deleted, and returning to the window, since a commit may have
+    /// been made in a terminal.
     pub fn scm_changed(&mut self) {
         self.scm_wanted = true;
     }
 
-    /// Hands the tree what a directory contains.
+    /// Supplies the tree with a directory's contents.
     pub fn fill_directory(&mut self, dir: &std::path::Path, entries: Vec<crate::explorer::Entry>) {
         if let Some(explorer) = self.explorer.as_mut() {
             explorer.fill(dir, entries);
@@ -4834,9 +4747,8 @@ impl Session {
 
     /// `revealInExplorer`: opens the tree onto the file being edited.
     ///
-    /// An untitled document has no path to reveal, and saying so is better than
-    /// a key that does nothing: the tree is showing, it just has nothing to
-    /// point at yet.
+    /// An untitled document has no path to reveal, so a message is shown instead
+    /// of ignoring the key.
     fn reveal_active_file(&mut self) -> Outcome {
         let Some(path) = self.document.path.clone() else {
             return Outcome::Message("this document has not been saved anywhere yet".to_owned());
@@ -4857,18 +4769,16 @@ impl Session {
     /// One of the tree's navigation keys.
     ///
     /// Does nothing unless the tree has the keyboard. The default keymap gates
-    /// these on `sideBarFocus` so it never comes up there, but a hand-written
-    /// binding without a `when` clause is allowed to exist, and moving a
-    /// selection nobody can see while someone types in the editor is worse than
-    /// a key that does nothing.
+    /// these keys on `sideBarFocus`, but a user binding without a `when` clause
+    /// is allowed. Such a key must not move a hidden selection while the user
+    /// types in the editor.
     fn explorer_key(&mut self, command: &str) -> Outcome {
         if self.focus != Focus::SideBar {
             return Outcome::Handled;
         }
-        // Whichever tenant is showing. The bindings are `list.*` in VS Code
-        // too — one set of keys for every list in the workbench, and which
-        // list they reach is a matter of what has the keyboard rather than of
-        // a separate binding per view.
+        // Route to the view that is showing. VS Code also uses `list.*`: one
+        // set of keys for every list in the workbench, with focus deciding which
+        // list receives them, rather than a separate binding per view.
         if self.side_bar_view == SideBarView::SourceControl {
             return self.source_control_key(command);
         }
@@ -4883,19 +4793,16 @@ impl Session {
             "list.expand" => explorer.expand(),
             "list.collapse" => explorer.collapse(),
             "list.select" => {
-                // Enter opens a file and toggles a directory, which is what the
-                // explorer does in VS Code and the only reading that makes the
-                // same key useful on every row.
+                // Enter opens a file and toggles a directory, as in the VS Code
+                // explorer.
                 let Some(row) = explorer.selection() else {
                     return Outcome::Handled;
                 };
                 if row.is_dir {
                     explorer.toggle();
                 } else {
-                    // The keyboard follows the file into the editor. Opening
-                    // something and leaving the caret in the tree would mean a
-                    // second keystroke before you could type in what you just
-                    // asked for.
+                    // Focus moves to the editor with the opened file, so the
+                    // user can type in it without another keystroke.
                     self.focus = Focus::Editor;
                     self.refresh_context();
                     return Outcome::OpenFile {
@@ -4906,8 +4813,8 @@ impl Session {
             }
             _ => {}
         }
-        // The side bar's height, so the tree can keep the selection on screen —
-        // the model does not know how tall it is drawn.
+        // Pass the side bar's height so the tree can keep the selection on
+        // screen. The model does not know its drawn height.
         let height = self.side_bar_rows();
         if let Some(explorer) = self.explorer.as_mut() {
             explorer.scroll_into_view(height);
@@ -4918,9 +4825,9 @@ impl Session {
 
     /// How many rows the side bar has for a list, once its chrome is off.
     ///
-    /// The models do not know how tall they are drawn, so whoever does has to
-    /// tell them — and that is here rather than in a frontend, because the
-    /// division of the window is the session's.
+    /// The models do not know their drawn height, so it must be passed to them.
+    /// It is computed here rather than in a frontend, because the session owns
+    /// the division of the window.
     fn side_bar_rows(&self) -> usize {
         self.regions()
             .side_bar
@@ -4930,9 +4837,9 @@ impl Session {
 
     /// Moves the keyboard to a region, showing it first if it is hidden.
     ///
-    /// Focusing something invisible is the one thing this must not do. Toggling
-    /// deliberately does *not* focus — VS Code's `ctrl+b` leaves the caret in
-    /// the text, and moving it would make showing the tree cost your place.
+    /// It must never focus a hidden region. Toggling does *not* focus: VS Code's
+    /// `ctrl+b` leaves the caret in the text, so showing the tree does not move
+    /// the user's position.
     fn focus_region(&mut self, focus: Focus) -> Outcome {
         match focus {
             Focus::SideBar if !self.side_bar => {
@@ -4944,8 +4851,7 @@ impl Session {
             _ => {}
         }
 
-        // A region that does not fit in this window cannot take the keyboard
-        // either, however it was asked for.
+        // A region that does not fit in the window cannot take focus.
         let regions = self.regions();
         let showing = match focus {
             Focus::Editor => true,
@@ -4963,20 +4869,18 @@ impl Session {
 
     /// How the window is currently divided between editor, side bar and panel.
     ///
-    /// Recomputed rather than stored: it is a pure function of the window size
-    /// and two booleans, and a cached copy is one more thing that can be stale
-    /// while the screen says otherwise.
+    /// Recomputed rather than stored. It is a pure function of the window size
+    /// and two booleans, and a cached copy could become stale.
     pub fn regions(&self) -> crate::layout::Regions {
         self.regions_for(self.screen.0, self.screen.1)
     }
 
     /// The same division, of a rectangle the caller names.
     ///
-    /// For a renderer, which knows the area it is drawing into and should not
-    /// have to assume it is the one the session was last resized to. The two
-    /// agree in the editor — the frontend computes one from the other — but a
-    /// renderer that took it on trust would be relying on that rather than on
-    /// what is in front of it.
+    /// For a renderer, which knows the area it draws into and should not assume
+    /// that it matches the session's last resize. The two are equal in the
+    /// editor, because the frontend computes one from the other, but the
+    /// renderer should not depend on that.
     pub fn regions_for(&self, width: usize, height: usize) -> crate::layout::Regions {
         crate::layout::regions(
             width,
@@ -4996,8 +4900,8 @@ impl Session {
     /// moving any window.
     fn lay_out(&mut self, width: usize, height: usize) {
         self.screen = (width, height);
-        // The regions come off first: what is left is what the editor has, and
-        // it is that rectangle the groups divide and the text wraps inside.
+        // Subtract the regions first. The remaining rectangle belongs to the
+        // editor, and the groups divide it and wrap text inside it.
         let editor = self.regions().editor;
         let (width, height) = (editor.width, editor.height);
 
@@ -5021,10 +4925,10 @@ impl Session {
         }
         let gutter = crate::layout::gutter_width(&self.document);
         // The active group is the second one on screen while the split has the
-        // keyboard — the same order `panes` reports.
+        // keyboard, matching the order `panes` reports.
         let active = usize::from(self.split_focused);
-        // Zero for a frontend that does not wrap, which is what tells the view
-        // there is nowhere to break.
+        // Zero for a frontend that does not wrap, which tells the view not to
+        // break lines.
         let text_width = |index: usize| {
             if !self.frontend_wraps {
                 return 0;
@@ -5043,23 +4947,21 @@ impl Session {
         if let Some(other) = self.split_view.as_mut() {
             other.width = width;
             other.height = height;
-            // Both groups show the same document today, so one gutter serves both;
-            // when they can differ this reads each pane's own.
+            // Both groups currently show the same document, so one gutter width
+            // applies to both. If they can differ, this must use each pane's own.
             other.text_width = other_width;
         }
     }
 
     /// Moves the open document to the front of the recency list.
     ///
-    /// Called from [`Session::refresh_context`], which runs after everything that
-    /// changes what is on screen — so there is no set of call sites to keep in step,
-    /// which is what a list like this usually goes wrong by. The guard makes the
-    /// common case one comparison: on an ordinary keystroke the document is already
-    /// at the front.
+    /// Called from [`Session::refresh_context`], which runs after every change to
+    /// what is on screen, so no separate call sites need to be maintained. The
+    /// guard reduces the common case to one comparison: on an ordinary keystroke
+    /// the document is already at the front.
     fn note_active_document(&mut self) {
         let Some(path) = self.document.path.as_deref() else {
-            // An untitled document has nothing to remember it by, and it is already
-            // on screen.
+            // An untitled document has no path to record.
             return;
         };
         if self.recent.first().is_some_and(|first| first == path) {
@@ -5073,14 +4975,13 @@ impl Session {
 
     /// Recomputes each group's text width for the size the session was last given.
     ///
-    /// How many columns are left for text depends on the document's gutter and on
-    /// how many groups share the screen, so anything that changes either — a tab
-    /// switch, a split, a group closing — has to ask again. A stale width wraps the
-    /// file on screen at the width of the one that used to be.
+    /// The text width depends on the document's gutter and on the number of
+    /// groups on screen, so anything that changes either (a tab switch, a split,
+    /// closing a group) must call this. A stale width would wrap the current file
+    /// at the previous file's width.
     ///
-    /// Deliberately not a `resize`: nothing here scrolls. Focusing a group that was
-    /// scrolled away from its own caret must leave it where it was, and re-laying
-    /// out the same size is not a reason to move any window.
+    /// Not a `resize`: nothing here scrolls. Focusing a group that was scrolled
+    /// away from its caret must not move it, and the size has not changed.
     fn relayout(&mut self) {
         let (width, height) = (self.view.width, self.view.height);
         self.lay_out(width, height);
@@ -5247,8 +5148,8 @@ mod tests {
     /// A rename-shaped workspace edit: one replacement per named file.
     ///
     /// Each `(uri, line, from_len, to)` replaces `from_len` characters at the
-    /// start of `line`, which is enough shape to tell whether the right text in
-    /// the right file changed.
+    /// start of `line`, which is enough to check that the correct text in the
+    /// correct file changed.
     fn workspace_edit(documents: &[(&str, u32, u32, &str)]) -> deco_lsp::WorkspaceEdit {
         let mut changes: Vec<deco_lsp::DocumentEdits> = Vec::new();
         for (uri, line, from_len, to) in documents {
@@ -5293,7 +5194,7 @@ mod tests {
         session.apply_workspace_edit(plan, 0)
     }
 
-    /// Answers both halves of a replace-in-files and returns what came out.
+    /// Answers both prompts of a replace-in-files and returns the outcome.
     fn replace_in_files(session: &mut Session, query: &str, replacement: &str) -> Outcome {
         session.run("workbench.action.replaceInFiles", None, 0);
         // The seed is selected, so typing replaces whatever was under the caret.
@@ -5330,8 +5231,7 @@ mod tests {
 
     #[test]
     fn an_empty_replacement_deletes_and_is_not_refused() {
-        // "take every occurrence of this out" is a thing people mean, and it
-        // would be the one destructive-looking case that could not be done.
+        // An empty replacement deletes every occurrence and must be accepted.
         let mut s = session();
         s.open(PathBuf::from("/w/a.rs"), "old\n");
 
@@ -5347,8 +5247,8 @@ mod tests {
 
     #[test]
     fn find_in_files_still_searches_rather_than_replacing() {
-        // The two commands open the same prompt, so the one that was pressed has
-        // to survive until the prompt is accepted.
+        // The two commands open the same prompt, so the session must remember
+        // which one was used until the prompt is accepted.
         let mut s = session();
         s.open(PathBuf::from("/w/a.rs"), "old\n");
         s.run("workbench.action.findInFiles", None, 0);
@@ -5382,9 +5282,9 @@ mod tests {
 
     #[test]
     fn a_replacement_is_planned_against_the_buffer_not_the_file() {
-        // The search read the file from disk; this tab has since changed. The
-        // buffer is what a replace has to act on, or it would edit positions in
-        // a document that no longer exists — and then save over the real one.
+        // The search read the file from disk, and this tab has since changed. A
+        // replace must act on the buffer. Otherwise it would edit positions in
+        // outdated text and a save would overwrite the buffer's changes.
         let mut s = session();
         s.open(PathBuf::from("/w/a.rs"), "old old\n");
         press(&mut s, "x");
@@ -5574,8 +5474,8 @@ mod tests {
 
     #[test]
     fn a_file_no_tab_holds_is_opened_rather_than_written() {
-        // Unsaved, so that nothing reaches the disk without the user saying so,
-        // and visible, so that they know it is there to save.
+        // The file is opened unsaved, so nothing is written to disk without the
+        // user saving, and in a tab, so the user can see it needs saving.
         let mut s = session();
         s.open(PathBuf::from("/w/a.rs"), "old();\n");
         let tabs_before = s.tab_count();
@@ -5630,8 +5530,8 @@ mod tests {
 
     #[test]
     fn overlapping_edits_change_nothing_at_all() {
-        // The refusal has to happen before the *other* document is written, which
-        // is the whole reason the transactions are built up front.
+        // The rejection must happen before the *other* document is changed. This
+        // is why all transactions are built first.
         let mut s = session();
         s.open(PathBuf::from("/w/a.rs"), "old();\n");
         s.open(PathBuf::from("/w/b.rs"), "old();\n");
@@ -5724,8 +5624,8 @@ mod tests {
 
     #[test]
     fn typing_after_a_workspace_edit_undoes_on_its_own() {
-        // The keystroke is this document's business. Only once it is undone is
-        // the shared step next, and only then does undo reach the other files.
+        // The keystroke belongs only to this document. After it is undone, the
+        // shared step is next, and only then does undo reach the other files.
         let mut s = session();
         s.open(PathBuf::from("/w/a.rs"), "old();\n");
         s.open(PathBuf::from("/w/b.rs"), "old();\n");
@@ -5823,7 +5723,7 @@ mod tests {
 
     #[test]
     fn save_and_quit_reach_the_frontend() {
-        // A document with a name; a nameless one goes to the save-as prompt
+        // A document with a name. An untitled one opens the save-as prompt
         // instead, which has its own test.
         let mut s = searchable("x\n");
         assert_eq!(press(&mut s, "ctrl+s"), Outcome::Save);
@@ -5832,10 +5732,10 @@ mod tests {
 
     #[test]
     fn ctrl_s_on_an_untitled_document_asks_where_to_put_it() {
-        // It used to report "This document has no filename yet" — after having
-        // aimed the write at whatever file deco was started with. Neither is a
-        // save, and `ctrl+w` was meanwhile saying "save it first", so an untitled
-        // tab could be neither saved nor closed.
+        // Regression test. Previously `ctrl+s` reported "This document has no
+        // filename yet" after targeting the file deco was started with, and
+        // `ctrl+w` reported "save it first", so an untitled tab could be neither
+        // saved nor closed.
         let mut s = session();
         s.resize(80, 10);
         press(&mut s, "y");
@@ -5850,7 +5750,7 @@ mod tests {
 
     #[test]
     fn an_untitled_document_can_be_closed_once_it_has_been_saved() {
-        // The route out of the trap, end to end.
+        // Save As followed by close, end to end.
         let mut s = session();
         s.resize(80, 10);
         press(&mut s, "y");
@@ -5862,7 +5762,7 @@ mod tests {
             press(&mut s, "enter"),
             Outcome::SaveAs(PathBuf::from("a.txt"))
         );
-        // The frontend writes and reports back, which is what clears `dirty`.
+        // The frontend writes the file and reports back, which clears `dirty`.
         s.rename_to(PathBuf::from("/w/a.txt"));
         assert_eq!(press(&mut s, "ctrl+w"), Outcome::Handled);
     }
@@ -6008,8 +5908,8 @@ mod tests {
 
     #[test]
     fn diagnostics_set_the_context_key_vscode_uses() {
-        // So a `when` clause copied from an existing keybindings.json means the
-        // same thing here.
+        // So a `when` clause copied from an existing keybindings.json behaves the
+        // same here.
         let mut s = with_diagnostics(&[]);
         assert_eq!(s.context.get("editorHasDiagnostics"), Some(&json!(false)));
         s.set_diagnostics(vec![diagnostic(1, deco_lsp::Severity::Error, "x")]);
@@ -6018,7 +5918,7 @@ mod tests {
 
     #[test]
     fn publishing_replaces_rather_than_appends() {
-        // The protocol is replace-per-document; appending would double every
+        // The protocol replaces per document. Appending would duplicate every
         // error each time the file is analysed.
         let mut s = with_diagnostics(&[1, 2, 3]);
         s.set_diagnostics(vec![diagnostic(9, deco_lsp::Severity::Error, "only")]);
@@ -6027,7 +5927,7 @@ mod tests {
 
     #[test]
     fn opening_another_file_drops_the_previous_ones_diagnostics() {
-        // They point at line numbers in a file that is no longer on screen.
+        // They refer to line numbers in a file that is no longer on screen.
         let mut s = with_diagnostics(&[1, 2]);
         s.open(PathBuf::from("/w/b.rs"), "fn other() {}");
         assert!(s.diagnostics.is_empty());
@@ -6045,8 +5945,7 @@ mod tests {
 
     #[test]
     fn f8_wraps_around_at_the_end() {
-        // Reaching the last error and pressing again returns to the first;
-        // doing nothing would make it useless for a second pass.
+        // Pressing again after the last error returns to the first.
         let mut s = with_diagnostics(&[2, 5]);
         s.view.selections = deco_core::SelectionSet::caret(Position::new(19, 0));
         s.run("editor.action.marker.next", None, 0);
@@ -6067,7 +5966,7 @@ mod tests {
 
     #[test]
     fn navigation_visits_problems_in_file_order_not_publication_order() {
-        // Servers emit in whatever order analysis finished.
+        // Servers publish in the order analysis finished.
         let mut s = with_diagnostics(&[]);
         s.set_diagnostics(vec![
             diagnostic(9, deco_lsp::Severity::Error, "third"),
@@ -6101,8 +6000,8 @@ mod tests {
 
     #[test]
     fn a_diagnostic_past_the_end_of_the_file_is_clamped() {
-        // A server can be a moment behind: the user deletes the offending lines
-        // before it recomputes, and its ranges outlive the text.
+        // A server can lag behind edits. If the user deletes the lines before it
+        // recomputes, its ranges refer to text that no longer exists.
         let mut s = session();
         s.open(PathBuf::from("/w/a.rs"), "one\ntwo\n");
         s.set_diagnostics(vec![diagnostic(900, deco_lsp::Severity::Error, "stale")]);
@@ -6152,7 +6051,7 @@ mod tests {
 
     #[test]
     fn replacing_a_range_leaves_the_cursor_after_the_text() {
-        // Where a caret belongs after accepting a completion.
+        // Where the caret goes after accepting a completion.
         let mut s = session();
         s.open(PathBuf::from("/w/a.rs"), "let x = Has;\n");
         let end = s.replace_range(
@@ -6171,8 +6070,8 @@ mod tests {
 
     #[test]
     fn replacing_a_range_is_one_undo_step() {
-        // Accepting a completion is one decision; coalescing it with the word
-        // typed before would make a single undo throw both away.
+        // Accepting a completion is one action. Merging it with the word typed
+        // before would make one undo remove both.
         let mut s = session();
         s.open(PathBuf::from("/w/a.rs"), "Has\n");
         s.replace_range(
@@ -6213,7 +6112,7 @@ mod tests {
     #[test]
     fn a_range_past_the_end_of_the_document_is_clamped() {
         // The range may have been computed against text the user has since
-        // changed — a completion answered while they kept typing.
+        // changed, such as a completion returned while typing continued.
         let mut s = session();
         s.open(PathBuf::from("/w/a.rs"), "ab\n");
         s.replace_range(
@@ -6248,9 +6147,9 @@ mod tests {
 
     #[test]
     fn edits_are_applied_back_to_front_whatever_order_they_arrive_in() {
-        // The trap this exists for: every range refers to the document the
-        // server saw, and applying them front to back shifts every position
-        // after the first edit. Given deliberately out of order.
+        // Every range refers to the document the server saw, and applying the
+        // edits front to back would shift every position after the first edit.
+        // The edits are intentionally given out of order.
         let mut s = session();
         s.open(PathBuf::from("/w/a.rs"), "aaaa bbbb cccc\n");
         let applied = s
@@ -6270,8 +6169,8 @@ mod tests {
 
     #[test]
     fn a_whole_batch_is_one_undo_step() {
-        // A formatting run is one decision; undoing it a line at a time would be
-        // unusable on a file the server reflowed.
+        // Formatting is one action. Undoing it one edit at a time would be
+        // impractical on a file the server reformatted.
         let mut s = session();
         s.open(PathBuf::from("/w/a.rs"), "aaaa bbbb\n");
         s.apply_edits(&[edit(0, 0, 4, "x"), edit(0, 5, 9, "y")], 0)
@@ -6306,8 +6205,8 @@ mod tests {
 
     #[test]
     fn an_already_formatted_document_is_left_alone() {
-        // Servers answer with a no-op edit for this. Applying one would mark the
-        // file dirty and add an undo step for nothing.
+        // Servers answer with a no-op edit here. Applying it would mark the file
+        // dirty and add an empty undo step.
         let mut s = session();
         s.open(PathBuf::from("/w/a.rs"), "fine\n");
         let applied = s.apply_edits(&[edit(0, 2, 2, "")], 0).unwrap();
@@ -6338,8 +6237,7 @@ mod tests {
 
     #[test]
     fn the_cursor_stays_where_it_was_rather_than_following_the_edits() {
-        // A formatting run that moved the caret to the end of the file would be
-        // correct by the letter of the edits and useless in practice.
+        // Formatting must not move the caret to the end of the file.
         let mut s = session();
         s.open(PathBuf::from("/w/a.rs"), "one\ntwo\nthree\n");
         s.view.selections = deco_core::SelectionSet::caret(Position::new(1, 2));
@@ -6359,7 +6257,7 @@ mod tests {
 
     #[test]
     fn an_edit_range_past_the_end_of_the_document_is_clamped() {
-        // The server may have answered about text the user has since deleted.
+        // The server's response may refer to text the user has since deleted.
         let mut s = session();
         s.open(PathBuf::from("/w/a.rs"), "ab\n");
         s.apply_edits(&[edit(0, 1, 99, "Z")], 0).unwrap();
@@ -6368,8 +6266,8 @@ mod tests {
 
     #[test]
     fn formatting_options_come_from_the_users_own_settings() {
-        // A server told nothing indents to its defaults, and against a project
-        // that disagrees the result is a diff touching every line.
+        // Without these options a server uses its own defaults. In a project
+        // with different settings, formatting would then change every line.
         let mut settings = Settings::with_defaults();
         settings
             .load_layer(
@@ -6389,8 +6287,8 @@ mod tests {
 
     #[test]
     fn format_commands_are_routed_to_the_frontend() {
-        // The core has no server to ask, and naming them keeps a mistyped
-        // binding reporting as unknown.
+        // The core has no language server. Listing the commands by name keeps a
+        // mistyped binding reported as unknown.
         let mut s = session();
         assert_eq!(
             s.run("editor.action.formatDocument", None, 0),
@@ -6451,8 +6349,8 @@ mod tests {
         for key in ["f", "o", "o"] {
             press(&mut s, key);
         }
-        // The first match, not the third: narrowing the query must not walk the
-        // cursor down the file one keystroke at a time.
+        // The first match, not the third: narrowing the query must not move the
+        // cursor down the file on each keystroke.
         assert_eq!(selected(&s), ((1, 0), (1, 3)));
     }
 
@@ -6583,7 +6481,7 @@ mod tests {
     #[test]
     fn f3_reports_where_it_landed_while_the_bar_is_closed() {
         let mut s = searchable("foo\nfoo\n");
-        // The bar is closed, so the status bar is the only place a count can go.
+        // The bar is closed, so the count is shown in the status bar.
         let outcome = press(&mut s, "f3");
         assert_eq!(outcome, Outcome::Message("2 of 2 for `foo`".to_owned()));
     }
@@ -6671,8 +6569,8 @@ mod tests {
         assert_eq!(s.context.get("editorTextFocus"), Some(&json!(true)));
 
         press(&mut s, "ctrl+f");
-        // VS Code's spelling, both of them, so a `when` clause copied out of a
-        // keybindings.json means the same thing here.
+        // VS Code's spelling for both keys, so a `when` clause copied from a
+        // keybindings.json behaves the same here.
         assert_eq!(s.context.get("findWidgetVisible"), Some(&json!(true)));
         assert_eq!(s.context.get("findInputFocussed"), Some(&json!(true)));
         assert_eq!(s.context.get("editorTextFocus"), Some(&json!(false)));
@@ -6826,7 +6724,7 @@ mod tests {
             "nothing should have been replaced yet"
         );
         assert_eq!(selected(&s), ((1, 0), (1, 3)));
-        // The second press, now that the user can see what is about to change.
+        // The second press replaces the match, which is now visible.
         s.run("editor.action.replaceOne", None, 0);
         assert_eq!(s.document.buffer.text(), "xx\n\n");
     }
@@ -6873,9 +6771,8 @@ mod tests {
 
     #[test]
     fn replace_all_handles_a_replacement_longer_than_what_it_replaces() {
-        // The interesting case for back-to-front application: every edit after
-        // the first would be misplaced if they were applied in document order
-        // against shifting positions.
+        // Tests back-to-front application: applied in document order, every edit
+        // after the first would be misplaced by the shifted positions.
         let mut s = searchable("a a a\n");
         s.find.set_query("a".to_owned());
         press(&mut s, "ctrl+h");
@@ -6987,13 +6884,13 @@ mod tests {
 
     #[test]
     fn every_command_the_palette_offers_actually_runs() {
-        // The registry is a list of strings beside two `match`es on strings, so
-        // they can drift. This is the check that they have not: a palette entry
-        // resolving to `NotFound` would be offered to the user and then report
-        // itself as unknown when chosen.
+        // The registry is a list of strings separate from two `match`es on
+        // strings, so they can get out of sync. A palette entry that resolves to
+        // `NotFound` would be offered to the user and then reported as unknown
+        // when chosen.
         for (id, title) in commands::PALETTE {
-            // A fresh session per entry, because several of them change state —
-            // and `quit` is in the list, which is exactly the point.
+            // A fresh session per entry, because several entries change state,
+            // including `quit`.
             let mut s = session();
             s.open(PathBuf::from("/w/a.rs"), "fn main() {\n    let x = 1;\n}\n");
             s.resize(80, 10);
@@ -7051,8 +6948,8 @@ mod tests {
 
     #[test]
     fn the_files_you_have_had_open_come_first() {
-        // What makes `ctrl+p` fast: the file you want is usually one you just had
-        // open, and an alphabetical list buries it.
+        // The wanted file is usually one that was recently open, so recent files
+        // are listed before the alphabetical list.
         let mut s = session();
         s.open(PathBuf::from("/w/zebra.rs"), "z\n");
         s.open(PathBuf::from("/w/apple.rs"), "a\n");
@@ -7084,8 +6981,8 @@ mod tests {
 
     #[test]
     fn a_file_that_was_closed_is_still_remembered() {
-        // VS Code remembers it too, and it is exactly the file you are most likely to
-        // want back.
+        // VS Code also keeps closed files in the list, because they are likely to
+        // be reopened.
         let mut s = session();
         s.open(PathBuf::from("/w/gone.rs"), "g\n");
         s.open(PathBuf::from("/w/here.rs"), "h\n");
@@ -7099,8 +6996,7 @@ mod tests {
 
     #[test]
     fn a_session_that_has_opened_nothing_lists_alphabetically() {
-        // Which is what quick open did for every file before recency existed, and is
-        // still the right answer with nothing to prefer.
+        // With no recent files, the order is alphabetical.
         let mut s = session();
         s.offer_files(file_entries(&["aaa.rs", "bbb.rs", "ccc.rs"]));
         assert_eq!(titles(&s), ["aaa.rs", "bbb.rs", "ccc.rs"]);
@@ -7108,9 +7004,9 @@ mod tests {
 
     #[test]
     fn a_path_spelled_differently_is_still_the_same_file() {
-        // `ctrl+o` resolves what was typed; the walk joins onto the workspace root.
-        // The two disagree about `./`, and a string comparison would sink the file
-        // back into the alphabet.
+        // `ctrl+o` resolves the typed path, and the walk joins onto the workspace
+        // root. They can differ in `./`, and a string comparison would not
+        // recognise the file as recent.
         let mut s = session();
         s.open(PathBuf::from("/w/./src/../src/main.rs"), "m\n");
         s.offer_files(file_entries(&["aaa.rs", "src/main.rs"]));
@@ -7119,7 +7015,7 @@ mod tests {
 
     #[test]
     fn recency_orders_equal_matches_and_no_more_than_that() {
-        // Two rows that match `main` equally well: recency decides between them.
+        // Two rows match `main` equally well, so recency decides the order.
         let mut s = session();
         s.open(PathBuf::from("/w/main.md"), "d\n");
         s.offer_files(file_entries(&["main.rs", "main.md"]));
@@ -7131,9 +7027,9 @@ mod tests {
 
     #[test]
     fn a_better_match_still_beats_a_recent_one() {
-        // Recency orders equals; it does not outrank how well a row matches. Here
-        // `main.rs` matches `main` as a prefix and `domain.rs` only contains it, and
-        // `domain.rs` is the file that was open.
+        // Recency orders equal matches only. It does not override match quality.
+        // Here `main.rs` matches `main` as a prefix, `domain.rs` only contains it,
+        // and `domain.rs` is the file that was open.
         let mut s = session();
         s.open(PathBuf::from("/w/domain.rs"), "d\n");
         s.offer_files(file_entries(&["main.rs", "domain.rs"]));
@@ -7205,8 +7101,8 @@ mod tests {
 
     #[test]
     fn opening_a_two_space_file_indents_by_two_whatever_the_setting_says() {
-        // `editor.detectIndentation` is on by default, and this is the whole point
-        // of it: the first `tab` in somebody else's project must not reindent it.
+        // `editor.detectIndentation` is on by default, so the first `tab` in a
+        // project with different indentation uses the file's indentation.
         let mut settings = Settings::with_defaults();
         settings.set(Scope::User, "editor.tabSize", json!(4));
         let mut s = Session::new(settings, None, Platform::Linux);
@@ -7229,7 +7125,7 @@ mod tests {
 
     #[test]
     fn a_file_that_agrees_with_the_setting_overrides_nothing() {
-        // So the status bar has nothing to disclose, which is most files.
+        // The status bar then shows no override, which is the case for most files.
         let mut settings = Settings::with_defaults();
         settings.set(Scope::User, "editor.tabSize", json!(2));
         let mut s = Session::new(settings, None, Platform::Linux);
@@ -7240,8 +7136,8 @@ mod tests {
 
     #[test]
     fn a_tab_indented_file_switches_to_tabs_and_keeps_the_settings_width() {
-        // How wide a tab is drawn is `editor.tabSize`'s business; the file only says
-        // that it uses one.
+        // `editor.tabSize` sets the drawn tab width. The file only indicates that
+        // it uses tabs.
         let mut settings = Settings::with_defaults();
         settings
             .load_layer(
@@ -7281,8 +7177,8 @@ mod tests {
 
     #[test]
     fn a_language_change_does_not_lose_what_the_file_said() {
-        // `ctrl+k m` resolves the settings from scratch. The file's indentation did
-        // not change because the language did.
+        // `ctrl+k m` resolves the settings from scratch, but changing the
+        // language does not change the file's indentation.
         let mut settings = Settings::with_defaults();
         settings.set(Scope::User, "editor.tabSize", json!(4));
         let mut s = Session::new(settings, None, Platform::Linux);
@@ -7310,8 +7206,8 @@ mod tests {
 
     #[test]
     fn workspace_settings_can_turn_the_detection_off_after_the_fact() {
-        // The flag is read from the freshly resolved settings, so a workspace layer
-        // arriving takes effect without the file being reopened.
+        // The flag is read from the newly resolved settings, so a workspace layer
+        // takes effect without reopening the file.
         let mut settings = Settings::with_defaults();
         settings.set(Scope::User, "editor.tabSize", json!(4));
         let mut s = Session::new(settings, None, Platform::Linux);
@@ -7325,8 +7221,8 @@ mod tests {
 
     #[test]
     fn an_unsupported_auto_save_value_reaches_the_problem_list() {
-        // The frontend shows every entry, which is how a setting that does nothing
-        // manages to say so.
+        // The frontend shows every entry, so the user learns that the setting has
+        // no effect.
         let mut settings = Settings::with_defaults();
         settings.set(Scope::User, "files.autoSave", json!("onFocusChange"));
         let s = Session::new(settings, None, Platform::Linux);
@@ -7336,8 +7232,8 @@ mod tests {
 
     #[test]
     fn the_same_complaint_is_not_made_twice() {
-        // The settings are re-resolved on a language change, a rename and a workspace
-        // layer arriving; a problem list of copies is a problem list nobody reads.
+        // The settings are re-resolved on a language change, a rename and a new
+        // workspace layer. Each must not add a duplicate problem.
         let mut settings = Settings::with_defaults();
         settings.set(Scope::User, "files.autoSave", json!("onWindowChange"));
         let mut s = Session::new(settings, None, Platform::Linux);
@@ -7359,8 +7255,8 @@ mod tests {
 
     #[test]
     fn alt_z_wraps_the_document_and_says_where() {
-        // The column is worth saying: it is the one thing about wrapping that is
-        // not visible from the text, and it is what the setting controls.
+        // The message includes the column, because it is not visible from the
+        // text and it is what the setting controls.
         let mut s = session();
         s.open(
             PathBuf::from("/w/a.md"),
@@ -7398,8 +7294,8 @@ mod tests {
 
     #[test]
     fn toggling_back_on_restores_what_the_setting_asked_for() {
-        // Somebody who configured `bounded` and pressed the key twice asked to get
-        // back what they had, not the width of the window.
+        // A user who configured `bounded` and pressed the key twice gets
+        // `bounded` back, not wrapping at the window width.
         let mut settings = Settings::with_defaults();
         settings
             .load_layer(
@@ -7446,9 +7342,8 @@ mod tests {
 
     #[test]
     fn word_wrap_is_per_tab() {
-        // The settings are per document, so turning it on to read one file leaves
-        // the code in the next tab alone — which is what makes the key worth having
-        // rather than a setting to edit.
+        // The settings are per document, so enabling wrap for one file does not
+        // affect the code in the next tab.
         let mut s = session();
         s.open(PathBuf::from("/w/prose.md"), "x\n");
         s.open(PathBuf::from("/w/main.rs"), "y\n");
@@ -7476,8 +7371,8 @@ mod tests {
 
     #[test]
     fn a_split_group_wraps_at_its_own_narrower_width() {
-        // Two groups share the width, so the same line wraps sooner in each. A
-        // group left with the whole width's wrap column would draw past its column.
+        // Two groups share the width, so the same line wraps earlier in each. A
+        // group that kept the full-width wrap column would draw past its column.
         let mut s = session();
         s.open(
             PathBuf::from("/w/a.md"),
@@ -7502,9 +7397,9 @@ mod tests {
 
     #[test]
     fn a_frontend_that_does_not_wrap_makes_the_setting_inert() {
-        // The GPU frontend lays out one line per row. A session that wrapped anyway
-        // would scroll and move the caret by rows nothing draws, putting the caret
-        // in one place and the text it is on in another.
+        // The GPU frontend lays out one line per row. If the session wrapped
+        // anyway, it would scroll and move the caret by rows that are not drawn,
+        // and the caret would not match the text.
         let mut settings = Settings::with_defaults();
         settings
             .load_layer(
@@ -7538,8 +7433,8 @@ mod tests {
 
     #[test]
     fn ctrl_shift_f_asks_what_to_look_for() {
-        // It used to search for the seed straight away, so a project search could
-        // only ever look for what the cursor happened to be on.
+        // Regression test. Previously it searched for the seed immediately, so a
+        // project search could only find the text at the cursor.
         let mut s = searchable("alpha beta\n");
         s.view.selections = deco_core::SelectionSet::caret(Position::new(0, 1));
         assert_eq!(press(&mut s, "ctrl+shift+f"), Outcome::Handled);
@@ -7571,8 +7466,8 @@ mod tests {
 
     #[test]
     fn a_project_search_and_the_find_bar_have_their_own_options() {
-        // One pair of booleans meant case-sensitivity set for a search across the
-        // workspace changed what the next ctrl+f matched. VS Code keeps them apart.
+        // With one shared set of options, case sensitivity set for a workspace
+        // search changed what the next ctrl+f matched. VS Code keeps them separate.
         let mut s = searchable("x\n");
         s.run("workbench.action.findInFiles", None, 0);
         press(&mut s, "alt+c");
@@ -7618,7 +7513,7 @@ mod tests {
         );
         assert_eq!(s.search_seed().as_deref(), Some("alpha"));
 
-        // Neither: the find bar's last query is the remaining evidence of intent.
+        // With neither, the find bar's last query is used.
         let mut blank = searchable("   \n");
         blank.view.selections = deco_core::selection::SelectionSet::caret(Position::new(0, 1));
         assert_eq!(blank.search_seed(), None);
@@ -7667,8 +7562,7 @@ mod tests {
 
     #[test]
     fn a_term_found_nowhere_says_that_rather_than_that_there_are_no_files() {
-        // Two different facts. Reporting one as the other sends the reader looking
-        // in the wrong place.
+        // These are different conditions and need different messages.
         let mut s = searchable("x\n");
         s.offer_search_results("zzz", Vec::new());
         assert!(s.prompt.is_none());
@@ -7695,7 +7589,7 @@ mod tests {
 
     #[test]
     fn save_as_seeds_the_prompt_with_the_current_path() {
-        // Editing the path you are already in beats typing a whole one.
+        // Editing the current path is faster than typing a full one.
         let mut s = searchable("x\n");
         s.open(PathBuf::from("/w/notes.txt"), "text\n");
         assert_eq!(press(&mut s, "ctrl+shift+s"), Outcome::Handled);
@@ -7706,8 +7600,8 @@ mod tests {
 
     #[test]
     fn open_file_seeds_the_prompt_with_the_directory_only() {
-        // The point is to open something else, so a seed whose last component you
-        // have to delete is a seed that cost you.
+        // The user wants to open a different file, so the seed omits the file
+        // name.
         let mut s = searchable("x\n");
         s.open(PathBuf::from("/w/src/main.rs"), "fn main() {}\n");
         s.run("workbench.action.files.openFile", None, 0);
@@ -7729,9 +7623,8 @@ mod tests {
         let mut s = searchable("x\n");
         s.open(PathBuf::from("/w/notes.txt"), "text\n");
         s.run("workbench.action.files.saveAs", None, 0);
-        // `ctrl+x` clears a one-line input, which is how a seed is replaced rather
-        // than appended to. `ctrl+a` is swallowed: half a selection in a field with
-        // no selection would be worse than none.
+        // `ctrl+x` clears a one-line input, so the seed is replaced rather than
+        // appended to. `ctrl+a` is ignored, because the field has no selection.
         press(&mut s, "ctrl+x");
         for key in ["a", ".", "t", "o", "m", "l"] {
             press(&mut s, key);
@@ -7798,8 +7691,7 @@ mod tests {
 
     #[test]
     fn renaming_keeps_a_language_that_was_chosen_by_hand() {
-        // Having said "this is TOML" and then saved it, being told it is now plain
-        // text would undo a decision nobody revisited.
+        // Saving under a new name must not override a manually chosen language.
         let mut s = searchable("x\n");
         s.open(PathBuf::from("/w/notes.txt"), "name = 1\n");
         s.set_language(Some("toml"));
@@ -7810,8 +7702,8 @@ mod tests {
 
     #[test]
     fn renaming_a_detected_language_still_follows_the_name() {
-        // The mirror of the case above: nothing was chosen by hand here, so the
-        // name is still the only evidence there is.
+        // The opposite of the case above: no language was chosen manually, so the
+        // file name decides.
         let mut s = searchable("x\n");
         s.open(PathBuf::from("/w/main.rs"), "fn main() {}\n");
         assert_eq!(s.document.language(), Some("rust"));
@@ -7839,7 +7731,7 @@ mod tests {
 
     #[test]
     fn a_pane_borrows_rather_than_copies() {
-        // A second copy of the document could disagree with the one being edited.
+        // A second copy of the document could diverge from the one being edited.
         let mut s = searchable("x\n");
         press(&mut s, "y");
         let panes = s.panes();
@@ -7850,10 +7742,10 @@ mod tests {
 
     #[test]
     fn typing_in_a_picker_selects_the_best_match() {
-        // `enter` runs whatever is selected, so it has to be the best match for
-        // what has been typed. The selection used to follow the previously
-        // selected entry — which starts on row 0, whatever the registry listed
-        // first, so nobody chose it — and stayed there however badly it ranked.
+        // `enter` runs the selected entry, so it must be the best match for the
+        // typed text. Previously the selection stayed on the previously selected
+        // entry (initially row 0, the registry's first entry) regardless of its
+        // rank.
         let mut s = searchable("x\n");
         s.run("workbench.action.showCommands", None, 0);
         press(&mut s, "down");
@@ -7870,8 +7762,8 @@ mod tests {
 
     #[test]
     fn deleting_from_a_picker_reranks_too() {
-        // Widening is a new query, so the best match for it is what should be
-        // selected rather than the best match for the longer one.
+        // A shorter query is a new query, so its best match is selected, not the
+        // best match for the longer query.
         let mut s = searchable("x\n");
         s.run("workbench.action.editor.changeLanguageMode", None, 0);
         for key in ["j", "s", "o", "n"] {
@@ -7887,9 +7779,9 @@ mod tests {
 
     #[test]
     fn a_file_reached_by_two_spellings_is_one_tab() {
-        // `deco src/main.rs` and then picking the same file from `ctrl+p` used to
-        // open it twice: two buffers, two undo histories, and whichever was saved
-        // last winning silently.
+        // Regression test. `deco src/main.rs` followed by picking the same file
+        // from `ctrl+p` opened it twice, with two buffers and two undo histories,
+        // and the last save overwrote the other.
         let mut s = session();
         s.resize(80, 10);
         s.open(PathBuf::from("/w/src/main.rs"), "fn main() {}\n");
@@ -7899,8 +7791,8 @@ mod tests {
 
     #[test]
     fn switching_to_it_keeps_the_edits_rather_than_rereading() {
-        // The point of one tab per file: the second open is a switch, so unsaved
-        // work is still there.
+        // With one tab per file, the second open switches to the tab, so unsaved
+        // changes are kept.
         let mut s = session();
         s.resize(80, 10);
         s.open(PathBuf::from("/w/a.rs"), "saved\n");
@@ -7912,7 +7804,7 @@ mod tests {
 
     #[test]
     fn normalising_leaves_a_leading_parent_alone() {
-        // `../a.rs` points somewhere; dropping the `..` would change where.
+        // Dropping the `..` from `../a.rs` would change where it points.
         assert_eq!(normalise(Path::new("../a.rs")), PathBuf::from("../a.rs"));
         assert_eq!(
             normalise(Path::new("../../a.rs")),
@@ -7944,9 +7836,8 @@ mod tests {
 
     #[test]
     fn reverting_an_untitled_document_empties_it_and_makes_it_closable() {
-        // There is no file to re-read, and empty is what it was — which is the
-        // route out of a scratch buffer that could otherwise be neither saved nor
-        // closed.
+        // There is no file to re-read, and the document started empty. This lets
+        // the user close a scratch buffer without saving it.
         let mut s = session();
         s.resize(80, 10);
         press(&mut s, "y");
@@ -7970,7 +7861,7 @@ mod tests {
             Outcome::Revert
         );
 
-        // What the frontend does with it.
+        // The frontend then calls `revert_to` with the file's text.
         assert_eq!(
             s.revert_to("saved\n"),
             Outcome::Message("Reverted a.txt".to_owned())
@@ -7981,8 +7872,7 @@ mod tests {
 
     #[test]
     fn a_revert_can_be_undone() {
-        // A command whose whole purpose is to destroy work should not be the one
-        // command that cannot be taken back.
+        // Revert discards edits, so it must be undoable.
         let mut s = searchable("saved\n");
         press(&mut s, "y");
         assert_eq!(s.document.buffer.text(), "ysaved\n");
@@ -8018,9 +7908,8 @@ mod tests {
 
     #[test]
     fn quitting_with_unsaved_work_refuses_and_names_it() {
-        // The editor already refuses to close one unsaved document with ctrl+w;
-        // dropping all of them on ctrl+q applied that principle to the narrower of
-        // the two paths.
+        // ctrl+w does not close one unsaved document, so ctrl+q must not discard
+        // all of them.
         let mut s = searchable("x\n");
         s.open(PathBuf::from("/w/b.rs"), "fn main() {}\n");
         press(&mut s, "y");
@@ -8061,8 +7950,7 @@ mod tests {
 
     #[test]
     fn anything_in_between_starts_the_conversation_again() {
-        // Acting minutes later on an answer nobody remembers giving is how a
-        // confirmation becomes a formality.
+        // Any other key resets the confirmation, so a later ctrl+q asks again.
         let mut s = searchable("x\n");
         press(&mut s, "y");
         assert!(matches!(press(&mut s, "ctrl+q"), Outcome::Message(_)));
@@ -8084,7 +7972,7 @@ mod tests {
     #[test]
     fn splitting_gives_the_same_document_a_second_view() {
         // One buffer, two views. Two documents would be two divergent copies of
-        // one file, which is what `open` refuses for tabs.
+        // one file, which `open` also prevents for tabs.
         let mut s = searchable("one\ntwo\nthree\n");
         assert_eq!(s.group_count(), 1);
         press(&mut s, "ctrl+\\");
@@ -8093,15 +7981,15 @@ mod tests {
         let panes = s.panes();
         assert_eq!(panes.len(), 2);
         assert!(std::ptr::eq(panes[0].document, panes[1].document));
-        // The new group starts where the old one was looking and takes the
-        // keyboard, because you split in order to work in the new one.
+        // The new group starts at the same position as the old one and takes
+        // the keyboard.
         assert!(!panes[0].focused);
         assert!(panes[1].focused);
     }
 
     #[test]
     fn each_group_scrolls_and_moves_on_its_own() {
-        // The whole point: two places in one file, at once.
+        // Two places in one file are visible at once.
         let mut s = searchable(&"line\n".repeat(60));
         s.resize(80, 10);
         press(&mut s, "ctrl+\\");
@@ -8131,8 +8019,8 @@ mod tests {
 
     #[test]
     fn typing_goes_into_the_group_with_the_keyboard() {
-        // Both groups show the edit, since there is one document — but only the
-        // focused view's cursor moved.
+        // Both groups show the edit, because there is one document, but only the
+        // focused view's cursor moves.
         let mut s = searchable("abc\n");
         press(&mut s, "ctrl+\\");
         s.view.selections = deco_core::SelectionSet::caret(Position::new(0, 3));
@@ -8175,7 +8063,7 @@ mod tests {
 
     #[test]
     fn ctrl_w_closes_the_group_before_it_closes_the_tab() {
-        // Having split, the first thing that key should do is put the screen back.
+        // After a split, the key first closes the second group.
         let mut s = searchable("x\n");
         s.open(PathBuf::from("/w/b.rs"), "fn main() {}\n");
         press(&mut s, "ctrl+\\");
@@ -8195,8 +8083,8 @@ mod tests {
 
     #[test]
     fn moving_between_groups_closes_the_find_bar() {
-        // Its matches were found against the other view, and its current match is
-        // where that group's cursor is.
+        // Its matches were found in the other view, and its current match is at
+        // that group's cursor.
         let mut s = searchable("hello hello\n");
         press(&mut s, "ctrl+\\");
         s.run("actions.find", None, 0);
@@ -8209,8 +8097,8 @@ mod tests {
 
     #[test]
     fn ctrl_k_ctrl_t_asks_the_frontend_for_the_installed_themes() {
-        // The frontend's, because a marketplace theme is a file in an extension
-        // directory and the core has no filesystem.
+        // Handled by the frontend, because a marketplace theme is a file in an
+        // extension directory and the core has no filesystem.
         let mut s = searchable("x\n");
         assert_eq!(press(&mut s, "ctrl+k"), Outcome::Handled);
         assert_eq!(
@@ -8260,8 +8148,8 @@ mod tests {
 
     #[test]
     fn the_theme_list_keeps_the_order_it_was_given() {
-        // The built-ins are the ones that always work, so they stay at the top
-        // rather than being buried by whatever is installed.
+        // The built-in themes always work, so they stay at the top above the
+        // installed ones.
         let mut s = searchable("x\n");
         s.offer_themes(vec![
             commands::PaletteEntry::new("", "Default Dark Modern"),
@@ -8284,9 +8172,8 @@ mod tests {
 
     #[test]
     fn setting_a_theme_says_how_to_keep_it() {
-        // deco reads `workbench.colorTheme` and never writes it: an editor that
-        // edits your configuration behind you is worse than one that tells you
-        // what to put in it.
+        // deco reads `workbench.colorTheme` but never writes it, so the message
+        // tells the user which setting to change.
         let mut s = searchable("x\n");
         let light = deco_theme::defaults::builtin("Default Light Modern").unwrap();
         assert_eq!(
@@ -8329,8 +8216,8 @@ mod tests {
         let prompt = s.prompt.as_ref().expect("a picker should be open");
         assert_eq!(prompt.kind(), crate::prompt::PromptKind::Languages);
         assert_eq!(prompt.matches(), crate::document::LANGUAGES.len() + 1);
-        // Detection first, because it is the only way back once a language has
-        // been chosen by hand.
+        // Detection is first, because it is the only way to undo a manual
+        // language choice.
         assert_eq!(
             prompt
                 .selected()
@@ -8342,8 +8229,8 @@ mod tests {
 
     #[test]
     fn choosing_a_language_relexes_and_reresolves_the_settings() {
-        // A `.txt` file that is really TOML: nothing about its name says so, so
-        // the lexer is idle until it is told.
+        // A `.txt` file that contains TOML. The name does not indicate TOML, so
+        // the lexer is inactive until the language is set.
         let mut settings = deco_config::Settings::with_defaults();
         settings
             .load_layer(
@@ -8424,15 +8311,15 @@ mod tests {
 
     #[test]
     fn a_language_deco_has_no_name_for_is_shown_as_its_identifier() {
-        // One can arrive from a settings file or a server. Showing the identifier
-        // is more useful than showing nothing.
+        // Such an identifier can come from a settings file or a server. Showing
+        // the identifier is more useful than showing nothing.
         assert_eq!(crate::document::language_title("rust"), "Rust");
         assert_eq!(crate::document::language_title("brainfuck"), "brainfuck");
     }
 
     #[test]
     fn every_language_the_file_name_can_detect_is_offerable() {
-        // Otherwise a document could be in a mode the picker cannot get back to.
+        // Otherwise a document could be in a language the picker cannot select.
         for name in [
             "a.rs",
             "a.ts",
@@ -8473,9 +8360,8 @@ mod tests {
 
     #[test]
     fn the_picker_orders_titles_the_way_a_reader_scans_them() {
-        // Byte order would put every capital below every lowercase letter, so
-        // `JSON` would come before `Java` and the list would be unpredictable to
-        // scan. Asserted through the real picker rather than against a copy of the
+        // Byte order sorts uppercase before lowercase, so `JSON` would come
+        // before `Java`. Tested through the real picker rather than a copy of the
         // comparison.
         let mut s = searchable("x\n");
         s.run("workbench.action.editor.changeLanguageMode", None, 0);
@@ -8543,7 +8429,7 @@ mod tests {
 
     #[test]
     fn a_failed_write_leaves_that_document_dirty() {
-        // A tab that looks saved and is not is how work gets lost.
+        // A tab must not appear saved when its write failed.
         let mut s = three_tabs();
         let outcome = s.save_all(|path, _| {
             if path == Path::new("/w/a.txt") {
@@ -8560,7 +8446,7 @@ mod tests {
             outcome,
             Outcome::Message("Saved 1 file; 1 could not be written".to_owned())
         );
-        // The reason is kept where a reader can find it: a status bar has one line.
+        // The reason goes to the problem list, because the status bar has one line.
         assert_eq!(s.problems, ["/w/a.txt: permission denied"]);
     }
 
@@ -8590,13 +8476,12 @@ mod tests {
 
     #[test]
     fn each_tab_is_written_with_its_own_settings() {
-        // `files.insertFinalNewline` can differ per language, and a batch save has
-        // to respect each tab's rather than the active one's.
+        // `files.insertFinalNewline` can differ per language, and a batch save
+        // must use each tab's value rather than the active tab's.
         //
-        // `files.eol` is pinned rather than left at `auto`: a document with no
-        // existing line ending takes the platform's, so the newline this appends
-        // would be CRLF on Windows and the assertion would be about the host
-        // instead of about the setting under test.
+        // `files.eol` is fixed rather than left at `auto`. A document with no
+        // existing line ending uses the platform's, so the appended newline would
+        // be CRLF on Windows and the test would depend on the host.
         let mut settings = deco_config::Settings::with_defaults();
         settings
             .load_layer(
@@ -8642,10 +8527,10 @@ mod tests {
 
     #[test]
     fn every_default_binding_resolves_to_something_that_answers() {
-        // The guard that makes a dead key impossible to add by accident. A command
-        // nothing handles and that is not on `commands::PENDING` returns
-        // `NotFound`, which the frontend has nowhere to put — so the key would do
-        // nothing at all, which is indistinguishable from a hung editor.
+        // Prevents adding a key binding that does nothing. A command that nothing
+        // handles and that is not in `commands::PENDING` returns `NotFound`,
+        // which the frontend does not display, so the key would appear to do
+        // nothing, like a hung editor.
         let mut dead = Vec::new();
         for rule in deco_keymap::defaults::default_rules(Platform::Linux) {
             let mut s = searchable("fn main() {}\n");
@@ -8685,8 +8570,9 @@ mod tests {
 
     #[test]
     fn showing_a_region_gives_the_text_less_room_to_wrap_in() {
-        // The whole reason the split lives in the session: the wrap width has to
-        // move with it, or a line breaks where the renderer is not drawing.
+        // The session owns the window division because the wrap width must
+        // follow it. Otherwise lines would break at a width the renderer does not
+        // use.
         let mut s = session();
         s.open(PathBuf::from("/w/a.txt"), "x\n");
         s.resize(80, 24);
@@ -8909,8 +8795,8 @@ mod tests {
         };
         s.file_operation_done(&operation);
 
-        // `src` was selected, so the file went inside it — and revealing it
-        // opened `src`, whose listing is now what the tree is waiting for.
+        // `src` was selected, so the file was created inside it. Revealing the
+        // file expanded `src`, so the tree now requests its listing.
         assert_eq!(s.directory_wanted().as_deref(), Some(Path::new("/w/src")));
         s.fill_directory(
             Path::new("/w/src"),
@@ -8933,8 +8819,8 @@ mod tests {
         };
         s.file_operation_done(&create);
 
-        // Creating a file put the keyboard in it; the tree's undo needs the
-        // tree, which is the trip back a person makes with `ctrl+shift+e`.
+        // Creating a file moved focus to the editor. The tree's undo requires
+        // tree focus, which the user restores with `ctrl+shift+e`.
         s.run("workbench.files.action.focusFilesExplorer", None, 0);
         assert!(s.can_undo_file_operation());
         assert_eq!(
@@ -8951,8 +8837,8 @@ mod tests {
 
     #[test]
     fn undoing_a_rename_through_the_prompts_puts_the_name_back() {
-        // The whole sequence as a person does it, prompts included — which is
-        // what the demonstration does, and where a focus bug would show.
+        // The full user sequence, including prompts, as in the demonstration.
+        // A focus bug would appear here.
         let mut s = with_tree();
         s.run("workbench.files.action.focusFilesExplorer", None, 0);
         s.run("list.focusDown", None, 0); // Cargo.toml
@@ -8987,9 +8873,8 @@ mod tests {
 
     #[test]
     fn creating_a_file_leaves_the_keyboard_where_the_new_file_is() {
-        // The sequence the demonstration walks: create through the prompt, then
-        // type. If the keyboard were still in the tree, the typing would be
-        // swallowed and the demonstration would show an editor that ignores it.
+        // The demonstration's sequence: create through the prompt, then type. If
+        // focus stayed in the tree, the typed keys would be ignored.
         let mut s = with_tree();
         s.run("workbench.files.action.focusFilesExplorer", None, 0);
         s.run("explorer.newFile", None, 0);
@@ -9001,7 +8886,7 @@ mod tests {
             panic!("accepting the prompt should create the file");
         };
         s.file_operation_done(&created);
-        // What the frontend does with a created file.
+        // The frontend opens a created file.
         s.open(PathBuf::from("/w/src/new.rs"), "");
 
         assert_eq!(
@@ -9019,10 +8904,9 @@ mod tests {
 
     #[test]
     fn the_trees_undo_works_after_the_document_has_been_typed_in() {
-        // The demonstration's whole sequence. Typing into the new file leaves
-        // the *document* with an undo history, and the tree's `ctrl+z` has to
-        // keep meaning the tree's undo — the two stacks are told apart by focus,
-        // not by which was used last.
+        // The demonstration's full sequence. Typing into the new file gives the
+        // *document* an undo history, and `ctrl+z` in the tree must still run the
+        // tree's undo. Focus selects the stack, not which was used last.
         let mut s = with_tree();
         s.run("workbench.files.action.focusFilesExplorer", None, 0);
         s.run("explorer.newFile", None, 0);
@@ -9034,8 +8918,8 @@ mod tests {
             panic!("expected a create");
         };
         s.file_operation_done(&created);
-        // The frontend's half: re-read the directory that changed, which is
-        // what lets the reveal land the selection on the new file.
+        // The frontend re-reads the changed directory, so the reveal can select
+        // the new file.
         assert_eq!(s.directory_wanted().as_deref(), Some(Path::new("/w/src")));
         s.fill_directory(
             Path::new("/w/src"),
@@ -9143,7 +9027,7 @@ mod tests {
         s.run("workbench.files.action.focusFilesExplorer", None, 0);
         assert!(s.can_undo_file_operation());
 
-        // A delete that never happens must not cost the create its undo.
+        // A failed delete must not remove the create's undo entry.
         let Outcome::FileOperation(delete) = s.delete_in_tree() else {
             panic!("expected a delete");
         };
@@ -9174,8 +9058,8 @@ mod tests {
 
     #[test]
     fn the_trees_undo_wins_over_a_waiting_workspace_edit() {
-        // After a project-wide replace the document has a shared step waiting.
-        // `ctrl+z` in the tree must still be the tree's undo.
+        // After a project-wide replace the document has a shared undo step.
+        // `ctrl+z` in the tree must still run the tree's undo.
         let mut s = with_tree();
         s.run("workbench.files.action.focusFilesExplorer", None, 0);
         let Outcome::FileOperation(created) = s.create_in_tree("new.rs", false) else {
@@ -9208,7 +9092,7 @@ mod tests {
         s.file_operation_done(&second);
         s.run("workbench.files.action.focusFilesExplorer", None, 0);
 
-        // Two presses must undo two operations, not undo one and put it back.
+        // Two presses must undo two operations, not undo one and redo it.
         let Outcome::FileOperation(undone_second) = s.run("undo", None, 0) else {
             panic!("expected the second create to be undone");
         };
@@ -9389,7 +9273,7 @@ mod tests {
         }];
         let index = s.tab_of(Path::new("/w/main.rs")).expect("it is open");
 
-        // `.txt` has no language, so no server will ever correct these.
+        // `.txt` has no language, so no server will replace these tokens.
         s.retarget_tab(index, PathBuf::from("/w/main.txt"));
         assert!(
             s.semantic_tokens.is_empty(),
@@ -9405,8 +9289,9 @@ mod tests {
 
     #[test]
     fn tabs_can_be_let_go_one_file_at_a_time() {
-        // What a half-finished recursive delete needs: some of a directory's
-        // files are gone and the rest are not, and only the disk knows which.
+        // Needed for a partly completed recursive delete: some of a directory's
+        // files are gone and the rest remain, and only the filesystem can tell
+        // which.
         let mut s = with_tree();
         s.fill_directory(
             Path::new("/w/src"),
@@ -9440,9 +9325,9 @@ mod tests {
         s.run("workbench.files.action.focusFilesExplorer", None, 0);
         assert!(s.can_undo_file_operation());
 
-        // A recursive delete that removed part of a tree and then stopped:
-        // something irreversible went, so the inverses below it describe a
-        // state that never existed.
+        // A recursive delete that removed part of a tree and then stopped. An
+        // irreversible change happened, so the older inverses no longer describe
+        // a valid state.
         s.clear_file_undo();
         assert!(!s.can_undo_file_operation());
     }
@@ -9486,7 +9371,7 @@ mod tests {
             panic!("expected a delete");
         };
         s.file_operation_done(&deleted);
-        // A directory of the same name exists again — a fresh, empty one.
+        // A new, empty directory with the same name exists.
         s.fill_directory(Path::new("/w"), vec![crate::explorer::Entry::dir("src")]);
 
         let rows = s.explorer().unwrap().rows();
@@ -9505,8 +9390,8 @@ mod tests {
         let mut s = with_tree();
         s.open(PathBuf::from("/w/main.rs"), "fn main() {}\n");
         assert_eq!(s.document.language(), Some("rust"));
-        // Choosing Rust for a file already inferred as Rust: by value alone this
-        // is indistinguishable from never having chosen.
+        // Choosing Rust for a file already detected as Rust. The language value
+        // alone cannot distinguish this from no manual choice.
         s.set_language(Some("rust"));
 
         let index = s.tab_of(Path::new("/w/main.rs")).expect("it is open");
@@ -9522,8 +9407,8 @@ mod tests {
     #[test]
     fn renaming_onto_a_path_a_tab_still_holds_is_refused() {
         let mut s = with_tree();
-        // A file another program deleted, still open here — the tree no longer
-        // lists it, so nothing else stands in the way.
+        // A file another program deleted, still open here. The tree no longer
+        // lists it, so only the tab check prevents the rename.
         s.open(PathBuf::from("/w/gone.rs"), "fn gone() {}\n");
         s.run("workbench.files.action.focusFilesExplorer", None, 0);
         s.run("list.focusDown", None, 0); // Cargo.toml
@@ -9537,8 +9422,8 @@ mod tests {
     #[test]
     fn creating_onto_a_path_a_tab_still_holds_is_refused() {
         let mut s = with_tree();
-        // Deleted by another program, still open here, so the tree does not
-        // list it and nothing else stands in the way.
+        // Deleted by another program and still open here. The tree does not
+        // list it, so only the tab check prevents the create.
         s.open(PathBuf::from("/w/gone.rs"), "fn gone() {}\n");
         s.run("workbench.files.action.focusFilesExplorer", None, 0);
         s.run("list.focusDown", None, 0); // Cargo.toml, so the parent is `/w`
@@ -9553,8 +9438,8 @@ mod tests {
     #[test]
     fn renaming_a_directory_onto_one_holding_an_open_file_is_refused() {
         let mut s = with_tree();
-        // `/w/b/x.rs` is open; `b` was removed by another program, so the tree
-        // does not list it and the name looks free.
+        // `/w/b/x.rs` is open, and another program removed `b`, so the tree does
+        // not list it and the name appears free.
         s.open(PathBuf::from("/w/b/x.rs"), "fn x() {}\n");
         s.fill_directory(
             Path::new("/w"),
@@ -9596,8 +9481,9 @@ mod tests {
         s.file_operation_done(&second);
         s.run("workbench.files.action.focusFilesExplorer", None, 0);
 
-        // Undoing the second: the frontend stamps whatever it just moved, and
-        // that must not land on the first rename's entry, which is now on top.
+        // Undo the second rename. The frontend stamps the file it just moved,
+        // and the stamp must not be applied to the first rename's entry, which
+        // is now on top.
         let Outcome::FileOperation(undo) = s.run("undo", None, 0) else {
             panic!("expected an undo");
         };
@@ -9630,8 +9516,8 @@ mod tests {
         };
         s.file_operation_done(&renamed);
 
-        // A new `Cargo.toml` gets opened, then removed by another program — so
-        // the tree does not list it and the path looks free again.
+        // A new `Cargo.toml` is opened and then removed by another program, so
+        // the tree does not list it and the path appears free.
         s.open(PathBuf::from("/w/Cargo.toml"), "someone else's\n");
         s.run("workbench.files.action.focusFilesExplorer", None, 0);
 
@@ -9661,9 +9547,9 @@ mod tests {
             .iter()
             .any(|r| r.name == "old.rs"));
 
-        // `src` is removed outside deco. Something refreshes the *parent* — a
-        // sibling mutation does exactly that — so the row goes, while `src`'s
-        // own listing and expansion stay cached behind it.
+        // `src` is removed outside deco. A refresh of the *parent* (for example,
+        // from a sibling operation) removes the row, but `src`'s listing and
+        // expansion stay cached.
         s.fill_directory(
             Path::new("/w"),
             vec![crate::explorer::Entry::file("Cargo.toml")],
@@ -9711,8 +9597,8 @@ mod tests {
             "nothing typed yet, so nothing differs"
         );
 
-        // Typed, not saved. The whole point: a gutter that waited for a write
-        // would be describing the file rather than the screen.
+        // Typed, not saved. The gutter must describe the buffer, not the file on
+        // disk.
         s.run("cursorEnd", None, 0);
         s.run("type", Some(&json!({ "text": "!" })), 0);
         s.refresh_diffs();
@@ -9725,8 +9611,8 @@ mod tests {
     fn a_file_with_nothing_committed_is_all_addition() {
         let mut s = with_tree();
         s.open(PathBuf::from("/w/new.rs"), "one\ntwo\n");
-        // `None` is git saying the file is not in HEAD — added since the last
-        // commit. Every line of it is new, which is not the same as no marks.
+        // `None` means the file is not in HEAD: it was added since the last
+        // commit. Every line is marked as added, which differs from no marks.
         s.fill_committed(PathBuf::from("/w/new.rs"), None);
 
         s.refresh_diffs();
@@ -9743,9 +9629,8 @@ mod tests {
         s.fill_committed(PathBuf::from("/w/a.rs"), Some("old\n".to_owned()));
         assert_eq!(s.committed_wanted(), None, "it has been answered");
 
-        // Someone commits in a terminal. Every file's committed text may now
-        // be something else, and a gutter drawn against the old one would be
-        // wrong in a way nothing on screen would explain.
+        // A commit is made in a terminal. Every file's committed text may have
+        // changed, and a gutter drawn against the old text would be wrong.
         s.fill_scm(Some(scm_at("2222222")));
         assert_eq!(
             s.committed_wanted(),
@@ -9762,8 +9647,8 @@ mod tests {
         s.fill_committed(PathBuf::from("/w/a.rs"), Some("old\n".to_owned()));
 
         // A save refreshes the status without moving HEAD. Re-fetching every
-        // open file's committed text on every save would be a process per file
-        // per keystroke-ish, to learn what was already known.
+        // open file's committed text on every save would start one process per
+        // file each time, for data that has not changed.
         s.fill_scm(Some(scm_at("1111111")));
         assert_eq!(s.committed_wanted(), None);
     }
@@ -9801,8 +9686,8 @@ mod tests {
         };
         s.file_operation_done(&renamed);
 
-        // The entry is keyed by path. Left behind, the next file to be called
-        // `a.rs` would be diffed against a stranger's history.
+        // The entry is keyed by path. If it were kept, the next file named
+        // `a.rs` would be diffed against another file's history.
         assert!(
             s.committed_wanted().is_some(),
             "the moved file is asked about under its new name"
@@ -9824,7 +9709,7 @@ mod tests {
         let mut s = with_tree();
         assert_eq!(s.side_bar_view(), SideBarView::Explorer);
 
-        // One key: open the container, switch the view, take the keyboard.
+        // One key opens the container, switches the view, and takes focus.
         assert!(matches!(
             s.run("workbench.view.scm", None, 0),
             Outcome::Handled
@@ -9874,9 +9759,9 @@ mod tests {
         s.fill_scm(Some(dirty_status()));
         s.run("workbench.view.scm", None, 0);
 
-        // `filesExplorerFocus` is what `explorer.newFile` and the tree's
-        // `ctrl+z` are gated on. Left true here, `ctrl+n` in the
-        // source-control view would create a file in the tree behind it.
+        // `explorer.newFile` and the tree's `ctrl+z` are gated on
+        // `filesExplorerFocus`. If it stayed true here, `ctrl+n` in the
+        // source-control view would create a file in the hidden tree.
         assert_eq!(s.context.get("filesExplorerFocus"), Some(&json!(false)));
         assert_eq!(
             s.context.get("listFocus"),
@@ -9892,10 +9777,9 @@ mod tests {
         s.fill_scm(Some(dirty_status()));
         s.run("workbench.view.scm", None, 0);
 
-        // `sideBarFocus` is true for *both* tenants, so a binding gated on it
-        // alone would act on the tree hidden behind this view. `ctrl+z` is the
-        // one that shows why it matters: it would take back a file operation
-        // nothing on screen mentions.
+        // `sideBarFocus` is true for *both* views, so a binding gated only on it
+        // would act on the hidden tree. For example, `ctrl+z` would undo a file
+        // operation that is not shown on screen.
         for key in ["ctrl+z", "ctrl+n", "ctrl+shift+n", "f2", "delete"] {
             let chord = Chord::parse(key).expect("a key");
             let outcome = s.handle_chord(chord, 0);
@@ -9933,8 +9817,8 @@ mod tests {
         for _ in 0..29 {
             s.run("list.focusDown", None, 0);
         }
-        // Without this the selection walks off the bottom and the next stage
-        // acts on a file nothing on screen shows.
+        // Otherwise the selection moves below the visible area, and the next
+        // stage acts on a file that is not shown.
         assert!(
             s.source_control().scroll() > 0,
             "the list never scrolled: selection {} of {}",
@@ -9949,8 +9833,8 @@ mod tests {
         s.fill_scm(Some(dirty_status()));
         assert!(!s.source_control().is_empty());
 
-        // git went away, or the folder stopped being a working tree. A list of
-        // files to stage would be worse than nothing.
+        // git is unavailable, or the folder is no longer a working tree. The
+        // previous list of files to stage must not remain.
         s.fill_scm(None);
         assert!(s.source_control().is_empty());
         assert_eq!(s.context.get("scmProvider"), Some(&json!("")));
@@ -10156,8 +10040,8 @@ mod tests {
         ));
         s.run("workbench.view.scm", None, 0);
 
-        // `git add` would succeed and change nothing. A message saying it
-        // staged something it did not is worse than one saying it could not.
+        // `git add` would succeed without effect, and the message would
+        // incorrectly report that something was staged.
         assert!(matches!(s.run("git.stage", None, 0), Outcome::Message(_)));
         assert!(
             matches!(s.run("git.stageAll", None, 0), Outcome::Message(_)),
@@ -10204,9 +10088,7 @@ mod tests {
         s.fill_scm(Some(dirty_status()));
         s.run("workbench.view.scm", None, 0);
 
-        // Refused before the box opens. Asking someone to write a commit
-        // message and *then* saying there was nothing to commit is how a
-        // message gets lost.
+        // Rejected before the prompt opens, so a typed message is not lost.
         assert!(matches!(s.run("git.commit", None, 0), Outcome::Message(_)));
         assert!(s.prompt.is_none());
     }
@@ -10228,8 +10110,7 @@ mod tests {
             Some(PromptKind::CommitMessage)
         );
 
-        // Enter on an empty box is what happens when a prompt is dismissed
-        // rather than answered.
+        // Enter on an empty input usually dismisses the prompt.
         let enter = Chord::parse("enter").expect("a key");
         assert!(matches!(s.handle_chord(enter, 0), Outcome::Message(_)));
 
@@ -10246,13 +10127,13 @@ mod tests {
     #[test]
     fn a_repository_change_asks_git_again_rather_than_guessing() {
         let mut s = with_tree();
-        // What the frontend does: mark the question taken, then answer it.
+        // As the frontend does: mark the run as started, then supply the result.
         s.scm_started();
         s.fill_scm(Some(dirty_status()));
         assert!(!s.scm_wanted(), "the status has been answered");
 
-        // The view is not adjusted here: git is what knows the index now, and
-        // a prediction would drift from it the first time a hook ran.
+        // The view is not adjusted here. Only git knows the current index, and
+        // a predicted state would diverge as soon as a hook ran.
         s.git_operation_done(&deco_scm::Operation::Stage(PathBuf::from("work.rs")));
         assert!(s.scm_wanted());
         assert_eq!(s.status.as_deref(), Some("staged work.rs"));
@@ -10262,8 +10143,7 @@ mod tests {
     fn a_refused_change_still_asks_git_again() {
         let mut s = with_tree();
         s.fill_scm(Some(dirty_status()));
-        // A refusal usually means the index is not what the view thought, and
-        // the view being wrong is what caused it.
+        // A failure usually means the view's state of the index was out of date.
         s.git_operation_failed(&deco_scm::Operation::StageAll, "index.lock exists");
         assert!(s.scm_wanted());
         assert!(s.status.as_deref().unwrap().contains("index.lock"));
@@ -10279,16 +10159,16 @@ mod tests {
             vec![crate::explorer::Entry::file("old.rs")],
         );
 
-        // `src` is removed outside deco, and a refresh of the parent alone
-        // drops its row while its listing and expansion stay cached behind it.
+        // `src` is removed outside deco. A refresh of the parent removes its row,
+        // but its listing and expansion stay cached.
         s.fill_directory(
             Path::new("/w"),
             vec![crate::explorer::Entry::file("Cargo.toml")],
         );
 
-        // deco tries to make a folder called `src` — the tree says the name is
-        // free, which is the only reason this reaches a disk at all. It fails,
-        // because another program recreated `src` in the meantime.
+        // deco tries to create a folder named `src`, because the tree shows the
+        // name as free. It fails, because another program recreated `src` in
+        // the meantime.
         let Outcome::FileOperation(made) = s.create_in_tree("src", true) else {
             panic!("expected a create");
         };
@@ -10342,11 +10222,11 @@ mod tests {
             vec![crate::explorer::Entry::file("theirs.rs")],
         );
 
-        // `b` goes, outside deco, and only the parent is refreshed.
+        // `b` is removed outside deco, and only the parent is refreshed.
         s.fill_directory(Path::new("/w"), vec![crate::explorer::Entry::dir("a")]);
 
-        // Renaming `a` onto the free name `b` fails: something else took it
-        // back between the tree reading and deco trying.
+        // Renaming `a` to the free name `b` fails, because another program
+        // recreated `b` after the tree was read.
         s.run("workbench.files.action.focusFilesExplorer", None, 0);
         s.run("list.focusFirst", None, 0);
         let Outcome::FileOperation(renamed) = s.rename_in_tree("b") else {
@@ -10380,9 +10260,9 @@ mod tests {
 
     #[test]
     fn a_renamed_directory_does_not_inherit_the_destinations_leftovers() {
-        // Puts the selection on a named path, whatever the tree's shape is.
-        // Renaming the wrong row would prove nothing, and the clamp after a
-        // refill moves the selection on its own.
+        // Selects the row for a path, regardless of the tree's shape. The test
+        // must rename the intended row, and the clamp after a refill can move
+        // the selection.
         fn focus(s: &mut Session, path: &str) {
             s.run("workbench.files.action.focusFilesExplorer", None, 0);
             s.run("list.focusFirst", None, 0);
@@ -10408,8 +10288,8 @@ mod tests {
             ],
         );
 
-        // `a` holds a directory of its own, which nobody opens: after the
-        // rename it is the row that must be asked about rather than assumed.
+        // `a` contains a directory that is not expanded. After the rename its
+        // listing must be requested rather than taken from the cache.
         focus(&mut s, "/w/a");
         s.run("list.expand", None, 0);
         s.fill_directory(
@@ -10420,9 +10300,9 @@ mod tests {
             ],
         );
 
-        // `b` holds a directory with the same name, and *that* one is open —
-        // so the tree remembers something a level below `b` that re-keying `a`
-        // over it cannot overwrite, because `a` has no listing that deep.
+        // `b` contains a directory with the same name, and *that* one is
+        // expanded. The tree therefore caches state one level below `b` that
+        // re-keying `a` cannot overwrite, because `a` has no listing that deep.
         focus(&mut s, "/w/b");
         s.run("list.expand", None, 0);
         s.fill_directory(Path::new("/w/b"), vec![crate::explorer::Entry::dir("sub")]);
@@ -10439,11 +10319,11 @@ mod tests {
             .iter()
             .any(|r| r.name == "theirs.rs"));
 
-        // `b` is removed outside deco and a later refresh of the parent drops
-        // its row — while its listings and expansions stay cached behind it.
+        // `b` is removed outside deco, and a later refresh of the parent removes
+        // its row, but its listings and expansions stay cached.
         s.fill_directory(Path::new("/w"), vec![crate::explorer::Entry::dir("a")]);
 
-        // Now rename `a` onto the free name `b`.
+        // Rename `a` to the free name `b`.
         focus(&mut s, "/w/a");
         let Outcome::FileOperation(renamed) = s.rename_in_tree("b") else {
             panic!("expected a rename");
@@ -10479,14 +10359,13 @@ mod tests {
         s.run("workbench.files.action.focusFilesExplorer", None, 0);
         assert!(s.can_undo_file_operation());
 
-        // Now delete something. The create below it must not become what
-        // `ctrl+z` offers — that would undo the wrong thing entirely.
+        // Delete something. `ctrl+z` must not then undo the older create.
         s.run("list.focusDown", None, 0);
         let Outcome::FileOperation(deleted) = s.delete_in_tree() else {
             panic!("expected an operation");
         };
-        // The stack is cleared once the delete is a fact, not when it is asked
-        // for — a refusal must not cost the earlier undos.
+        // The stack is cleared after the delete succeeds, not when it is
+        // requested, so a failed delete keeps the earlier undo entries.
         s.file_operation_done(&deleted);
         assert!(
             !s.can_undo_file_operation(),
@@ -10521,7 +10400,7 @@ mod tests {
         };
         s.file_operation_done(&create);
 
-        // Back to the text, and `ctrl+z` there is the document's own undo.
+        // In the text, `ctrl+z` runs the document's undo.
         s.run("workbench.action.focusActiveEditorGroup", None, 0);
         assert_ne!(
             s.run("undo", None, 0),
@@ -10536,9 +10415,8 @@ mod tests {
 
     #[test]
     fn a_region_that_does_not_fit_is_remembered_and_says_so() {
-        // The key was pressed and nothing appeared, which without a sentence
-        // reads as an editor that ignored it. The *state* is kept, so widening
-        // the window shows what was asked for rather than needing another press.
+        // Without a message, the key would appear to be ignored. The *state* is
+        // kept, so widening the window shows the region without another press.
         let mut s = session();
         s.resize(24, 24);
 
@@ -10558,8 +10436,7 @@ mod tests {
 
     #[test]
     fn toggling_the_side_bar_leaves_the_keyboard_in_the_text() {
-        // VS Code's behaviour, and the point of it: showing the tree should not
-        // cost you your place in the file.
+        // As in VS Code, showing the tree does not move focus out of the file.
         let mut s = session();
         s.resize(80, 24);
         press(&mut s, "ctrl+b");
@@ -10571,7 +10448,7 @@ mod tests {
 
     #[test]
     fn focusing_a_region_shows_it_first() {
-        // Focusing something invisible is the one thing this must not do.
+        // A hidden region must never receive focus.
         let mut s = session();
         s.resize(80, 24);
 
@@ -10603,9 +10480,9 @@ mod tests {
 
     #[test]
     fn a_region_with_the_keyboard_does_not_get_typed_into() {
-        // Every editing command acts on the document, and the document is not
-        // what has focus. The unbound-printable fallback goes the same way,
-        // which is why the guard is on the command rather than on the binding.
+        // Every editing command acts on the document, which does not have focus.
+        // The fallback for unbound printable keys is also blocked, which is why
+        // the guard is on the command rather than on the binding.
         let mut s = session();
         s.open(PathBuf::from("/w/a.txt"), "hello\n");
         s.resize(80, 24);
@@ -10619,7 +10496,7 @@ mod tests {
         assert_eq!(s.document.buffer.text(), "hello\n", "untouched");
         assert!(!s.document.dirty);
 
-        // And it comes back the moment the editor has the keyboard again.
+        // Typing works again as soon as the editor has focus.
         s.run("workbench.action.focusActiveEditorGroup", None, 0);
         press(&mut s, "x");
         assert_eq!(s.document.buffer.text(), "xhello\n");
@@ -10639,8 +10516,8 @@ mod tests {
 
     #[test]
     fn an_unimplemented_command_says_which_feature_it_is() {
-        // The panel exists now; a terminal to put in it does not, which is what
-        // this key is still waiting on.
+        // The panel exists, but the terminal that this key opens is not
+        // implemented.
         let mut s = searchable("x\n");
         assert_eq!(
             s.run("workbench.action.terminal.toggleTerminal", None, 0),
@@ -10654,7 +10531,7 @@ mod tests {
 
     #[test]
     fn an_identifier_that_does_not_exist_says_that_instead() {
-        // A different fact from "not built yet", and usually a typo in somebody's
+        // Different from "not implemented yet". This is usually a typo in a
         // keybindings.json rather than a missing feature.
         let mut s = searchable("x\n");
         assert_eq!(s.run("editor.action.nonsense", None, 0), Outcome::NotFound);
@@ -10666,8 +10543,8 @@ mod tests {
 
     #[test]
     fn nothing_pending_is_offered_in_the_palette() {
-        // A palette entry has to work when chosen. One that only apologises is
-        // worse than a shorter list.
+        // A palette entry must work when chosen, so unimplemented commands are
+        // not listed.
         let s = searchable("x\n");
         let offered: Vec<&str> = s
             .palette()
@@ -10705,9 +10582,8 @@ mod tests {
 
     #[test]
     fn accepting_a_symbol_asks_for_the_document_and_the_position() {
-        // Through the same path a search result takes, which for a document that
-        // is already open is a tab switch onto itself — so unsaved changes
-        // survive going to a symbol in the file being edited.
+        // Uses the same path as a search result. For a document that is already
+        // open, this switches to its own tab, so unsaved changes are kept.
         let mut s = searchable("x\n");
         s.offer_symbols(vec![commands::PaletteEntry::at(
             "/w/a.txt",
@@ -10784,7 +10660,8 @@ mod tests {
 
     #[test]
     fn the_palette_gives_every_command_its_identifier_as_a_second_column() {
-        // It is what a `keybindings.json` refers to, and the title does not say it.
+        // `keybindings.json` refers to the identifier, and the title does not
+        // show it.
         let s = searchable("x\n");
         let palette = s.palette();
         assert!(!palette.is_empty());
@@ -10914,8 +10791,8 @@ mod tests {
 
     #[test]
     fn switching_tabs_parks_the_find_bar_with_its_own_tab() {
-        // The bar belongs to the tab, so switching away puts it down rather than
-        // throwing it away, and switching back finds it as it was left.
+        // The bar belongs to the tab, so switching away keeps it with the tab
+        // instead of discarding it, and switching back restores it as it was.
         let mut s = session();
         s.resize(80, 10);
         s.open(PathBuf::from("/w/a.txt"), "foo\n");
@@ -10942,7 +10819,7 @@ mod tests {
 
     #[test]
     fn two_tabs_can_be_searching_for_different_things() {
-        // One match list per session was what made a switch have to discard it.
+        // With one match list per session, every switch had to discard it.
         let mut s = session();
         s.resize(80, 10);
         s.open(PathBuf::from("/w/a.txt"), "aaa\n");
@@ -10950,7 +10827,7 @@ mod tests {
         press(&mut s, "a");
         s.open(PathBuf::from("/w/b.txt"), "bbbb\n");
         press(&mut s, "ctrl+f");
-        // The query came over, so replace it.
+        // The query was carried over, so replace it.
         press(&mut s, "ctrl+x");
         press(&mut s, "b");
         assert_eq!(s.find.matches().len(), 4);
@@ -10962,8 +10839,8 @@ mod tests {
 
     #[test]
     fn a_new_document_in_the_same_tab_still_drops_the_matches() {
-        // `open` on a pristine untitled tab replaces the document rather than
-        // adding a tab, and then the matches really are stale.
+        // `open` on an unmodified untitled tab replaces the document rather than
+        // adding a tab, so the matches are stale.
         let mut s = session();
         s.resize(80, 10);
         press(&mut s, "ctrl+f");
@@ -11221,8 +11098,8 @@ mod tests {
 
     #[test]
     fn a_palette_command_that_opens_a_prompt_of_its_own_works() {
-        // `accept_prompt` takes the prompt rather than borrowing it, which is what
-        // makes this possible at all.
+        // This works because `accept_prompt` takes the prompt rather than
+        // borrowing it.
         let mut s = searchable("one\ntwo\n");
         s.frontend_commands.push(commands::PaletteEntry::new(
             "workbench.action.gotoLine",

@@ -18,8 +18,8 @@
 //! - [`keys`] parses `keybindings.json` key spellings into chords.
 //! - [`when`] parses and evaluates `when` clauses against a [`when::ContextKeys`]
 //!   store.
-//! - [`binding`] reads a `keybindings.json` document entry by entry, so one bad
-//!   line does not cost the user the rest of the file.
+//! - [`binding`] reads a `keybindings.json` document entry by entry, so one
+//!   invalid entry does not prevent the rest of the file from loading.
 //! - [`resolver`] stacks the defaults and the user's bindings and turns a
 //!   keypress into a command, including two-chord sequences.
 //! - [`defaults`] is deco's built-in keymap, written in the same format.

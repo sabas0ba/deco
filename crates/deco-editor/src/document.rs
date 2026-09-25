@@ -51,16 +51,18 @@ pub fn language_for_path(path: &Path) -> Option<&'static str> {
 ///
 /// # Why this is a list and not derived from [`language_for_path`]
 ///
-/// Detection maps *file names* to identifiers, and several identifiers share one
-/// pattern while others have none — `plaintext` is nothing's extension. This is
-/// the other direction: what a user may choose, and what to show them for it.
+/// Detection maps *file names* to identifiers. Several file patterns can map to
+/// one identifier, and some identifiers have no pattern: no extension maps to
+/// `plaintext`. This list is the reverse mapping: the identifiers a user can
+/// choose and the title shown for each.
 ///
-/// The identifier is the part that matters and the part a title does not tell
-/// you: it is what `[rust]` in a `settings.json` refers to, what a language
-/// server is matched on, and what picks the lexer. So the picker shows both.
+/// The picker shows both the identifier and the title, because the title does
+/// not show the identifier. The identifier is what `[rust]` in a
+/// `settings.json` refers to, what a language server is matched on, and what
+/// selects the lexer.
 ///
-/// Written in the order the picker lists them — by title, ignoring case — so the
-/// source reads as the list a user sees.
+/// Entries are in the picker's order (by title, ignoring case), so the source
+/// matches the list a user sees.
 pub const LANGUAGES: &[(&str, &str)] = &[
     ("c", "C"),
     ("cpp", "C++"),
@@ -91,8 +93,8 @@ pub const LANGUAGES: &[(&str, &str)] = &[
 
 /// What to call `language`, or the identifier itself if deco has no name for it.
 ///
-/// An unknown identifier can arrive from a `settings.json` or a server, and
-/// showing it verbatim is more useful than showing nothing.
+/// An unknown identifier can come from a `settings.json` or a server. It is
+/// shown verbatim rather than hidden.
 pub fn language_title(language: &str) -> &str {
     LANGUAGES
         .iter()
@@ -117,20 +119,21 @@ pub fn line_comment_token(language: Option<&str>) -> Option<&'static str> {
 /// # What is deliberately absent
 ///
 /// - **Shell, YAML, TOML, Makefile, Dockerfile.** They have no block comment,
-///   and neither does VS Code claim one for them.
-/// - **Ruby**, whose `=begin` / `=end` must each sit alone at the start of a
-///   line. VS Code offers them anyway; wrapping a selection in the middle of a
-///   line with them produces text Ruby will not parse, so deco says the language
-///   has none rather than corrupting the file.
+///   and VS Code does not define one for them either.
+/// - **Ruby**, whose `=begin` / `=end` must each be alone at the start of a
+///   line. VS Code offers them anyway. Wrapping a selection in the middle of a
+///   line with them produces text Ruby cannot parse, so deco reports that the
+///   language has no block comment instead of producing invalid code.
 /// - **JSON**, which has no comments at all. `jsonc` does.
 ///
-/// **Python's `"""` is a string, not a comment.** It is what VS Code inserts and
-/// what a Python programmer means by commenting a block out, and it does disable
-/// the code — but as an expression statement, so it is only sound where a
-/// statement is allowed. Matching VS Code here beats inventing a different answer.
+/// **Python's `"""` is a string, not a comment.** VS Code inserts it, and Python
+/// programmers use it to comment out a block. It disables the code as an
+/// expression statement, so it is valid only where a statement is allowed. deco
+/// follows VS Code here.
 ///
-/// HTML, XML and Markdown appear even though [`crate::document`] has no lexer for
-/// them: wrapping a selection needs the delimiters, not a grammar.
+/// HTML, XML and Markdown are included even though [`crate::document`] has no
+/// lexer for them, because wrapping a selection needs only the delimiters, not
+/// a grammar.
 pub fn block_comment_tokens(language: Option<&str>) -> Option<(&'static str, &'static str)> {
     Some(match language? {
         "rust" | "typescript" | "typescriptreact" | "javascript" | "javascriptreact" | "go"
@@ -146,17 +149,18 @@ pub fn block_comment_tokens(language: Option<&str>) -> Option<(&'static str, &'s
 ///
 /// # Why a table and not one list
 ///
-/// The pairs are a property of the language, which is what VS Code's
-/// `languageDefined` means — and two of them matter enough to be worth the table:
+/// The pairs depend on the language, which is what VS Code's `languageDefined`
+/// means. Two cases require the table:
 ///
-/// - **Rust's `'` is a lifetime**, not a quote. `&'a str` is ordinary, and closing it
-///   would put `&''a str` on the screen every time somebody wrote one. rust-analyzer's
-///   own language configuration leaves it out for the same reason.
-/// - **Markdown, HTML and XML have no `'` pair** either: an apostrophe in prose is
-///   far more common there than a quoted string, and `don''t` is worse than nothing.
+/// - **Rust's `'` is a lifetime**, not a quote. `&'a str` is common, and closing
+///   the quote would produce `&''a str`. rust-analyzer's language configuration
+///   omits it for the same reason.
+/// - **Markdown, HTML and XML have no `'` pair** either. An apostrophe in prose
+///   is much more common there than a quoted string, and closing it would
+///   produce `don''t`.
 ///
-/// A language deco has no entry for gets the brackets and the double quote, which are
-/// the pairs every language in the table shares.
+/// A language without an entry gets the brackets and the double quote, which
+/// are the pairs every language in the table shares.
 pub fn bracket_pairs(language: Option<&str>) -> &'static [(char, char)] {
     const BRACKETS: &[(char, char)] = &[('(', ')'), ('[', ']'), ('{', '}'), ('"', '"')];
     const WITH_APOSTROPHE: &[(char, char)] =
@@ -170,9 +174,9 @@ pub fn bracket_pairs(language: Option<&str>) -> &'static [(char, char)] {
         ('`', '`'),
     ];
     match language {
-        // A template literal is a quote in these, and the pair is worth having.
+        // A backtick starts a template literal in these languages.
         Some("typescript" | "typescriptreact" | "javascript" | "javascriptreact") => BACKTICK,
-        // The apostrophe is a lifetime, an apostrophe, or a tag delimiter.
+        // Here `'` is a lifetime, an apostrophe, or a tag delimiter.
         Some("rust" | "markdown" | "html" | "xml") => BRACKETS,
         Some(_) | None => WITH_APOSTROPHE,
     }
@@ -193,11 +197,11 @@ pub struct Document {
     pub language_id: Option<String>,
     /// Whether the language was chosen by hand rather than from the file name.
     ///
-    /// Recorded rather than worked out by comparing the language against what
-    /// the extension implies: picking Rust for a `.rs` file — to pin it before a
-    /// rename, say — is indistinguishable from never having picked anything if
-    /// the two are only compared by value, and the choice would then be lost the
-    /// moment the file was renamed to something the extension no longer covers.
+    /// Stored explicitly rather than derived by comparing the language with the
+    /// one the extension implies. Choosing Rust for a `.rs` file, for example to
+    /// keep it before a rename, would otherwise be indistinguishable from making
+    /// no choice, and the choice would be lost when the file is renamed to an
+    /// extension that maps to a different language.
     pub language_pinned: bool,
     /// Settings resolved for this document's language.
     pub settings: EditorSettings,
@@ -205,51 +209,51 @@ pub struct Document {
     pub dirty: bool,
     /// Highlighting for this document's language.
     ///
-    /// Lives here rather than in a frontend because the lexer state entering each
-    /// line is a property of the text, not of a screen — and because both
-    /// frontends would otherwise keep their own copy of it.
+    /// Stored here rather than in a frontend because the lexer state at the
+    /// start of each line depends on the text, not on the screen, and because
+    /// both frontends would otherwise keep their own copy.
     pub syntax: Syntax,
-    /// What the file's own text said about its indentation, if anything.
+    /// The indentation detected from the file's text, if any.
     ///
-    /// Read once, when the file is opened, and re-applied by
-    /// [`Document::apply_overrides`] every time the settings are resolved again. Its
-    /// own field rather than folded straight into [`Document::settings`] for two
-    /// reasons: a language change re-resolves those from scratch and would throw the
-    /// answer away, and re-reading it would mean copying the whole file to be told
-    /// what it already said.
+    /// Detected once, when the file is opened, and re-applied by
+    /// [`Document::apply_overrides`] every time the settings are resolved again.
+    /// It is a separate field rather than merged into [`Document::settings`] for
+    /// two reasons: a language change re-resolves the settings from scratch and
+    /// would discard it, and detecting it again would require copying the whole
+    /// file.
     pub indentation: deco_config::indent::Guess,
-    /// `alt+z`'s answer for this document, or `None` to follow `editor.wordWrap`.
+    /// The word-wrap mode set by `alt+z` for this document, or `None` to follow
+    /// `editor.wordWrap`.
     ///
-    /// Here for the same reason: the keyboard said it, so re-resolving the settings
-    /// must not un-say it.
+    /// Stored separately for the same reason: re-resolving the settings must not
+    /// discard a choice made from the keyboard.
     pub wrap_override: Option<deco_config::WordWrap>,
     /// Lines whose leading whitespace was inserted by an auto-indent and not typed.
     ///
-    /// `editor.trimAutoWhitespace` removes it rather than letting one press of enter
-    /// too many leave a line of trailing spaces in a diff. Each entry is a line and
-    /// how many UTF-16 units of whitespace were put there.
+    /// `editor.trimAutoWhitespace` removes that whitespace so that an extra
+    /// `enter` does not leave a line of trailing spaces in a diff. Each entry is
+    /// a line and the number of UTF-16 units of whitespace inserted there.
     ///
-    /// A record, not an authority: before anything is deleted the line is checked
-    /// against the buffer, and only a line that still holds exactly that whitespace
-    /// and nothing else is trimmed. So a stale entry cannot cost anybody their text —
-    /// the worst it can do is nothing.
+    /// The entries are hints only. Before deleting, the line is checked against
+    /// the buffer, and only a line that still contains exactly that whitespace
+    /// and nothing else is trimmed. A stale entry therefore cannot delete text;
+    /// at worst it has no effect.
     pub auto_whitespace: Vec<(u32, u32)>,
-    /// Whether the file's indentation differed from the settings, and won.
+    /// Whether the file's indentation differed from the settings and was used.
     ///
-    /// Not merely "was something detected": a two-space file read as two-space when
-    /// `editor.tabSize` already said two overrode nothing, and saying so would put a
-    /// permanent note in the status bar for the case where there is nothing to
-    /// disclose. Set by [`Document::apply_overrides`], which is the only place that
-    /// can see both answers at once.
+    /// This is not the same as "indentation was detected". If a two-space file
+    /// is detected as two-space and `editor.tabSize` is already two, nothing was
+    /// overridden, and reporting it would leave a permanent note in the status
+    /// bar with nothing to report. Set by [`Document::apply_overrides`], the only
+    /// place where both values are available.
     pub indentation_overridden: bool,
 }
 
 /// The line ending `files.eol` asks for, or `None` when it defers.
 ///
-/// `auto` is the deferral, and it is the only value that does not name an
-/// ending. Callers decide when the setting gets to speak at all — see
-/// [`Document::from_file`], where it does so only for a file with no ending of
-/// its own.
+/// `auto` defers, and it is the only value that does not name an ending.
+/// Callers decide when the setting applies. See [`Document::from_file`], where
+/// it applies only to a file with no line ending of its own.
 fn configured_eol(setting: deco_config::EolSetting) -> Option<LineEnding> {
     match setting {
         deco_config::EolSetting::Lf => Some(LineEnding::Lf),
@@ -261,13 +265,13 @@ fn configured_eol(setting: deco_config::EolSetting) -> Option<LineEnding> {
 impl Document {
     /// A new, empty, untitled document.
     ///
-    /// Nothing to detect: an empty buffer has no indentation to read, so the
-    /// settings stand until something is typed. VS Code does not re-guess as you
-    /// type either — the guess is about a file that already exists.
+    /// No indentation is detected for an empty buffer, so the settings apply
+    /// until something is typed. VS Code also does not re-detect while typing;
+    /// detection applies to existing files.
     pub fn untitled(settings: EditorSettings) -> Self {
         let mut buffer = Buffer::new();
-        // There is no text to detect from, so `files.eol` — "the default end of
-        // line character" — is exactly what it names here.
+        // There is no text to detect from, so `files.eol` ("the default end of
+        // line character") applies directly.
         if let Some(eol) = configured_eol(settings.eol) {
             buffer.set_line_ending(eol);
         }
@@ -292,13 +296,13 @@ impl Document {
     pub fn from_file(path: PathBuf, text: &str, settings: EditorSettings) -> Self {
         let language_id = language_for_path(&path).map(str::to_owned);
         let mut buffer = Buffer::from_text(text);
-        // A file that already has an ending keeps it, whatever `files.eol` says:
-        // VS Code documents the key as the ending a *new* file gets, and applying
-        // it on open rewrites every line of a file the user came to read. The
-        // ending is changed deliberately or not at all.
+        // A file that already has a line ending keeps it regardless of
+        // `files.eol`. VS Code documents the key as the ending for a *new* file,
+        // and applying it on open would rewrite every line. The ending changes
+        // only when the user changes it explicitly.
         //
-        // A file with no terminator in it — empty, or one line without a break —
-        // has nothing to keep, and that is where the setting decides.
+        // For a file with no line terminator (empty, or one line without a
+        // break), the setting decides.
         if LineEnding::detected(text).is_none() {
             if let Some(eol) = configured_eol(settings.eol) {
                 buffer.set_line_ending(eol);
@@ -323,12 +327,13 @@ impl Document {
         document
     }
 
-    /// Re-applies what the file and the keyboard have said, over the settings.
+    /// Re-applies the detected indentation and the keyboard word-wrap override on
+    /// top of the settings.
     ///
-    /// [`crate::Session`] calls this after every re-resolution — a workspace layer
-    /// arriving, a rename, a language change — because each of those replaces the
-    /// whole [`EditorSettings`] and would otherwise discard two answers that did not
-    /// come from `settings.json`.
+    /// [`crate::Session`] calls this after every re-resolution (a workspace layer
+    /// arriving, a rename, a language change), because each of those replaces
+    /// the whole [`EditorSettings`] and would otherwise discard the two values
+    /// that did not come from `settings.json`.
     ///
     /// `editor.detectIndentation` is read from the freshly resolved settings, so
     /// turning it off in workspace settings takes effect here rather than needing the
@@ -336,9 +341,9 @@ impl Document {
     pub fn apply_overrides(&mut self) {
         let configured = (self.settings.insert_spaces, self.settings.tab_size);
         if self.settings.detect_indentation {
-            // The two halves are independent. A tab-indented file settles
-            // `insertSpaces` and says nothing about how wide to draw a tab, so
-            // `editor.tabSize` still decides that — which is what VS Code does.
+            // The two values are independent. A tab-indented file determines
+            // `insertSpaces` but not the tab width, so `editor.tabSize` still
+            // sets the width, as in VS Code.
             if let Some(spaces) = self.indentation.insert_spaces {
                 self.settings.insert_spaces = spaces;
             }
@@ -355,9 +360,9 @@ impl Document {
 
     /// Applies `transaction` to the text, returning its inverse.
     ///
-    /// The one place the buffer is mutated by an edit, so that everything derived
-    /// from the text is invalidated without each caller having to remember to.
-    /// Highlighting is the first such thing; there will be more.
+    /// This is the only place an edit mutates the buffer, so all state derived
+    /// from the text is invalidated here instead of by each caller. Highlighting
+    /// is the first such state; more is expected.
     pub fn apply(&mut self, transaction: &Transaction) -> Transaction {
         if self
             .snippet
@@ -366,9 +371,9 @@ impl Document {
         {
             self.snippet = None;
         }
-        // From the earliest line the edit touched. Everything above it is still
-        // true — a change on line 900 cannot alter what line 3 left open — which
-        // is what keeps editing a large file from re-lexing all of it.
+        // Invalidate from the earliest line the edit touched. State above it is
+        // still valid, because a change on line 900 cannot affect the lexer
+        // state at line 3. This avoids re-lexing a large file on every edit.
         let first = transaction
             .changes()
             .iter()
@@ -381,8 +386,8 @@ impl Document {
 
     /// Marks everything derived from the text as unknown.
     ///
-    /// For a change that did not come through [`Document::apply`] — undo and redo
-    /// apply their own transactions inside the history.
+    /// Used for a change that did not go through [`Document::apply`], such as
+    /// undo and redo, which apply their own transactions inside the history.
     pub fn invalidate(&mut self) {
         self.snippet = None;
         self.syntax.invalidate_from(0);
@@ -410,9 +415,9 @@ impl Document {
 
 /// The visible window onto a document, plus this view's cursors.
 ///
-/// A view is per-pane rather than per-document: the same file split across two
-/// panes has two independent cursors and scroll positions, which is why these
-/// do not live on [`Document`].
+/// A view is per pane rather than per document: the same file in two panes has
+/// two independent cursors and scroll positions, so these are not stored on
+/// [`Document`].
 #[derive(Debug, Clone)]
 pub struct View {
     /// The cursors.
@@ -422,15 +427,15 @@ pub struct View {
     /// Which wrapped row of [`View::scroll_top`] is the first on screen.
     ///
     /// Zero unless the line is wrapped and the window starts partway down it.
-    /// The scroll position is anchored to a document line and an offset within it,
-    /// rather than to a count of rows from the top of the file, because counting
-    /// rows from the top means wrapping the whole file to find out where the
-    /// window is — on every keystroke, for a file of any size. Anchored this way,
-    /// scrolling and drawing both cost the height of the window.
+    /// The scroll position is anchored to a document line and a row within it,
+    /// rather than to a row count from the top of the file. A row count would
+    /// require wrapping the whole file on every keystroke to locate the window.
+    /// With this anchor, scrolling and drawing cost is proportional to the window
+    /// height.
     pub scroll_row: usize,
     /// The leftmost visible display column.
     ///
-    /// Meaningless while wrapping, where nothing extends past the right edge.
+    /// Not used while wrapping, because no text extends past the right edge.
     pub scroll_left: usize,
     /// Height of the text area in lines.
     pub height: usize,
@@ -438,10 +443,10 @@ pub struct View {
     pub width: usize,
     /// Columns this group leaves for text: its own width less its gutter.
     ///
-    /// The frontend's layout decides it — how many groups are on screen, how wide
-    /// a gutter this document needs — and [`crate::Session::resize`] computes it
-    /// from [`crate::layout`] so that both the wrap and the drawing use one
-    /// answer. Zero means "not laid out yet", which wraps nothing.
+    /// Determined by the layout (how many groups are on screen and how wide a
+    /// gutter this document needs). [`crate::Session::resize`] computes it from
+    /// [`crate::layout`] so that wrapping and drawing use the same value. Zero
+    /// means "not laid out yet" and disables wrapping.
     pub text_width: usize,
     /// Any chord waiting for its second keypress.
     pub chord: deco_keymap::ChordState,
@@ -472,27 +477,27 @@ fn line_text(buffer: &Buffer, line: usize) -> String {
 
 /// One row on screen: which document line it shows, and which part of it.
 ///
-/// A line that is not wrapped produces exactly one of these, so a renderer has
-/// one path rather than two.
+/// A line that is not wrapped produces exactly one of these, so a renderer
+/// handles wrapped and unwrapped lines the same way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VisualRow {
     /// The document line.
     pub line: usize,
     /// Which row of that line this is, counting from zero.
     ///
-    /// Zero is where the line number goes: a continuation row leaves the gutter
-    /// blank, because repeating the number would read as a line that is not there.
+    /// Row zero shows the line number. A continuation row leaves the gutter
+    /// blank, because repeating the number would suggest a separate line.
     pub row: usize,
     /// UTF-16 column the row starts at.
     pub start: u32,
-    /// UTF-16 column the next row starts at, or `None` on a line's last row —
+    /// UTF-16 column the next row starts at, or `None` on a line's last row,
     /// which runs to the end of the line.
     pub end: Option<u32>,
-    /// Display columns of blank this row's text is pushed in by.
+    /// Number of blank display columns before this row's text.
     ///
-    /// Zero on a line's first row. `editor.wrappingIndent` decides the rest, and the
-    /// renderer has to draw exactly this much or the text lands somewhere the wrap did
-    /// not put it.
+    /// Zero on a line's first row. `editor.wrappingIndent` determines the value
+    /// for other rows. The renderer must draw exactly this indent, or the text
+    /// will not be where the wrap computation placed it.
     pub indent: usize,
 }
 
@@ -504,9 +509,8 @@ impl VisualRow {
 
     /// Whether `column` falls on this row.
     ///
-    /// The end is exclusive, except on a line's last row, where a caret sitting
-    /// one past the final character still belongs here — there is no next row for
-    /// it to belong to.
+    /// The end is exclusive, except on a line's last row, where a caret one past
+    /// the final character belongs to this row because there is no next row.
     pub fn holds(&self, column: u32) -> bool {
         column >= self.start && self.end.is_none_or(|end| column < end)
     }
@@ -515,16 +519,16 @@ impl VisualRow {
 impl View {
     /// The column this view wraps at, or zero when it does not wrap.
     ///
-    /// `editor.wordWrap` decides which of the two widths applies:
-    /// `"on"` follows the window, `"wordWrapColumn"` ignores it, and `"bounded"`
-    /// takes whichever is narrower — which is the one that keeps prose readable on
-    /// a wide screen without letting a narrow one wrap twice.
+    /// `editor.wordWrap` decides which of the two widths applies: `"on"` uses
+    /// the window width, `"wordWrapColumn"` ignores it, and `"bounded"` uses the
+    /// narrower of the two. `"bounded"` keeps prose readable on a wide screen
+    /// and avoids wrapping twice on a narrow one.
     pub fn wrap_column(&self, settings: &EditorSettings) -> usize {
-        // No width means nothing has laid this group out yet, or the frontend does
-        // not wrap — see `Session::frontend_wraps`. Either way there is nowhere to
-        // break, and that holds for `wordWrapColumn` too: wrapping in the session
-        // while the frontend draws one line per row would scroll and move the caret
-        // by rows nobody draws.
+        // Zero width means this group has not been laid out yet, or the frontend
+        // does not wrap (see `Session::frontend_wraps`). In both cases nothing is
+        // wrapped, including for `wordWrapColumn`. Wrapping in the session while
+        // the frontend draws one line per row would scroll and move the caret by
+        // rows that are not drawn.
         if self.text_width == 0 {
             return 0;
         }
@@ -549,9 +553,9 @@ impl View {
 
     /// How far this line's continuation rows are pushed in.
     ///
-    /// `editor.wrappingIndent` decides, from the line's own leading whitespace —
-    /// which is why it is measured here, where the text is, rather than resolved once
-    /// with the rest of the settings.
+    /// `editor.wrappingIndent` determines this from the line's leading
+    /// whitespace, so it is measured here from the text rather than resolved
+    /// once with the other settings.
     fn wrapping_indent_of(&self, text: &str, settings: &EditorSettings, wrap: usize) -> usize {
         let leading: String = text.chars().take_while(|c| c.is_whitespace()).collect();
         let columns = deco_core::wrap::width_between(
@@ -597,8 +601,8 @@ impl View {
 
     /// The rows on screen, from the scroll anchor down.
     ///
-    /// Shorter than the height only at the end of the document. Costs the height
-    /// of the window and not the length of the file, which is the whole reason the
+    /// Shorter than the height only at the end of the document. The cost is
+    /// proportional to the window height, not the file length, which is why the
     /// anchor is a line rather than a row count.
     pub fn visible_rows(&self, buffer: &Buffer, settings: &EditorSettings) -> Vec<VisualRow> {
         let wrap = self.wrap_column(settings);
@@ -609,7 +613,7 @@ impl View {
             let starts = self.row_starts(buffer, settings, line);
             if row >= starts.len() {
                 // The anchor points past the end of a line that has since been
-                // shortened — by an edit, or by the window getting wider.
+                // shortened by an edit or by a wider window.
                 line += 1;
                 row = 0;
                 continue;
@@ -669,8 +673,9 @@ impl View {
 
     /// The same in rows rather than lines.
     ///
-    /// Every walk here is bounded by the height of the window: a cursor further
-    /// away than that re-anchors on itself instead of being counted towards.
+    /// Every walk here is bounded by the window height. If the cursor is further
+    /// away, the view is re-anchored at the cursor instead of counting rows to
+    /// it.
     fn reveal_cursor_wrapped(&mut self, buffer: &Buffer, settings: &EditorSettings) {
         let cursor = buffer.clamp_position(self.selections.primary().active);
         let at = (cursor.line as usize, self.row_of(buffer, settings, cursor));
@@ -679,8 +684,8 @@ impl View {
             .min(self.height.saturating_sub(1) / 2);
         let last = self.height.saturating_sub(1);
 
-        // `None` when the cursor is above the anchor or further below it than the
-        // window is tall; either way the answer is to re-anchor on the cursor.
+        // `None` when the cursor is above the anchor or more than a window height
+        // below it. In both cases the view is re-anchored at the cursor.
         match self.rows_to(buffer, settings, at) {
             Some(distance) if distance >= margin && distance + margin <= last => {}
             Some(distance) if distance + margin > last => {
@@ -696,9 +701,9 @@ impl View {
         }
 
         if !settings.scroll_beyond_last_line {
-            // The furthest the window may sit is one where its last row is the
-            // document's last row. Found by walking back from the end, which costs
-            // the height of the window rather than the length of the file.
+            // The window may scroll until its last row is the document's last
+            // row. That position is found by walking back from the end, which
+            // costs the window height rather than the file length.
             let last_line = buffer.line_count().saturating_sub(1);
             let end = (
                 last_line,
@@ -776,11 +781,11 @@ impl View {
 
     /// Which column of the text area `position` is drawn in.
     ///
-    /// This is what a vertical motion keeps constant, and it is a column **on
-    /// screen** — the row's own indent included. Measured from the line's start
-    /// instead it would be a number with no meaning on screen; measured from the
-    /// row's text instead, `down` would step sideways every time two rows are pushed
-    /// in by different amounts, which is exactly what `editor.wrappingIndent` does.
+    /// A vertical motion keeps this value constant. It is a column **on screen**,
+    /// including the row's indent. A column measured from the line's start would
+    /// not correspond to a screen position. A column measured from the row's
+    /// text would make `down` move sideways whenever two rows have different
+    /// indents, which `editor.wrappingIndent` produces.
     pub fn goal_column(
         &self,
         buffer: &Buffer,
@@ -802,10 +807,9 @@ impl View {
     /// The position `count` rows away from `from`, keeping `goal` display columns
     /// into the row.
     ///
-    /// Rows, not lines: with wrapping on, one press of `down` moves one row, which
-    /// is what the key looks like it does. Moving by line instead would skip over
-    /// however many rows the current line happens to occupy, and in prose that is
-    /// most of a paragraph.
+    /// Moves by rows, not lines: with wrapping on, one press of `down` moves one
+    /// visible row. Moving by line would skip all rows of the current line,
+    /// which in prose can be most of a paragraph.
     pub fn step_rows(
         &self,
         buffer: &Buffer,
@@ -849,10 +853,10 @@ impl View {
         } else {
             self.wrapping_indent_of(&text, settings, self.wrap_column(settings))
         };
-        // `goal` is a column of the text area, so the target row's indent comes off
-        // it: landing the same distance into two rows pushed in by different amounts
-        // would move the caret sideways. A goal inside the indent lands at the row's
-        // first character, which is the nearest column there is.
+        // `goal` is a column of the text area, so the target row's indent is
+        // subtracted from it. Using the same offset into rows with different
+        // indents would move the caret sideways. A goal inside the indent maps
+        // to the row's first character, the nearest available column.
         let character = deco_core::wrap::column_in_row_from(
             &text,
             start,
@@ -866,9 +870,9 @@ impl View {
 
     /// The range of lines currently visible.
     ///
-    /// Counts one row per line, so it over-reports while wrapping — a window four
-    /// rows tall may be showing one line. [`View::visible_rows`] is the wrap-aware
-    /// answer, and what a renderer wants.
+    /// Counts one row per line, so it over-reports while wrapping: a window four
+    /// rows tall may show one line. Renderers should use the wrap-aware
+    /// [`View::visible_rows`].
     pub fn visible_lines(&self, buffer: &Buffer) -> std::ops::Range<usize> {
         let end = (self.scroll_top + self.height).min(buffer.line_count());
         self.scroll_top.min(end)..end
@@ -948,8 +952,8 @@ mod tests {
 
     #[test]
     fn files_eol_leaves_an_existing_files_own_line_ending_alone() {
-        // The whole point: opening a CRLF file with `"files.eol": "\n"` must not
-        // stage a rewrite of every line in it.
+        // Opening a CRLF file with `"files.eol": "\n"` must not rewrite every
+        // line.
         let doc = Document::from_file(
             PathBuf::from("/w/a.txt"),
             "a\r\nb\r\n",
@@ -969,8 +973,8 @@ mod tests {
 
     #[test]
     fn files_eol_decides_for_a_file_with_no_line_ending_to_keep() {
-        // Nothing to detect, so the setting is all there is to go on — which is
-        // what "the default end of line character" means.
+        // Nothing to detect, so the setting applies. This is what "the default
+        // end of line character" means.
         for (text, expected) in [("", LineEnding::Crlf), ("one line", LineEnding::Crlf)] {
             let doc = Document::from_file(
                 PathBuf::from("/w/a.txt"),
@@ -1112,8 +1116,8 @@ mod tests {
 
     #[test]
     fn a_wrap_column_ignores_the_window() {
-        // Which is the point of `wordWrapColumn`: the text keeps its measure on a
-        // wide screen instead of running the whole way across it.
+        // With `wordWrapColumn`, text keeps a fixed width on a wide screen
+        // instead of spanning the whole window.
         let settings = EditorSettings {
             word_wrap: deco_config::WordWrap::WordWrapColumn,
             word_wrap_column: 30,
@@ -1135,8 +1139,8 @@ mod tests {
 
     #[test]
     fn revealing_a_caret_further_down_its_own_line_scrolls_by_rows() {
-        // The whole point. Anchoring on the line would leave the window showing
-        // the line's first row with the caret several rows below the bottom.
+        // Anchoring on the line would show the line's first row with the caret
+        // several rows below the bottom of the window.
         let buffer = Buffer::from_text(&format!("{}\n", "word ".repeat(20)));
         let mut view = view(10, 4);
         view.selections = SelectionSet::caret(Position::new(0, 95));
@@ -1163,8 +1167,8 @@ mod tests {
 
     #[test]
     fn an_anchor_past_the_end_of_a_shortened_line_recovers() {
-        // An edit or a wider window can leave the anchor pointing at a row the
-        // line no longer has. Drawing nothing at all would look like a hang.
+        // An edit or a wider window can leave the anchor at a row the line no
+        // longer has. Drawing nothing would look like a hang.
         let buffer = Buffer::from_text("short\nsecond\nthird\n");
         let mut view = view(20, 3);
         view.scroll_row = 7;
@@ -1178,9 +1182,9 @@ mod tests {
 
     #[test]
     fn the_last_row_of_the_file_can_be_scrolled_to_and_no_further() {
-        // Clamping to `line_count - height`, which is what the unwrapped path
-        // does, would stop with rows still below the bottom of the window: a
-        // wrapped file has more rows than lines, so counting in lines undershoots.
+        // Clamping to `line_count - height`, as the unwrapped path does, would
+        // leave rows below the bottom of the window. A wrapped file has more
+        // rows than lines, so counting in lines stops too early.
         let buffer = Buffer::from_text(&format!("{}\n", "word ".repeat(20)));
         let mut view = view(10, 4);
         let settings = EditorSettings {
@@ -1214,9 +1218,9 @@ mod tests {
 
     #[test]
     fn a_goal_column_is_measured_within_the_row() {
-        // Not from the start of the line: on screen the row is the line, and a
-        // goal counted from the line's start would put every vertical motion
-        // through a wrapped paragraph at the wrong column.
+        // Not from the start of the line. A goal counted from the line's start
+        // would put every vertical motion through a wrapped paragraph at the
+        // wrong column.
         let buffer = Buffer::from_text("aaaaa bbbbb ccccc\n");
         let view = view(6, 5);
         let settings = wrapping();

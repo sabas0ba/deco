@@ -1,14 +1,14 @@
 //! Command-line parsing.
 //!
 //! Hand-written rather than derived. deco's command line is one path and three
-//! flags, and an argument parser that covers subcommands, shell completion and
-//! coloured help costs about a dozen crates — one of them a procedural macro,
-//! which is code that runs on the build machine. That is a poor trade for a
-//! surface this small, and the smaller the dependency graph the less of it
-//! anyone has to trust. See deny.toml for the wider policy.
+//! flags. An argument parser that supports subcommands, shell completion and
+//! coloured help adds about a dozen crates, including a procedural macro that
+//! runs on the build machine. That is not justified for a command line this
+//! small, and a smaller dependency graph means less code to trust. See deny.toml
+//! for the wider policy.
 //!
-//! The accepted grammar deliberately matches what the derived version accepted,
-//! so this is not a change in behaviour for anyone's muscle memory:
+//! The accepted grammar matches what the derived version accepted, so existing
+//! usage does not change:
 //!
 //! ```text
 //! deco [OPTIONS] [FILE]
@@ -59,67 +59,64 @@ pub struct Cli {
     pub clean: bool,
     /// Run as the headless remote server rather than as an editor.
     ///
-    /// Set by `--server`. `--stdio` is accepted and is the only transport there
-    /// is, so it changes nothing — it is taken because the command
-    /// `deco-remote` builds passes it, and because a future transport would need
-    /// the flag to have meant something.
+    /// Set by `--server`. `--stdio` is accepted but has no effect, because it is
+    /// the only transport. It is accepted because the command `deco-remote`
+    /// builds passes it, and because a future transport would need the flag to
+    /// have a defined meaning.
     pub server: bool,
     /// The directory a server serves, or the one an editor treats as the
     /// workspace root.
     pub workspace: Option<PathBuf>,
     /// The file a server hands over as this machine's settings.
     ///
-    /// Server-side only, and normally left alone: the default is this machine's
-    /// own `machine-settings.json`, worked out from the same rules the editor
-    /// uses for a configuration directory. Named here for whoever *starts* the
-    /// server — a packager placing it elsewhere, or a test that cannot change
-    /// the process environment without changing it for everything running
-    /// beside it.
+    /// Server-side only and normally unset. The default is this machine's own
+    /// `machine-settings.json`, located by the same rules the editor uses for a
+    /// configuration directory. The option is for whoever *starts* the server:
+    /// a packager placing the file elsewhere, or a test that cannot change the
+    /// process environment without affecting everything else running in it.
     ///
-    /// This is not a way for a client to choose a file. `settings.read` takes
-    /// no path; the decision is made where the server is launched, which is on
-    /// the remote and by whoever runs it.
+    /// A client cannot use this to choose a file. `settings.read` takes no
+    /// path; the file is chosen when the server is launched, on the remote, by
+    /// whoever runs it.
     pub machine_settings: Option<PathBuf>,
     /// A remote authority to open the files on, as `ssh-remote+host`.
     ///
-    /// Present means every file named on the command line lives there, and the
-    /// editor is a client rather than the thing holding the files.
+    /// When set, every file named on the command line is on the remote, and the
+    /// editor acts as a client rather than holding the files itself.
     pub remote: Option<String>,
     /// Where deco lives on the remote.
     ///
-    /// `None` means whatever `deco` resolves to on the remote's PATH, which is
-    /// right when it was installed the ordinary way and wrong when it was
-    /// unpacked into a directory no login shell adds.
+    /// `None` means whatever `deco` resolves to on the remote's PATH. That works
+    /// for a normal installation but not when deco was unpacked into a directory
+    /// that no login shell adds to PATH.
     pub remote_server_path: Option<String>,
     /// Put this machine's deco on the remote before connecting.
     ///
-    /// Off unless asked for. Pointing an editor at a machine is not the same as
-    /// authorising it to install software there — see [`deco_remote::install`].
+    /// Off unless requested. Opening files on a machine does not authorise
+    /// installing software there; see [`deco_remote::install`].
     pub remote_install: bool,
     /// Also download a build for the remote when it is a different platform.
     ///
-    /// Separate from `remote_install` because it is a larger thing to allow:
-    /// sending the binary already running here reaches nothing, and this
-    /// fetches an executable over the network. Implies `--remote-install`, since
-    /// downloading a deco for a machine you were not going to install one on
-    /// would do nothing.
+    /// Separate from `remote_install` because it grants more: sending the binary
+    /// already running here downloads nothing, while this option fetches an
+    /// executable over the network. Implies `--remote-install`, because a
+    /// download is useless without an install.
     pub remote_install_download: bool,
     /// Ports on the remote to make reachable from here, as `3000` or `8080:3000`.
     pub forwards: Vec<deco_remote::PortSpec>,
     /// Run as one end of a forwarded connection rather than as an editor.
     ///
     /// Set by `--forward-to`. This is the remote half: it connects to the address
-    /// and pipes it to stdin and stdout, which is how a port crosses a transport
-    /// that has no idea what a port is.
+    /// and pipes it to stdin and stdout. This lets a port be forwarded over a
+    /// transport that has no concept of ports.
     pub forward_to: Option<String>,
 }
 
 /// What `parse` decided the process should do.
 ///
-/// `--help` and `--version` are not errors and not settings; they are requests
-/// to print something and exit successfully. Keeping them in the return type
-/// rather than writing to stdout here keeps parsing free of side effects, which
-/// is what makes it testable.
+/// `--help` and `--version` are neither errors nor settings; they request
+/// printing something and exiting successfully. Returning them instead of
+/// writing to stdout here keeps parsing free of side effects and testable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     /// Run the editor with these options.
@@ -146,7 +143,7 @@ pub enum CliError {
         /// The accepted values, comma separated.
         expected: &'static str,
     },
-    /// The same file was given twice, which would be a tab fighting itself.
+    /// The same file was given twice.
     DuplicateFile(String),
     /// A `--forward` value was not a port or a pair of them.
     BadPort(deco_remote::PortSpecError),
@@ -208,11 +205,12 @@ Options:
 
 /// Parses arguments, which must *not* include the program name.
 ///
-/// The rules that are easy to get wrong, and so are pinned by tests below:
-/// `--` ends option parsing, so a file really called `--clean` is reachable;
-/// `--frontend=gui` and `--frontend gui` are the same thing; and an unknown
-/// flag is refused rather than silently taken as a filename, because taking
-/// a mistyped `--cleen` as a path would create a file named `--cleen`.
+/// Rules covered by the tests below:
+///
+/// - `--` ends option parsing, so a file named `--clean` can be opened.
+/// - `--frontend=gui` and `--frontend gui` are equivalent.
+/// - An unknown flag is rejected rather than taken as a filename. Otherwise a
+///   mistyped `--cleen` would create a file named `--cleen`.
 pub fn parse<I, S>(args: I) -> Result<Outcome, CliError>
 where
     I: IntoIterator<Item = S>,
@@ -237,9 +235,9 @@ where
             "--print-config" => cli.print_config = true,
             "--clean" => cli.clean = true,
             "--server" => cli.server = true,
-            // Accepted and ignored: stdio is the only transport, and refusing a
-            // flag the transport command already passes would make the two halves
-            // of this repository disagree.
+            // Accepted and ignored: stdio is the only transport, and the transport
+            // command already passes this flag. Rejecting it would make the
+            // client and server code in this repository disagree.
             "--stdio" => {}
             "--machine-settings" => {
                 let value = args
@@ -262,7 +260,7 @@ where
                 cli.remote_server_path = Some(value.as_ref().to_owned());
             }
             "--remote-install" => cli.remote_install = true,
-            // Implies the install: the download exists to make one possible.
+            // Implies the install, because the download is only used for one.
             "--remote-install-download" => {
                 cli.remote_install = true;
                 cli.remote_install_download = true;
@@ -317,9 +315,9 @@ fn port_spec(value: &str) -> Result<deco_remote::PortSpec, CliError> {
 
 fn set_file(cli: &mut Cli, arg: &str) -> Result<(), CliError> {
     let path = PathBuf::from(arg);
-    // Refused rather than deduplicated silently: `deco a.rs a.rs` is nearly
-    // always a typo for two different files, and opening what looks like two
-    // tabs onto one buffer would be more confusing than an error.
+    // Rejected rather than deduplicated: `deco a.rs a.rs` is nearly always a
+    // typo for two different files, and two tabs showing one buffer would be
+    // more confusing than an error.
     if cli.files.contains(&path) {
         return Err(CliError::DuplicateFile(arg.to_string()));
     }
@@ -350,16 +348,16 @@ mod tests {
             run(&["--remote=wsl+Ubuntu"]).remote.as_deref(),
             Some("wsl+Ubuntu")
         );
-        // A path is not an authority, and the file list is not the place to put
-        // one: `--remote` without a value is an error rather than a filename.
+        // A path is not an authority. `--remote` without a value is an error,
+        // not a filename.
         assert_eq!(parse(["--remote"]), Err(CliError::MissingValue("--remote")));
     }
 
     #[test]
     fn installing_onto_a_remote_is_asked_for_rather_than_assumed() {
-        // The default has to stay off: this flag is what turns "open a file over
-        // there" into "put software on that machine", and a person who did not
-        // type it did not agree to the second one.
+        // The default must stay off. This flag changes "open a file on the
+        // remote" into "install software on the remote", which requires the
+        // user's explicit consent.
         let cli = run(&["--remote", "ssh-remote+myhost", "src/main.rs"]);
         assert!(!cli.remote_install);
         assert_eq!(cli.remote_server_path, None);
@@ -391,9 +389,9 @@ mod tests {
 
     #[test]
     fn server_mode_takes_a_workspace_either_way_round() {
-        // `--stdio` is what `deco_remote::server_command` passes, so it has to be
-        // accepted here or the two halves of this repository disagree about the
-        // command line one of them builds.
+        // `deco_remote::server_command` passes `--stdio`, so it must be accepted
+        // here. Otherwise the parser would reject the command line that
+        // deco-remote builds.
         let cli = run(&["--server", "--stdio", "--workspace", "/srv/project"]);
         assert!(cli.server);
         assert_eq!(cli.workspace.as_deref(), Some(Path::new("/srv/project")));
@@ -405,8 +403,8 @@ mod tests {
 
     #[test]
     fn a_server_without_a_workspace_is_allowed() {
-        // `ssh host deco --server --stdio` with no directory means "serve where
-        // you landed", which is the working directory the transport left it in.
+        // `ssh host deco --server --stdio` with no directory serves the working
+        // directory the transport started it in.
         let cli = run(&["--server", "--stdio"]);
         assert!(cli.server);
         assert_eq!(cli.workspace, None);
@@ -421,8 +419,8 @@ mod tests {
 
     #[test]
     fn the_server_command_deco_remote_builds_parses_here() {
-        // The one place the two ends can drift apart: `deco-remote` writes the
-        // command and this parses it, and nothing else compares them.
+        // `deco-remote` builds the command and this module parses it. This test
+        // is the only check that the two stay consistent.
         let built = deco_remote::server_command("deco", Some("/home/u/project"));
         let (program, args) = built.split_first().expect("a program");
         assert_eq!(program, "deco");
@@ -523,15 +521,15 @@ mod tests {
         assert_eq!(parse(["-h"]), Ok(Outcome::Help));
         assert_eq!(parse(["--version"]), Ok(Outcome::Version));
         assert_eq!(parse(["-V"]), Ok(Outcome::Version));
-        // Notably including arguments that would otherwise be errors: asking
-        // for help is how you find out that the rest was wrong.
+        // This includes arguments that would otherwise be errors, because the
+        // user may be asking for help to find out what was wrong.
         assert_eq!(parse(["--help", "--nonsense"]), Ok(Outcome::Help));
     }
 
     #[test]
     fn a_mistyped_flag_is_an_error_rather_than_a_filename() {
-        // The failure this prevents: `deco --cleen` creating a new buffer for
-        // a file literally named `--cleen`.
+        // Prevents `deco --cleen` from creating a new buffer for a file named
+        // `--cleen`.
         assert_eq!(
             parse(["--cleen"]),
             Err(CliError::UnknownFlag("--cleen".into()))
@@ -580,10 +578,10 @@ mod tests {
         ] {
             let rendered = error.to_string();
             assert!(!rendered.is_empty());
-            // Every message is printed as `deco: {error}`, so it is a
-            // continuation of that line rather than a sentence of its own —
-            // uncapitalised, and no trailing full stop. (Not "is lowercase":
-            // several of these correctly begin with a backticked flag.)
+            // Every message is printed as `deco: {error}`, so it continues that
+            // line: it does not start with a capital letter or end with a full
+            // stop. The check is "not uppercase" rather than "lowercase" because
+            // several messages begin with a backticked flag.
             assert!(
                 !rendered.chars().next().is_some_and(char::is_uppercase),
                 "reads as a capitalised sentence after `deco: `: {rendered}"

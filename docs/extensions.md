@@ -1,10 +1,6 @@
 # Extensions
 
-A VS Code extension is arbitrary JavaScript running with your full privileges. It
-can read `~/.ssh/id_ed25519`, open a socket and spawn a shell, and nothing in the
-extension API makes that visible, let alone preventable. Installing one is
-trusting its author — and every package in its `node_modules` — with everything you
-can reach.
+A VS Code extension is arbitrary JavaScript running with your full privileges. It can read `~/.ssh/id_ed25519`, open a socket and spawn a shell, and the extension API neither shows nor prevents this. Installing an extension means trusting its author, and every package in its `node_modules`, with everything you can access.
 
 deco runs code extensions in a separate Node process, inside a container by default. Direct filesystem and network access are restricted; supported operations are requested through deco's capability broker.
 
@@ -12,51 +8,27 @@ deco runs code extensions in a separate Node process, inside a container by defa
 
 ## Running one
 
-Press `ctrl+shift+p` and an extension's commands are in the list, beside deco's own.
-The right-hand column is the *extension's* name rather than the command identifier
-that deco's own commands show there: for something contributed from outside, which
-extension it came from is the fact that decides whether you want it.
+Press `ctrl+shift+p` to see an extension's commands in the list alongside deco's own. For extension commands, the right-hand column shows the *extension's* name instead of the command identifier shown for deco's commands, because the source extension is the most relevant information for a contributed command.
 
 ![The command palette listing a command contributed by an extension](img/extension-commands.svg)
 
-Choosing one starts the host, activates the extension, and runs the command. The
-first start in a container pulls the image, which can take a minute — the editor
-does not block while it happens, the status bar says what is going on, and the
-command you asked for runs when the host is ready rather than being forgotten.
+Choosing one starts the host, activates the extension, and runs the command. The first start in a container pulls the image, which can take a minute. The editor does not block during the pull, the status bar shows progress, and the requested command runs when the host is ready.
 
 Extensions start only when a command is selected. The catalogue parses `onLanguage:` and `onStartupFinished`, but these events do not activate extensions yet.
 
-An extension is started once and reused. If its host dies, the status bar says so.
+An extension is started once and reused. If its host exits, the status bar reports it.
 
 ## Four independent layers
 
-**0. A container.** The host runs inside one by default, from an image named by
-digest. This is the outermost layer and the newest; the three below it all live
-*inside* the Node process, which left one assumption unpinned — the runtime
-itself. See [The container](#the-container).
+**0. A container.** By default the host runs inside a container, from an image identified by digest. This is the outermost and most recent layer. The three layers below it all run *inside* the Node process and therefore do not pin the runtime itself. See [The container](#the-container).
 
-**1. Node's permission model.** The host runs with `--permission`, which blocks
-filesystem, child-process and worker access below JavaScript, where an extension
-cannot argue with it. No `--allow-child-process`, no `--allow-fs-write`. It is
-passed inside the container too: a layer is not dropped because another one
-arrived.
+**1. Node's permission model.** The host runs with `--permission`, which blocks filesystem, child-process and worker access below the JavaScript level, where an extension cannot bypass it. `--allow-child-process` and `--allow-fs-write` are not passed. The flag is also passed inside the container; adding a layer does not remove another.
 
-That flag is why the host needs **Node 22.13 or newer**: the permission model
-became stable there and the flag lost its `--experimental-` prefix, and older
-Node rejects the spelling deco passes. In the default container this is the
-image's problem rather than yours — the pinned image carries Node 22.23 — and it
-only becomes a requirement on your own machine if you turn the container off.
+This flag requires **Node 22.13 or newer**. The permission model became stable in that version and the flag lost its `--experimental-` prefix, so older Node rejects the form deco passes. The pinned image for the default container provides Node 22.23, so the requirement applies to your own machine only if you disable the container.
 
-**2. The host bootstrap.** It removes the network globals and refuses to load
-`fs`, `net`, `http`, `child_process` and friends, so a blocked call produces a
-clear error naming its brokered replacement rather than an opaque permission trap.
-Node's permission model does not cover the network; this layer is why that gap is
-closed.
+**2. The host bootstrap.** It removes the network globals and refuses to load `fs`, `net`, `http`, `child_process` and similar modules, so a blocked call produces a clear error naming its brokered replacement instead of an opaque permission error. Node's permission model does not cover the network; this layer does.
 
-The module loader is part of the sandbox, which is why the host's own code
-requires `node:path` and `node:module` with the prefix. An unprefixed `require`
-can be shadowed by a `node_modules` package of that name, and the host has a test
-asserting no bare `require` of a non-builtin survives anywhere in `src/`.
+The module loader is part of the sandbox, so the host's own code requires `node:path` and `node:module` with the prefix. An unprefixed `require` can be shadowed by a `node_modules` package of the same name. A host test asserts that no bare `require` of a non-builtin remains anywhere in `src/`.
 
 **3. The capability broker.** It checks every request that does get through.
 
@@ -64,38 +36,23 @@ asserting no bare `require` of a non-builtin survives anywhere in `src/`.
 
 Layers 1 to 3 are enforced by Node or deco. In process mode, these checks depend on the locally installed Node runtime. Container mode also fixes the runtime image by digest and applies the isolation settings below.
 
-A container closes that gap:
+Container mode provides the following:
 
-- **The runtime is pinned by digest**, the same way this project pins its CI
-  actions. `docker.io/library/node:22-bookworm-slim@sha256:d649c27…` is a
-  specific set of bytes, not a tag someone can move. deco **refuses an image
-  reference that is not pinned**, including one you configure yourself.
+- **The runtime is pinned by digest**, in the same way this project pins its CI actions. `docker.io/library/node:22-bookworm-slim@sha256:d649c27…` identifies specific image content, not a tag that can be moved. deco **refuses an image reference that is not pinned**, including one you configure yourself.
 - **`--network=none`** disables external container networking at the operating-system level. This supplements the bootstrap's JavaScript-level restrictions on `fetch` and `net`.
-- **`--read-only`**, one 16MB `noexec` `tmpfs`, and two read-only bind mounts:
-  deco's own host code, and the single extension being run. `--cap-drop=ALL` and
-  `--security-opt=no-new-privileges` leave nothing to escalate with. `--memory`
-  and `--pids-limit` make a runaway extension the container's problem.
+- **`--read-only`**, one 16MB `noexec` `tmpfs`, and two read-only bind mounts: deco's own host code and the single extension being run. `--cap-drop=ALL` and `--security-opt=no-new-privileges` remove privilege escalation paths. `--memory` and `--pids-limit` confine a runaway extension to the container's resource limits.
 
 ### The workspace is not mounted
 
 **The workspace is not mounted inside the container.** Extensions read and write workspace files through brokered requests performed by deco, subject to capability and path-scope checks.
 
-Had the workspace been bind-mounted — as a dev container would — the container
-would add very little. The files an extension actually wants are in there, and a
-mount hands them over wholesale, with the broker bypassed for anything the
-extension can reach through `fs`.
+If the workspace were bind-mounted, as in a dev container, the container would add little protection. The workspace contains the files an extension typically wants, and a mount would expose all of them, with the broker bypassed for anything the extension can access through `fs`.
 
 ### If there is no container runtime
 
-deco refuses to start the host, and says so, naming the setting that would let you
-proceed. It does **not** fall back to running the host without a container. A
-sandbox that silently degrades is worse than no sandbox, because nobody can tell
-which one they have.
+deco refuses to start the host and reports the setting that allows you to proceed. It does **not** fall back to running the host without a container. A sandbox that degrades silently is worse than no sandbox, because the user cannot tell which one is active.
 
-Neither does a workspace get to make that decision. `deco.extensions.sandbox`,
-`deco.extensions.containerRuntime` and `deco.extensions.containerImage` are read
-from deco's defaults and **your own** settings only. A `.vscode/settings.json`
-arrives with a cloned repository and must not be able to disable isolation for its own extensions. Attempts to override these settings are reported.
+A workspace cannot make this decision either. `deco.extensions.sandbox`, `deco.extensions.containerRuntime` and `deco.extensions.containerImage` are read only from deco's defaults and **your own** settings. A `.vscode/settings.json` comes with a cloned repository and must not be able to disable isolation for its own extensions. Attempts to override these settings are reported.
 
 ### Turning it off
 
@@ -106,41 +63,25 @@ arrives with a cloned repository and must not be able to disable isolation for i
 }
 ```
 
-This exists for telling a container problem apart from an extension problem. It
-costs you layer 0 and pins nothing about the runtime, so `node` on your `PATH`
-then has to be 22.13 or newer.
+This setting exists to distinguish a container problem from an extension problem. It removes layer 0 and does not pin the runtime, so `node` on your `PATH` must then be 22.13 or newer.
 
 ### What deco does not pass
 
-`--user`. Under rootless Podman the container's root is already your own
-unprivileged uid, and naming a uid there maps it into a subordinate range that
-cannot read the bind mounts — so the flag would break the common case while adding
-nothing to it.
+`--user`. Under rootless Podman, the container's root is already your own unprivileged uid. Specifying a uid maps it into a subordinate range that cannot read the bind mounts, so the flag would break the common case without adding protection.
 
-An extension inside the container sees deco's own two variables, the five the Node
-image sets in its own layers (`PATH`, `HOME`, `HOSTNAME`, `NODE_VERSION`,
-`YARN_VERSION`), and — under Podman — `container=podman`, which OCI runtimes set
-so software inside can tell where it is. Nothing from deco's environment crosses,
-which is checked by starting a real container and asking the extension to report
-what it can see.
+An extension inside the container sees deco's own two variables, the five variables the Node image sets in its layers (`PATH`, `HOME`, `HOSTNAME`, `NODE_VERSION`, `YARN_VERSION`), and, under Podman, `container=podman`, which OCI runtimes set so that software can detect the container. No variables from deco's environment are passed. A test checks this by starting a real container and having the extension report the variables it can see.
 
 ## What the broker enforces
 
-- **Deny by default.** A capability the manifest never declared is refused
-  outright and never offered to you. Consent cannot be manufactured at request
-  time by an extension that did not say up front what it wanted.
-- **Declaration is a ceiling, not a grant.** A declared capability still needs a
-  decision — remembered, prompted for, or refused by policy.
-- **Scopes are checked on resolved paths**, so `workspace` access cannot be walked
-  out of with `..`, and `/project-secrets` does not pass as a child of `/project`.
+- **Deny by default.** A capability the manifest does not declare is refused and never offered to you for approval. An extension cannot obtain consent at request time for a capability it did not declare in advance.
+- **Declaration is a ceiling, not a grant.** A declared capability still needs a decision: a stored decision, a prompt, or a refusal by policy.
+- **Scopes are checked on resolved paths**, so `..` cannot be used to leave `workspace` access, and `/project-secrets` is not treated as a child of `/project`.
 
 Capabilities: `readFile`, `writeFile`, `process`, `network`, `env`, `clipboard`,
 `secrets`, `openExternal`. Path scopes: `workspace`, `extensionStorage`,
 `extensionInstall`.
 
-A refusal says which of these it was — undeclared, denied by you, denied by
-policy, or outside the declared scope — because "permission denied" without the
-reason is not something you can act on.
+A refusal states the reason: undeclared, denied by you, denied by policy, or outside the declared scope. A message without the reason would not tell you what to change.
 
 ## Declaring capabilities
 
@@ -176,111 +117,54 @@ VS Code extensions do not normally declare deco capabilities. Without those decl
 
 ## Starting one
 
-`deco_ext::connection` is the layer between the command line and the protocol:
-`Host::spawn` starts the process described by
-[`build_spec`](#four-independent-layers), and one JSON object per line travels each
-way.
+`deco_ext::connection` is the layer between the command line and the protocol. `Host::spawn` starts the process described by [`build_spec`](#four-independent-layers), and messages are exchanged as one JSON object per line in each direction.
 
-Newline-delimited rather than the Language Server Protocol's `Content-Length` framing.
-There is no specification to match here — both ends are deco's — and a newline is a
-position a reader can resynchronise from, so an unreadable line costs one message
-rather than the rest of the stream.
+The framing is newline-delimited, not the Language Server Protocol's `Content-Length` framing. No external specification applies because deco implements both ends. A reader can resynchronise at a newline, so an unreadable line loses one message instead of the rest of the stream.
 
-**The program must be an absolute path.** The host's environment is built from nothing,
-so it carries no `PATH` for the operating system to search, and a bare `node` fails as
-"no such file" — true, and no help to whoever configured it. `Host::spawn` refuses it
-by name instead. That one was found by writing the round-trip test below and reading
-the error it gave.
+**The program must be an absolute path.** The host's environment is built empty, so it has no `PATH` for the operating system to search, and a bare `node` fails with "no such file", which does not identify the cause. `Host::spawn` instead rejects it with an error that names the problem. This was found while writing the round-trip test described below.
 
 ### `dispatch` is the only way in
 
-Every inbound request goes through one function, and it is a pure function of the
-broker and the request so that every path through it is testable without a process. It
-fails closed twice:
+Every inbound request goes through one function. It is a pure function of the broker and the request, so every path through it can be tested without a process. It fails closed in two ways:
 
-- a method [`required_capability`] does not recognise is refused as unknown, so a host
-  built from a newer deco cannot reach an older one's editor surface by naming
-  something it has never heard of;
-- a capability the manifest never declared is refused by the broker whatever the user
-  has agreed to since — the declaration is a ceiling, not a starting point.
+- a method that [`required_capability`] does not recognise is refused as unknown, so a host built from a newer deco cannot use functionality of an older editor by naming a method the editor does not know;
+- a capability the manifest does not declare is refused by the broker regardless of later user approvals; the declaration is a ceiling, not a starting point.
 
-Registering a command, showing a message and appending to the log need no declaration
-at all: they only touch state deco already owns and shows to the user. So the extension
-in the round-trip test declares nothing and still works, which is the shape most
-extensions should have.
+Registering a command, showing a message and appending to the log need no declaration, because they only affect state that deco owns and shows to the user. The extension in the round-trip test therefore declares nothing and still works. Most extensions should follow this pattern.
 
 ### Tested against the real host, and against no host
 
-The connection's own tests drive it over a `Cursor` or a channel, because the Rust
-suite has to run where there is no Node — under Wine, for one.
+The connection's own tests use a `Cursor` or a channel, because the Rust test suite must run where Node is not available, for example under Wine.
 
-`crates/deco-ext/tests/host_round_trip.rs` is the other half: it starts the real
-`extension-host` with the real `node`, activates a real extension, and watches
-`commands.registerCommand` arrive and pass the capability seam. It is `#[ignore]`d so
-`cargo test` stays portable, and `cargo xtask host-test` runs it — the same command CI
-runs in the one job that installs Node.
+`crates/deco-ext/tests/host_round_trip.rs` covers the real host. It starts the real `extension-host` with the real `node`, activates a real extension, and checks that `commands.registerCommand` arrives and passes the capability check. It is marked `#[ignore]` so that `cargo test` stays portable, and `cargo xtask host-test` runs it. CI runs the same command in the one job that installs Node.
 
-One of its tests asserts the environment of the **running process** rather than of
-the spec: the extension reports every variable it can see, and anything but deco's own
-two is a failure. An extension that could read `$GITHUB_TOKEN` would make every other
-guard here moot, so it is worth checking against a process and not against a `BTreeMap`.
+One test checks the environment of the **running process**, not of the spec. The extension reports every variable it can see, and any variable other than deco's two causes a failure. An extension that could read `$GITHUB_TOKEN` would defeat the other protections, so the check uses a real process instead of a `BTreeMap`.
 
-A third test does the same thing **inside the container**, against the pinned image.
-It is the only check that the digest deco ships still resolves to a working Node, and
-that everything else — the mounts, the translated paths, `--permission` with container
-roots, the `vscode` shim — agrees once the filesystem is not the machine's own.
-`cargo xtask host-test` selects it only when Podman or Docker is on the `PATH`, and
-**prints which of the two it decided**: a test that quietly does not run looks exactly
-like a test that passed.
+A third test does the same **inside the container**, using the pinned image. It is the only check that the digest deco ships still provides a working Node, and that the mounts, translated paths, `--permission` with container roots and the `vscode` shim work when the filesystem is the container's. `cargo xtask host-test` selects it only when Podman or Docker is on the `PATH`, and **prints which one it selected**, because a skipped test would otherwise look like a passing one.
 
 The container test checks the expected environment variables, including those supplied by the image and runtime. `PATH`, `HOME`, `HOSTNAME`, `NODE_VERSION` and `YARN_VERSION` are supplied by the container environment; their presence does not imply that deco forwarded its own environment.
 
 ## Which extensions start, and when
 
-`deco_ext::catalogue` is the decision: given what is installed and something that
-happened, which extensions should be running. It is pure — the directory walk belongs
-to the frontend, the same way finding themes does — and it holds three rules worth
-stating.
+`deco_ext::catalogue` decides which extensions should be running, given the installed extensions and an event. It is pure: the directory walk is done by the frontend, as it is for themes. It applies three rules.
 
-**Only code extensions activate.** An extension with no `main` never starts a process
-at all. A theme's `"activationEvents": ["*"]` fires for nothing, because there is
-nothing to fire: the whole sandbox would be spent starting a process to read a JSON
-file. That is why a marketplace theme works in deco today.
+**Only code extensions activate.** An extension without `main` never starts a process. A theme's `"activationEvents": ["*"]` activates nothing, because there is no code to run; starting a sandboxed process only to read a JSON file would be wasteful. This is why marketplace themes work in deco.
 
-**A contributed command activates its extension, with or without `onCommand:`.** VS
-Code stopped requiring the declaration in 1.74, and the reason to follow it is not
-compatibility: a palette entry that does nothing is worse than either alternative, and
-the trigger is the user naming the command. An empty `activationEvents` is still not a
-wildcard — such an extension activates only through its own commands.
+**A contributed command activates its extension, with or without `onCommand:`.** VS Code stopped requiring the declaration in 1.74. deco follows this for a reason other than compatibility: a palette entry that does nothing is worse than either alternative, and the user selecting the command is the trigger. An empty `activationEvents` is still not a wildcard; such an extension activates only through its own commands.
 
-**An activation event deco does not understand fires for nothing.** Activation is a
-security control before it is a performance one: an extension that has not activated
-has no process, so no request it could make exists. Treating an unknown event as `*`
-would turn every future VS Code event into a startup activation.
+**An activation event deco does not recognise activates nothing.** Activation is primarily a security control and secondarily a performance one: an extension that has not activated has no process and cannot make requests. Treating an unknown event as `*` would turn every future VS Code event into a startup activation.
 
-Collisions are reported rather than resolved silently. The same extension installed
-twice keeps the first copy; a command contributed by two extensions stays with the
-first, and the second is told so — otherwise the loser looks broken with the reason
-visible nowhere.
+Collisions are reported, not resolved silently. If the same extension is installed twice, the first copy is kept. If two extensions contribute the same command, the first keeps it and the second is notified; otherwise the second extension would appear broken with no visible reason.
 
 ## Running an extension's command
 
-`commands.registerCommand` goes one way: the extension tells deco a name. Running it
-goes the other, as `$/executeCommand`, and `Host::execute_command` is that call. The
-reply carries whatever the extension's callback returned; a command the host does not
-have is an error reply naming it, not a dropped connection.
+`commands.registerCommand` sends a command name from the extension to deco. Running the command goes in the other direction, as `$/executeCommand`, through `Host::execute_command`. The reply contains the value returned by the extension's callback. A command the host does not have produces an error reply naming it; the connection is not dropped.
 
-This path existed in the `vscode` shim from the beginning and **nothing had ever asked
-it to run**. It works — the round-trip test now activates the fixture, calls
-`roundTrip.hello`, and asserts `"hello from the host"` comes back — and the shim's
-command registry has tests of its own now, which it did not before: arguments in
-order, async callbacks awaited, a `dispose()`d command no longer callable, a throwing
-command reported without ending the session.
+This path existed in the `vscode` shim from the start but had **never been exercised**. It works: the round-trip test now activates the fixture, calls `roundTrip.hello`, and asserts that `"hello from the host"` is returned. The shim's command registry now also has its own tests, covering argument order, awaiting async callbacks, a `dispose()`d command no longer being callable, and a throwing command being reported without ending the session.
 
 ## What an extension can reach, today
 
-Commands, messages, the filesystem, and edits — all of which only touch state
-deco already owns and shows you:
+Commands, messages, the filesystem and edits, all of which only affect state that deco owns and shows you:
 
 | Call | What happens |
 | --- | --- |
@@ -292,102 +176,46 @@ deco already owns and shows you:
 | `fs.createDirectory`, `fs.delete`, `fs.rename`, `fs.copy` | The change, made where the session's files are |
 | `workspace.applyEdit` | The edits, applied to the open document's buffer when it is open, and to the file when it is not |
 
-**Everything else is refused by name.** An extension that asks to spawn a process
-gets an error saying deco does not implement it yet — not a fake exit code, not an
-empty list of open editors. An extension told "no" can cope; one told "here is your
-empty answer" cannot, and neither can the person reading its behaviour.
+**All other calls are refused with an error naming the call.** An extension that asks to spawn a process gets an error saying that deco does not implement it yet, not a fake exit code or an empty list of open editors. An extension can handle a refusal, but it cannot distinguish a placeholder empty result from a real one, and neither can a user investigating its behaviour.
 
-A capability the manifest declared and nobody has ruled on **is asked about**. The
-extension waits — its request is held rather than answered — and the question names
-the extension and what it wants in words: *"Acme Tools wants to read files under
-/home/u/project/notes.txt"*, not a Rust value. The answer is remembered — written
-down, refusals included, as [below](#where-a-decision-lives) — because a refusal
-that is not remembered is a prompt loop, and a prompt loop is how someone ends up
-allowing something to make it stop.
+A capability that the manifest declares and that has no stored decision **is prompted for**. The extension's request is held until the user answers. The prompt names the extension and describes the request in words, for example *"Acme Tools wants to read files under /home/u/project/notes.txt"*, not as a Rust value. The answer, including a refusal, is stored as described [below](#where-a-decision-lives). If refusals were not stored, the prompt would repeat, and a user might allow the request only to stop the prompts.
 
-Only one question is open at a time. A second extension asking while one is on
-screen is refused, with that as the reason: a queue would mean answering about a
-request that was abandoned long before anyone read it.
+Only one prompt is open at a time. A request from a second extension while a prompt is shown is refused with that reason. A queue would ask about requests that may have been abandoned long before the user reads them.
 
-A decision can be taken back. **Extensions: Forget a Permission Decision** in the
-command palette lists what has been decided — *"Acme Tools: refused — read files
-under /home/u/project/notes.txt"* — and choosing one makes that extension ask
-again the next time it wants it. Without that, a `deny` chosen in a hurry means
-the extension quietly fails from then on — and now that decisions are written
-down, "then on" outlives the session — with nothing to undo it and no hint that a
-decision is the reason.
+A decision can be revoked. **Extensions: Forget a Permission Decision** in the command palette lists stored decisions, for example *"Acme Tools: refused — read files under /home/u/project/notes.txt"*. Choosing one makes that extension prompt again the next time it needs the capability. Without this command, a `deny` chosen by mistake would make the extension fail from then on, including in later sessions because decisions are stored, with no way to undo it and no indication that a decision is the cause.
 
 ### Where a decision lives
 
-`permissions.json`, next to `settings.json`, `0600` on Unix. Nothing in it is
-secret; what matters is the other direction — anything that can write that file
-can grant capabilities to code that runs as you, so it must not be one another
-account can edit. It is written after every answer rather than at shutdown,
-because being killed is an ordinary way for an editor to end.
+`permissions.json`, next to `settings.json`, with mode `0600` on Unix. The file contains no secrets. The mode protects against writes: anything that can write the file can grant capabilities to code running as you, so other accounts must not be able to edit it. The file is written after every answer instead of at shutdown, because an editor can be killed.
 
-**A stored decision is a decision about one version of one extension.** Each entry
-records the version it was made for, and after an update the user is asked again —
-with the reason said, so it does not look like deco forgot. A grant on disk
-otherwise outlives the reason it was given: an extension allowed to read the
-workspace at 1.0.0 is different code at 1.1.0, and carrying the answer across
-would be allowing something without having seen what it now does. An update
-therefore costs a prompt, which is the intended price.
+**A stored decision applies to one version of one extension.** Each entry records the extension version it was made for. After an update, the user is prompted again, and the prompt states the reason so that it does not look as if deco lost the decision. An extension allowed to read the workspace at 1.0.0 is different code at 1.1.0, so carrying the decision across versions would allow code the user has not reviewed. An update therefore requires a new prompt, by design.
 
-A damaged permissions file is reported and treated as empty. Refusing to start an
-editor over one would be the worse failure; being asked again is recoverable.
+A damaged permissions file is reported and treated as empty. Refusing to start the editor would be a worse failure, while being prompted again is recoverable.
 
-`deco --print-config` prints which sandbox you would get, including the resolved
-runtime and the pinned image — or the reason there is none, which is the state in
-which extensions refuse to start.
+`deco --print-config` shows which sandbox would be used, including the resolved runtime and the pinned image, or the reason no sandbox is available. In that case extensions do not start.
 
 ## What is still not connected
 
-The table above is the whole mediated surface. No activation on opening a file or
-on startup. No editor state, no quick pick, no
-tree views, no webviews, no debug adapters. `process`, `net`, `env`, `secrets` and
-`openExternal` are declared and brokered and then refused by name at the last
-step, because nothing implements them.
+The table above lists all mediated APIs. There is no activation on file open or on startup. There is no editor state, quick pick, tree view, webview or debug adapter support. `process`, `net`, `env`, `secrets` and `openExternal` are declared and brokered, but are refused by name at the last step because nothing implements them.
 
 ### An edit goes through the editor, not past it
 
 `workspace.applyEdit` takes a path and a list of LSP-shaped edits, and where they
 land depends on whether that file is open:
 
-- **Open** — in any tab, not only the one on screen — and the edits go to its
-  *buffer*. They become one undo step, the document goes unsaved, and nothing is
-  written. That is VS Code's behaviour and it is also the only correct one: a
-  document with unsaved changes would overwrite anything written past it the next
-  time it was saved, so an edit that went to the file would be an edit that
-  silently did not happen.
-- **Not open**, and the file is the document: read, edited and written through the
-  same connection as everything else.
+- **Open** in any tab, not only the visible one: the edits go to its *buffer*. They become one undo step, the document becomes unsaved, and nothing is written. This matches VS Code. Writing to the file instead would be incorrect, because the next save of the document with unsaved changes would overwrite the edit.
+- **Not open**: the file is read, edited and written through the same connection as other file operations.
 
-Overlapping edits are rejected without changing the document because their result is not well-defined. Language-server edits use the same validation.
-An empty list is a success — an extension that computed no changes has not
-failed.
+Overlapping edits are rejected without changing the document because their result is not well-defined. Language-server edits use the same validation. An empty list succeeds, because an extension that computes no changes has not failed.
 
 ### What a write refuses
 
-- **`useTrash` is refused, not ignored.** deco has no trash, and an extension
-  that asked for something recoverable and got an unrecoverable deletion instead
-  would have no way to tell.
-- **A directory with anything in it needs `recursive`**, which is the caller's own
-  word. Nothing here supplies it for them, because that is the difference between
-  "delete this" and "delete everything under this".
-- **A rename or copy is checked at both ends.** The broker checks the target,
-  which is the one capability a request can carry; the source is a write too —
-  moving a file out of a directory changes that directory — so deco checks it as
-  well, and it has to be already covered rather than newly asked about.
-- **A link is removed as a link.** Deleting resolves the path only to check where
-  it is, then removes the name that was given: resolving *and then deleting* would
-  remove the file a link points at and leave the link, which is the wrong file and
-  says nothing about it. On the remote a link pointing out of the workspace cannot
-  be deleted through at all — every path there is confined after being
-  canonicalised, and one exception is how a rule stops being one.
+- **`useTrash` is refused, not ignored.** deco has no trash. If the option were ignored, an extension that requested a recoverable deletion would get an unrecoverable one without being told.
+- **A non-empty directory requires `recursive`**, set by the caller. deco does not add it, because it distinguishes deleting one entry from deleting everything under it.
+- **A rename or copy is checked at both paths.** The broker checks the target, which is the only capability a request can carry. The source is also a write, because moving a file out of a directory changes that directory, so deco checks it too. The source must already be covered by an existing decision; it does not trigger a new prompt.
+- **A link is removed as a link.** Deletion resolves the path only to check its location, then removes the given name. Resolving the path and deleting the result would delete the link's target, leave the link, and report nothing. On the remote, a link that points outside the workspace cannot be used for deletion at all, because every path there is confined after canonicalisation, without exceptions.
 
-A symbolic link is reported as a link rather than as what it points at — 65 for a
-link to a file, in VS Code's numbering — because following one is how a listing
-starts describing files outside the scope that was granted.
+A symbolic link is reported as a link, not as its target (65 for a link to a file, in VS Code's numbering). Following links would let a listing describe files outside the granted scope.
 
 ## Zero npm dependencies
 

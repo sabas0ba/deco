@@ -1,38 +1,35 @@
 //! Reaching a port on the remote from this machine.
 //!
-//! A dev server running on the remote's `:3000` is not reachable from here —
-//! that is the whole problem, and it is why every remote editor grows port
-//! forwarding.
+//! A service listening on the remote's `:3000`, such as a dev server, is not
+//! reachable from the local machine without port forwarding.
 //!
 //! # Why deco is its own tunnel
 //!
-//! `ssh -L` exists and does this well, and it is used by nothing here, because
-//! it is available on exactly one of deco's three transports. `docker exec`
-//! cannot forward a port at all, and a WSL distribution has no `-L` either. A
-//! feature that worked over SSH and not over containers would be the kind of
-//! half-thing this project keeps refusing to ship.
+//! `ssh -L` is not used because it is available on only one of deco's three
+//! transports. `docker exec` cannot forward a port, and WSL has no equivalent of
+//! `-L`. Forwarding is meant to work on every transport, not only SSH.
 //!
-//! So the remote's deco is the tunnel: [`forward_command`] runs
+//! The remote deco therefore acts as the tunnel. [`forward_command`] runs
 //! `deco --forward-to 127.0.0.1:3000 --stdio`, which connects to that port and
-//! pipes it to its own stdin and stdout. Every transport can already carry a
-//! program's stdio — that is how the file server works — so this works over all
-//! three of them, with no `socat`, no `nc`, and nothing on the remote that deco
-//! did not put there.
+//! pipes it to its own stdin and stdout. Every transport already carries a
+//! program's stdio, as the file server does, so forwarding works over all three
+//! without `socat`, `nc` or any other tool on the remote.
 //!
-//! The cost is a process per connection. Over SSH that would be an
-//! authentication round-trip each time, which is why
-//! [`TransportOptions::multiplex`](crate::TransportOptions) defaults on: with a
-//! control socket the second connection onwards is local work.
+//! Each connection starts a new process. Over SSH that would mean an
+//! authentication round-trip per connection, so
+//! [`TransportOptions::multiplex`](crate::TransportOptions) is on by default.
+//! With a control socket, later connections reuse the existing SSH session.
 //!
-//! # What it will not reach
+//! # Reachable addresses
 //!
-//! Only loopback addresses on the remote. `deco --forward-to 10.0.0.5:5432`
-//! is refused, because a deco that connects anywhere its host can reach is a
-//! proxy into the remote's private network, and that is an authority nobody
-//! asked it to have. It is the same rule the file server follows about paths.
+//! Only loopback addresses on the remote are reachable.
+//! `deco --forward-to 10.0.0.5:5432` is rejected, because otherwise deco would
+//! act as a proxy into the remote's private network. The file server applies the
+//! same restriction to paths.
 //!
-//! The near end listens on loopback too, and that is the more important half:
-//! binding `0.0.0.0` would put the remote's database on this machine's network.
+//! The local side also listens only on loopback. This is the more important
+//! restriction: binding `0.0.0.0` would expose the remote service, such as a
+//! database, to this machine's network.
 
 use std::io;
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
@@ -42,7 +39,7 @@ use std::thread;
 
 use crate::transport::Command;
 
-/// Which port here stands for which port there.
+/// A mapping from a local port to a remote port.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PortSpec {
     /// The port to listen on, on this machine.
@@ -54,13 +51,13 @@ pub struct PortSpec {
 /// Why a `--forward` value was rejected.
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 pub enum PortSpecError {
-    /// A number was not a number, or was out of range.
+    /// A value was not a number, or was out of range.
     #[error("`{value}` is not a port number")]
     NotAPort {
         /// What was written.
         value: String,
     },
-    /// Port 0 means "any free port", which is not a thing to forward.
+    /// Port 0 means "any free port" and cannot be forwarded.
     #[error("port 0 is not a port to forward")]
     Zero,
     /// More than one colon, so it is not `local:remote`.
@@ -74,8 +71,8 @@ pub enum PortSpecError {
 impl PortSpec {
     /// Parses `3000` or `8080:3000`.
     ///
-    /// A bare number means the same port at both ends, which is what a person
-    /// means nine times out of ten and is what VS Code shows by default.
+    /// A bare number uses the same port locally and remotely. This is the
+    /// common case and matches VS Code's default.
     pub fn parse(value: &str) -> Result<Self, PortSpecError> {
         let port = |text: &str| -> Result<u16, PortSpecError> {
             let port: u16 = text.trim().parse().map_err(|_| PortSpecError::NotAPort {
@@ -123,9 +120,9 @@ pub fn forward_command(server_path: &str, port: u16) -> Vec<String> {
     vec![
         server_path.to_owned(),
         "--forward-to".to_owned(),
-        // Spelled out rather than passed as a bare port so that the remote's
-        // refusal has an address to name, and so that the argument means the
-        // same thing read from a process list.
+        // A full address rather than a bare port, so that the remote's error
+        // message can name it and the process list shows an unambiguous
+        // argument.
         format!("127.0.0.1:{port}"),
         "--stdio".to_owned(),
     ]
@@ -146,8 +143,8 @@ pub enum ForwardError {
 
 /// A port on this machine standing in for one on the remote.
 ///
-/// Lives until it is dropped, which is what stops the listener: a forward is
-/// tied to the session that asked for it rather than to the process.
+/// Dropping it stops the listener, so a forward lasts as long as the session
+/// that created it rather than the whole process.
 #[derive(Debug)]
 pub struct Forward {
     spec: PortSpec,
@@ -160,12 +157,12 @@ impl Forward {
     ///
     /// `command` is the transport command that runs [`forward_command`] on the
     /// remote. It is cloned per connection because each connection needs its own
-    /// process — a single pipe cannot carry two conversations without a protocol
-    /// on top, and the point of this design is that there is no protocol on top.
+    /// process. A single pipe cannot carry multiple connections without a
+    /// multiplexing protocol, and this design intentionally has none.
     pub fn start(command: Command, spec: PortSpec) -> Result<Self, ForwardError> {
-        // Loopback, never `0.0.0.0`: the far end of this is a service on someone
-        // else's machine, and putting it on this machine's network is not
-        // something a person asked for by typing a port number.
+        // Bind to loopback, never `0.0.0.0`. The forwarded service runs on the
+        // remote machine, and requesting a forward must not expose it to this
+        // machine's network.
         let listener =
             TcpListener::bind(("127.0.0.1", spec.local)).map_err(|error| ForwardError::Listen {
                 port: spec.local,
@@ -187,9 +184,8 @@ impl Forward {
                 }
                 let Ok(stream) = stream else { continue };
                 let command = command.clone();
-                // Detached: a connection outlives the accept loop's interest in
-                // it, and there is nothing to join — when the socket closes the
-                // thread ends.
+                // Detached. The accept loop does not track connections, and the
+                // thread ends when the socket closes.
                 thread::spawn(move || {
                     let _ = carry(&command, stream);
                 });
@@ -203,7 +199,7 @@ impl Forward {
         })
     }
 
-    /// What this forward is, for saying so.
+    /// The port mapping, for display.
     pub fn spec(&self) -> PortSpec {
         self.spec
     }
@@ -217,18 +213,18 @@ impl Forward {
 impl Drop for Forward {
     fn drop(&mut self) {
         self.running.store(false, Ordering::SeqCst);
-        // The accept loop is blocked in `accept`, and a flag alone will not wake
-        // it. Connecting to it does, and the loop then sees the flag and stops.
+        // The accept loop is blocked in `accept`, and setting the flag does not
+        // wake it. A connection wakes it, and the loop then checks the flag and
+        // stops.
         let _ = TcpStream::connect(self.address);
     }
 }
 
 /// Copies `from` into `to`, flushing every chunk.
 ///
-/// [`std::io::copy`] is the obvious thing to write here and is wrong at one end
-/// of this: a process's stdout is line buffered, so a reply with no newline in
-/// it — which is most of what a socket carries — sits in the buffer while the
-/// client waits for it. A tunnel cannot hold bytes back until it sees a line.
+/// [`std::io::copy`] is not used because a process's stdout is line buffered.
+/// Data without a newline, which is most socket traffic, would stay in the
+/// buffer while the client waits. A tunnel must forward bytes immediately.
 pub fn pipe(from: &mut dyn io::Read, to: &mut dyn io::Write) -> io::Result<u64> {
     let mut buffer = [0u8; 32 * 1024];
     let mut total = 0;
@@ -253,8 +249,8 @@ fn carry(command: &Command, stream: TcpStream) -> io::Result<()> {
         .args(&command.args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        // Inherited for the reason the client's is: `ssh` writes its diagnosis
-        // there, and swallowing it would turn every failure into silence.
+        // Inherited for the same reason as in the client: `ssh` writes its
+        // diagnostics there, and capturing them would hide failures.
         .stderr(Stdio::inherit())
         .spawn()?;
     let mut to_remote = child.stdin.take().expect("stdin was piped");
@@ -264,14 +260,14 @@ fn carry(command: &Command, stream: TcpStream) -> io::Result<()> {
 
     let upstream = thread::spawn(move || {
         let _ = pipe(&mut from_client, &mut to_remote);
-        // Dropped so the remote sees end-of-input and closes its own socket,
-        // rather than both ends waiting for the other.
+        // Dropped so the remote receives end-of-input and closes its socket,
+        // instead of both sides waiting for each other.
         drop(to_remote);
     });
 
     let _ = pipe(&mut from_remote, &mut to_client);
-    // Whichever direction ended, the connection is over. Shutting the socket
-    // down is what unblocks the thread above if it is still reading from it.
+    // When either direction ends, the connection is over. Shutting down the
+    // socket unblocks the thread above if it is still reading from it.
     let _ = to_client.shutdown(Shutdown::Both);
     let _ = child.kill();
     let _ = child.wait();
@@ -279,18 +275,18 @@ fn carry(command: &Command, stream: TcpStream) -> io::Result<()> {
     Ok(())
 }
 
-/// Resolves what `--forward-to` was given, refusing anything not loopback.
+/// Resolves the `--forward-to` argument and rejects non-loopback addresses.
 ///
-/// This runs on the *remote*, and is the rule that keeps a deco server from
-/// being a way into the network it sits in. A name is resolved first and then
-/// every address it resolved to is checked, because `localhost` is only
-/// loopback by convention — a remote's `/etc/hosts` can say otherwise, and a
-/// check on the spelling rather than the address would miss it.
+/// This runs on the remote and prevents a deco server from giving access to
+/// the network it runs in. The name is resolved first and every resulting
+/// address is checked. `localhost` is loopback only by convention, and the
+/// remote's `/etc/hosts` can map it elsewhere, so checking the name alone is
+/// not sufficient.
 pub fn resolve_loopback(target: &str) -> Result<SocketAddr, String> {
     use std::net::ToSocketAddrs;
 
-    // A bare port is the same shorthand `forward_command` avoids writing, taken
-    // here because a person may well type it by hand.
+    // `forward_command` never sends a bare port, but it is accepted here for
+    // manual use.
     let target = if target.chars().all(|c| c.is_ascii_digit()) && !target.is_empty() {
         format!("127.0.0.1:{target}")
     } else {
@@ -345,7 +341,8 @@ mod tests {
                 value: "http".to_owned()
             })
         );
-        // 65536 does not fit in a port, and saying so beats wrapping to 0.
+        // 65536 is out of range and is reported as an error rather than
+        // wrapping to 0.
         assert_eq!(
             PortSpec::parse("65536"),
             Err(PortSpecError::NotAPort {
@@ -364,8 +361,8 @@ mod tests {
 
     #[test]
     fn the_remote_command_names_a_loopback_address() {
-        // Not a bare port: the address is what the remote's refusal quotes, and
-        // it is what someone reading `ps` on that machine sees.
+        // A full address rather than a bare port. The remote's error message
+        // quotes it, and `ps` on the remote shows it.
         assert_eq!(
             forward_command("deco", 3000),
             ["deco", "--forward-to", "127.0.0.1:3000", "--stdio"]
@@ -383,8 +380,8 @@ mod tests {
             "127.0.0.1:3000".parse::<SocketAddr>().expect("an address")
         );
 
-        // The refusal that matters: a remote deco that dialled this would be a
-        // route into whatever network the remote sits in.
+        // A remote deco that connected here would give access to the remote's
+        // network.
         let error = resolve_loopback("10.0.0.5:5432").expect_err("a refusal");
         assert!(error.contains("loopback"), "{error}");
         assert!(error.contains("10.0.0.5"), "{error}");
@@ -392,10 +389,9 @@ mod tests {
 
     #[test]
     fn a_forward_listens_on_loopback_and_nowhere_else() {
-        // The single most important line in this module, and the one nothing
-        // else would catch if it were changed to `0.0.0.0` for convenience:
-        // binding anywhere else puts the remote's service on this machine's
-        // network, reachable by every other machine that can route here.
+        // No other test catches a change of the bind address to `0.0.0.0`.
+        // Binding anywhere other than loopback exposes the remote service to
+        // every machine that can route to this one.
         let forward = Forward::start(
             Command {
                 program: "true".to_owned(),
@@ -416,8 +412,8 @@ mod tests {
 
     #[test]
     fn a_forward_stops_listening_when_it_is_dropped() {
-        // Otherwise a session that ends leaves the port held until the process
-        // does, and the next `--forward 3000` fails for no visible reason.
+        // Otherwise the port stays held after the session ends, until the
+        // process exits, and the next `--forward 3000` fails.
         let forward = Forward::start(
             Command {
                 program: "true".to_owned(),
@@ -433,8 +429,8 @@ mod tests {
         assert!(TcpStream::connect(address).is_ok());
         drop(forward);
 
-        // The accept loop needs a moment to notice, and polling for it beats a
-        // sleep that is either flaky or slow.
+        // The accept loop takes a moment to stop. Polling avoids a fixed sleep
+        // that would be either flaky or slow.
         let freed = (0..100).any(|_| {
             std::thread::sleep(std::time::Duration::from_millis(10));
             TcpListener::bind(address).is_ok()

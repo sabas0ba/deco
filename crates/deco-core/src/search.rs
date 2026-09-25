@@ -1,10 +1,9 @@
 //! Finding literal text in a buffer.
 //!
-//! Literal, not regular expressions. That is what `ctrl+d` and `ctrl+shift+l`
-//! search for — the text you have selected, matched exactly — and it is what a
-//! find bar defaults to. A regex mode would need its own escaping rules and its
-//! own error reporting for an invalid pattern; this module deliberately does not
-//! reach for either.
+//! Search is literal and does not support regular expressions. `ctrl+d` and
+//! `ctrl+shift+l` search for the selected text exactly, and a find bar defaults
+//! to literal search. A regex mode would need its own escaping rules and error
+//! reporting for invalid patterns; this module provides neither.
 //!
 //! # Positions, not byte offsets
 //!
@@ -14,7 +13,7 @@
 //! search would find a match starting in the middle of a multi-byte character
 //! and produce a range that cannot be a valid position.
 //!
-//! # Word boundaries, and one deliberate divergence from VS Code
+//! # Word boundaries and a difference from VS Code
 //!
 //! [`SearchOptions::whole_word`] uses the editor's own word rule: a word
 //! character is alphanumeric or `_`. The constraint applies **only to the ends of
@@ -25,13 +24,13 @@
 //! - `(` — neither end is a word character, so there is no boundary to violate
 //!   and it matches everywhere.
 //!
-//! VS Code implements the option as the regex `\bneedle\b`, which is the same
-//! thing for any needle beginning and ending in a word character — every needle
-//! anyone types with the option on. It differs for a needle like `(`: `\b(`
-//! requires a *transition*, so VS Code finds the bracket in `f(x)` and not the
-//! one in ` ( `. That is inherited from `\b` rather than intended, and matching
-//! it would mean "whole word" quietly excluding results for a needle that has no
-//! words in it. deco does not copy it.
+//! VS Code implements the option as the regex `\bneedle\b`. The result is the
+//! same for any needle that begins and ends with a word character, which covers
+//! typical use of the option. It differs for a needle like `(`: `\b(` requires a
+//! *transition*, so VS Code finds the bracket in `f(x)` and not the one in
+//! ` ( `. This is a side effect of `\b`. deco does not reproduce it, because
+//! "whole word" would then exclude results for a needle that contains no word
+//! characters.
 
 use crate::position::{Position, Range};
 use crate::Buffer;
@@ -48,8 +47,8 @@ pub struct SearchOptions {
 impl SearchOptions {
     /// Case-sensitive, matching anywhere.
     ///
-    /// What `ctrl+d` uses: the user selected exactly this text, so matching a
-    /// different case would be a surprise.
+    /// Used by `ctrl+d`: the user selected exactly this text, so a match with
+    /// different case is not expected.
     pub const EXACT: Self = Self {
         case_sensitive: true,
         whole_word: false,
@@ -58,19 +57,18 @@ impl SearchOptions {
 
 /// Every match of `needle` in `buffer`, in document order.
 ///
-/// An empty needle matches nothing. Returning a match at every position would be
-/// technically defensible and useless: `ctrl+shift+l` on an empty selection would
-/// put a cursor on every character in the file.
+/// An empty needle matches nothing. Otherwise `ctrl+shift+l` on an empty
+/// selection would put a cursor on every character in the file.
 pub fn find_all(buffer: &Buffer, needle: &str, options: SearchOptions) -> Vec<Range> {
     if needle.is_empty() {
         return Vec::new();
     }
 
-    // Both sides folded once, rather than per comparison. `to_lowercase` rather
-    // than `to_ascii_lowercase`, so `Straße` and `STRASSE` behave the way the
-    // user's language does — Unicode case folding can change length, which is
-    // exactly why the *positions* come from the haystack's own characters below
-    // and never from the folded copy.
+    // Both sides are folded once, not per comparison. `to_lowercase` is used
+    // instead of `to_ascii_lowercase` so that non-ASCII text such as `Straße`
+    // and `STRASSE` is folded by Unicode rules. Unicode case folding can change
+    // length, so the *positions* below come from the haystack's own characters,
+    // not from the folded copy.
     let haystack: Vec<char> = buffer.text().chars().collect();
     let needle_chars: Vec<char> = needle.chars().collect();
 
@@ -85,10 +83,9 @@ pub fn find_all(buffer: &Buffer, needle: &str, options: SearchOptions) -> Vec<Ra
         needle_chars.iter().flat_map(|c| c.to_lowercase()).collect()
     };
 
-    // Case folding that changes length would misalign the two, and a misaligned
-    // position is a range in the wrong place — worse than a missed match. When
-    // it happens, fall back to a case-sensitive search rather than reporting
-    // something wrong.
+    // Case folding that changes length would misalign the two copies and
+    // produce ranges in the wrong place, which is worse than a missed match. In
+    // that case, fall back to a case-sensitive search.
     let aligned =
         folded_haystack.len() == haystack.len() && folded_needle.len() == needle_chars.len();
     let (folded_haystack, folded_needle) = if aligned {
@@ -142,8 +139,8 @@ fn is_word_char(c: char) -> bool {
 
 /// The first match at or after `from`, wrapping to the start of the document.
 ///
-/// Wrapping is what makes `ctrl+d` usable: reaching the last occurrence and
-/// pressing again returns to the first rather than doing nothing.
+/// With wrapping, pressing `ctrl+d` after the last occurrence returns to the
+/// first occurrence instead of doing nothing.
 pub fn find_next(
     buffer: &Buffer,
     needle: &str,
@@ -183,9 +180,8 @@ pub fn word_at(buffer: &Buffer, pos: Position) -> Option<Range> {
     let line = buffer.line_content(pos.line as usize)?.to_string();
     let chars: Vec<char> = line.chars().collect();
 
-    // The column is in UTF-16 units and the scan is in characters, so the two
-    // have to be reconciled rather than assumed equal — they differ on any line
-    // containing an emoji.
+    // The column is in UTF-16 units and the scan is in characters. The two
+    // differ on any line containing an emoji, so convert between them.
     let mut column = 0usize;
     let mut units = 0u32;
     while column < chars.len() && units < pos.character {
@@ -259,9 +255,8 @@ mod tests {
 
     #[test]
     fn an_empty_needle_matches_nothing() {
-        // A match at every position is technically defensible and useless:
-        // ctrl+shift+l on an empty selection would put a cursor on every
-        // character in the file.
+        // Otherwise ctrl+shift+l on an empty selection would put a cursor on
+        // every character in the file.
         assert!(find_all(&buffer("anything"), "", SearchOptions::EXACT).is_empty());
     }
 
@@ -295,8 +290,8 @@ mod tests {
 
     #[test]
     fn a_case_insensitive_match_reports_the_haystacks_own_positions() {
-        // The folded copy is only for comparing; a position taken from it would
-        // be in the wrong place the moment folding changed a length.
+        // The folded copy is used only for comparison. A position taken from it
+        // would be wrong whenever folding changed a length.
         let b = buffer("xxFOOxx");
         let matches = find_all(
             &b,
@@ -334,11 +329,9 @@ mod tests {
 
     #[test]
     fn whole_word_does_not_constrain_a_needle_with_no_word_characters() {
-        // A bracket has no word boundary to violate, so every one matches. This
-        // is the one place deco diverges from VS Code, which implements the
-        // option as `\bneedle\b` and so finds the bracket in `f(x)` but not the
-        // one in ` ( ` — inherited from `\b` rather than intended. See the
-        // module docs.
+        // A bracket has no word-character end, so every bracket matches. VS
+        // Code differs here: it implements the option as `\bneedle\b` and finds
+        // the bracket in `f(x)` but not the one in ` ( `. See the module docs.
         let options = SearchOptions {
             case_sensitive: true,
             whole_word: true,
@@ -382,7 +375,7 @@ mod tests {
 
     #[test]
     fn find_next_wraps_to_the_start() {
-        // What makes ctrl+d usable: past the last occurrence, return to the first.
+        // Used by ctrl+d: after the last occurrence, return to the first.
         let b = buffer("foo bar foo\n");
         assert_eq!(
             find_next(&b, "foo", at(0, 9), SearchOptions::EXACT).map(|r| r.start),
@@ -397,8 +390,8 @@ mod tests {
 
     #[test]
     fn find_next_from_a_matchs_own_start_returns_that_match() {
-        // So "find the match at the cursor" and "find the next one" are
-        // different calls rather than the same one with an off-by-one.
+        // Finding the match at the cursor and finding the next match are
+        // separate calls, not one call with an offset of one.
         let b = buffer("foo foo\n");
         assert_eq!(
             find_next(&b, "foo", at(0, 4), SearchOptions::EXACT).map(|r| r.start),
@@ -464,8 +457,8 @@ mod tests {
 
     #[test]
     fn a_caret_in_whitespace_is_on_no_word() {
-        // Distinct from an empty word: ctrl+d has nothing to select here, and
-        // guessing the nearest word would move the user's cursor unbidden.
+        // Distinct from an empty word: ctrl+d has nothing to select here.
+        // Selecting the nearest word would move the cursor unexpectedly.
         let b = buffer("a    b\n");
         assert_eq!(word_at(&b, at(0, 3)), None);
     }

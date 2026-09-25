@@ -1,25 +1,24 @@
-//! Starting a host process and talking to it.
+//! Starting a host process and exchanging messages with it.
 //!
-//! The piece that was missing between [`crate::host::build_spec`], which says what
-//! command to run, and [`crate::protocol`], which says what the two ends say to each
-//! other. Everything below it was built and tested against itself; nothing started a
-//! process.
+//! [`crate::host::build_spec`] defines the command to run, and [`crate::protocol`]
+//! defines the messages. This module starts the process and carries the messages
+//! between the two sides.
 //!
 //! # The framing
 //!
-//! One JSON object per line, which is what the Node side writes. Not
-//! `Content-Length` framing like the Language Server Protocol: there is no
-//! specification to match here, both ends are deco's, and a line is the format a
-//! reader can resynchronise from — a bad frame costs one message rather than the
-//! rest of the stream.
+//! One JSON object per line, which is what the Node side writes. This is not
+//! `Content-Length` framing like the Language Server Protocol: there is no external
+//! specification to match, since deco owns both sides. A reader can resynchronise
+//! at the next newline, so a bad frame loses one message instead of the rest of the
+//! stream.
 //!
 //! # Where the capability model is applied
 //!
-//! [`dispatch`] is the only way an inbound request reaches the editor, and it is a
-//! pure function of the broker and the request so that every path through it can be
-//! tested without a process. It fails closed twice over: a method
-//! [`crate::protocol::required_capability`] does not recognise is refused, and so is
-//! a capability the manifest never declared.
+//! [`dispatch`] is the only path from an inbound request to the editor. It is a
+//! pure function of the broker and the request, so every path through it can be
+//! tested without a process. It denies in two cases: a method that
+//! [`crate::protocol::required_capability`] does not recognise, and a capability
+//! the manifest did not declare.
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
@@ -34,25 +33,25 @@ use crate::capability::{Broker, CheckResult};
 use crate::host::{HostSpec, PROTOCOL_VERSION};
 use crate::protocol::{required_capability, ErrorCode, Message, Notification, Request, Response};
 
-/// What the reader saw.
+/// An event from the reader.
 #[derive(Debug, Clone, PartialEq)]
 pub enum HostEvent {
     /// A message arrived.
     Message(Message),
-    /// A line could not be understood.
+    /// A line could not be decoded.
     ///
     /// Not terminal, unlike a length-prefixed framing error: the next newline is a
-    /// known position, so one unreadable line costs one message.
+    /// known position, so one unreadable line loses one message.
     Garbled(String),
-    /// The stream ended, which means the process is going or gone.
+    /// The stream ended, which means the process is exiting or has exited.
     Closed,
 }
 
 /// The last lines the host wrote to stderr.
 ///
-/// Bounded, because a host that logs per keystroke would otherwise grow this for the
-/// length of the session. The *last* lines are kept rather than the first: when a
-/// process dies, the reason is at the end.
+/// Bounded, because a host that logs on every keystroke would otherwise grow this
+/// for the whole session. The *last* lines are kept, not the first, because the
+/// reason a process exits is usually at the end.
 #[derive(Debug, Default)]
 pub struct ErrorLog {
     lines: std::collections::VecDeque<String>,
@@ -83,13 +82,13 @@ impl ErrorLog {
 
 /// Reads newline-delimited JSON until the stream ends, sending each message on.
 ///
-/// Returns when the stream closes or the receiver hangs up. A line that does not
-/// parse is reported and skipped rather than ending the read: the framing is a
-/// newline, so the next message starts at a position that is still known.
+/// Returns when the stream closes or the receiver is dropped. A line that does not
+/// parse is reported and skipped instead of ending the read. The framing is a
+/// newline, so the next message starts at a known position.
 pub fn pump_messages(reader: impl BufRead, tx: &Sender<HostEvent>) {
     for line in reader.lines() {
         let Ok(line) = line else {
-            // An I/O error on the pipe means the process is gone.
+            // An I/O error on the pipe means the process has exited.
             break;
         };
         if line.trim().is_empty() {
@@ -108,8 +107,8 @@ pub fn pump_messages(reader: impl BufRead, tx: &Sender<HostEvent>) {
 
 /// Reads lines until the stream ends, appending each to a shared log.
 ///
-/// Invalid UTF-8 is replaced rather than fatal: this is a diagnostic channel, and a
-/// host that logs a stray byte should not cost the log.
+/// Invalid UTF-8 is replaced instead of ending the read. This is a diagnostic
+/// channel, and a stray byte from the host must not discard the log.
 pub fn pump_lines(reader: impl BufRead, log: &Mutex<ErrorLog>) {
     for line in reader.split(b'\n') {
         let Ok(line) = line else {
@@ -141,14 +140,14 @@ pub enum Dispatch {
 
 /// Decides what happens to an inbound request.
 ///
-/// The only way a request reaches the editor, and a pure function so that every path
-/// through it is testable without a process. It fails closed twice:
+/// The only path from a request to the editor. It is a pure function, so every path
+/// through it is testable without a process. It denies in two cases:
 ///
-/// - a method [`required_capability`] does not recognise is refused as unknown, so a
-///   host built from a newer deco cannot reach an older one's editor surface by
-///   naming something it has never heard of;
-/// - a capability the manifest did not declare is refused by the broker, whatever the
-///   user has agreed to since — the declaration is a ceiling and not a starting point.
+/// - a method that [`required_capability`] does not recognise is rejected as
+///   unknown, so a host from a newer deco cannot reach an older deco's editor
+///   surface through a method the older version does not know;
+/// - a capability the manifest did not declare is denied by the broker, regardless
+///   of later user grants. The declaration is an upper bound.
 pub fn dispatch(broker: &Broker, request: &Request) -> Dispatch {
     let Ok(needed) = required_capability(&request.method, &request.params) else {
         return Dispatch::Refused(Response::err(
@@ -157,8 +156,8 @@ pub fn dispatch(broker: &Broker, request: &Request) -> Dispatch {
             format!("deco does not know the method `{}`", request.method),
         ));
     };
-    // No capability needed: a method that only touches state deco already owns and
-    // shows to the user.
+    // No capability needed: the method only affects state that deco owns and shows
+    // to the user.
     let Some(needed) = needed else {
         return Dispatch::Allowed;
     };
@@ -175,8 +174,8 @@ pub fn dispatch(broker: &Broker, request: &Request) -> Dispatch {
 
 /// Whether a `$/ready` notification agrees with deco about the protocol.
 ///
-/// Its own function so that the rule can be tested without a process, and so the test
-/// exercises the same code the handshake does rather than a copy of it.
+/// A separate function so the rule can be tested without a process, using the same
+/// code as the handshake.
 pub fn agrees_on_protocol(ready: &Notification) -> Result<(), ReadyError> {
     let claimed = ready
         .params
@@ -195,22 +194,22 @@ pub fn agrees_on_protocol(ready: &Notification) -> Result<(), ReadyError> {
 /// Why a host could not be started.
 #[derive(Debug)]
 pub enum SpawnError {
-    /// The program could not be run at all.
+    /// The program could not be run.
     Launch {
         /// The program that was tried.
         program: String,
-        /// What the operating system said.
+        /// The operating system error.
         error: std::io::Error,
     },
     /// A pipe to the process could not be taken.
     Pipes,
-    /// The program was named rather than located.
+    /// The program is a bare name, not an absolute path.
     ///
-    /// The host's environment is built from nothing, so it has no `PATH` for the
-    /// operating system to search — a bare `node` fails as "no such file", which is
-    /// true and unhelpful. Refused here instead, where the reason can be said.
+    /// The host's environment is built from scratch, so it has no `PATH` for the
+    /// operating system to search. A bare `node` would fail as "no such file", which
+    /// does not explain the cause. This error states the cause instead.
     NotAbsolute {
-        /// What was asked for.
+        /// The configured program.
         program: String,
     },
 }
@@ -236,19 +235,19 @@ impl std::error::Error for SpawnError {}
 /// Why the host never became usable.
 #[derive(Debug, PartialEq)]
 pub enum ReadyError {
-    /// It did not say `$/ready` in time.
+    /// It did not send `$/ready` in time.
     TimedOut {
-        /// How long was allowed.
+        /// The timeout.
         after_ms: u64,
     },
-    /// It exited, or its pipe closed, first.
+    /// It exited, or its pipe closed, before sending `$/ready`.
     Closed,
-    /// It said `$/ready` with a protocol version deco does not speak.
+    /// It sent `$/ready` with a protocol version deco does not support.
     ///
-    /// The Node side refuses first, so reaching this means the two disagree about
-    /// which of them is wrong — still better than half-speaking an older protocol.
+    /// The Node side checks the version first, so this is reached only when the two
+    /// sides' checks disagree. Rejecting is safer than using a mismatched protocol.
     Protocol {
-        /// What the host claimed.
+        /// The version the host reported.
         host: String,
     },
 }
@@ -270,8 +269,8 @@ impl std::fmt::Display for ReadyError {
 
 /// How long to wait for a host to exit on its own before killing it.
 ///
-/// Long enough for `deactivate` to finish something short, short enough that quitting
-/// the editor is not held up by an extension that will not stop.
+/// Long enough for a short `deactivate` to finish, and short enough that an
+/// extension that does not stop does not delay quitting the editor.
 pub const SHUTDOWN_GRACE: Duration = Duration::from_millis(500);
 
 /// The request that loads an extension and runs its `activate`.
@@ -279,8 +278,8 @@ pub const ACTIVATE: &str = "$/activate";
 
 /// The request that runs a command the extension registered.
 ///
-/// Named here rather than written at each call site because both ends have to
-/// agree on it, and the other end is `extension-host/src/vscode.js`.
+/// Defined once here because both sides must use the same name. The other side is
+/// `extension-host/src/vscode.js`.
 pub const EXECUTE_COMMAND: &str = "$/executeCommand";
 
 /// A running host process.
@@ -292,21 +291,21 @@ pub struct Host {
     next_id: u64,
     /// Requests sent and not yet answered, by id and method.
     ///
-    /// Kept so a reply can be attributed: the id alone says nothing about what it is
-    /// answering, and a caller that has forgotten cannot route the result.
+    /// Kept so a reply can be matched to its request. The id alone does not identify
+    /// the method, and the caller needs the method to route the result.
     pending: BTreeMap<u64, String>,
 }
 
 impl Host {
     /// Starts the process described by `spec`.
     ///
-    /// The environment is `spec`'s in full — [`crate::host::build_spec`] builds it from
-    /// nothing rather than filtering the parent's, and `env_clear` is what makes that
-    /// true in practice rather than only on paper.
+    /// The environment is exactly `spec`'s. [`crate::host::build_spec`] builds it from
+    /// scratch instead of filtering the parent's, and `env_clear` ensures that no
+    /// inherited variable remains.
     pub fn spawn(spec: &HostSpec) -> Result<Self, SpawnError> {
-        // Checked before spawning, because `env_clear` leaves no `PATH` and the
-        // operating system's answer for a bare name would be "no such file" — true,
-        // and no help at all to whoever configured it.
+        // Checked before spawning. `env_clear` leaves no `PATH`, so the operating
+        // system would report a bare name only as "no such file", which does not
+        // explain the cause.
         if !spec.program.is_absolute() {
             return Err(SpawnError::NotAbsolute {
                 program: spec.program.display().to_string(),
@@ -350,8 +349,8 @@ impl Host {
 
     /// Sends a message.
     pub fn send(&mut self, message: &Message) -> std::io::Result<()> {
-        // One line per message, newline included: the reader on the other side splits
-        // on it.
+        // One line per message, including the newline. The reader on the other side
+        // splits on it.
         self.stdin.write_all(message.encode().as_bytes())?;
         self.stdin.write_all(b"\n")?;
         self.stdin.flush()
@@ -380,11 +379,11 @@ impl Host {
 
     /// Asks the host to load an extension and run its `activate`.
     ///
-    /// `path` is the extension directory **as the host sees it**, which is not
-    /// the same as deco's own path when the host is in a container: translate it
-    /// through [`crate::sandbox::Prepared::seen_by_host`] first. A host path
-    /// passed straight through would be outside every mount and fail to open,
-    /// which is a confusing way to learn that a container is involved.
+    /// `path` is the extension directory **as the host sees it**. When the host
+    /// runs in a container, this differs from deco's own path: translate it with
+    /// [`crate::sandbox::Prepared::seen_by_host`] first. An untranslated path is
+    /// outside every mount and fails to open, with an error that does not mention
+    /// the container.
     pub fn activate(&mut self, path: &str, main: &str) -> std::io::Result<u64> {
         self.request(
             ACTIVATE,
@@ -394,10 +393,10 @@ impl Host {
 
     /// Asks the host to run one of the commands its extension registered.
     ///
-    /// The reply carries whatever the extension's callback returned, or an error
-    /// if it threw or the command is not registered there. This is the other
-    /// direction of `commands.registerCommand`: the extension tells deco a name,
-    /// and this is deco calling it back.
+    /// The reply carries the value the extension's callback returned, or an error
+    /// if the callback threw or the command is not registered in this host. This is
+    /// the reverse direction of `commands.registerCommand`: the extension registers
+    /// a name with deco, and deco uses this to invoke it.
     pub fn execute_command(&mut self, command: &str, args: Value) -> std::io::Result<u64> {
         self.request(
             EXECUTE_COMMAND,
@@ -405,7 +404,7 @@ impl Host {
         )
     }
 
-    /// The method a reply is answering, forgetting it in the process.
+    /// The method a reply answers. Removes the request from the pending list.
     pub fn answered(&mut self, id: u64) -> Option<String> {
         self.pending.remove(&id)
     }
@@ -419,7 +418,7 @@ impl Host {
     pub fn poll(&mut self) -> Option<HostEvent> {
         match self.events.try_recv() {
             Ok(event) => Some(event),
-            // The reader thread is gone, which it only does after sending `Closed`.
+            // The reader thread has exited, which it only does after sending `Closed`.
             Err(TryRecvError::Disconnected) => Some(HostEvent::Closed),
             Err(TryRecvError::Empty) => None,
         }
@@ -427,9 +426,9 @@ impl Host {
 
     /// Waits for the host's `$/ready`, returning the events seen on the way.
     ///
-    /// Anything that arrives before `$/ready` is handed back rather than dropped: a
-    /// host that logs while starting up has said something worth keeping, and a
-    /// request that arrives first still has to be answered.
+    /// Events that arrive before `$/ready` are returned instead of dropped. Log
+    /// output during startup is worth keeping, and a request that arrives first
+    /// still needs a reply.
     pub fn wait_for_ready(
         &mut self,
         timeout: Duration,
@@ -454,9 +453,9 @@ impl Host {
                             seen,
                         );
                     }
-                    // A short sleep rather than a spin: starting a Node process takes
-                    // tens of milliseconds and a busy wait would spend them burning a
-                    // core.
+                    // Sleep briefly instead of spinning. Starting a Node process takes
+                    // tens of milliseconds, and a busy wait would occupy a core for
+                    // that time.
                     std::thread::sleep(Duration::from_millis(2));
                 }
             }
@@ -471,11 +470,11 @@ impl Host {
             .unwrap_or_default()
     }
 
-    /// Asks the host to stop, then makes sure it has.
+    /// Asks the host to stop, then kills it if it has not exited.
     ///
-    /// `$/shutdown` first, so the sandbox is restored and `deactivate` gets to run;
-    /// then a kill, because an extension that ignores the notification must not keep
-    /// the editor open.
+    /// Sends `$/shutdown` first, so the sandbox is restored and `deactivate` runs.
+    /// Then kills the process, because an extension that ignores the notification
+    /// must not keep the editor open.
     pub fn shutdown(&mut self) {
         let _ = self.notify("$/shutdown", Value::Null);
         let deadline = Instant::now() + SHUTDOWN_GRACE;
@@ -485,7 +484,7 @@ impl Host {
                 Ok(None) if Instant::now() < deadline => {
                     std::thread::sleep(Duration::from_millis(10));
                 }
-                // Gone, or unwaitable: either way there is nothing left to ask.
+                // Grace period expired, or waiting failed: stop polling.
                 _ => break,
             }
         }
@@ -496,8 +495,8 @@ impl Host {
 
 impl Drop for Host {
     fn drop(&mut self) {
-        // A host outliving the editor would keep running somebody's JavaScript with
-        // nothing to report to.
+        // A host that outlived the editor would keep running extension code with no
+        // editor to report to.
         self.shutdown();
     }
 }
@@ -550,8 +549,8 @@ mod tests {
 
     #[test]
     fn one_unreadable_line_costs_one_message_and_not_the_stream() {
-        // The reason for newlines rather than length prefixes: the next message starts
-        // at a position that is still known.
+        // This is why the framing uses newlines instead of length prefixes: the next
+        // message starts at a known position.
         let seen = events(&format!("{{ not json\n{}\n", ready_line()));
         assert!(matches!(seen[0], HostEvent::Garbled(_)), "{seen:?}");
         assert!(
@@ -570,7 +569,7 @@ mod tests {
 
     #[test]
     fn the_error_log_keeps_the_last_lines_not_the_first() {
-        // When a process dies, the reason is at the end.
+        // When a process exits, the reason is usually at the end.
         let log = Mutex::new(ErrorLog::default());
         let mut input = String::new();
         for i in 0..(ERROR_LOG_LINES + 5) {
@@ -615,8 +614,8 @@ mod tests {
 
     #[test]
     fn a_method_deco_does_not_know_is_refused() {
-        // Fails closed on the name alone: a host from a newer deco cannot reach an
-        // older one's editor surface by naming something it has never heard of.
+        // Rejected by name alone: a host from a newer deco cannot reach an older
+        // deco's editor surface through a method the older version does not know.
         let broker = broker(Vec::new(), DefaultPolicy::Allow);
         let refusal = dispatch(&broker, &request("fs.deleteEverything", Value::Null));
         match refusal {
@@ -631,7 +630,7 @@ mod tests {
 
     #[test]
     fn a_mediated_method_needs_no_capability_at_all() {
-        // These only touch state deco already owns and shows to the user, so an
+        // These only affect state that deco owns and shows to the user, so an
         // extension that declared nothing can still register a command.
         let broker = broker(Vec::new(), DefaultPolicy::Deny);
         for method in [
@@ -650,8 +649,8 @@ mod tests {
 
     #[test]
     fn a_capability_the_manifest_never_declared_is_refused() {
-        // The declaration is a ceiling, not a starting point: whatever the user has
-        // agreed to since, an extension cannot exceed what it asked for in writing.
+        // The declaration is an upper bound. Regardless of later user grants, an
+        // extension cannot exceed what its manifest declares.
         let broker = broker(Vec::new(), DefaultPolicy::Allow);
         let params = serde_json::json!({ "path": "/w/src/main.rs" });
         match dispatch(&broker, &request("fs.readFile", params)) {
@@ -687,7 +686,7 @@ mod tests {
 
     #[test]
     fn a_declared_capability_outside_its_scope_is_still_refused() {
-        // The classic target, reached by walking out of the workspace.
+        // An SSH key, reached through `..` from inside the workspace.
         let broker = broker(
             vec![Capability::ReadFile {
                 scope: PathScope::Workspace,
@@ -727,10 +726,9 @@ mod tests {
 
     #[test]
     fn a_program_named_rather_than_located_is_refused_with_the_reason() {
-        // Found by using this: the environment is built from nothing, so there is no
-        // `PATH`, and a bare `node` fails as "no such file" — which sends whoever
-        // configured it looking for a missing file rather than for a missing directory
-        // name.
+        // Found in practice. The environment is built from scratch, so there is no
+        // `PATH`, and a bare `node` fails as "no such file". That message suggests a
+        // missing file instead of a missing directory in the path.
         let spec = HostSpec {
             program: PathBuf::from("node"),
             args: Vec::new(),
@@ -770,8 +768,8 @@ mod tests {
 
     #[test]
     fn a_ready_with_the_wrong_protocol_is_refused() {
-        // The Node side checks first, so reaching this means the two ends disagree
-        // about which of them is wrong — still better than half-speaking.
+        // The Node side checks first, so this is reached only when the two sides'
+        // checks disagree. Rejecting is safer than using a mismatched protocol.
         let ready = |protocol: &str| Notification {
             method: "$/ready".to_owned(),
             params: serde_json::json!({ "protocol": protocol }),
@@ -787,8 +785,8 @@ mod tests {
 
     #[test]
     fn a_ready_that_names_no_protocol_at_all_is_refused() {
-        // Absent is not "the current one": a host that does not say is a host deco
-        // cannot know it agrees with.
+        // A missing version does not mean the current one. deco cannot confirm
+        // agreement with a host that reports no version.
         assert!(agrees_on_protocol(&Notification {
             method: "$/ready".to_owned(),
             params: Value::Null,
@@ -798,8 +796,8 @@ mod tests {
 
     #[test]
     fn every_error_says_what_to_do_about_it() {
-        // These reach the user through the problem list, so they have to read as
-        // sentences rather than as variant names.
+        // These reach the user through the problem list, so they must be sentences,
+        // not variant names.
         assert!(ReadyError::TimedOut { after_ms: 10_000 }
             .to_string()
             .contains("10000 ms"));

@@ -1,39 +1,38 @@
 //! One language server, driven end to end.
 //!
-//! [`Client`] knows the protocol, [`ServerProcess`] moves the bytes, and
-//! [`DocumentSync`] and [`DiagnosticStore`] hold the state. This is the piece
-//! that joins them, so a frontend can write
+//! [`Client`] implements the protocol, [`ServerProcess`] transfers the bytes,
+//! and [`DocumentSync`] and [`DiagnosticStore`] hold the state. This module
+//! combines them, so a frontend can write
 //!
 //! ```text
 //! supervisor.did_open(path, "rust", text)?;
 //! for update in supervisor.poll() { … }
 //! ```
 //!
-//! and not think about ids, versions, framing or lifecycle ordering.
+//! without handling ids, versions, framing or lifecycle ordering.
 //!
 //! # It does not block the editor
 //!
-//! [`Supervisor::poll`] drains whatever has arrived and returns. Two bounded
-//! exceptions, both deliberate:
+//! [`Supervisor::poll`] processes the messages that have arrived and returns.
+//! There are two intentional, bounded exceptions:
 //!
 //! - **Starting a server.** The protocol forbids sending anything before the
-//!   `initialize` reply, so this genuinely has to wait — bounded by
-//!   [`Supervisor::start`]'s timeout, because a server that never answers must
-//!   not be able to hang the editor at launch.
-//! - **The frame on which a server dies**, for up to 100ms, waiting for its
-//!   stderr. See [`ServerProcess::stderr_after_exit`].
+//!   `initialize` reply, so this must wait. The wait is bounded by
+//!   [`Supervisor::start`]'s timeout, so a server that never answers cannot
+//!   block the editor at launch.
+//! - **The poll in which a server exits**, for up to 100ms, while waiting for
+//!   its stderr. See [`ServerProcess::stderr_after_exit`].
 //!
-//! # A server that misbehaves costs itself
+//! # A misbehaving server affects only itself
 //!
-//! Every failure path here degrades to "this server is not running" and leaves
-//! the editor working: a crash during startup, a protocol error mid-session, a
-//! server that exits on its own.
+//! Every failure path here results in "this server is not running" and keeps
+//! the editor working: a crash during startup, a protocol error during a
+//! session, or a server that exits by itself.
 //!
-//! Each of those reports the server's stderr tail, because it is usually the
-//! only explanation there is — and getting that right needs more care than it
-//! looks like, since stdout and stderr are pumped by separate threads and the
-//! news that a server is gone can beat the reason it gave.
-//! [`ServerProcess::stderr_after_exit`] is where that race is resolved.
+//! Each of these reports the server's stderr tail, because it is usually the
+//! only explanation available. stdout and stderr are read by separate threads,
+//! so the editor can detect the exit before the stderr output is collected.
+//! [`ServerProcess::stderr_after_exit`] resolves that race.
 
 use std::path::Path;
 use std::time::Duration;
@@ -51,9 +50,9 @@ use crate::uri::{PathMap, Uri};
 
 /// How long to wait for `initialize` to be answered.
 ///
-/// Generous, because a server may be reading a large project's metadata before
-/// it replies — but finite, because the alternative is an editor that hangs at
-/// startup when a server is broken.
+/// Long, because a server may read a large project's metadata before it
+/// replies. Finite, so that a broken server does not block the editor at
+/// startup.
 pub const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Something the editor should react to.
@@ -79,28 +78,28 @@ pub enum Update {
         /// The text.
         message: String,
     },
-    /// The server is gone. No further updates will arrive.
+    /// The server has stopped. No further updates will arrive.
     Stopped {
         /// Which server.
         id: String,
-        /// Why, in a form fit to show a user.
+        /// Why, in a form suitable for the user.
         reason: String,
     },
     /// An answer to [`Supervisor::hover`].
     Hover {
         /// The request this answers, so a caller that has moved on can ignore it.
         id: RequestId,
-        /// What the server said, or `None` for "nothing at that position" —
-        /// which is a successful answer and worth reporting as such.
+        /// The server's result, or `None` when there is nothing at that
+        /// position. `None` is a successful answer and is reported as one.
         hover: Option<Hover>,
     },
     /// An answer to [`Supervisor::definition`] or [`Supervisor::references`].
     Locations {
         /// The request this answers.
         id: RequestId,
-        /// Which method asked, since both answer in the same shape.
+        /// Which method was called, since both have the same response shape.
         method: String,
-        /// Where the server pointed. Empty means it found nothing.
+        /// The locations the server returned. Empty means it found nothing.
         locations: Vec<Location>,
     },
     /// An answer to [`Supervisor::document_symbols`].
@@ -115,25 +114,25 @@ pub enum Update {
     Renamed {
         /// The request this answers.
         id: RequestId,
-        /// Everything the server wants changed, or why its answer could not be
-        /// read. An `Ok` edit with nothing in it is the server declining, which
-        /// is a successful answer and worth reporting as such.
+        /// All changes the server requests, or why its answer could not be
+        /// read. An empty `Ok` edit means the server declined. This is a
+        /// successful answer and is reported as one.
         edit: Result<crate::WorkspaceEdit, crate::WorkspaceEditError>,
     },
     /// An answer to [`Supervisor::code_action`].
     CodeActions {
         /// The request this answers.
         id: RequestId,
-        /// What the server offers, in the order it listed them. Empty means it
-        /// has nothing for that place, which is a successful answer.
+        /// The server's actions, in the order it listed them. Empty means it
+        /// has no actions for that location, which is a successful answer.
         actions: Vec<crate::requests::CodeAction>,
     },
     /// An answer to [`Supervisor::resolve_code_action`].
     CodeActionResolved {
         /// The request this answers.
         id: RequestId,
-        /// The same action with its edit filled in — or, from a server that
-        /// resolved to nothing useful, still without one.
+        /// The same action with its edit filled in. If the server's resolution
+        /// did not provide an edit, the action still has none.
         action: Box<crate::requests::CodeAction>,
     },
     /// An answer to [`Supervisor::semantic_tokens`].
@@ -149,34 +148,34 @@ pub enum Update {
         id: RequestId,
         /// The suggestions, in the order the server sent them.
         items: Vec<CompletionItem>,
-        /// Whether the server marked the list incomplete. Reported but not acted
-        /// on: deco re-requests from scratch rather than refining a partial list.
+        /// Whether the server marked the list incomplete. Reported but not used:
+        /// deco sends a new request rather than refining a partial list.
         incomplete: bool,
     },
     /// An answer to [`Supervisor::formatting`] or [`Supervisor::range_formatting`].
     Edits {
         /// The request this answers.
         id: RequestId,
-        /// Which method asked.
+        /// Which method was called.
         method: String,
         /// The replacements to make, in the order the server sent them. They
         /// refer to the document as the server saw it and must not be applied
         /// front to back; see [`TextEdit::list_from_json`].
         edits: Vec<TextEdit>,
     },
-    /// A request failed for a reason worth showing the user.
+    /// A request failed for a reason that should be shown to the user.
     ///
-    /// Routine failures — cancellation, content-modified — are not reported
-    /// here; they happen constantly during ordinary typing.
+    /// Routine failures, such as cancellation and content-modified, are not
+    /// reported here because they occur constantly during ordinary typing.
     RequestFailed {
         /// The request that failed.
         id: RequestId,
         /// Which method.
         method: String,
-        /// Why, in a form fit for a status bar.
+        /// Why, in a form suitable for a status bar.
         reason: String,
     },
-    /// Something was ignored. Interesting only in a log.
+    /// Something was ignored. Only useful in a log.
     Noted {
         /// What happened.
         detail: String,
@@ -189,7 +188,7 @@ pub enum SupervisorError {
     /// The server could not be started.
     #[error(transparent)]
     Spawn(#[from] SpawnError),
-    /// The protocol state machine refused the call.
+    /// The protocol state machine rejected the call.
     #[error(transparent)]
     Protocol(#[from] LspError),
     /// A document synchronisation rule was broken.
@@ -229,26 +228,15 @@ pub enum SupervisorError {
     },
 }
 
-/// Waits for a dying server's last words, then renders them.
-///
-/// stdout and stderr are pumped by separate threads, so the news that a server
-/// is gone can beat the reason it gave. Losing that race produces the least
-/// useful error there is — "the server exited during startup; the server wrote
-/// nothing to stderr" — for a server that said precisely why.
-///
-/// [`ServerProcess::stderr_after_exit`] resolves it by waiting for the pump
-/// thread to finish rather than for output to appear, which is a fact rather
-/// than a guess.
 /// Whether a raw diagnostic's range overlaps `range` at all.
 ///
-/// Read off the JSON rather than the parsed struct, because the parsed set and
-/// the raw set are two lists and matching one against the other by index would
-/// be a rule that silently stops holding the first time a diagnostic fails to
-/// parse. Reading the range from the same value being filtered cannot drift.
+/// Read from the JSON rather than the parsed struct. The parsed set and the
+/// raw set are separate lists, and matching them by index would break as soon
+/// as one diagnostic fails to parse. Reading the range from the value being
+/// filtered keeps them consistent.
 ///
-/// A diagnostic with no usable range never matches, which is the same thing
-/// [`Diagnostic::from_json`] does with one: it cannot be placed, so nothing can
-/// be said about where it is.
+/// A diagnostic with no usable range never matches. [`Diagnostic::from_json`]
+/// handles it the same way, because its location is unknown.
 fn overlaps_range(value: &serde_json::Value, range: deco_core::position::Range) -> bool {
     let Some(other) = value
         .get("range")
@@ -257,26 +245,35 @@ fn overlaps_range(value: &serde_json::Value, range: deco_core::position::Range) 
         return false;
     };
     // Touching counts. An empty selection is a caret, and a caret at the start
-    // of an error is squarely a request about that error.
+    // of an error is a request about that error.
     other.start <= range.end && range.start <= other.end
 }
 
+/// Waits for an exiting server's final stderr output, then formats it.
+///
+/// stdout and stderr are read by separate threads, so the exit can be detected
+/// before the stderr output is collected. In that case the error would be
+/// "the server exited during startup; the server wrote nothing to stderr",
+/// even though the server wrote the reason.
+///
+/// [`ServerProcess::stderr_after_exit`] resolves this by waiting for the pump
+/// thread to finish instead of waiting for output to appear.
 fn drain_stderr(process: &mut ServerProcess, grace: Duration) -> String {
     process.stderr_after_exit(grace).summary()
 }
 
 /// How long to wait for stderr while a server is failing to start.
 ///
-/// Startup is already a blocking operation, so spending a fraction of a second
-/// to turn an unexplained failure into an explained one is clearly worth it.
+/// Startup already blocks, so waiting a fraction of a second to report the
+/// reason for a failure is worthwhile.
 const STARTUP_STDERR_GRACE: Duration = Duration::from_millis(500);
 
-/// How long to wait for stderr when a running server dies.
+/// How long to wait for stderr when a running server exits.
 ///
-/// Much shorter: this happens inside [`Supervisor::poll`], which the event loop
-/// calls between keystrokes. It is the one place `poll` can block, and it does
-/// so only on the single frame where a server disappears — the alternative is
-/// telling the user their language server stopped and being unable to say why.
+/// Much shorter, because this happens inside [`Supervisor::poll`], which the
+/// event loop calls between keystrokes. It is the only place `poll` can block,
+/// and only in the poll where the server exits. Without it, the editor could
+/// report that the language server stopped but not why.
 const RUNNING_STDERR_GRACE: Duration = Duration::from_millis(100);
 
 /// One language server and everything the editor knows about its state.
@@ -289,29 +286,29 @@ pub struct Supervisor {
     diagnostics: DiagnosticStore,
     /// The diagnostics as the server sent them, per document.
     ///
-    /// Beside the parsed store rather than inside it, because they are not for
-    /// the editor to read: nothing draws them, and the one thing they are for is
-    /// being handed back to the server that produced them — see
-    /// [`Supervisor::code_action`], and the comment where they are stored.
+    /// Kept beside the parsed store rather than inside it, because the editor
+    /// does not read them. Nothing draws them. They are only sent back to the
+    /// server that produced them; see [`Supervisor::code_action`] and the
+    /// comment where they are stored.
     published: std::collections::HashMap<Uri, Vec<serde_json::Value>>,
     paths: PathMap,
-    /// Set once the server is gone, so a later call reports the original reason
-    /// rather than a bare "not running".
+    /// Set once the server has stopped, so a later call reports the original
+    /// reason rather than only "not running".
     stopped: Option<String>,
     /// Updates produced while handling the current message.
     ///
-    /// A side channel because `dispatch` has to return what must be written
-    /// back to the server, and threading two collections through every call
-    /// site made the state changes harder to follow than this does.
+    /// A separate field because `dispatch` must return the messages to write
+    /// back to the server. Passing two collections through every call site made
+    /// the state changes harder to follow.
     pending_updates: Vec<Update>,
 }
 
 impl Supervisor {
     /// Starts a server and completes the handshake.
     ///
-    /// Blocks until the server answers `initialize` or the timeout expires —
-    /// the only place this crate blocks, and unavoidable: the protocol forbids
-    /// sending anything else first.
+    /// Blocks until the server answers `initialize` or the timeout expires.
+    /// This is the only place this crate blocks, and it is unavoidable because
+    /// the protocol forbids sending anything else first.
     pub fn start(
         config: &ServerConfig,
         consent: Consent,
@@ -322,17 +319,17 @@ impl Supervisor {
         let mut process = ServerProcess::spawn(config, consent)?;
         let mut client = Client::new();
 
-        // The root as the *server* spells it, which in a remote session is a
-        // path on that machine rather than anything this one has.
+        // The root in the *server's* form. In a remote session this is a path
+        // on the remote machine, not on this one.
         let root_uri = root.and_then(|path| Uri::from_path(path, paths.style()).ok());
         let Outgoing(message) =
             client.initialize(root_uri.as_ref(), config.initialization_options.clone())?;
 
-        // A write failure here is almost always a server that exited before it
-        // read anything — a missing runtime, a bad argument, a licence check.
-        // Reporting the raw "broken pipe" would hide the one thing that
-        // explains it, so the process is given a moment to finish dying and its
-        // stderr is attached instead.
+        // A write failure here almost always means the server exited before
+        // reading anything, for example because of a missing runtime, a bad
+        // argument or a licence check. A plain "broken pipe" would not explain
+        // this, so the process is given a moment to exit and its stderr is
+        // attached.
         if let Err(source) = process.send(&message) {
             let stderr = drain_stderr(&mut process, Duration::from_millis(500));
             return Err(SupervisorError::StartupFailed {
@@ -364,8 +361,8 @@ impl Supervisor {
         while self.client.state() != State::Ready {
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             if remaining.is_zero() {
-                // No grace here: the server is still alive and simply has not
-                // answered, so whatever it has written is already collected.
+                // No grace period: the server is still running and has not
+                // answered, so its output so far is already collected.
                 let stderr = self.stderr_summary(Duration::ZERO);
                 return Err(SupervisorError::StartupTimeout {
                     id: self.id.clone(),
@@ -388,8 +385,8 @@ impl Supervisor {
 
             match event {
                 ReaderEvent::Message(message) => {
-                    // A refused handshake leaves the client in `Exited`, which
-                    // this loop would otherwise spin on until the deadline.
+                    // A rejected handshake leaves the client in `Exited`.
+                    // Without this check the loop would run until the deadline.
                     let outgoing = self.dispatch(message)?;
                     if self.client.state() == State::Exited {
                         return Err(self.startup_failed("the server refused to initialize"));
@@ -407,9 +404,9 @@ impl Supervisor {
 
     /// Builds a startup failure, waiting for the server's stderr first.
     ///
-    /// `&mut self` rather than `&self` precisely so it can drain: the reason is
-    /// almost always in stderr, and reporting before the pump has caught up
-    /// throws it away.
+    /// Takes `&mut self` rather than `&self` so it can drain stderr. The reason
+    /// is almost always in stderr, and reporting before the pump has collected
+    /// it would lose it.
     fn startup_failed(&mut self, reason: &str) -> SupervisorError {
         let stderr = self.stderr_summary(STARTUP_STDERR_GRACE);
         SupervisorError::StartupFailed {
@@ -447,7 +444,7 @@ impl Supervisor {
 
     /// The URI a path maps to for this server.
     ///
-    /// The one place a path becomes a URI, which is why the remote prefix is
+    /// This is the only place a path becomes a URI, so the remote prefix is
     /// applied here and not at each of the eleven callers.
     pub fn uri_for(&self, path: &Path) -> Option<Uri> {
         self.paths.to_uri(path).ok()
@@ -460,8 +457,8 @@ impl Supervisor {
 
     /// Tells the server a document is open.
     ///
-    /// A no-op returning `Ok` when the server said it does not want open and
-    /// close notifications — the caller should not have to check.
+    /// Does nothing and returns `Ok` when the server does not want open and
+    /// close notifications, so the caller does not need to check.
     pub fn did_open(
         &mut self,
         path: &Path,
@@ -481,8 +478,8 @@ impl Supervisor {
     /// Tells the server a document changed.
     ///
     /// `changes` is used only when the server negotiated incremental sync;
-    /// `text` is the whole document, used for a full sync. Passing both lets the
-    /// caller stay ignorant of which was negotiated.
+    /// `text` is the whole document, used for a full sync. Because both are
+    /// passed, the caller does not need to know which was negotiated.
     pub fn did_change(
         &mut self,
         path: &Path,
@@ -493,9 +490,9 @@ impl Supervisor {
             return Ok(());
         };
         if !self.sync.is_open(&uri) {
-            // Not an error: a document the server was never told about (because
-            // it does not want open notifications, or is not this server's
-            // language) has nothing to change.
+            // Not an error. The server was not told about this document,
+            // because it does not want open notifications or the document is
+            // not in its language, so there is nothing to change.
             return Ok(());
         }
         let kind = self.client.capabilities().sync_kind;
@@ -522,8 +519,8 @@ impl Supervisor {
 
     /// Tells the server a document is closed.
     ///
-    /// Its diagnostics go with it: nothing will ever retract them once the
-    /// server has stopped tracking the file.
+    /// Its diagnostics are cleared as well, because nothing can remove them
+    /// after the server stops tracking the file.
     pub fn did_close(&mut self, path: &Path) -> Result<(), SupervisorError> {
         let Some(uri) = self.uri_for(path) else {
             return Ok(());
@@ -538,10 +535,10 @@ impl Supervisor {
 
     /// Asks what is at a position.
     ///
-    /// Returns the request id so the caller can match the answer — or drop it,
-    /// if the cursor has since moved. `None` when the server does not offer
-    /// hover: the caller should not have to check capabilities before every
-    /// keypress.
+    /// Returns the request id so the caller can match the answer, or drop it if
+    /// the cursor has since moved. Returns `None` when the server does not
+    /// offer hover, so the caller does not need to check capabilities before
+    /// every keypress.
     pub fn hover(
         &mut self,
         path: &Path,
@@ -576,10 +573,10 @@ impl Supervisor {
         self.request("textDocument/completion", params).map(Some)
     }
 
-    /// The characters that should open a completion list without being asked.
+    /// The characters that open a completion list automatically.
     ///
-    /// Empty when no server is running, which is what makes a caller able to
-    /// check this on every keystroke without a branch of its own.
+    /// Empty when no server is running, so a caller can check this on every
+    /// keystroke without a separate branch.
     pub fn completion_triggers(&self) -> &[String] {
         self.client
             .capabilities()
@@ -591,9 +588,9 @@ impl Supervisor {
 
     /// Asks the server to format the whole document.
     ///
-    /// `options` is the user's own indentation settings, which is the point of
-    /// sending them: a server told nothing formats to its defaults, and against
-    /// a project that disagrees the result is a diff touching every line.
+    /// `options` contains the user's indentation settings. Without them a
+    /// server formats with its defaults, and in a project with different
+    /// settings the result changes every line.
     pub fn formatting(
         &mut self,
         path: &Path,
@@ -614,10 +611,10 @@ impl Supervisor {
 
     /// Asks the server to format one range.
     ///
-    /// Uses the same `formatting` capability: a server that offers whole-document
-    /// formatting usually offers this too, and the specification gives them
-    /// separate flags that servers set inconsistently. A server that does not
-    /// support it answers with an error, which is reported like any other.
+    /// Uses the same `formatting` capability. A server that offers
+    /// whole-document formatting usually offers this too, and servers set the
+    /// specification's separate flags inconsistently. A server without support
+    /// answers with an error, which is reported like any other.
     pub fn range_formatting(
         &mut self,
         path: &Path,
@@ -652,9 +649,9 @@ impl Supervisor {
 
     /// Asks how the whole document is classified.
     ///
-    /// Full document only: deco highlights the visible lines of a document it has
-    /// already lexed, so a range request would mean one round trip per scroll for
-    /// a refinement the lexer has already approximated.
+    /// Full document only. deco highlights the visible lines of a document it
+    /// has already lexed, so a range request would need one round trip per
+    /// scroll for a refinement the lexer already approximates.
     pub fn semantic_tokens(&mut self, path: &Path) -> Result<Option<RequestId>, SupervisorError> {
         if self.client.capabilities().semantic_tokens.is_none() {
             return Ok(None);
@@ -672,8 +669,8 @@ impl Supervisor {
 
     /// Asks what names a document declares.
     ///
-    /// The whole document, since that is the only shape the request has — there
-    /// is no positional variant, and the picker it feeds needs all of them.
+    /// Always the whole document. The request has no positional variant, and
+    /// the picker that uses it needs all symbols.
     pub fn document_symbols(&mut self, path: &Path) -> Result<Option<RequestId>, SupervisorError> {
         if !self.client.capabilities().document_symbol {
             return Ok(None);
@@ -689,10 +686,10 @@ impl Supervisor {
             .map(Some)
     }
 
-    /// Asks for every change renaming the symbol at `position` would take.
+    /// Asks for all changes needed to rename the symbol at `position`.
     ///
-    /// The answer is a `WorkspaceEdit` covering the whole project, not just this
-    /// document — see [`crate::WorkspaceEdit`] for what comes back and
+    /// The answer is a `WorkspaceEdit` covering the whole project, not only
+    /// this document. See [`crate::WorkspaceEdit`] for its contents and
     /// `deco_editor::workspace` for the rules about applying it.
     pub fn rename(
         &mut self,
@@ -713,11 +710,11 @@ impl Supervisor {
         self.request("textDocument/rename", params).map(Some)
     }
 
-    /// Asks what the server offers to do about `range`.
+    /// Asks which code actions the server offers for `range`.
     ///
-    /// The diagnostics covering that range go with the request, as the server
-    /// sent them — see [`crate::requests::code_action_params`] for why that
-    /// matters more than it looks like it should.
+    /// The diagnostics covering that range are sent with the request, exactly
+    /// as the server sent them. See [`crate::requests::code_action_params`] for
+    /// why this is important.
     pub fn code_action(
         &mut self,
         path: &Path,
@@ -732,9 +729,9 @@ impl Supervisor {
         if !self.sync.is_open(&uri) {
             return Ok(None);
         }
-        // Overlapping the range rather than contained in it: a selection across
-        // half an error is still a request about that error, and VS Code sends
-        // the same set.
+        // Diagnostics that overlap the range, not only those contained in it. A
+        // selection across part of an error is still a request about that
+        // error, and VS Code sends the same set.
         let diagnostics: Vec<serde_json::Value> = self
             .published
             .get(&uri)
@@ -752,9 +749,9 @@ impl Supervisor {
 
     /// Asks the server to fill in a chosen action's edit.
     ///
-    /// `Ok(None)` when the server does not offer resolving, which is the
-    /// caller's cue that an action with no edit is one that cannot be run rather
-    /// than one that has not been asked about yet.
+    /// Returns `Ok(None)` when the server does not support resolving. The
+    /// caller then knows that an action without an edit cannot be run, rather
+    /// than not yet resolved.
     pub fn resolve_code_action(
         &mut self,
         action: &crate::requests::CodeAction,
@@ -774,9 +771,9 @@ impl Supervisor {
 
     /// The version last sent to the server for `path`.
     ///
-    /// What an incoming edit's `version` has to match. `None` for a document
-    /// this server is not tracking, which is not a mismatch — there is simply
-    /// nothing to compare against.
+    /// An incoming edit's `version` must match this. `None` for a document this
+    /// server is not tracking. That is not a mismatch; there is no version to
+    /// compare against.
     pub fn version_of(&self, path: &Path) -> Option<i64> {
         let uri = self.uri_for(path)?;
         self.sync.version(&uri).map(i64::from)
@@ -797,8 +794,8 @@ impl Supervisor {
         if !self.sync.is_open(&uri) {
             return Ok(None);
         }
-        // Including the declaration: "find all references" that omits the
-        // definition is a surprising answer, and VS Code includes it.
+        // Include the declaration. Users expect "find all references" to list
+        // the definition, and VS Code includes it.
         let params = crate::requests::reference_params(&uri, position, true);
         self.request("textDocument/references", params).map(Some)
     }
@@ -813,8 +810,8 @@ impl Supervisor {
         let Some(uri) = self.uri_for(path) else {
             return Ok(None);
         };
-        // Asking about a document the server was never told about would get an
-        // error at best and a confident wrong answer at worst.
+        // A request about a document the server has not opened returns an
+        // error at best and a wrong answer at worst.
         if !self.sync.is_open(&uri) {
             return Ok(None);
         }
@@ -824,9 +821,9 @@ impl Supervisor {
 
     /// Asks the server to abandon a request.
     ///
-    /// Advisory: the reply may already be on its way, and is dropped when it
-    /// arrives. Worth sending anyway — a hover the user has moved past is work
-    /// the server can stop doing.
+    /// Advisory: the reply may already have been sent, and is dropped when it
+    /// arrives. Cancelling still lets the server stop work on, for example, a
+    /// hover the user no longer needs.
     pub fn cancel(&mut self, id: &RequestId) -> Result<(), SupervisorError> {
         if let Some(Outgoing(message)) = self.client.cancel(id) {
             self.write(&message)?;
@@ -869,25 +866,25 @@ impl Supervisor {
         Ok(())
     }
 
-    /// The next thing the reader thread has for us, if any. Never blocks.
+    /// The next event from the reader thread, if any. Never blocks.
     ///
-    /// `None` covers both "nothing yet" and "no process", which are the same
-    /// thing to a caller draining a queue.
+    /// `None` means either "no event yet" or "no process". A caller draining a
+    /// queue treats both the same way.
     fn next_event(&self) -> Option<ReaderEvent> {
         self.process.as_ref()?.try_recv()
     }
 
-    /// Drains whatever has arrived from the server. Never blocks.
+    /// Processes all messages that have arrived from the server. Never blocks.
     ///
     /// A write failure while answering the server is reported as an update
-    /// rather than returned: the caller asked for news, and failing the whole
-    /// call would discard the updates already collected.
+    /// rather than returned, because failing the whole call would discard the
+    /// updates already collected.
     pub fn poll(&mut self) -> Vec<Update> {
         let mut updates = Vec::new();
 
-        // The borrow of `self.process` has to end before each iteration's body,
-        // which calls `&mut self` methods — hence a helper rather than reaching
-        // into the field inside the loop head.
+        // The borrow of `self.process` must end before each iteration's body,
+        // which calls `&mut self` methods. A helper is used for this instead of
+        // accessing the field in the loop head.
         while let Some(event) = self.next_event() {
             match event {
                 ReaderEvent::Message(message) => match self.dispatch(message) {
@@ -914,8 +911,8 @@ impl Supervisor {
             }
         }
 
-        // A server can also die without closing its pipes in an order the
-        // reader notices, so the exit status is checked independently.
+        // A server can also exit without the reader detecting its pipes
+        // closing, so the exit status is checked separately.
         if let Some(process) = self.process.as_mut() {
             if let Some(status) = process.exited() {
                 updates.push(self.stop_with(format!("the server exited with {status}")));
@@ -925,11 +922,11 @@ impl Supervisor {
         updates
     }
 
-    /// Marks the server gone and produces the update saying so.
+    /// Marks the server as stopped and returns the corresponding update.
     fn stop_with(&mut self, reason: String) -> Update {
-        // Drained, for the same reason as at startup: stdout closing and stderr
-        // being collected are separate threads racing, and losing that race
-        // means telling the user their server stopped without saying why.
+        // stderr is drained for the same reason as at startup. Detecting stdout
+        // closing and collecting stderr happen on separate threads. Without
+        // waiting, the user may be told the server stopped but not why.
         let detail = match self.process.as_mut() {
             Some(process) => {
                 let tail = drain_stderr(process, RUNNING_STDERR_GRACE);
@@ -950,10 +947,10 @@ impl Supervisor {
 
     /// Asks the server to stop, then waits for it.
     ///
-    /// `shutdown`, then `exit`, then a bounded wait, then a kill — see
-    /// [`ServerProcess::stop`]. Errors are swallowed deliberately: this runs
-    /// while the editor is quitting, and there is nothing useful to do with a
-    /// failure to shut down a process that is about to be killed anyway.
+    /// `shutdown`, then `exit`, then a bounded wait, then a kill; see
+    /// [`ServerProcess::stop`]. Errors are ignored intentionally. This runs
+    /// while the editor is quitting, and the process is killed anyway if the
+    /// shutdown fails.
     pub fn stop(&mut self) {
         if let Ok(Outgoing(message)) = self.client.shutdown() {
             let _ = self.write(&message);
@@ -968,8 +965,8 @@ impl Supervisor {
     }
 }
 
-// Updates produced while handling one message, collected out of band because
-// `dispatch` also has to return what must be written back.
+// Updates produced while handling one message are collected separately,
+// because `dispatch` also returns the messages to write back.
 impl Supervisor {
     fn dispatch(&mut self, message: Message) -> Result<Vec<Outgoing>, SupervisorError> {
         let (outgoing, events) = self.client.handle(message)?;
@@ -1006,8 +1003,8 @@ impl Supervisor {
                 error,
             } => {
                 if let Some(error) = error {
-                    // Cancellation and content-modified happen constantly during
-                    // ordinary typing; reporting them would bury the rest.
+                    // Cancellation and content-modified occur constantly during
+                    // ordinary typing. Reporting them would hide other errors.
                     if crate::jsonrpc::ErrorCode::from_code(error.code)
                         .is_some_and(|code| code.is_expected())
                     {
@@ -1057,9 +1054,9 @@ impl Supervisor {
                         actions: crate::requests::CodeAction::list_from_json(&result),
                     }),
                     "codeAction/resolve" => {
-                        // One action back, not a list. A server that answered
-                        // with something unreadable leaves nothing to apply,
-                        // which the caller reports as such.
+                        // One action, not a list. If the response cannot be
+                        // read, there is nothing to apply, and the caller
+                        // reports that.
                         crate::requests::CodeAction::list_from_json(&serde_json::Value::Array(
                             vec![result],
                         ))
@@ -1078,8 +1075,8 @@ impl Supervisor {
                         symbols: crate::requests::DocumentSymbol::list_from_json(&result),
                     }),
                     "textDocument/semanticTokens/full" => {
-                        // The legend is the server's, so a response cannot be read
-                        // without the capabilities it announced at startup.
+                        // The legend comes from the server, so a response cannot
+                        // be read without the capabilities it sent at startup.
                         let spans = self
                             .client
                             .capabilities()
@@ -1120,14 +1117,13 @@ impl Supervisor {
             .publish(uri.clone(), version, diagnostics, current)
         {
             Published::Replaced { .. } => {
-                // Kept as sent, beside the parsed set and only when that set was
-                // accepted, so the two cannot disagree about which publication
-                // is current. Parsing drops what deco has no use for — `data`
-                // above all, which is opaque to a client by design — and a quick
-                // fix is exactly the request that hands a diagnostic back to the
-                // server that produced it. Reconstructing one from the parsed
-                // struct would return a diagnostic the server does not
-                // recognise, and the fix it was carrying with it.
+                // Kept as sent, beside the parsed set, and only when that set
+                // was accepted, so both refer to the same publication. Parsing
+                // drops fields deco does not use, in particular `data`, which
+                // is opaque to clients by design. A quick fix request sends the
+                // diagnostic back to the server that produced it. A diagnostic
+                // rebuilt from the parsed struct would not be recognised by the
+                // server and would lose the fix data it carried.
                 let raw = params
                     .get("diagnostics")
                     .and_then(|v| v.as_array())
@@ -1143,9 +1139,9 @@ impl Supervisor {
                     uri,
                 })
             }
-            // Not reported: the editor's current diagnostics are still correct,
-            // and a message saying a stale result was dropped is noise during
-            // ordinary typing.
+            // Only noted for the log. The editor's current diagnostics are still
+            // correct, and reporting each dropped stale result would be noise
+            // during ordinary typing.
             Published::Stale { published, current } => Some(Update::Noted {
                 detail: format!(
                     "dropped diagnostics for {uri} computed against version \
@@ -1166,10 +1162,10 @@ mod tests {
 
     /// A supervisor with no process behind it.
     ///
-    /// Everything except `start`, `poll` and the write path is a pure function
-    /// of the client, sync and diagnostic state, so most of the interesting
-    /// behaviour can be exercised without a server. The process-owning parts
-    /// are covered by the `process` module and by `tests/server_process.rs`.
+    /// Everything except `start`, `poll` and the write path depends only on the
+    /// client, sync and diagnostic state, so most behaviour can be tested
+    /// without a server. The process-owning parts are covered by the `process`
+    /// module and by `tests/server_process.rs`.
     fn detached(capabilities: serde_json::Value) -> Supervisor {
         let mut client = Client::new();
         let Outgoing(Message::Request(init)) = client.initialize(None, None).unwrap() else {
@@ -1254,8 +1250,8 @@ mod tests {
 
     #[test]
     fn an_empty_publication_is_reported_so_the_editor_clears() {
-        // This is how a server says the errors are fixed. Skipping it because
-        // the list is empty leaves stale squiggles on screen forever.
+        // An empty list means the errors are fixed. Skipping it would leave
+        // stale underlines on screen.
         let mut s = detached(json!({}));
         feed(&mut s, publish("file:///w/a.rs", None, &[(1, "boom")]));
         let updates = feed(&mut s, publish("file:///w/a.rs", None, &[]));
@@ -1287,7 +1283,7 @@ mod tests {
 
     #[test]
     fn the_diagnostics_a_server_sent_are_kept_as_it_sent_them() {
-        // Parsing drops `data`, and `data` is what a server builds the fix from.
+        // Parsing drops `data`, which the server uses to build the fix.
         let mut s = detached(json!({}));
         feed(
             &mut s,
@@ -1302,8 +1298,9 @@ mod tests {
 
     #[test]
     fn a_publication_that_is_dropped_leaves_the_kept_set_alone() {
-        // Otherwise the raw set would describe a publication the editor refused,
-        // and a code action would be asked about a diagnostic nothing is showing.
+        // Otherwise the raw set would describe a publication the editor
+        // rejected, and a code action request would include a diagnostic that
+        // is not shown.
         let mut s = detached(json!({
             "textDocumentSync": {"openClose": true, "change": 1}
         }));
@@ -1360,8 +1357,8 @@ mod tests {
 
     #[test]
     fn an_action_is_not_sent_for_resolving_to_a_server_that_cannot() {
-        // The caller reads `None` as "this action has no edit and never will",
-        // which is a different thing to report than a request in flight.
+        // The caller reads `None` as "this action has no edit and will not get
+        // one", which is reported differently from a pending request.
         let mut s = detached(json!({"codeActionProvider": true}));
         let action = crate::requests::CodeAction::list_from_json(&json!([{"title": "Fix"}]))
             .pop()
@@ -1435,7 +1432,7 @@ mod tests {
 
     #[test]
     fn a_publication_without_a_version_is_trusted() {
-        // A server that does not stamp versions offers nothing better to go on.
+        // Without a version there is no way to check the publication.
         let mut s = detached(json!({"textDocumentSync": 1}));
         let path = Path::new("/w/a.rs");
         s.sync.open(s.uri_for(path).unwrap(), "rust", "x").unwrap();
@@ -1524,11 +1521,11 @@ mod tests {
 
     #[test]
     fn open_and_change_are_skipped_when_the_server_does_not_want_them() {
-        // The caller should not have to check capabilities before every edit.
+        // The caller does not need to check capabilities before every edit.
         let mut s = detached(json!({"textDocumentSync": {"openClose": false}}));
         let path = Path::new("/w/a.rs");
 
-        // No process attached, so anything actually sent would fail the write.
+        // No process is attached, so any message actually sent would fail.
         assert!(s.did_open(path, "rust", "x").is_ok());
         assert!(s.did_change(path, &[], "y").is_ok());
         assert!(s.did_save(path, "y").is_ok());
@@ -1538,7 +1535,7 @@ mod tests {
 
     #[test]
     fn changing_a_document_that_was_never_opened_is_not_an_error() {
-        // It happens whenever a file's language is not this server's.
+        // This happens whenever a file is not in this server's language.
         let mut s = detached(json!({"textDocumentSync": 2}));
         assert!(s.did_change(Path::new("/w/other.py"), &[], "x").is_ok());
     }
@@ -1555,7 +1552,7 @@ mod tests {
 
     #[test]
     fn closing_a_document_drops_its_diagnostics() {
-        // Nothing will ever retract them once the server stops tracking it.
+        // Nothing can remove them after the server stops tracking the file.
         let mut s = detached(json!({"textDocumentSync": {"openClose": true, "change": 1}}));
         let path = Path::new("/w/a.rs");
         let uri = s.uri_for(path).unwrap();
@@ -1571,7 +1568,7 @@ mod tests {
 
     #[test]
     fn a_relative_path_is_skipped_rather_than_guessed_at() {
-        // LSP has no working directory, so there is no correct URI to invent.
+        // LSP has no working directory, so no correct URI can be formed.
         let mut s = detached(json!({"textDocumentSync": 1}));
         assert!(s.did_open(Path::new("relative.rs"), "rust", "x").is_ok());
         assert_eq!(s.sync.len(), 0);
@@ -1579,7 +1576,7 @@ mod tests {
 
     #[test]
     fn stopping_reports_the_stderr_tail() {
-        // When a server dies, its last words are the only explanation there is.
+        // When a server exits, its final stderr output is the only explanation.
         let mut s = detached(json!({}));
         let update = s.stop_with("the server exited".into());
         let Update::Stopped { reason, .. } = &update else {
@@ -1618,7 +1615,7 @@ mod tests {
 
     #[test]
     fn an_expected_request_failure_is_not_reported() {
-        // Cancellation and content-modified arrive constantly during typing.
+        // Cancellation and content-modified occur constantly during typing.
         let mut s = detached(json!({}));
         let (id, _) = s.client.request("textDocument/hover", json!({})).unwrap();
         let updates = feed(
@@ -1634,9 +1631,9 @@ mod tests {
 
     #[test]
     fn a_real_request_failure_reaches_the_editor() {
-        // Reported as `RequestFailed` rather than folded into `Noted`: the
-        // editor has a pending request whose caller is waiting, and a status
-        // line saying why is more use than a log entry.
+        // Reported as `RequestFailed` rather than `Noted`. The caller of the
+        // pending request is waiting, and a status line with the reason is more
+        // useful than a log entry.
         let mut s = detached(json!({}));
         let (id, _) = s.client.request("textDocument/hover", json!({})).unwrap();
         let updates = feed(
@@ -1666,9 +1663,9 @@ mod tests {
 
     #[test]
     fn a_full_sync_server_gets_the_whole_text_and_an_incremental_one_gets_ranges() {
-        // Both are driven through the same `did_change` call; only the
-        // negotiated kind decides what goes on the wire. Asserted through the
-        // sync layer, since there is no process to write to here.
+        // Both use the same `did_change` call, and only the negotiated kind
+        // determines what is sent. Checked through the sync layer, because
+        // there is no process to write to here.
         for (capabilities, expect_range) in [
             (
                 json!({"textDocumentSync": {"openClose": true, "change": 1}}),
@@ -1713,7 +1710,7 @@ mod tests {
 
     #[test]
     fn hover_is_skipped_when_the_server_does_not_offer_it() {
-        // The caller should not have to check capabilities before every keypress.
+        // The caller does not need to check capabilities before every keypress.
         let (mut s, path) = with_open_document(json!({"textDocumentSync": 1}));
         assert_eq!(s.hover(&path, Position::new(0, 3)).unwrap(), None);
         assert_eq!(s.definition(&path, Position::new(0, 3)).unwrap(), None);
@@ -1722,8 +1719,8 @@ mod tests {
 
     #[test]
     fn a_request_about_an_unopened_document_is_skipped() {
-        // The server was never told about it, so it would answer about a file it
-        // does not have — an error at best, a wrong answer at worst.
+        // The server has not opened the document, so it would return an error
+        // at best and a wrong answer at worst.
         let mut s = detached(json!({"hoverProvider": true}));
         assert_eq!(
             s.hover(std::path::Path::new("/w/never-opened.rs"), Position::ZERO)
@@ -1764,8 +1761,8 @@ mod tests {
 
     #[test]
     fn a_null_hover_is_reported_as_a_successful_nothing() {
-        // Distinct from a failure: the server answered, and the answer is that
-        // there is nothing there. Silence would leave the editor waiting.
+        // Not a failure: the server answered that there is nothing at that
+        // position. Without an update the editor would keep waiting.
         let (mut s, _) = with_open_document(json!({"hoverProvider": true}));
         let (id, _) = s.client.request("textDocument/hover", json!({})).unwrap();
         let updates = feed(&mut s, Message::Response(Response::ok(id, json!(null))));
@@ -1777,8 +1774,8 @@ mod tests {
 
     #[test]
     fn a_definition_answer_is_routed_with_the_method_that_asked() {
-        // definition and references answer in the same shape, so the method is
-        // the only thing distinguishing "jump there" from "list them".
+        // definition and references have the same response shape, so only the
+        // method distinguishes "jump there" from "list them".
         let (mut s, _) = with_open_document(json!({"definitionProvider": true}));
         let (id, _) = s
             .client
@@ -1810,8 +1807,8 @@ mod tests {
 
     #[test]
     fn every_location_returning_method_is_routed() {
-        // Not just definition: a server may implement declaration or
-        // typeDefinition and the answer arrives in the same shape.
+        // Not only definition: a server may implement declaration or
+        // typeDefinition, which have the same response shape.
         for method in [
             "textDocument/definition",
             "textDocument/declaration",
@@ -1831,11 +1828,11 @@ mod tests {
 
     #[test]
     fn references_ask_for_the_declaration_too() {
-        // "Find all references" that omits the definition is a surprising
-        // answer, and VS Code includes it.
+        // Users expect "find all references" to list the definition, and VS
+        // Code includes it.
         let (mut s, path) = with_open_document(json!({"referencesProvider": true}));
-        // No process, so the write fails — but the params are built first, and
-        // the client records the request either way.
+        // No process, so the write fails. The params are built first, and the
+        // client records the request in either case.
         let _ = s.references(&path, Position::new(0, 3));
         assert_eq!(s.client.pending_count(), 1);
     }
@@ -1861,7 +1858,7 @@ mod tests {
 
     #[test]
     fn a_cancelled_or_stale_request_failure_is_not_reported() {
-        // Both arrive constantly while typing.
+        // Both occur constantly while typing.
         for code in [
             crate::jsonrpc::ErrorCode::RequestCancelled,
             crate::jsonrpc::ErrorCode::ContentModified,
@@ -1876,9 +1873,9 @@ mod tests {
     #[test]
     fn cancelling_a_request_on_a_stopped_server_is_a_named_error() {
         // The editor cancels on every cursor move, and both call sites in
-        // deco-tui discard the result — so what has to hold is that a dead
-        // server answers at all rather than panicking, and that when it does it
-        // is the same named error every other write to a stopped server gives.
+        // deco-tui discard the result. The requirement is that cancelling on a
+        // stopped server returns instead of panicking, with the same named
+        // error as every other write to a stopped server.
         let (mut s, _) = with_open_document(json!({"hoverProvider": true}));
         let (id, _) = s.client.request("textDocument/hover", json!({})).unwrap();
         s.stop_with("gone".into());

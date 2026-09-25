@@ -1,19 +1,20 @@
-//! An extension found on disk, invoked by name, answered by deco.
+//! An extension found on disk, invoked by name, and handled by deco.
 //!
-//! Everything else about this path is tested without a process: the catalogue
-//! decides with no filesystem, `sandbox` builds an argv, `dispatch` is pure, and
-//! `deco-ext`'s own round trip proves the wire — including inside a container. What
-//! none of them prove is that the *editor* joins them up: that a directory becomes
-//! a palette entry, that invoking the entry starts a host, that the host's reply
-//! reaches the status bar, and that a capability the manifest never declared is
-//! refused when a real extension really asks for it.
+//! The individual parts of this path are tested without a process: the catalogue
+//! needs no filesystem, `sandbox` builds an argv, `dispatch` is pure, and
+//! `deco-ext`'s round-trip test covers the protocol, including inside a
+//! container. None of them test that the *editor* connects the parts: that a
+//! directory becomes a palette entry, that invoking the entry starts a host, that
+//! the host's reply reaches the status bar, and that a capability the manifest
+//! did not declare is refused when a real extension requests it.
 //!
-//! `#[ignore]`d, so `cargo test` stays portable — this one needs Node. Run by
-//! `cargo xtask host-test`, in the CI job that has one.
+//! These tests are `#[ignore]`d so `cargo test` stays portable, because they
+//! need Node. They are run by `cargo xtask host-test` in the CI job that has
+//! Node.
 //!
-//! The sandbox is `process` here on purpose. What this test is about is the
-//! editor's half, and `deco-ext`'s round trip already starts the same stack inside
-//! the pinned image; running a container here would test that twice and this once.
+//! The sandbox is intentionally `process` here. This test covers the editor
+//! side, and `deco-ext`'s round-trip test already starts the same stack inside
+//! the pinned image. Running a container here would duplicate that coverage.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -45,8 +46,8 @@ fn install(name: &str, manifest: &str, code: &str) -> PathBuf {
 
 /// Tells `Hosts` where deco's own host code is.
 ///
-/// A test binary lives in `target/debug/deps`, which is not the layout an installed
-/// deco has, so the search would come up empty.
+/// A test binary is in `target/debug/deps`, which does not match the layout of an
+/// installed deco, so the search would find nothing.
 fn point_at_the_host() {
     std::env::set_var(
         "DECO_HOST_BOOTSTRAP",
@@ -65,7 +66,7 @@ fn session() -> Session {
     Session::new(settings, None, deco_keymap::binding::Platform::Linux)
 }
 
-/// Polls until `done` is satisfied, or panics with what the log says.
+/// Polls until `done` is satisfied, or panics with the log contents.
 fn until(
     hosts: &mut Hosts,
     session: &mut Session,
@@ -113,8 +114,8 @@ module.exports = { activate };
 "#,
     );
 
-    // The directory becomes a palette entry, named after the extension so that
-    // "which extension is this" is answerable before running it.
+    // The directory becomes a palette entry that shows the extension's name, so
+    // the user can see which extension a command belongs to before running it.
     let catalogue = discover(std::slice::from_ref(&root));
     let listed = rows(&catalogue);
     assert_eq!(listed.len(), 1, "{listed:?}");
@@ -124,12 +125,12 @@ module.exports = { activate };
 
     let mut session = session();
     session.frontend_commands.extend(listed);
-    // Before the `Hosts`, which looks for the bootstrap when it is built: a test
-    // binary does not sit in the layout an installed deco does.
+    // Set before creating `Hosts`, which looks for the bootstrap on creation. A
+    // test binary is not in the layout of an installed deco.
     point_at_the_host();
     let mut hosts = Hosts::new(catalogue);
 
-    // Invoked the way the palette invokes it: by identifier, through the session,
+    // Invoked in the same way as the palette: by identifier, through the session,
     // which routes it to the frontend because the frontend declared it.
     let outcome = session.run("acme.greet", None, 0);
     assert_eq!(
@@ -143,7 +144,7 @@ module.exports = { activate };
     );
     assert_eq!(hosts.started(), 1, "a host should have been started");
 
-    // The extension's own return value, in the status bar.
+    // The extension's return value is shown in the status bar.
     until(
         &mut hosts,
         &mut session,
@@ -156,7 +157,8 @@ module.exports = { activate };
         },
     );
 
-    // Asked again, the host is reused rather than started a second time.
+    // When the command is invoked again, the host is reused rather than
+    // started a second time.
     session.status = None;
     assert!(hosts.run_command(&mut session, "acme.greet"));
     assert_eq!(hosts.started(), 1);
@@ -180,8 +182,9 @@ module.exports = { activate };
 #[test]
 #[ignore = "needs node; run through `cargo xtask host-test`"]
 fn a_capability_the_manifest_never_declared_is_refused_when_it_is_really_asked_for() {
-    // The design's whole claim, against a real extension rather than a `Request`
-    // built in a test: this one declares nothing and tries to read a file.
+    // The core security property, tested with a real extension rather than a
+    // `Request` built in a test. This extension declares nothing and tries to
+    // read a file.
     let root = install(
         "refused",
         r#"{
@@ -229,8 +232,8 @@ module.exports = { activate };
         !said.contains("read it"),
         "an undeclared capability must not have been served: {said}"
     );
-    // And deco's own record of it, which is what makes the refusal explicable
-    // rather than an extension that mysteriously does not work.
+    // deco's log also records the refusal, so the user can see why the
+    // extension does not work.
     let log = hosts.log().collect::<Vec<_>>().join("\n");
     assert!(
         log.contains("refused fs.readFile"),
@@ -241,13 +244,13 @@ module.exports = { activate };
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// An extension that reads `path` and says what happened.
+/// An extension that reads `path` and returns the result.
 ///
-/// `name` picks its directory, and every caller must pass a different one:
-/// `install` clears the directory before writing it, so two tests sharing a name
-/// delete each other's manifest halfway through being read. That showed up as
-/// "the manifest does not declare this capability" — and only in CI, which runs
-/// these in parallel.
+/// `name` selects its directory, and every caller must pass a different name.
+/// `install` clears the directory before writing it, so two tests with the same
+/// name could delete each other's manifest while it is being read. This caused
+/// "the manifest does not declare this capability" errors, only in CI, where
+/// these tests run in parallel.
 fn reader(name: &str, path: &Path) -> PathBuf {
     install(
         name,
@@ -286,10 +289,9 @@ module.exports = {{ activate }};
 #[test]
 #[ignore = "needs node; run through `cargo xtask host-test`"]
 fn a_declared_capability_is_asked_about_rather_than_refused() {
-    // The default policy is `prompt`, and until there was somewhere to prompt
-    // that meant every declared capability was refused. What should happen is
-    // this: the extension waits, and the user is asked in words naming who is
-    // asking and for what.
+    // The default policy is `prompt`. Before a prompt existed, every declared
+    // capability was refused. Expected behaviour: the extension waits, and the
+    // user is asked with a message naming the extension and the request.
     let workspace = std::env::temp_dir().join(format!("deco-consent-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&workspace);
     std::fs::create_dir_all(&workspace).expect("a workspace");
@@ -311,17 +313,16 @@ fn a_declared_capability_is_asked_about_rather_than_refused() {
     let prompt = session.prompt.as_ref().expect("a prompt");
     let offered: Vec<String> = prompt.visible().iter().map(|e| e.title.clone()).collect();
     let asked = offered.join(" | ");
-    // Who is asking and for what, in words rather than in a `Debug` of a Rust
-    // value: `ReadFile { scope: Workspace }` is not a question anyone can answer.
+    // The extension and the request, described in words rather than as the
+    // `Debug` output of a Rust value such as `ReadFile { scope: Workspace }`.
     assert!(asked.contains("Acme Tools"), "{asked}");
-    // The file it actually asked for, not the `workspace` scope its manifest
-    // declared. The broker asks about the request, and the request is the more
-    // useful of the two to be shown: "may read files in this workspace" is a
-    // decision about everything, and this is a decision about one file.
+    // The requested file, not the `workspace` scope declared in the manifest.
+    // The broker asks about the request because it is more specific: "may read
+    // files in this workspace" covers everything, while this covers one file.
     assert!(asked.contains("read files under"), "{asked}");
     assert!(asked.contains("notes.txt"), "{asked}");
     assert!(asked.contains("Allow") && asked.contains("Deny"), "{asked}");
-    // And nothing has been served while the question is open.
+    // Nothing is served while the question is open.
     assert!(
         !session
             .status
@@ -332,7 +333,7 @@ fn a_declared_capability_is_asked_about_rather_than_refused() {
         session.status
     );
 
-    // Answered the way the prompt's own submit answers it.
+    // Answered in the same way as the prompt's submit action.
     hosts.answer_consent(
         &mut session,
         true,
@@ -355,9 +356,9 @@ fn a_declared_capability_is_asked_about_rather_than_refused() {
 #[test]
 #[ignore = "needs node; run through `cargo xtask host-test`"]
 fn a_decision_can_be_taken_back_from_the_palette() {
-    // The reason this exists: a `deny` chosen in a hurry otherwise means that
-    // extension quietly fails for the rest of the session, with nothing to undo
-    // it and no hint that a decision is why.
+    // Without this feature, an accidental `deny` makes the extension fail for
+    // the rest of the session, with no way to undo it and no indication that a
+    // decision is the cause.
     let workspace = std::env::temp_dir().join(format!("deco-consent-undo-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&workspace);
     std::fs::create_dir_all(&workspace).expect("a workspace");
@@ -389,7 +390,7 @@ fn a_decision_can_be_taken_back_from_the_palette() {
             .is_some_and(|s| s.contains("refused"))
     });
 
-    // The decision is listed, in the words it was made in.
+    // The decision is listed in the same terms as the original prompt.
     session.prompt = None;
     assert!(hosts.offer_permissions(&mut session));
     let listed = session
@@ -409,8 +410,8 @@ fn a_decision_can_be_taken_back_from_the_palette() {
     assert!(shown.contains("refused"), "{shown}");
     assert!(shown.contains("notes.txt"), "{shown}");
 
-    // Taken back, and the extension asks again rather than being refused from
-    // memory.
+    // After the decision is revoked, the user is asked again rather than the
+    // request being refused from the stored decision.
     let (chosen, _) = listed.first().expect("a decision").clone();
     session.prompt = None;
     hosts.forget_permission(&mut session, &chosen);
@@ -445,9 +446,9 @@ fn a_decision_can_be_taken_back_from_the_palette() {
 #[test]
 #[ignore = "needs node; run through `cargo xtask host-test`"]
 fn an_answer_is_remembered_across_sessions_until_the_extension_changes() {
-    // The claim this feature makes, and the rule that bounds it. Two `Hosts` in a
-    // row stand in for two runs of the editor: they share a permissions file and
-    // nothing else.
+    // Tests the persistence of decisions and its version limit. Consecutive
+    // `Hosts` instances represent separate editor runs: they share only a
+    // permissions file.
     let workspace = std::env::temp_dir().join(format!("deco-consent-keep-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&workspace);
     std::fs::create_dir_all(&workspace).expect("a workspace");
@@ -511,9 +512,9 @@ fn an_answer_is_remembered_across_sessions_until_the_extension_changes() {
         hosts.shutdown();
     }
 
-    // Third run, after an update: asked again. A grant on disk otherwise outlives
-    // the reason it was given — 1.0.0 was allowed to read this, and 2.0.0 is
-    // different code nobody has looked at.
+    // Third run, after an update: asked again. Otherwise a stored grant would
+    // apply to code it was not given for: 1.0.0 was allowed to read this file,
+    // but 2.0.0 is different code that has not been reviewed.
     let manifest = root.join("acme.tools-1.0.0/package.json");
     let updated = std::fs::read_to_string(&manifest)
         .expect("a manifest")
@@ -532,7 +533,8 @@ fn an_answer_is_remembered_across_sessions_until_the_extension_changes() {
             "the question again",
             |_, session| session.prompt.is_some(),
         );
-        // And it says why it is asking, so this does not look like deco forgetting.
+        // The log explains why it is asking, so it does not look like deco lost
+        // the decision.
         let log = hosts.log().collect::<Vec<_>>().join("\n");
         assert!(log.contains("being asked again"), "{log}");
         hosts.shutdown();
@@ -543,8 +545,8 @@ fn an_answer_is_remembered_across_sessions_until_the_extension_changes() {
 
 #[test]
 fn with_nothing_decided_the_palette_says_so_rather_than_offering_an_empty_list() {
-    // No host, no decisions: an empty picker is a puzzle, and this is the one
-    // scenario here that needs no Node at all.
+    // No host and no decisions: an empty picker would be confusing. This is the
+    // only scenario in this file that does not need Node.
     let mut session = session();
     let mut hosts = Hosts::new(discover(&[]));
     assert!(!hosts.offer_permissions(&mut session));
@@ -602,9 +604,9 @@ fn a_refusal_is_remembered_so_an_extension_cannot_ask_in_a_loop() {
         session.status
     );
 
-    // Asked again, and *not* asked about again: a refusal that is not remembered
-    // is a prompt loop, which is how a user ends up clicking allow to make it
-    // stop.
+    // The command runs again, but the user is *not* asked again. A refusal that
+    // is not stored causes a prompt loop, which can lead a user to allow the
+    // request just to stop it.
     session.prompt = None;
     session.status = None;
     assert!(hosts.run_command(&mut session, "acme.read"));
@@ -672,7 +674,7 @@ module.exports = {{ activate }};
     )
 }
 
-/// Runs `acme.edit` against `session` and returns what the extension said.
+/// Runs `acme.edit` against `session` and returns the extension's status message.
 fn edit_through(root: &Path, workspace: &Path, session: &mut Session) -> String {
     point_at_the_host();
     let catalogue = discover(std::slice::from_ref(&root.to_path_buf()));
@@ -680,10 +682,9 @@ fn edit_through(root: &Path, workspace: &Path, session: &mut Session) -> String 
     let mut hosts = Hosts::rooted(catalogue, vec![workspace.to_path_buf()]);
     assert!(hosts.run_command(session, "acme.edit"));
 
-    // `writeFile` is a declared capability nobody has ruled on, so the first
-    // thing that happens is the question — and the request waits behind it. A
-    // scenario that only watched the status would wait forever, which is how
-    // this test first failed.
+    // `writeFile` is a declared capability with no decision yet, so the user is
+    // asked first and the request waits. A test that only watched the status
+    // would wait forever; this test originally failed that way.
     until(&mut hosts, session, "the question", |_, session| {
         session.prompt.is_some()
     });
@@ -703,9 +704,9 @@ fn edit_through(root: &Path, workspace: &Path, session: &mut Session) -> String 
 #[test]
 #[ignore = "needs node; run through `cargo xtask host-test`"]
 fn an_edit_to_the_open_document_reaches_the_buffer_and_not_the_file() {
-    // The distinction the whole method turns on. A document with unsaved changes
-    // would overwrite anything written past it the next time it was saved, so an
-    // edit that went to the file would be an edit that silently did not happen.
+    // This is the key behaviour of the method. An open document would overwrite
+    // a direct file write the next time it was saved, so an edit written to the
+    // file would be lost without an error.
     let workspace = std::env::temp_dir().join(format!("deco-edit-open-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&workspace);
     std::fs::create_dir_all(&workspace).expect("a workspace");
@@ -719,10 +720,10 @@ fn an_edit_to_the_open_document_reaches_the_buffer_and_not_the_file() {
     let said = edit_through(&root, &workspace, &mut session);
     assert!(said.contains("edited"), "{said}");
 
-    // In the buffer, marked unsaved, and undoable — an edit like any other.
+    // Applied to the buffer, marked unsaved, and undoable, like any other edit.
     assert_eq!(session.document.buffer.text(), "EDITED there\n");
     assert!(session.document.dirty);
-    // And *not* on disk: nothing asked for it to be saved.
+    // *Not* written to disk, because no save was requested.
     assert_eq!(
         std::fs::read_to_string(&file).expect("the file"),
         "hello there\n"
@@ -737,7 +738,7 @@ fn an_edit_to_the_open_document_reaches_the_buffer_and_not_the_file() {
 #[test]
 #[ignore = "needs node; run through `cargo xtask host-test`"]
 fn an_edit_to_a_file_that_is_not_open_reaches_the_file() {
-    // The other half: no buffer to put it in, so the file is the document.
+    // The other case: no open buffer, so the edit is written to the file.
     let workspace = std::env::temp_dir().join(format!("deco-edit-closed-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&workspace);
     std::fs::create_dir_all(&workspace).expect("a workspace");

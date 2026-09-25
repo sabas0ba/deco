@@ -133,8 +133,8 @@ const HC_LIGHT_OVERRIDES: &[(&str, Rgba)] = &[
     ("focusBorder", hex(0x006bbd)),
 ];
 
-/// The built-in default for `key` under `kind`, or `None` if deco has no
-/// opinion about that key.
+/// The built-in default for `key` under `kind`, or `None` if deco defines no
+/// default for that key.
 pub fn default_color(kind: ThemeKind, key: &str) -> Option<Rgba> {
     let overrides = match kind {
         ThemeKind::HighContrastDark => HC_DARK_OVERRIDES,
@@ -166,9 +166,9 @@ pub fn fallback_chain(key: &str) -> &'static [&'static str] {
         "editorCursor.foreground" => &["editor.foreground"],
         "editorLineNumber.activeForeground" => &["editor.foreground"],
         "editorGutter.background" => &["editor.background"],
-        // A theme that colours diagnostics but says nothing about the git
-        // marks gets marks in its own palette rather than deco's greens
-        // and reds — the same reasoning as the line numbers above.
+        // A theme that colours diagnostics but not the git marks gets marks
+        // from its own palette rather than deco's greens and reds, as with
+        // the line numbers above.
         "editorGutter.addedBackground" => &["editorInfo.foreground"],
         "editorGutter.modifiedBackground" => &["editorInfo.foreground"],
         "editorGutter.deletedBackground" => &["editorError.foreground"],
@@ -192,8 +192,8 @@ pub fn fallback_chain(key: &str) -> &'static [&'static str] {
     }
 }
 
-/// deco's built-in dark theme, matching VS Code's Dark Modern closely enough
-/// that switching editors is not visually jarring.
+/// deco's built-in dark theme. It closely matches VS Code's Dark Modern so that
+/// switching between the editors does not noticeably change the appearance.
 pub const DARK_MODERN_JSONC: &str = r##"{
     "name": "Default Dark Modern",
     "type": "dark",
@@ -443,8 +443,8 @@ mod tests {
 
     #[test]
     fn every_fallback_target_is_itself_resolvable() {
-        // A chain that points at a key with no default would silently produce
-        // `None` for a colour the editor needs.
+        // A chain that points at a key with no default would produce `None`,
+        // without an error, for a colour the editor needs.
         for key in [
             "foreground",
             "editorCursor.foreground",

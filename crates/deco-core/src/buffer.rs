@@ -39,19 +39,18 @@ impl LineEnding {
     ///
     /// VS Code decides this from the *first* terminator it sees rather than by
     /// majority vote, and files with no terminator at all fall back to the
-    /// platform default. We match that so round-tripping a file through deco
-    /// never rewrites every line silently.
+    /// platform default. deco matches this so that opening and saving a file
+    /// does not change the terminator of every line.
     pub fn detect(text: &str) -> Self {
         Self::detected(text).unwrap_or_else(Self::platform_default)
     }
 
-    /// The line ending `text` actually shows, or `None` when it shows none.
+    /// The line ending used in `text`, or `None` when `text` has no terminator.
     ///
-    /// The distinction [`LineEnding::detect`] flattens away: a file with no
-    /// terminator in it has no ending of its own to keep, which is the one case
-    /// where `files.eol` gets to decide. Everywhere else the file's own ending
-    /// wins, because converting a file the user only opened is a whole-file
-    /// rewrite they did not ask for.
+    /// Unlike [`LineEnding::detect`], this distinguishes a file with no
+    /// terminator. Only in that case does `files.eol` decide the line ending.
+    /// Otherwise the file's own ending is kept, because converting it would
+    /// rewrite a file the user only opened.
     pub fn detected(text: &str) -> Option<Self> {
         match text.find('\n') {
             Some(0) => Some(LineEnding::Lf),
@@ -93,7 +92,7 @@ pub struct Buffer {
     rope: Rope,
     line_ending: LineEnding,
     /// Whether the file ended with a terminator when it was read. Preserved so
-    /// saving does not add or drop a trailing newline behind the user's back.
+    /// saving does not add or remove a trailing newline.
     final_newline: bool,
     version: i32,
 }
@@ -234,10 +233,9 @@ impl Buffer {
     ///
     /// Out-of-range lines snap to the end of the document and out-of-range
     /// characters snap to the end of their line, matching VS Code's
-    /// `TextModel.validatePosition`. Note that a too-large line does *not* just
-    /// clamp the line number and keep the column — it lands on the very end of
-    /// the document, which is what every editor command implicitly relies on
-    /// after a concurrent edit truncated the file.
+    /// `TextModel.validatePosition`. A line past the end does *not* keep its
+    /// column on the last line; it maps to the end of the document. Editor
+    /// commands rely on this after a concurrent edit truncates the file.
     pub fn clamp_position(&self, pos: Position) -> Position {
         let max_line = (self.line_count() - 1) as u32;
         if pos.line > max_line {
@@ -390,8 +388,8 @@ mod tests {
 
     #[test]
     fn a_file_with_no_terminator_has_no_detected_ending() {
-        // The distinction `detect` flattens: `None` is "nothing to keep", which
-        // is where `files.eol` gets to decide.
+        // Unlike `detect`, `None` means the file has no ending to keep, so
+        // `files.eol` decides.
         assert_eq!(LineEnding::detected("a\r\nb"), Some(LineEnding::Crlf));
         assert_eq!(LineEnding::detected("a\nb"), Some(LineEnding::Lf));
         assert_eq!(LineEnding::detected("\na"), Some(LineEnding::Lf));

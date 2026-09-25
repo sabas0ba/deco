@@ -1,18 +1,18 @@
 //! Finding the colour themes that are installed.
 //!
-//! Here rather than in `deco-editor` for the same reason the file walk is: the
-//! core has no filesystem, and a theme that lives in an extension directory has
-//! to be read from one.
+//! This module is in this crate rather than in `deco-editor` for the same reason
+//! as the file walk: the core has no filesystem access, and a theme in an
+//! extension directory has to be read from the filesystem.
 //!
 //! # What counts as installed
 //!
 //! The two themes deco ships with, plus every `contributes.themes` entry of every
 //! extension under deco's own extensions directory and VS Code's. A theme
-//! extension has no `main`, never starts a host process and needs no capability —
-//! which is why one from the marketplace works here at all.
+//! extension has no `main`, never starts a host process and needs no capability.
+//! This is why marketplace themes work in deco.
 //!
-//! Nothing is *loaded* while listing. A picker over forty themes would otherwise
-//! parse forty JSON files, and thirty-nine of them for nothing.
+//! Listing does not *load* any theme, so opening a picker over many themes does
+//! not parse their JSON files.
 
 use std::path::{Path, PathBuf};
 
@@ -20,22 +20,22 @@ use deco_editor::commands::PaletteEntry;
 
 /// How many extension directories are examined before the walk gives up.
 ///
-/// A marketplace-managed directory holds tens of extensions, not thousands; a
-/// number this size only ever stops something pathological.
+/// A marketplace-managed directory holds tens of extensions, not thousands. The
+/// limit only applies to abnormal directories.
 pub const MAX_EXTENSIONS: usize = 2_000;
 
 /// A theme that can be chosen.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Available {
-    /// What to call it — the extension's own `label`, which is what a
-    /// `workbench.colorTheme` setting has to name.
+    /// The display name: the extension's `label`. A `workbench.colorTheme`
+    /// setting refers to a theme by this name.
     pub label: String,
-    /// The file to read, or `None` for one compiled in.
+    /// The file to read, or `None` for a built-in theme.
     pub path: Option<PathBuf>,
     /// `dark`, `light` or `high contrast`, from the contribution's `uiTheme`.
     ///
-    /// Worth showing: it is the part of the choice a label often does not say, and
-    /// it is what tells you whether the screen is about to go white.
+    /// Shown in the picker because the label often does not indicate whether the
+    /// theme is light or dark.
     pub kind: &'static str,
 }
 
@@ -75,13 +75,13 @@ pub fn list(roots: &[PathBuf]) -> Vec<Available> {
         }
     }
 
-    // Built-ins stay at the top, because they are the ones that always work, and
-    // the rest go in the order the picker lists them.
+    // Built-ins stay at the top because they always work. Contributed themes are
+    // sorted by label.
     all[builtins..].sort_by(|a, b| a.label.cmp(&b.label));
 
-    // One label can be contributed twice — the same extension installed under two
-    // versions is the common way. The first wins, which is a built-in when a
-    // marketplace theme happens to share a name with one.
+    // One label can be contributed twice, usually by the same extension installed
+    // in two versions. The first entry is kept, which is a built-in when a
+    // marketplace theme has the same name as one.
     all.dedup_by(|a, b| a.label == b.label);
     all
 }
@@ -89,8 +89,8 @@ pub fn list(roots: &[PathBuf]) -> Vec<Available> {
 /// The themes one extension directory contributes.
 fn contributed(root: &Path) -> Vec<Available> {
     let Ok(source) = std::fs::read_to_string(root.join("package.json")) else {
-        // A directory that is not an extension. Nothing to report: an extensions
-        // directory routinely holds `.obsolete` and other bookkeeping.
+        // A directory that is not an extension. This is not reported: an
+        // extensions directory usually contains `.obsolete` and other metadata.
         return Vec::new();
     };
     let Ok(manifest) = deco_ext::Manifest::parse(&source) else {
@@ -109,8 +109,8 @@ fn contributed(root: &Path) -> Vec<Available> {
             kind: match theme.ui_theme.as_deref() {
                 Some("vs") => "light",
                 Some("hc-black") | Some("hc-light") => "high contrast",
-                // `vs-dark` and anything unrecognised. Dark is VS Code's own
-                // default for a contribution that does not say.
+                // `vs-dark` and anything unrecognised. VS Code also defaults to
+                // dark when a contribution has no `uiTheme`.
                 _ => "dark",
             },
         })
@@ -119,8 +119,8 @@ fn contributed(root: &Path) -> Vec<Available> {
 
 /// The available themes as picker rows.
 ///
-/// The identifier is the path to read, empty for a built-in — which is what
-/// `Session::accept_prompt` hands back to the frontend to load.
+/// The identifier is the path to read, or empty for a built-in.
+/// `Session::accept_prompt` returns this identifier to the frontend to load.
 pub fn rows(available: &[Available]) -> Vec<PaletteEntry> {
     available
         .iter()
@@ -213,14 +213,14 @@ mod tests {
         };
         assert_eq!(kind("Paper"), "light");
         assert_eq!(kind("Contrast"), "high contrast");
-        // VS Code's own default for a contribution that does not say.
+        // VS Code's default for a contribution without `uiTheme`.
         assert_eq!(kind("Unstated"), "dark");
     }
 
     #[test]
     fn a_directory_that_is_not_an_extension_is_skipped_quietly() {
-        // An extensions directory routinely holds `.obsolete` and other
-        // bookkeeping, which is not a problem worth reporting.
+        // An extensions directory usually contains `.obsolete` and other
+        // metadata. These are not errors.
         let root = temp("not-an-extension");
         std::fs::create_dir_all(root.join(".obsolete")).unwrap();
         extension(&root, "broken", "{ not json");
@@ -258,8 +258,8 @@ mod tests {
 
     #[test]
     fn contributed_themes_sort_by_label_below_the_builtins() {
-        // The built-ins are the ones that always work, so they stay reachable at
-        // the top rather than being buried by whatever is installed.
+        // The built-ins always work, so they stay at the top above installed
+        // themes.
         let root = temp("order");
         extension(
             &root,

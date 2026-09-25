@@ -1,13 +1,13 @@
 //! Turning a command line and a configuration directory into a session.
 //!
 //! This is the work between `main` returning from [`crate::cli::parse`] and a
-//! frontend drawing its first frame. It is a module rather than a stretch of
-//! `main` so that it can be run twice: once by the binary against the machine it
-//! is installed on, and once by a test against a home directory it wrote itself.
+//! frontend drawing its first frame. It is a module rather than part of `main`
+//! so that it has two callers: the binary, against the machine it is installed
+//! on, and tests, against a home directory they created.
 //!
-//! Nothing here reads the process environment. The three facts that would
-//! otherwise be read from it — where home is, which platform's configuration
-//! layout to use, and which platform's keybindings win — are [`Boot`], and
+//! Nothing here reads the process environment. The three values that would
+//! otherwise come from it (the home directory, the platform's configuration
+//! layout, and the platform whose keybindings apply) are held in [`Boot`].
 //! `main` is the only caller that fills it in from the process.
 
 use std::path::{Path, PathBuf};
@@ -22,28 +22,28 @@ use crate::cli::Cli;
 
 /// The machine deco is starting on.
 ///
-/// Data rather than calls, for the reason [`deco_config::paths::Env`] is: the
-/// rules that depend on these are then the same rules under test as in
-/// production, and a test does not have to mutate the process environment — which
-/// is shared by every test thread and therefore cannot be done safely — to
-/// exercise them.
+/// Stored as data rather than read by calls, for the same reason as
+/// [`deco_config::paths::Env`]. The rules that depend on these values are then
+/// the same in tests and in production. A test does not have to modify the
+/// process environment, which every test thread shares and which therefore
+/// cannot be modified safely.
 #[derive(Debug, Clone)]
 pub struct Boot {
     /// Home, `$XDG_CONFIG_HOME` and `%APPDATA%`.
     pub env: Env,
     /// Which platform's configuration directory layout applies.
     pub layout: Layout,
-    /// Which platform's keybindings win, for `key` versus `mac` and for the
+    /// Which platform's keybindings apply, for `key` versus `mac` and for the
     /// `isMac`-style context keys.
     pub platform: Platform,
-    /// What relative paths on the command line are taken against. `None` when the
-    /// working directory cannot be read, in which case a relative path is left as
-    /// it was typed.
+    /// The directory that relative paths on the command line are resolved
+    /// against. `None` when the working directory cannot be read, in which case a
+    /// relative path is left as it was typed.
     pub cwd: Option<PathBuf>,
 }
 
 impl Boot {
-    /// What the process says about the machine it is running on.
+    /// Reads these values from the current process.
     pub fn from_process() -> Self {
         Self {
             env: Env::from_process(),
@@ -56,25 +56,24 @@ impl Boot {
 
 /// The session a command line asks for, with every configuration layer applied.
 ///
-/// No file is opened here — that is [`open_local`], which is separate because a
-/// remote session fetches its files rather than reading them, and both then agree
-/// about the settings that were already resolved.
+/// No file is opened here; [`open_local`] does that. It is separate because a
+/// remote session fetches its files instead of reading them. Both paths use the
+/// settings already resolved here.
 ///
-/// Configuration failures land in `session.problems` rather than stopping
-/// startup: a `settings.json` with a typo in it is a reason to say so, not a
-/// reason to refuse to open the file somebody asked for.
+/// Configuration failures are added to `session.problems` rather than stopping
+/// startup. A typo in `settings.json` should be reported, but it should not
+/// prevent the requested file from opening.
 pub fn session(cli: &Cli, boot: &Boot, remote_settings: Option<&str>) -> Session {
-    // The first file names the workspace; a mixed invocation has to pick one,
-    // and the first is the one the user led with.
+    // The first file determines the workspace. When files come from different
+    // places one must be chosen, and the first is the one the user gave first.
     //
-    // Resolved before the walk, not after. `workspace_root_for` climbs the path
-    // asking the filesystem whether each directory holds a `.git` or a `.vscode`,
-    // and a relative path makes every one of those questions a question about the
-    // process's working directory — so the walk was reaching the right answer
-    // only for as long as that directory and the one the path is relative to were
-    // the same. They are the same for `deco src/main.rs` in a shell, and they are
-    // not the same for anything that resolves paths itself, which is why this was
-    // invisible until a test tried to run deco against a workspace of its own.
+    // The path is made absolute before the walk. `workspace_root_for` climbs the
+    // path and checks whether each directory contains a `.git` or a `.vscode`.
+    // With a relative path, each check is relative to the process's working
+    // directory, so the result was correct only when that directory matched the
+    // one the path was relative to. They match for `deco src/main.rs` in a
+    // shell, but not for callers that resolve paths themselves. The problem was
+    // found when a test ran deco against its own workspace.
     let workspace = cli
         .files
         .first()
@@ -82,9 +81,8 @@ pub fn session(cli: &Cli, boot: &Boot, remote_settings: Option<&str>) -> Session
         .as_deref()
         .and_then(crate::config::workspace_root_for);
     let loaded = if cli.clean {
-        // `--clean` means no configuration, and the remote's is configuration:
-        // a flag for "start with nothing" that still adopted another machine's
-        // settings would not be the flag it says it is.
+        // `--clean` means no configuration, and that includes the remote's
+        // settings.
         crate::config::LoadedConfig {
             settings: deco_config::Settings::with_defaults(),
             keybindings: None,
@@ -110,18 +108,18 @@ pub fn session(cli: &Cli, boot: &Boot, remote_settings: Option<&str>) -> Session
 
 /// Opens each file from the command line, reading it from this machine.
 ///
-/// A path that does not exist yet is a new file, not an error — that is how every
-/// editor is used to create one. Anything else that goes wrong reading a file
-/// *is* an error, because an editor that silently opens an empty buffer over a
-/// file it could not read is one keystroke away from truncating it.
+/// A path that does not exist yet is a new file, not an error; editors are
+/// commonly used this way to create files. Any other read failure *is* an
+/// error. If the editor opened an empty buffer for a file it could not read,
+/// saving that buffer would truncate the file.
 pub fn open_local(session: &mut Session, files: &[PathBuf], boot: &Boot) -> Result<()> {
     for path in files {
-        // Absolute before the session sees it. Every other way a file gets opened
-        // — quick open, `ctrl+o`, a search result, a jump to a definition —
-        // resolves first, so a relative path from here was the one spelling that
-        // never compared equal to any other: `deco src/main.rs` and then picking
-        // the same file from `ctrl+p` opened it twice, in two buffers with two
-        // undo histories.
+        // Make the path absolute before the session sees it. Every other way of
+        // opening a file (quick open, `ctrl+o`, a search result, a jump to a
+        // definition) resolves the path first. A relative path from here never
+        // compared equal to those, so `deco src/main.rs` followed by picking the
+        // same file from `ctrl+p` opened it twice, in two buffers with two undo
+        // histories.
         let path = absolute(path, boot.cwd.as_deref());
         let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,
@@ -138,7 +136,7 @@ pub fn open_local(session: &mut Session, files: &[PathBuf], boot: &Boot) -> Resu
 /// Leaves the first of `count` freshly opened files showing.
 ///
 /// Opening focuses each file in turn, so the last one ends up active. The first
-/// is what the user led with, so it is the one shown.
+/// file on the command line is the one shown.
 pub fn focus_first(session: &mut Session, count: usize) {
     for _ in 1..count {
         session.run("workbench.action.previousEditor", None, 0);
@@ -147,9 +145,10 @@ pub fn focus_first(session: &mut Session, count: usize) {
 
 /// `path` against the working directory, when it is not already absolute.
 ///
-/// Lexical: a file that does not exist yet has to resolve too, so this cannot be
-/// `fs::canonicalize`. A working directory that cannot be read leaves the path as
-/// typed, which is what deco did before it resolved anything.
+/// Resolution is lexical because a file that does not exist yet must also
+/// resolve, so `fs::canonicalize` cannot be used. If the working directory
+/// cannot be read, the path is left as typed, matching deco's behaviour before
+/// paths were resolved.
 pub fn absolute(path: &Path, cwd: Option<&Path>) -> PathBuf {
     if path.is_absolute() {
         return path.to_path_buf();
@@ -160,14 +159,13 @@ pub fn absolute(path: &Path, cwd: Option<&Path>) -> PathBuf {
     }
 }
 
-/// What `--print-config` prints: what the editor resolved, which is the quickest
-/// way to answer "why is my setting not taking effect".
+/// What `--print-config` prints: the values the editor resolved. This is the
+/// quickest way to find out why a setting is not taking effect.
 ///
-/// Returned rather than printed so that the answer can be asserted. Every value
-/// that came out of a settings file is made printable first, for the same reason
-/// the problem list is: `--print-config` in a cloned repository prints that
-/// repository's text to the terminal it was run from, and a terminal interprets
-/// what it is written.
+/// Returned rather than printed so that the output can be asserted. Every value
+/// read from a settings file is sanitised first, as the problem list is:
+/// `--print-config` in a cloned repository prints that repository's text to the
+/// terminal, and the terminal interprets control sequences in it.
 pub fn config_report(session: &Session) -> String {
     use std::fmt::Write as _;
 
@@ -187,9 +185,8 @@ pub fn config_report(session: &Session) -> String {
     let _ = writeln!(out, "editor.fontSize     {}", settings.font_size);
     let _ = writeln!(out, "files.eol           {:?}", settings.eol);
     let _ = writeln!(out, "keybindings         {} bindings", session.keymap.len());
-    // How extensions would be run. Printed because refusing to degrade silently
-    // only means anything if the answer is available somewhere, and this is where
-    // someone looks for it.
+    // How extensions would be run. deco reports rather than hides a weaker
+    // sandbox, so the current mode is printed here, where users look for it.
     let _ = writeln!(
         out,
         "extension sandbox   {}",

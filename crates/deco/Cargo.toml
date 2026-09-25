@@ -17,8 +17,8 @@ path = "src/main.rs"
 deco-config.workspace = true
 deco-editor.workspace = true
 deco-keymap.workspace = true
-# The far end of remote development: `deco --server` is this binary too, because
-# one binary on the remote is one thing to install and one version to match.
+# The remote side of remote development: `deco --server` is this same binary, so
+# the remote needs only one binary to install and one version to match.
 deco-remote.workspace = true
 deco-theme.workspace = true
 deco-tui.workspace = true
@@ -41,15 +41,15 @@ serde_json.workspace = true
 # options through rather than naming them itself.
 deco-core.workspace = true
 # The end-to-end harness, for scenarios that need this package's binary as the
-# far end of a remote session. A dev-dependency cycle — deco-e2e depends on this
-# crate's library — which Cargo allows and which is the only way a scenario can
-# have both the editor's own startup and a real `deco --server` to talk to.
+# remote side of a remote session. This is a dev-dependency cycle (deco-e2e
+# depends on this crate's library), which Cargo allows. It is the only way for a
+# scenario to use both the editor's own startup and a real `deco --server`.
 deco-e2e = { path = "../deco-e2e", version = "0.1.0" }
 # For the remote-extension scenario, which sets the sandbox key by name rather
 # than by copying its spelling into a string literal.
 deco-ext.workspace = true
-# For the remote-settings scenarios, which check the *trust* a server definition
-# from the remote layer carries — the thing that decides whether connecting to a
+# For the remote-settings scenarios, which check the *trust* level of a server
+# definition from the remote layer. That level decides whether connecting to a
 # machine is enough to run a program it names.
 deco-lsp.workspace = true
 # For source-control operations sent through the remote-session integration

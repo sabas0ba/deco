@@ -1,10 +1,9 @@
 //! Repository tooling.
 //!
-//! Everything CI does is a subcommand here, so a contributor can reproduce any
-//! CI step locally with the same command CI runs. The workflows stay short
-//! enough to read, and the logic that decides what a release contains is
-//! ordinary Rust with unit tests rather than inline YAML shell that can only be
-//! exercised by pushing a tag.
+//! Every CI step is a subcommand here, so a contributor can reproduce any CI
+//! step locally with the same command. The workflows stay short, and the logic
+//! that defines a release's contents is Rust with unit tests rather than inline
+//! shell in YAML that can only be tested by pushing a tag.
 //!
 //! ```console
 //! $ cargo xtask ci                                  # everything the CI checks run
@@ -44,12 +43,12 @@ enum Command {
         #[arg(long)]
         test_only: bool,
     },
-    /// Exercise the Windows and macOS targets from a Linux host.
+    /// Test the Windows and macOS targets from a Linux host.
     ///
     /// Type-checks every triple the release matrix ships, then builds the
-    /// tests for the Windows target and runs them under Wine. Needs
-    /// `mingw-w64` and `wine64` for the second half; see `xtask/src/cross.rs`
-    /// for what this does and does not stand in for.
+    /// tests for the Windows target and runs them under Wine. The Wine run
+    /// needs `mingw-w64` and `wine64`. See `xtask/src/cross.rs` for what this
+    /// does and does not cover.
     Cross {
         /// Only type-check, skipping the Wine run.
         #[arg(long)]
@@ -83,9 +82,8 @@ enum Command {
         tag: String,
         /// Where to write the notes.
         ///
-        /// Deliberately not under `dist`: the release uploads `dist/*` as
-        /// assets, and the notes are the release's text rather than a file to
-        /// download.
+        /// Not under `dist`, because the release uploads `dist/*` as assets,
+        /// and the notes are the release's text rather than a download.
         #[arg(long, default_value = "target/release-notes.md")]
         out: PathBuf,
     },
@@ -104,8 +102,8 @@ enum Command {
     Commitlint {
         /// Revision range to check, e.g. `origin/main..HEAD`.
         ///
-        /// Defaults to the commits this branch adds to `origin/main`, which is
-        /// what a pull request is asking to merge.
+        /// Defaults to the commits this branch adds to `origin/main`, which are
+        /// the commits a pull request merges.
         #[arg(long)]
         range: Option<String>,
     },
@@ -160,14 +158,14 @@ fn main() -> Result<()> {
 
 /// Checks every commit in `range` against Conventional Commits.
 ///
-/// Only the commits a branch adds, not the whole history: the convention was
-/// adopted partway through, and rewriting merged commits to satisfy it would
-/// change history other people have already pulled.
+/// Only the commits a branch adds are checked, not the whole history. The
+/// convention was adopted partway through, and rewriting merged commits would
+/// change history that others have already pulled.
 fn commit_lint(root: &Path, range: Option<&str>) -> Result<()> {
     let range = range.unwrap_or("origin/main..HEAD").to_owned();
 
-    // NUL-separated, because a commit message contains blank lines and
-    // everything else a line-based split would trip over.
+    // NUL-separated, because commit messages contain blank lines and other
+    // content that a line-based split cannot handle.
     let output = std::process::Command::new("git")
         .current_dir(root)
         .args(["log", "--no-merges", "--format=%B%x00", &range])
@@ -225,8 +223,8 @@ fn commit_lint(root: &Path, range: Option<&str>) -> Result<()> {
 /// Runs `cargo deny` against deny.toml.
 ///
 /// Separate from `ci` because it needs a tool that is not part of a default
-/// Rust installation, and because a newly published advisory can turn it red
-/// without anything in this repository changing.
+/// Rust installation, and because a newly published advisory can make it fail
+/// without any change in this repository.
 fn deny(root: &Path) -> Result<()> {
     run(root, "cargo", &["deny", "--all-features", "check"], &[])
         .context("`cargo deny` failed — install it with `cargo install cargo-deny --locked`")
@@ -272,16 +270,16 @@ fn ci(root: &Path, lint_only: bool, test_only: bool) -> Result<()> {
 
 /// Runs the Node extension host's tests.
 ///
-/// Delegates to `npm test` rather than restating the invocation: the script in
-/// `extension-host/package.json` is the single definition of how those tests
-/// run, and CI calls the same one.
+/// Delegates to `npm test` rather than repeating the invocation. The script in
+/// `extension-host/package.json` is the only definition of how those tests run,
+/// and CI uses the same script.
 fn host_test(root: &Path) -> Result<()> {
     check_node_version()?;
     let npm = if cfg!(windows) { "npm.cmd" } else { "npm" };
     run(&root.join("extension-host"), npm, &["test"], &[])?;
-    // The other half: the Rust side against the real host. Ignored by default so
-    // `cargo test` stays runnable where there is no Node — under Wine, for one — and
-    // run here, which is the command that already requires it.
+    // The Rust side against the real host. These tests are ignored by default so
+    // `cargo test` runs without Node (for example under Wine), and are run here
+    // because this command already requires Node.
     run_cargo(
         root,
         &[
@@ -293,15 +291,15 @@ fn host_test(root: &Path) -> Result<()> {
             "host_round_trip",
             "--",
             "--ignored",
-            // The container round trip is selected separately below, because it
-            // needs something this one does not.
+            // The container round trip is run separately below, because it also
+            // needs a container runtime.
             "--skip",
             CONTAINER_TESTS,
         ],
     )?;
 
-    // The editor's half: a directory becoming a palette entry, and the command
-    // being run. Needs Node for the same reason and nothing more.
+    // The editor side: an extension directory becomes a palette entry, and the
+    // command runs. This also needs only Node.
     run_cargo(
         root,
         &[
@@ -316,9 +314,9 @@ fn host_test(root: &Path) -> Result<()> {
         ],
     )?;
 
-    // The same stack again, with the files on the other end of a connection: an
-    // extension's read has to go through the server rather than around it, and
-    // only a real host asking a real server can show which one happened.
+    // The same stack with the files on the remote side of a connection. An
+    // extension's read must go through the server, and only a real host with a
+    // real server can verify this.
     run_cargo(
         root,
         &[
@@ -330,16 +328,15 @@ fn host_test(root: &Path) -> Result<()> {
             "remote_extension",
             "--",
             "--ignored",
-            // One at a time: each scenario starts its own host and its own
-            // server, and the bootstrap path they need is process-wide.
+            // One at a time, because each scenario starts its own host and
+            // server, and the bootstrap path they use is process-wide.
             "--test-threads=1",
         ],
     )?;
 
-    // And the same stack in the container deco actually ships with. This needs a
-    // container runtime, which not every machine has — so the decision is
-    // *printed* either way. A test that quietly does not run is worse than one
-    // that is not written, because the output looks the same as passing.
+    // The same stack in the container deco ships with. This needs a container
+    // runtime, which not every machine has, so the result is printed in both
+    // cases. A skipped test that is not reported looks the same as a pass.
     match deco_ext::sandbox::find_runtime(
         &deco_ext::sandbox::RUNTIMES,
         std::env::var_os("PATH").as_deref(),
@@ -377,12 +374,12 @@ const CONTAINER_TESTS: &str = "a_container";
 
 /// The oldest Node the host runs on, as `(major, minor)`.
 ///
-/// `--permission` became the flag's stable spelling in 22.13, and the host passes
-/// that spelling. An older Node rejects it and exits before printing anything about
-/// deco, so the version is worth stating before the tests rather than after.
+/// `--permission` became the flag's stable name in 22.13, and the host passes that
+/// name. An older Node rejects it and exits without output related to deco, so
+/// the version is checked before the tests run.
 const OLDEST_NODE: (u64, u64) = (22, 13);
 
-/// Refuses to run the host tests on a Node too old to accept `--permission`.
+/// Fails if the installed Node is too old to accept `--permission`.
 fn check_node_version() -> Result<()> {
     let node = if cfg!(windows) { "node.exe" } else { "node" };
     let output = std::process::Command::new(node)
@@ -536,9 +533,9 @@ mod tests {
 
     #[test]
     fn release_notes_needs_a_tag_and_writes_beside_the_artifacts() {
-        // The tag is required rather than defaulted to the version in Cargo.toml:
-        // the workflow knows which tag it is building, and guessing would let a
-        // mistyped tag publish the wrong version's notes without complaint.
+        // The tag is required rather than defaulting to the version in
+        // Cargo.toml. The workflow knows which tag it builds, and a default could
+        // let a mistyped tag publish the wrong version's notes without an error.
         assert!(Cli::try_parse_from(["xtask", "release-notes"]).is_err());
         match Cli::parse_from(["xtask", "release-notes", "--tag", "v0.1.0"]).command {
             Command::ReleaseNotes { tag, out } => {
@@ -576,7 +573,7 @@ mod tests {
         assert_eq!(parse_node_version(""), None);
         assert_eq!(parse_node_version("v22"), None);
         assert_eq!(parse_node_version("not a version"), None);
-        // Text order would put 22.9 above 22.13, which is the mistake this guards.
+        // Text comparison would order 22.9 after 22.13.
         assert!(parse_node_version("v22.9.0").unwrap() < OLDEST_NODE);
         assert!(parse_node_version("v20.20.2").unwrap() < OLDEST_NODE);
         assert!(parse_node_version("v22.13.0").unwrap() >= OLDEST_NODE);
@@ -585,9 +582,9 @@ mod tests {
 
     #[test]
     fn the_oldest_node_matches_what_the_host_package_declares() {
-        // Two places have to agree about the runtime: this check and the manifest npm
-        // reads. Stating it once is not possible — npm will not read a Rust constant —
-        // so the next best thing is a test that notices when they drift apart.
+        // This check and the manifest npm reads must require the same version.
+        // npm cannot read a Rust constant, so this test detects when the two
+        // differ.
         let manifest = std::fs::read_to_string(
             repository_root()
                 .unwrap()

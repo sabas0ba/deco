@@ -1,17 +1,17 @@
 //! Turning a session into a grid of styled cells.
 //!
 //! Rendering is a pure function of the session plus the terminal size, and
-//! produces a [`Frame`] rather than writing to the terminal. That split is what
-//! lets the layout — gutter width, selection highlighting, tab expansion,
-//! status bar — be asserted in CI with no terminal attached.
+//! produces a [`Frame`] rather than writing to the terminal. This allows the
+//! layout (gutter width, selection highlighting, tab expansion, status bar) to
+//! be tested in CI without a terminal.
 
 use deco_config::{LineNumbers, RenderWhitespace};
 use deco_core::position::Range;
-// The gutter width and the column division are the session's, not the renderer's:
-// it needs the same answers to know how many columns are left for text, which is
-// what decides where a wrapped line breaks. Two implementations would be free to
-// disagree about the width, and a disagreement there draws a caret beside the
-// character it is on rather than under it.
+// The gutter width and the column division come from the session, not the
+// renderer. The session needs the same values to know how many columns are left
+// for text, which determines where a wrapped line breaks. Two implementations
+// could disagree about the width and draw the caret next to its character
+// instead of on it.
 use deco_editor::find::Field;
 use deco_editor::layout::{column_widths, gutter_width as gutter_width_of, Rect};
 use deco_editor::Session;
@@ -81,9 +81,9 @@ impl Palette {
             fg,
             bg,
             gutter_fg: theme.color("editorLineNumber.foreground").unwrap_or(fg),
-            // The git marks. A theme with nothing to say about them falls back
-            // through `deco-theme`'s chain to its own diagnostic colours
-            // before it ever reaches the line-number colour here.
+            // The git marks. A theme that does not define them falls back
+            // through `deco-theme`'s chain to its diagnostic colours before
+            // this default is used.
             added_fg: theme.color("editorGutter.addedBackground").unwrap_or(fg),
             modified_fg: theme.color("editorGutter.modifiedBackground").unwrap_or(fg),
             deleted_fg: theme.color("editorGutter.deletedBackground").unwrap_or(fg),
@@ -120,11 +120,10 @@ impl Palette {
                 .color("editorWhitespace.foreground")
                 .map(|c| c.over(bg))
                 .unwrap_or(fg),
-            // A ruler is a hairline between two columns in VS Code, and a terminal
-            // has no space between cells to put one in. So it becomes a tint of the
-            // cell instead, at a quarter strength: strong enough to follow down the
-            // screen, weak enough to read the code sitting on it — which is the
-            // column a ruler is there to warn about in the first place.
+            // In VS Code a ruler is a thin line between two columns, but a
+            // terminal has no space between cells. The ruler is drawn as a cell
+            // tint at quarter strength instead: visible down the screen, while
+            // the code in that column stays readable.
             ruler_bg: theme
                 .color("editorRuler.foreground")
                 .map(|c| Rgba { a: 0x40, ..c }.over(bg))
@@ -137,8 +136,8 @@ impl Palette {
 
 /// How often `editor.lineNumbers: "interval"` draws a number.
 ///
-/// Ten, as VS Code does. The setting names no interval of its own, so this is not a
-/// number anybody can configure — in either editor.
+/// Ten, as in VS Code. The setting has no interval option, so the value is not
+/// configurable in either editor.
 const LINE_NUMBER_INTERVAL: usize = 10;
 
 /// Number of columns the line-number gutter needs.
@@ -153,9 +152,9 @@ pub fn render(session: &Session, width: usize, height: usize) -> Frame {
 
 /// Renders, optionally overlaying a hover box near the cursor.
 ///
-/// A separate entry point rather than a field on `Session`, because a hover is
-/// the frontend's business: it belongs to a screen with a cursor on it, and the
-/// core has neither.
+/// A separate entry point rather than a field on `Session`, because the hover
+/// belongs to the frontend. It is positioned on a screen relative to a cursor,
+/// and the core has neither.
 pub fn render_with_hover(
     session: &Session,
     width: usize,
@@ -167,9 +166,9 @@ pub fn render_with_hover(
 
 /// Renders with both overlays.
 ///
-/// Only one is ever drawn: a completion list and a hover box would occupy the
-/// same space beside the cursor, and the list is the one the user is interacting
-/// with. `Suggest` therefore wins.
+/// Only one is drawn. A completion list and a hover box would occupy the same
+/// space beside the cursor, and the user is interacting with the list, so
+/// `Suggest` takes precedence.
 pub fn render_with_overlays(
     session: &Session,
     width: usize,
@@ -192,17 +191,16 @@ pub fn render_with_overlays(
 /// How many rows the chrome below the text takes: the status bar, plus the find
 /// bar's one or two rows when it is open.
 ///
-/// The frontend needs this to tell the session how tall the text area is, so
-/// exported rather than folded into the renderer.
+/// Public because the frontend needs it to tell the session the height of the
+/// text area.
 pub fn chrome_height(session: &Session, height: usize) -> usize {
     fixed_chrome_height(session) + prompt_rows(session, height)
 }
 
 /// The rows of chrome whose count does not depend on the terminal's height: the
 /// status bar, the find bar's one or two, the tab bar, and the prompt's own input
-/// line. Everything here is a row the editor cannot do without while it is
-/// showing — which is what makes the prompt's *list* the part that gives way when
-/// the terminal is too short to hold all of it.
+/// line. These rows are required while shown, so the prompt's *list* is the part
+/// that shrinks when the terminal is too short.
 fn fixed_chrome_height(session: &Session) -> usize {
     let find = if session.find.visible() {
         1 + usize::from(session.find.replacing())
@@ -215,11 +213,11 @@ fn fixed_chrome_height(session: &Session) -> usize {
 
 /// One row for the tab bar, or none while a single document is open.
 ///
-/// Hidden for a single tab so that opening one file looks exactly as it always
-/// did — the bar earns its row only once there is a choice to show.
+/// Hidden for a single tab, so opening one file shows no tab bar. The bar uses a
+/// row only when there is more than one tab.
 pub fn tab_bar_height(session: &Session) -> usize {
-    // Any group showing more than one tab earns the row, and the row spans the
-    // window — so one group with two tabs makes the bar appear for all of them.
+    // The bar is shown when any group has more than one tab. It spans the whole
+    // window, so one group with two tabs shows the bar for all groups.
     usize::from(
         session.comparison_active() || session.panes().iter().any(|pane| pane.tabs.len() > 1),
     )
@@ -227,17 +225,16 @@ pub fn tab_bar_height(session: &Session) -> usize {
 
 /// Rows the open prompt's list of choices takes.
 ///
-/// Bounded three ways: by how many choices there are, so a prompt with two
-/// matches costs two rows and not eight; by [`deco_editor::prompt::MAX_ROWS`],
-/// because the file is what the user is trying to look at; and by the rows the
-/// terminal actually has left after the chrome that cannot be shortened.
+/// Bounded in three ways: by the number of choices, so a prompt with two
+/// matches uses two rows and not eight; by [`deco_editor::prompt::MAX_ROWS`],
+/// so the file stays visible; and by the rows the terminal has left after the
+/// chrome that cannot be shortened.
 ///
-/// That third bound is not a nicety. Eight choices, an input line and a status
-/// bar are ten rows, and a terminal can be five — at which point the frame was
-/// twice the height of the window it was painted into, which on a real terminal
-/// scrolls the screen and walks the whole editor upwards. The list is the part
-/// that gives way because it is the only part that can: it is already a window
-/// onto a longer list, and it already scrolls with the selection.
+/// The third bound is required. Eight choices, an input line and a status bar
+/// are ten rows, but a terminal can be five rows high. A frame taller than the
+/// terminal scrolls the screen and shifts the whole editor upwards. The list is
+/// the only part that can shrink, because it is already a scrolling window onto
+/// a longer list that follows the selection.
 fn prompt_rows(session: &Session, height: usize) -> usize {
     let Some(prompt) = &session.prompt else {
         return 0;
@@ -257,9 +254,9 @@ fn render_text(session: &Session, width: usize, height: usize) -> Frame {
         rows.push(tab_bar(session, &session.panes(), width, &palette));
     }
 
-    // What is left of the text area once the chrome regions have taken theirs.
-    // Computed from the height actually being drawn rather than from the one the
-    // session was last resized to — see `Session::regions_for`.
+    // The text area remaining after the chrome regions. Computed from the height
+    // being drawn rather than the height the session was last resized to; see
+    // `Session::regions_for`.
     let regions = session.regions_for(width, text_height);
     let editor = regions.editor;
 
@@ -275,8 +272,8 @@ fn render_text(session: &Session, width: usize, height: usize) -> Frame {
         })
         .collect();
 
-    // The caret belongs to one group, and its column is offset by everything to
-    // the left of that group — including the separators, and now the side bar.
+    // The caret belongs to one group. Its column is offset by everything to the
+    // left of that group, including the separators and the side bar.
     let mut left = editor.x;
     for (index, frame) in drawn.iter().enumerate() {
         if let Some((x, y)) = frame.cursor {
@@ -284,9 +281,8 @@ fn render_text(session: &Session, width: usize, height: usize) -> Frame {
         }
         left += widths[index] + usize::from(index + 1 < widths.len());
     }
-    // A region with the keyboard means the text does not have it, and two
-    // carets — or one in a place typing does not go — is a lie about where the
-    // next keystroke lands.
+    // When another region has keyboard focus, the text does not. A caret in the
+    // text would then misrepresent where the next keystroke goes.
     if session.focus() != deco_editor::Focus::Editor {
         cursor_cell = None;
     }
@@ -300,7 +296,7 @@ fn render_text(session: &Session, width: usize, height: usize) -> Frame {
 
     for row_index in 0..text_height {
         // The middle of the row: the groups, the rule above the panel, or the
-        // panel itself, depending how far down we are.
+        // panel itself, depending on the row.
         let middle = if let Some(rule) = regions.panel_rule.filter(|rule| *rule == row_index) {
             let _ = rule;
             Row {
@@ -328,9 +324,9 @@ fn render_text(session: &Session, width: usize, height: usize) -> Frame {
                 let cells = bar.get(row_index).cloned().unwrap_or_else(|| Row {
                     spans: vec![blank(rect.width, palette.bg)],
                 });
-                // Where the panel's rule meets the side bar's, the two join
-                // rather than crossing: a `│` butted against a run of `─` reads
-                // as two borders that happen to touch.
+                // Where the panel's rule meets the side bar's, draw a junction.
+                // A `│` next to a run of `─` would look like two separate
+                // borders.
                 let joins = regions.panel_rule == Some(row_index);
                 let rule = Span {
                     text: match (joins, rect.x == 0) {
@@ -358,13 +354,12 @@ fn render_text(session: &Session, width: usize, height: usize) -> Frame {
         });
     }
 
-    // Between the text and the status bar, so that the bar the user is typing
-    // into sits next to the text it is searching and never covers the place the
-    // editor reports errors.
+    // Between the text and the status bar, so the find bar is next to the text
+    // being searched and does not cover the line where errors are reported.
     if session.find.visible() {
-        // The caret belongs in whichever input has the keyboard: the document's
-        // cursor is on the current match, which is highlighted, and two visible
-        // carets would be a lie about where typing goes.
+        // The caret goes in the input that has keyboard focus. The document's
+        // cursor is on the current match, which is highlighted, and a second
+        // visible caret would misrepresent where typing goes.
         let focus = session.find.field();
         let (row, caret) = find_bar(session, width, &palette);
         rows.push(row);
@@ -380,12 +375,11 @@ fn render_text(session: &Session, width: usize, height: usize) -> Frame {
         }
     }
 
-    // Below the find bar, because the prompt is the thing that just opened and so
-    // is the thing holding the keyboard.
+    // Below the find bar, because the prompt opened most recently and has
+    // keyboard focus.
     if let Some(prompt) = &session.prompt {
-        // Only as many as `prompt_rows` said would fit — the same count the text
-        // area was sized against, so the two cannot disagree about how tall the
-        // frame is.
+        // Only as many rows as `prompt_rows` allows. The text area was sized with
+        // the same count, so both agree on the frame height.
         let listed = prompt_rows(session, height);
         for (index, entry) in prompt.visible().iter().take(listed).enumerate() {
             rows.push(choice_row(
@@ -402,13 +396,11 @@ fn render_text(session: &Session, width: usize, height: usize) -> Frame {
 
     rows.push(status_bar(session, width, &palette));
 
-    // The backstop, for a terminal shorter than the chrome that cannot be
-    // shortened: two rows of find bar and a status bar do not fit in one row,
-    // however little else is drawn. Rows go from the top, because what is at the
-    // bottom is what has the keyboard — the input being typed into and the line
-    // that reports what happened — and a frame taller than its window does not
-    // merely lose a row, it scrolls the terminal and walks the editor off the
-    // screen.
+    // Fallback for a terminal shorter than the chrome that cannot be shortened,
+    // for example two find bar rows and a status bar in a one-row terminal.
+    // Rows are removed from the top, because the bottom rows hold the input with
+    // keyboard focus and the status line. A frame taller than the terminal would
+    // scroll the terminal and move the editor off screen.
     if rows.len() > height {
         let excess = rows.len() - height;
         rows.drain(..excess);
@@ -421,7 +413,7 @@ fn render_text(session: &Session, width: usize, height: usize) -> Frame {
     }
 }
 
-/// Which region is being drawn, for the two things that differ between them.
+/// Which region is being drawn, for the properties that differ between them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Region {
     SideBar,
@@ -429,11 +421,11 @@ enum Region {
 }
 
 impl Region {
-    /// The heading, in the case VS Code puts its view titles in.
+    /// The heading, in the same letter case as VS Code's view titles.
     fn title(self, session: &Session) -> &'static str {
         match self {
-            // Named for its tenant once it has one, as VS Code names the view
-            // rather than the container it is in.
+            // Named after the view it contains, if any, as VS Code names the
+            // view rather than its container.
             Self::SideBar if session.side_bar_view() == deco_editor::SideBarView::SourceControl => {
                 "SOURCE CONTROL"
             }
@@ -443,13 +435,12 @@ impl Region {
         }
     }
 
-    /// What is going to live here, for as long as nothing does.
+    /// The planned contents of this region, shown while it has no view.
     ///
-    /// A region that opens empty and says nothing is indistinguishable from one
-    /// that failed to draw. deco names commands it has not built rather than
-    /// letting the key do nothing silently, and this is the same rule one layer
-    /// out: the chrome is real, what goes in it is named, and neither is
-    /// pretended about.
+    /// An empty region with no text looks the same as one that failed to draw.
+    /// deco reports unimplemented commands instead of ignoring the key, and this
+    /// applies the same rule to the chrome: the region names what it will
+    /// contain.
     fn waiting_on(self) -> &'static str {
         match self {
             Self::SideBar => "search and source control",
@@ -457,7 +448,7 @@ impl Region {
         }
     }
 
-    /// Whether this region currently has the keyboard.
+    /// Whether this region currently has keyboard focus.
     fn has_focus(self, session: &Session) -> bool {
         match self {
             Self::SideBar => session.focus() == deco_editor::Focus::SideBar,
@@ -466,14 +457,15 @@ impl Region {
     }
 }
 
-/// One region's rows: a heading, then what it is waiting for, then blank.
+/// One region's rows: a heading, then its contents or placeholder, then blank
+/// rows.
 ///
 /// Exactly `rect.height` rows of exactly `rect.width` columns, so the caller can
-/// stitch them beside the editor's without measuring anything.
+/// place them beside the editor's rows without measuring.
 fn region_rows(session: &Session, rect: Rect, region: Region, palette: &Palette) -> Vec<Row> {
     let theme = &session.theme;
-    // The side bar's own colours when the theme has them, so a region looks like
-    // part of the editor it was themed for rather than a hole in it.
+    // Use the theme's side bar colours when defined, so the region matches the
+    // rest of the themed editor.
     let bg = theme
         .color("sideBar.background")
         .unwrap_or(palette.status_bg);
@@ -481,8 +473,8 @@ fn region_rows(session: &Session, rect: Rect, region: Region, palette: &Palette)
         .color("sideBar.foreground")
         .unwrap_or(palette.status_fg);
     let title_fg = theme.color("sideBarTitle.foreground").unwrap_or(fg);
-    // The one thing that has to be visible without a tenant to show it: which
-    // region the keyboard is in.
+    // Keyboard focus must be visible even when the region has no view, so the
+    // title is highlighted.
     let title_bg = if region.has_focus(session) {
         theme
             .color("focusBorder")
@@ -502,7 +494,7 @@ fn region_rows(session: &Session, rect: Rect, region: Region, palette: &Palette)
         rows.push(region_line("", rect.width, fg, bg));
     }
 
-    // The side bar has two tenants now; the panel has none.
+    // The side bar has two views; the panel has none.
     if region == Region::SideBar
         && session.side_bar_view() == deco_editor::SideBarView::SourceControl
     {
@@ -524,8 +516,8 @@ fn region_rows(session: &Session, rect: Rect, region: Region, palette: &Palette)
         }
     }
 
-    // Wrapped, because what a region is waiting for does not fit in thirty
-    // columns and a region that ends mid-word reads as broken.
+    // Wrapped, because the placeholder does not fit in thirty columns and text
+    // cut mid-word looks broken.
     let mut body = wrap(region.waiting_on(), rect.width.saturating_sub(1), 4);
     body.push("will live here".to_owned());
     for text in body {
@@ -543,9 +535,8 @@ fn region_rows(session: &Session, rect: Rect, region: Region, palette: &Palette)
 
 /// The source-control view: a heading per group, then its files.
 ///
-/// The headings are drawn from the rows rather than being rows themselves, so
-/// the selection can never land on one — which is what keeps `git.stage` from
-/// ever being asked to stage a word.
+/// The headings are derived from the rows rather than being rows themselves, so
+/// the selection cannot land on one and `git.stage` never receives a heading.
 fn scm_rows(
     session: &Session,
     rect: Rect,
@@ -556,8 +547,8 @@ fn scm_rows(
 ) {
     let view = session.source_control();
     if view.is_empty() {
-        // Told apart from "no repository" by the status bar beside it, which
-        // shows a branch in one case and nothing in the other.
+        // The two cases are also distinguished by the status bar, which shows a
+        // branch in a repository and nothing otherwise.
         let message = match session.scm_status() {
             Some(_) => "no changes",
             None => "not a git repository",
@@ -570,15 +561,15 @@ fn scm_rows(
         && session.side_bar_view() == deco_editor::SideBarView::SourceControl;
     let selected_at = view.selected_index();
 
-    // Every line the list would draw, headings included, and then the window
-    // the model has scrolled to. Built whole rather than drawn straight into
-    // `rows`, because the scroll is counted in *lines* — a heading takes one —
-    // and slicing at the end is the only way the two agree about where the
-    // selection is.
-    // The group and whether a line is its heading are retained until the
-    // window is chosen. When a long group scrolls, its real heading can be
-    // above the window; that metadata lets it be repeated at the top rather
-    // than leaving rows whose stage/unstage meaning is no longer visible.
+    // Build every line the list would draw, including headings, then take the
+    // window the model has scrolled to. The lines are built in full rather than
+    // drawn directly into `rows`, because the scroll offset counts *lines*,
+    // including headings. Slicing at the end keeps the selection position
+    // consistent with the scroll offset.
+    // Each line keeps its group and whether it is a heading until the window is
+    // chosen. When a long group scrolls, its heading can be above the window;
+    // this metadata lets the heading be repeated at the top so the rows still
+    // show whether they are staged or unstaged.
     let mut lines: Vec<(deco_editor::ScmGroup, bool, Row)> = Vec::new();
     let mut selected_line = 0;
     let mut group = None;
@@ -602,10 +593,10 @@ fn scm_rows(
             ));
         }
 
-        // `M src/main.rs` — the letter, then the name, then the directory in
+        // `M src/main.rs`: the letter, then the name, then the directory in
         // the dimmer colour when there is room. VS Code puts the letter on the
-        // right; here it is on the left, because a column that moves with the
-        // name length is not a column you can read down.
+        // right; here it is on the left so it stays in a fixed column regardless
+        // of name length.
         let name = row.name();
         let directory = row.directory().unwrap_or_default();
         let left = format!(" {} {name}", row.letter());
@@ -621,9 +612,9 @@ fn scm_rows(
             selected_line = lines.len();
         }
         let (row_fg, row_bg) = match (chosen, focused) {
-            // The selection is drawn as the tree's is: inverted when the view
-            // has the keyboard, and merely marked when it does not, so a
-            // glance says where typing would go.
+            // The selection is drawn like the tree's: inverted when the view
+            // has keyboard focus and only marked when it does not, so the
+            // focus is visible.
             (true, true) => (bg, palette.status_fg),
             (true, false) => (palette.status_fg, bg),
             (false, _) => (fg, bg),
@@ -705,9 +696,8 @@ fn dim(fg: Rgba, bg: Rgba) -> Rgba {
 
 /// The file tree's rows, indented, with the selection highlighted.
 ///
-/// A name too long for the side bar is cut with an ellipsis rather than wrapped:
-/// a file name that ran onto a second line would look like two files, and the
-/// tree's whole job is to be countable at a glance.
+/// A name too long for the side bar is cut with an ellipsis rather than wrapped,
+/// because a file name on two lines would look like two files.
 #[allow(clippy::too_many_arguments)]
 fn tree_rows(
     session: &Session,
@@ -740,9 +730,9 @@ fn tree_rows(
         return;
     }
 
-    // Two different silences: a workspace nobody has read yet, and one that is
-    // genuinely empty. Both would otherwise be a blank panel that reads as a
-    // failure to draw.
+    // Distinguish a workspace that has not been read yet from one that is
+    // empty. Otherwise both would show a blank panel that looks like a drawing
+    // failure.
     if !explorer.loaded() {
         rows.push(region_line("reading the workspace…", rect.width, fg, bg));
         return;
@@ -753,8 +743,8 @@ fn tree_rows(
     }
 
     for row in explorer.visible(height) {
-        // A chevron for a directory, two spaces for a file, so names at one
-        // level start in the same column whatever their kind.
+        // A chevron for a directory and two spaces for a file, so names at the
+        // same level start in the same column.
         let marker = match (row.is_dir, row.expanded) {
             (true, true) => "▾ ",
             (true, false) => "▸ ",
@@ -809,9 +799,9 @@ fn clip(text: &str, limit: usize) -> String {
 
 /// Joins one row of every group into the row that goes on screen.
 ///
-/// The separator is a full-height rule in the gutter's colour: something has to
-/// mark where one file ends and the next begins, and a blank column reads as part
-/// of whichever file has short lines.
+/// The separator is a full-height rule in the gutter colour. It marks where one
+/// file ends and the next begins; a blank column would look like part of a file
+/// with short lines.
 fn stitch(frames: &[Frame], row_index: usize, palette: &Palette) -> Row {
     let mut spans = Vec::new();
     for (index, frame) in frames.iter().enumerate() {
@@ -824,9 +814,8 @@ fn stitch(frames: &[Frame], row_index: usize, palette: &Palette) -> Row {
         }
         match frame.rows.get(row_index) {
             Some(row) => spans.extend(row.spans.iter().cloned()),
-            // A group with fewer rows than another cannot happen — they are all
-            // asked for the same height — but leaving a hole would be worse than
-            // padding it.
+            // Not expected, because every group is rendered at the same height.
+            // Pad the row anyway rather than leaving a gap.
             None => spans.push(blank(0, palette.bg)),
         }
     }
@@ -836,7 +825,7 @@ fn stitch(frames: &[Frame], row_index: usize, palette: &Palette) -> Row {
 /// One group's rows, and where its caret is within them.
 ///
 /// The caret's row is relative to the first text row rather than to the screen,
-/// since where the text area starts is the caller's business.
+/// because the caller positions the text area.
 fn pane_rows(
     session: &Session,
     pane: &deco_editor::Pane<'_>,
@@ -852,10 +841,9 @@ fn pane_rows(
     let caret = pane.view.cursor();
     let cursor_line = caret.line as usize;
 
-    // One entry per row on screen rather than one per line: a wrapped line
-    // occupies several, and which part of it each row shows is the view's answer
-    // and not the renderer's — the same answer the view scrolls and moves the
-    // caret by.
+    // One entry per screen row rather than per line, because a wrapped line
+    // occupies several rows. The view decides which part of the line each row
+    // shows, and uses the same rows to scroll and move the caret.
     let visible = pane.view.visible_rows(buffer, &pane.document.settings);
 
     let mut rows = Vec::with_capacity(height);
@@ -878,17 +866,15 @@ fn pane_rows(
 
         let mut spans = Vec::new();
         if gutter > 0 {
-            // Blank on a continuation row: repeating the number would read as a
-            // second line that is not there, and VS Code leaves it blank too.
+            // Blank on a continuation row, as in VS Code. Repeating the number
+            // would suggest a second line.
             let label = if visual.numbered() {
                 match pane.document.settings.line_numbers {
                     LineNumbers::Relative if line != cursor_line => (line as i64
                         - cursor_line as i64)
                         .unsigned_abs()
                         .to_string(),
-                    // Every tenth, plus the line the caret is on — which is the one
-                    // you are about to quote in a stack trace, and the only line
-                    // worth an exception to the interval.
+                    // Every tenth line, plus the line the caret is on.
                     LineNumbers::Interval
                         if (line + 1) % LINE_NUMBER_INTERVAL != 0 && line != cursor_line =>
                     {
@@ -910,10 +896,10 @@ fn pane_rows(
             } else {
                 palette.gutter_fg
             };
-            // The column between the numbers and the text is where VS Code
-            // puts its git marks, and it is already spare here. On a
-            // continuation row it stays blank: a wrapped line is one line, and
-            // repeating its mark would read as several.
+            // VS Code puts git marks in the column between the numbers and the
+            // text, which is otherwise unused here. On a continuation row it
+            // stays blank, because a wrapped line is one line and repeating its
+            // mark would suggest several.
             let mark = visual
                 .numbered()
                 .then(|| {
@@ -937,9 +923,8 @@ fn pane_rows(
                         bg: line_bg,
                     });
                 }
-                // One, as it was before there were marks. Worth the branch:
-                // most lines of most files have nothing beside them, and a
-                // span per row that only ever holds a space is a span per row.
+                // One span when there is no mark, which is the common case.
+                // This avoids an extra span per row that only holds a space.
                 None => spans.push(Span {
                     text: format!("{label:>width$} ", width = gutter - 1),
                     fg: number_fg,
@@ -957,12 +942,12 @@ fn pane_rows(
         ));
         rows.push(Row { spans });
 
-        // Only the group with the keyboard draws one: two carets would be a lie
-        // about where typing goes.
+        // Only the group with keyboard focus draws a caret, so there is never a
+        // second caret where typing does not go.
         if pane.focused && line == cursor_line && visual.holds(caret.character) {
-            // Measured from the row's own start, because that is where this row's
-            // tab stops are counted from — the same measurement the wrap used to
-            // decide the row ends here.
+            // Measured from the row's start, because this row's tab stops are
+            // counted from there. The wrap uses the same measurement to decide
+            // where the row ends.
             let column = visual.indent
                 + deco_core::wrap::width_between_from(
                     &text,
@@ -1000,15 +985,14 @@ fn tab_bar(
     let mut spans = Vec::new();
     let mut used = 0usize;
     for label in panes.iter().flat_map(|pane| pane.tabs.iter()) {
-        // The same marker the status bar uses for the active document, so the
-        // two read as one vocabulary.
+        // The same marker the status bar uses for the active document, for
+        // consistency.
         let dirty = if label.dirty { "*" } else { "" };
         let text = format!(" {}{dirty} ", label.title);
         let cells = columns(&text);
         if used + cells > width {
-            // Out of room. The bar truncates rather than scrolling; with the
-            // active tab always reachable by ctrl+tab, a scrolling bar is not
-            // worth its complexity yet.
+            // Out of room. The bar truncates rather than scrolling. Every tab is
+            // reachable with ctrl+tab, so a scrolling bar is not implemented yet.
             break;
         }
         let (fg, bg) = if label.active {
@@ -1032,8 +1016,8 @@ fn tab_bar(
 /// The prompt's own row, and the column its caret sits in.
 fn prompt_row(prompt: &deco_editor::Prompt, width: usize, palette: &Palette) -> (Row, usize) {
     let label = format!(" {} ", prompt.kind().label());
-    // The match count, for a prompt that has a list to count. A go-to-line box
-    // has nothing to say here.
+    // The match count, for a prompt with a list. A go-to-line prompt shows
+    // nothing here.
     let right = if prompt.has_list() {
         let count = prompt.matches();
         let noun = prompt.kind().noun(count);
@@ -1063,9 +1047,9 @@ fn choice_row(
     palette: &Palette,
 ) -> Row {
     let left = format!("  {} ", entry.title);
-    // The second column, for the entries whose title does not say everything —
-    // see `PaletteEntry::detail`. An entry without one gets no column at all,
-    // rather than `/home/you/src/main.rs` repeated beside `src/main.rs:2: …`.
+    // The second column, for entries whose title is not sufficient; see
+    // `PaletteEntry::detail`. An entry without a detail gets no second column,
+    // rather than repeating `/home/you/src/main.rs` beside `src/main.rs:2: …`.
     let right = match &entry.detail {
         Some(detail) => format!(" {detail} "),
         None => String::new(),
@@ -1084,8 +1068,8 @@ fn choice_row(
         text.push(' ');
     }
 
-    // The selected row is drawn as the status bar is, inverted against the
-    // editor's own colours, which is how the completion list marks its selection.
+    // The selected row is drawn inverted against the editor colours, the same
+    // way the completion list marks its selection.
     let (fg, bg) = if selected {
         (palette.bg, palette.status_fg)
     } else {
@@ -1098,8 +1082,8 @@ fn choice_row(
 
 /// The find bar, and the column its caret sits in.
 ///
-/// One line, because that is what fits: the query, the two toggles as the
-/// letters VS Code puts on its buttons, and the match count.
+/// One line containing the query, the two toggles shown as the letters on VS
+/// Code's buttons, and the match count.
 fn find_bar(session: &Session, width: usize, palette: &Palette) -> (Row, usize) {
     const PROMPT: &str = " Find: ";
 
@@ -1110,9 +1094,8 @@ fn find_bar(session: &Session, width: usize, palette: &Palette) -> (Row, usize) 
         if options.case_sensitive { 'A' } else { 'a' },
         if options.whole_word { 'W' } else { 'w' },
     );
-    // `Aa`/`ab` on VS Code's buttons; here the capital says the option is on.
-    // Spelled out in the status bar the first time either is toggled, so the
-    // letters do not have to be guessed at.
+    // VS Code's buttons show `Aa`/`ab`. Here a capital letter means the option
+    // is on. The status bar names the option the first time either is toggled.
     let count = if find.query().is_empty() {
         String::new()
     } else if find.matches().is_empty() {
@@ -1121,16 +1104,14 @@ fn find_bar(session: &Session, width: usize, palette: &Palette) -> (Row, usize) 
         let primary = session.view.selections.primary();
         match find.ordinal(Range::new(primary.start(), primary.end())) {
             Some(ordinal) => format!("{ordinal} of {} ", find.matches().len()),
-            // The cursor was moved off the match, so claiming a position in the
-            // list would be wrong. The total is still true.
+            // The cursor is not on a match, so only the total is shown.
             None => format!("{} results ", find.matches().len()),
         }
     };
 
-    // The query is the last thing to go, because it is what the user is typing:
-    // a search term you cannot see is a search term you cannot correct. On a
-    // terminal too narrow for all three the count is dropped first and the
-    // toggles second, both recoverable by widening the window.
+    // The query is dropped last, because the user is typing it and must be able
+    // to see it. On a terminal too narrow for all three, the count is dropped
+    // first and the toggles second; both return when the window is widened.
     let mut right = format!("{count}{toggles}");
     let fits = |right: &str| width.saturating_sub(columns(PROMPT) + columns(right)) >= MIN_QUERY;
     if !fits(&right) {
@@ -1142,8 +1123,8 @@ fn find_bar(session: &Session, width: usize, palette: &Palette) -> (Row, usize) 
 
     let caret = match find.field() {
         Field::Query => find.caret(),
-        // The unfocused input still has to be drawn, and its caret is not
-        // visible, so the end of the text is as good a window as any.
+        // The unfocused input is still drawn but its caret is not shown, so the
+        // window is placed at the end of the text.
         Field::Replace => find.query().chars().count(),
     };
     let selected = find.field() == Field::Query && find.text_selected();
@@ -1160,8 +1141,8 @@ fn find_bar(session: &Session, width: usize, palette: &Palette) -> (Row, usize) 
 
 /// The replacement input, and the column its caret sits in.
 ///
-/// The same width of prompt as the query's, so the two inputs line up and read
-/// as one sentence: `Find: foo` / `With: bar`.
+/// The prompt has the same width as the query's, so the two inputs line up:
+/// `Find: foo` / `With: bar`.
 fn replace_bar(session: &Session, width: usize, palette: &Palette) -> (Row, usize) {
     const PROMPT: &str = " With: ";
 
@@ -1176,10 +1157,9 @@ fn replace_bar(session: &Session, width: usize, palette: &Palette) -> (Row, usiz
 
 /// One row of the bar: a prompt, an editable field, and a right-aligned readout.
 ///
-/// `selected` draws the field inverted, the way the chosen row of a list is
-/// drawn. A field whose next keystroke replaces everything in it has to look
-/// different from one that appends, or the difference is something the user only
-/// discovers by losing what they typed.
+/// `selected` draws the field inverted, like the selected row of a list. A field
+/// whose next keystroke replaces its whole content must look different from one
+/// that appends, so the user does not lose text unexpectedly.
 fn input_row(
     prompt: &str,
     value: &str,
@@ -1216,10 +1196,10 @@ fn input_row(
 
 /// The row's spans, with the field inverted when it is selected.
 ///
-/// One span unless there is a selection to show, and one span again if
-/// truncation ate the field the offsets were computed from: a highlight drawn
-/// over the wrong bytes would be worse than none, and a narrow terminal is the
-/// case where it is least useful anyway.
+/// One span unless there is a selection to show. Also one span if truncation
+/// removed part of the field the offsets were computed from, because a highlight
+/// over the wrong bytes would be misleading. This only happens on a narrow
+/// terminal.
 fn highlighted(
     text: &str,
     prompt: &str,
@@ -1240,8 +1220,8 @@ fn highlighted(
         plain(prompt),
         Span {
             text: field.to_owned(),
-            // Inverted against the editor's own colours, as the chosen row of a
-            // list and the status bar are.
+            // Inverted against the editor colours, like the selected row of a
+            // list.
             fg: palette.bg,
             bg: palette.status_fg,
         },
@@ -1252,7 +1232,7 @@ fn highlighted(
 /// The fewest columns the query is given before the readouts beside it are
 /// dropped to make room.
 ///
-/// Eight is enough to see a short search term whole and enough of a long one to
+/// Eight columns show a short search term in full and enough of a long one to
 /// recognise it.
 const MIN_QUERY: usize = 8;
 
@@ -1264,8 +1244,8 @@ struct VisibleQuery {
 
 /// Scrolls a long query so the caret stays on screen.
 ///
-/// A query wider than the bar has to be windowed rather than truncated: an input
-/// that stops showing what is being typed is worse than one that scrolls.
+/// A query wider than the bar is scrolled rather than truncated, so the text
+/// being typed stays visible.
 fn visible_query(query: &str, caret: usize, room: usize) -> VisibleQuery {
     if room == 0 {
         return VisibleQuery {
@@ -1274,8 +1254,8 @@ fn visible_query(query: &str, caret: usize, room: usize) -> VisibleQuery {
         };
     }
     let chars: Vec<char> = query.chars().collect();
-    // One column reserved so the caret has somewhere to sit at the end of the
-    // text rather than on top of the last character.
+    // One column is reserved so the caret can sit after the end of the text
+    // rather than on the last character.
     let visible = room.saturating_sub(1).max(1);
     let start = caret.saturating_sub(visible);
     let end = (start + visible).min(chars.len());
@@ -1296,10 +1276,9 @@ fn blank(width: usize, bg: Rgba) -> Span {
 
 /// Builds the styled spans for one row of one line.
 ///
-/// `text` is the whole document line and `visual` says which part of it this row
-/// shows, so highlighting, selections and matches are still looked up by their
-/// column in the line — a wrapped row is a window onto the line, not a line of
-/// its own.
+/// `text` is the whole document line and `visual` identifies the part this row
+/// shows. Highlighting, selections and matches are looked up by their column in
+/// the line, because a wrapped row is part of the line, not a separate line.
 fn line_spans(
     session: &Session,
     pane: &deco_editor::Pane<'_>,
@@ -1311,14 +1290,13 @@ fn line_spans(
 ) -> Vec<Span> {
     let line = visual.line;
     let tab_size = pane.document.settings.tab_size;
-    // Expand tabs first: the terminal has no tab stops of its own once we are
-    // positioning the cursor by column. `column` counts *terminal columns*, not
-    // characters — a CJK character occupies two, so padding by character count
-    // would push every row past the right edge.
+    // Expand tabs first, because terminal tab stops cannot be used when the
+    // cursor is positioned by column. `column` counts *terminal columns*, not
+    // characters. A CJK character occupies two, so padding by character count
+    // would push rows past the right edge.
     let mut cells: Vec<(char, Cell, Rgba)> = Vec::new();
-    // The blank a continuation row is pushed in by. Part of the cell run rather than
-    // a span of its own, so a selection or a ruler crossing the indent still draws:
-    // the columns are real, they simply hold nothing.
+    // The indent of a continuation row. It is part of the cell run rather than a
+    // separate span, so a selection or ruler crossing the indent is still drawn.
     let mut column = 0usize;
     while column < visual.indent.min(width) {
         cells.push((' ', Cell::Plain, palette.fg));
@@ -1339,9 +1317,9 @@ fn line_spans(
             .map(|s| Range::new(s.start(), s.end())),
         line,
     );
-    // Empty whenever the find bar is closed, which is what makes this free for
-    // everyone not searching — and empty for an unfocused group, whose document
-    // the query was never run against.
+    // Empty when the find bar is closed, so this adds no cost outside a search.
+    // Also empty for an unfocused group, because the query was not run against
+    // its document.
     let match_ranges = if pane.focused {
         clipped_to_line(session.find.matches().iter().copied(), line)
     } else {
@@ -1357,8 +1335,9 @@ fn line_spans(
         covers(&selected_ranges, utf16),
         covers(&match_ranges, utf16),
     ) {
-        // The current match is both: `Session` selects the match it moves to, so
-        // this is where VS Code's distinct current-match colour comes from.
+        // The current match is both selected and a match, because `Session`
+        // selects the match it moves to. This gives the current match its own
+        // colour, as in VS Code.
         (true, true) => Cell::CurrentMatch,
         (true, false) => Cell::Selected,
         (false, true) => Cell::OtherMatch,
@@ -1366,9 +1345,9 @@ fn line_spans(
     };
 
     // The server's classification of this line, when semantic highlighting is on.
-    // Kept separate from the lexer's spans rather than merged into them: the two
-    // disagree about where a run begins as often as they agree, and the finer
-    // answer wins per cell rather than per run.
+    // Kept separate from the lexer's spans rather than merged, because the two
+    // often disagree about where a run begins. The semantic colour is chosen per
+    // cell rather than per run.
     let semantic: Vec<&deco_lsp::requests::SemanticSpan> = if semantic_highlighting(session) {
         pane.semantic
             .iter()
@@ -1380,9 +1359,9 @@ fn line_spans(
 
     // Foreground colour per UTF-16 offset, from the highlighting.
     let colour_at = |utf16: u32| -> Rgba {
-        // The server first. It knows what a lexer cannot — that this `Foo` is a
-        // type and that one is a variable — and a theme that styles the token type
-        // has said which it prefers by styling it at all.
+        // The server's classification first. It distinguishes cases a lexer
+        // cannot, such as a `Foo` that is a type and one that is a variable. A
+        // theme that styles the token type takes precedence over the lexer.
         if let Some(span) = semantic
             .iter()
             .find(|span| utf16 >= span.range.start.character && utf16 < span.range.end.character)
@@ -1400,9 +1379,9 @@ fn line_spans(
             {
                 return colour;
             }
-            // The theme has no rule for this token type, so fall through to the
-            // lexer rather than to the plain foreground: losing the keyword colour
-            // because a server also called it a keyword would be a regression.
+            // The theme has no rule for this token type, so fall back to the
+            // lexer rather than the plain foreground. Otherwise a keyword would
+            // lose its colour when the server also classifies it.
         }
 
         let Some(span) = highlights
@@ -1423,21 +1402,21 @@ fn line_spans(
     };
 
     // Where this line's trailing whitespace begins, for
-    // `editor.renderWhitespace: "trailing"`. A line of nothing but whitespace is
-    // trailing from its first character, which `trim_end` gives for free.
+    // `editor.renderWhitespace: "trailing"`. A whitespace-only line is trailing
+    // from its first character, which `trim_end` handles directly.
     let trailing_from: u32 = utf16_len(text.trim_end());
     let whitespace_mode = pane.document.settings.render_whitespace;
     // Indexed, because `boundary` mode has to see the characters either side.
     let chars: Vec<char> = text.chars().collect();
 
     for (index, &c) in chars.iter().enumerate() {
-        // Everything before this row belongs to the row above, but its columns
-        // still have to be counted: the lookups below are by column in the line.
+        // Characters before this row belong to the row above, but their offsets
+        // are still counted because the lookups below use the column in the line.
         if utf16 < visual.start {
             utf16 += c.len_utf16() as u32;
             continue;
         }
-        // And everything from the next row's start belongs to it.
+        // Characters from the next row's start belong to that row.
         if visual.end.is_some_and(|end| utf16 >= end) {
             break;
         }
@@ -1462,8 +1441,8 @@ fn line_spans(
             cell != Cell::Plain,
         );
         if c == '\t' {
-            // The arrow at the start of the tab's span and spaces after it, so the
-            // glyph sits where the tab does rather than where it lands.
+            // The arrow at the start of the tab's span, followed by spaces, so the
+            // glyph is at the tab's position rather than at the next tab stop.
             for offset in 0..advance {
                 let glyph = if marked && offset == 0 { '→' } else { ' ' };
                 cells.push((glyph, cell, if marked { palette.whitespace_fg } else { fg }));
@@ -1471,8 +1450,8 @@ fn line_spans(
         } else if marked && c == ' ' {
             cells.push(('·', cell, palette.whitespace_fg));
         } else if let Some(picture) = control_picture(c) {
-            // `editor.renderControlCharacters` picks the glyph or a blank. Either way
-            // the byte itself does not reach the terminal — see `control_picture`.
+            // `editor.renderControlCharacters` selects the glyph or a blank. In both
+            // cases the byte itself does not reach the terminal; see `control_picture`.
             let shown = if pane.document.settings.render_control_characters {
                 (picture, palette.whitespace_fg)
             } else {
@@ -1486,9 +1465,9 @@ fn line_spans(
         utf16 += c.len_utf16() as u32;
     }
 
-    // A selection that runs past the end of the line is drawn one cell wide, so
-    // that selecting a line break is visible rather than invisible. Only on the
-    // line's last row: there is one line break, and it is at the end.
+    // A selection that runs past the end of the line gets one extra cell, so a
+    // selected line break is visible. Only on the line's last row, because the
+    // line break is at the end.
     let trailing = cell_at(utf16);
     if visual.end.is_none() && trailing != Cell::Plain && column < width {
         cells.push((' ', trailing, palette.fg));
@@ -1499,14 +1478,14 @@ fn line_spans(
         column += 1;
     }
 
-    // Coalesce runs sharing a style; one span per character would be correct
-    // but would make the terminal writer do far more work than it needs to.
+    // Coalesce runs sharing a style. One span per character would be correct
+    // but would make the terminal writer do much more work.
     let rulers = &pane.document.settings.rulers;
     let mut spans: Vec<Span> = Vec::new();
     for (at, (c, cell, fg)) in cells.into_iter().enumerate() {
         let bg = match cell {
-            // A ruler only shows through a cell nothing else has claimed: a
-            // selection or a find match is what the user is doing, and it wins.
+            // A ruler is only drawn on a plain cell. A selection or find match
+            // takes precedence.
             Cell::Plain if rulers.contains(&at) => palette.ruler_bg,
             Cell::Plain => plain_bg,
             Cell::Selected => palette.selection_bg,
@@ -1514,8 +1493,8 @@ fn line_spans(
             Cell::OtherMatch => palette.find_highlight_bg,
         };
         match spans.last_mut() {
-            // Coalesced on both colours now: a run of one style is one span, and
-            // highlighting breaks runs far more often than a selection does.
+            // Coalesced on both colours, so a run of one style is one span.
+            // Highlighting breaks runs much more often than a selection does.
             Some(last) if last.bg == bg && last.fg == fg => last.text.push(c),
             _ => spans.push(Span {
                 text: c.to_string(),
@@ -1532,18 +1511,17 @@ fn line_spans(
 /// # Why this is not a cosmetic setting
 ///
 /// deco draws into a terminal, and a terminal *interprets* these bytes. A document
-/// containing `\x1b[31m` would recolour everything after it; `\x07` rings the bell; and
+/// containing `\x1b[31m` would recolour everything after it, `\x07` rings the bell, and
 /// `\x1b]52;c;…\x07` is OSC 52, which **writes the clipboard** on every terminal that
-/// supports it. Passing a document's bytes through to the terminal would make "open
-/// this file" mean "let this file talk to your terminal", so nothing here is ever
-/// emitted as-is.
+/// supports it. Passing a document's bytes to the terminal would let any opened file
+/// control the terminal, so these characters are never emitted as-is.
 ///
-/// The Unicode Control Pictures block is the stand-in: `␛` for escape, `␇` for bell,
-/// one column each, so the substitution changes no column anybody counted.
+/// The stand-ins come from the Unicode Control Pictures block: `␛` for escape, `␇` for
+/// bell. Each is one column wide, so the substitution does not change column counts.
 ///
 /// `editor.renderControlCharacters` chooses between showing that glyph and showing a
-/// blank. It cannot choose to send the byte: that is not a rendering option, it is a
-/// way of handing the terminal to whoever wrote the file.
+/// blank. It cannot send the byte itself, because that would give control of the
+/// terminal to the file's author.
 fn control_picture(c: char) -> Option<char> {
     match c {
         // Tab is expanded to spaces before this, and a line's content never contains
@@ -1559,10 +1537,10 @@ fn control_picture(c: char) -> Option<char> {
 
 /// Every control character in `text` replaced by its picture.
 ///
-/// The last line of defence, applied by the painter to everything it writes rather
-/// than to the document alone: a file *name* with an escape byte in it reaches the tab
-/// bar, and a search result carries a line of somebody else's file into a prompt row.
-/// One column in, one column out, so no layout depends on which path the text took.
+/// The final safeguard, applied by the painter to everything it writes, not only to
+/// the document. A file *name* containing an escape byte reaches the tab bar, and a
+/// search result puts a line from another file into a prompt row. Each character is
+/// replaced by one of the same width, so layout does not depend on the text's source.
 pub fn sanitise(text: &str) -> std::borrow::Cow<'_, str> {
     if !text.chars().any(|c| control_picture(c).is_some()) {
         return std::borrow::Cow::Borrowed(text);
@@ -1581,8 +1559,8 @@ fn utf16_len(text: &str) -> u32 {
 
 /// Whether `editor.renderWhitespace` marks the whitespace at `index`.
 ///
-/// VS Code's five modes. `selection` is its default and the least intrusive useful
-/// one: whitespace appears exactly where you are looking at it.
+/// VS Code's five modes. `selection` is the default and the least intrusive useful
+/// mode: whitespace is shown only inside the selection.
 fn marks_whitespace(
     mode: RenderWhitespace,
     chars: &[char],
@@ -1599,9 +1577,9 @@ fn marks_whitespace(
         RenderWhitespace::All => true,
         RenderWhitespace::Selection => selected,
         RenderWhitespace::Trailing => column >= trailing_from,
-        // Everything except a single space with a word on each side. Marking those
-        // would put a dot between every word of a sentence, which is the reason this
-        // mode exists rather than being the same as `all`.
+        // Everything except a single space between two words. Marking those would
+        // put a dot between every word of a sentence; this is how the mode differs
+        // from `all`.
         RenderWhitespace::Boundary => {
             chars[index] == '\t' || !single_space_between_words(chars, index)
         }
@@ -1617,10 +1595,10 @@ fn single_space_between_words(chars: &[char], index: usize) -> bool {
 /// Whether the language server's classification is used.
 ///
 /// `editor.semanticHighlighting.enabled` is VS Code's setting and takes three
-/// values: `true`, `false`, and `"configuredByTheme"` — the default — which defers
-/// to the theme's own `semanticHighlighting` flag. Deferring is the right default
-/// because a theme written without semantic rules looks *worse* with them applied:
-/// every token the theme has no rule for falls back inconsistently.
+/// values: `true`, `false`, and the default `"configuredByTheme"`, which uses the
+/// theme's own `semanticHighlighting` flag. This is the default because a theme
+/// without semantic rules looks *worse* with them applied: tokens the theme has no
+/// rule for fall back inconsistently.
 fn semantic_highlighting(session: &Session) -> bool {
     if let Some(enabled) = session
         .settings
@@ -1628,9 +1606,8 @@ fn semantic_highlighting(session: &Session) -> bool {
     {
         return enabled;
     }
-    // Absent, or any string — including `configuredByTheme`. A misspelled value
-    // therefore behaves as the default rather than as `false`, which is the kinder
-    // failure.
+    // Absent, or any string, including `configuredByTheme`. A misspelled value
+    // therefore behaves as the default rather than as `false`.
     session.theme.semantic_highlighting()
 }
 
@@ -1641,7 +1618,7 @@ enum Cell {
     Plain,
     /// Inside a selection.
     Selected,
-    /// Inside the find match the editor is sitting on.
+    /// Inside the current find match.
     CurrentMatch,
     /// Inside one of the other find matches.
     OtherMatch,
@@ -1650,8 +1627,8 @@ enum Cell {
 /// The parts of `ranges` that fall on `line`, as UTF-16 column pairs.
 ///
 /// A range that starts above the line begins at column zero, and one that ends
-/// below it runs to `u32::MAX` — which the caller draws as one cell past the end
-/// of the text, so that a selected line break is visible.
+/// below it runs to `u32::MAX`. The caller draws that as one cell past the end of
+/// the text, so a selected line break is visible.
 fn clipped_to_line(ranges: impl Iterator<Item = Range>, line: usize) -> Vec<(u32, u32)> {
     let line = line as u32;
     ranges
@@ -1674,32 +1651,29 @@ fn clipped_to_line(ranges: impl Iterator<Item = Range>, line: usize) -> Vec<(u32
         .collect()
 }
 
-/// The status bar.
-/// The error and warning tallies, or nothing at all when the file is clean.
+/// The error and warning counts, or nothing when the file has no problems.
 ///
-/// `×`/`⚠` rather than VS Code's icon font, and omitted entirely at zero: a
-/// permanent `0 errors` is noise, and the absence of the marker is the signal.
+/// Uses `×`/`⚠` rather than VS Code's icon font, and is omitted when there are no
+/// diagnostics, so a permanent `0 errors` does not clutter the bar.
 fn problem_summary(session: &Session) -> String {
     let counts = session.diagnostic_counts();
     if counts.is_empty() {
         return String::new();
     }
-    // Information and hints are folded into neither tally. They are not
-    // problems the user has to act on, and a status bar has room for the two
-    // that are.
+    // Information and hints are not counted, because they do not require
+    // action.
     format!("×{} ⚠{}  ", counts.errors, counts.warnings)
 }
 
 /// What the status bar says about indentation.
 ///
-/// VS Code shows `Spaces: 4` here, and it earns its place for the same reason: what
-/// one press of `tab` inserts is not visible from the text, and it is what decides
-/// whether a diff is one line or forty.
+/// VS Code shows `Spaces: 4` here for the same reason: what `tab` inserts is not
+/// visible from the text, and it affects the size of a diff.
 ///
-/// `(detected)` is added only when the file's own indentation **differed** from the
-/// settings and won. A two-space file read as two-space where `editor.tabSize`
-/// already said two overrode nothing, and marking that would be a permanent note
-/// about a case with nothing to disclose.
+/// `(detected)` is added only when the file's detected indentation **differed**
+/// from the settings and was applied. If `editor.tabSize` is already two and a
+/// two-space file is detected as two-space, nothing was overridden and no marker
+/// is shown.
 fn indentation(session: &Session) -> String {
     let settings = &session.document.settings;
     let unit = if settings.insert_spaces {
@@ -1716,16 +1690,15 @@ fn indentation(session: &Session) -> String {
 
 /// What to draw in the gutter's mark column for `line`, if anything.
 ///
-/// Shape as well as colour. VS Code separates *added* from *modified* by
-/// colour alone, which is a distinction anyone who cannot tell its green from
-/// its blue does not get; a heavy bar against a light one costs nothing and
-/// carries the same information without it.
+/// Marks differ in shape as well as colour. VS Code distinguishes *added* from
+/// *modified* by colour alone, which users who cannot distinguish its green and
+/// blue cannot see. A heavy bar and a light bar carry the same information
+/// without relying on colour.
 ///
-/// - `┃` — lines that are not in the committed file at all.
-/// - `│` — lines that are there and say something else.
-/// - `▔` — lines were removed just above this one. It sits on the cell's top
-///   edge because that is where they were; there is nothing left to draw
-///   beside.
+/// - `┃`: lines that are not in the committed file.
+/// - `│`: lines that differ from the committed file.
+/// - `▔`: lines were removed just above this one. It is drawn on the cell's top
+///   edge because that is where the removed lines were.
 fn git_mark(
     session: &Session,
     pane: &deco_editor::Pane<'_>,
@@ -1777,14 +1750,12 @@ fn comparison_background(
 
 /// The branch and how far the working tree has drifted from it.
 ///
-/// Empty when nobody has run `git status` yet, when there is no git, or when
-/// the folder is not a repository — the three are indistinguishable from here
-/// and all three mean the same thing on screen, which is nothing. VS Code does
-/// the same: no repository, no segment.
+/// Empty when `git status` has not run yet, when git is not installed, or when
+/// the folder is not a repository. These cases cannot be distinguished here and
+/// all show nothing. VS Code also omits the segment without a repository.
 ///
-/// The text itself is `deco_scm::Status::summary` rather than assembled here:
-/// what to say is a decision about git, and this function's business is only
-/// where it goes.
+/// The text comes from `deco_scm::Status::summary` rather than being built here.
+/// The content is a git concern; this function only places it.
 fn branch_summary(session: &Session) -> String {
     match session.scm_status() {
         Some(status) => format!("{}  ", status.summary()),
@@ -1792,6 +1763,7 @@ fn branch_summary(session: &Session) -> String {
     }
 }
 
+/// The status bar.
 fn status_bar(session: &Session, width: usize, palette: &Palette) -> Row {
     let cursor = session.view.cursor();
     let dirty = if session.document.dirty { "*" } else { "" };
@@ -1804,10 +1776,9 @@ fn status_bar(session: &Session, width: usize, palette: &Palette) -> Row {
             None => format!(" {}{} ", session.document.title(), dirty),
         },
     };
-    // The branch first in the right-hand group: it is about the workspace,
-    // where everything after it is about this file, and the two read better
-    // apart than interleaved. VS Code puts it at the far left instead, which
-    // deco cannot do — that end is the document title and the message line.
+    // The branch comes first in the right-hand group, because it describes the
+    // workspace and everything after it describes this file. VS Code puts it at
+    // the far left, but deco uses that end for the document title and messages.
     let right = format!(
         " {}{}{}  {}  Ln {}, Col {} ",
         branch_summary(session),
@@ -1842,10 +1813,9 @@ fn status_bar(session: &Session, width: usize, palette: &Palette) -> Row {
 
 /// Draws a hover box over the text, anchored to the cursor.
 ///
-/// Below the cursor when there is room, above it otherwise — a box that would
-/// hang off the bottom of the terminal is worse than one that covers the line
-/// above. The status bar is never covered: it is where the editor reports
-/// everything else, including why a hover might be wrong.
+/// Below the cursor when there is room, otherwise above it, so the box is not
+/// cut off at the bottom of the terminal. The status bar is never covered,
+/// because the editor reports everything else there.
 fn overlay_hover(
     frame: &mut Frame,
     session: &Session,
@@ -1854,12 +1824,12 @@ fn overlay_hover(
     hover: &deco_lsp::Hover,
 ) {
     let palette = Palette::from(session);
-    // Never over the chrome: the status bar is where the editor reports things,
-    // and the find bar is where the user is typing.
+    // Never over the chrome: the status bar shows editor messages, and the
+    // find bar is where the user types.
     let text_height = height.saturating_sub(chrome_height(session, height));
     if text_height < 3 || width < 8 {
-        // Not enough screen to draw a box that says anything. The status bar
-        // still carries the first line, so nothing is lost silently.
+        // Too little space for a useful box. The status bar still shows the
+        // first line.
         return;
     }
 
@@ -1890,10 +1860,9 @@ fn overlay_hover(
         // Below the cursor, the usual case.
         cursor_row + 1
     } else {
-        // Above it, and saturating at zero: a box taller than the space above
-        // the cursor fits nowhere relative to it, so it goes at the top, where
-        // at least it does not cover the line being edited when the cursor is
-        // low on the screen.
+        // Above it, clamped at the top of the text area. A box taller than the
+        // space above the cursor goes at the top, where it does not cover the
+        // edited line when the cursor is low on the screen.
         cursor_row
             .saturating_sub(box_height)
             .max(tab_bar_height(session))
@@ -1918,7 +1887,7 @@ fn overlay_hover(
                     bg: palette.status_bg,
                 },
                 // The rest of the row keeps the editor background, so the box
-                // reads as floating rather than as a full-width banner.
+                // appears as a floating box rather than a full-width banner.
                 Span {
                     text: " ".repeat(width.saturating_sub(box_width)),
                     fg: palette.bg,
@@ -1931,8 +1900,8 @@ fn overlay_hover(
 
 /// The most lines a hover box will show.
 ///
-/// A long doc comment would otherwise cover the whole file. Ten is enough for a
-/// signature and the first paragraph, which is what a hover is for.
+/// A long doc comment would otherwise cover the whole file. Ten lines fit a
+/// signature and the first paragraph.
 const MAX_HOVER_LINES: usize = 10;
 
 fn border_line(box_width: usize, left: char, right: char) -> String {
@@ -1958,7 +1927,7 @@ fn wrap(text: &str, width: usize, max_lines: usize) -> Vec<String> {
         }
         if paragraph.trim().is_empty() {
             // Blank lines separate a signature from its documentation, so they
-            // are worth keeping — but not at the very top of the box.
+            // are kept, except at the top of the box.
             if !out.is_empty() {
                 out.push(String::new());
             }
@@ -1985,8 +1954,8 @@ fn wrap(text: &str, width: usize, max_lines: usize) -> Vec<String> {
                 line.push(' ');
                 columns += 1;
             }
-            // A single word longer than the box is cut rather than allowed to
-            // overflow; the alternative is a broken border.
+            // A single word longer than the box is cut so it does not overflow
+            // and break the border.
             if word_width > width {
                 let mut used = 0;
                 for c in word.chars() {
@@ -2013,7 +1982,7 @@ fn wrap(text: &str, width: usize, max_lines: usize) -> Vec<String> {
 
 fn trimmed(mut lines: Vec<String>, max_lines: usize) -> Vec<String> {
     lines.truncate(max_lines);
-    // A trailing blank line inside a box is just a gap above the border.
+    // Drop trailing blank lines, which would only add a gap above the border.
     while lines.last().is_some_and(String::is_empty) {
         lines.pop();
     }
@@ -2022,10 +1991,10 @@ fn trimmed(mut lines: Vec<String>, max_lines: usize) -> Vec<String> {
 
 /// Draws the completion list over the text, anchored to the cursor.
 ///
-/// Shares the placement rule with the hover box — below the cursor, above when
-/// it will not fit, never over the status bar — so the two feel like the same
-/// widget in different clothes. The selected row is inverted rather than marked
-/// with a character, because a marker column costs width the labels need.
+/// Uses the same placement rule as the hover box: below the cursor, above when
+/// it does not fit, and never over the status bar. The selected row is inverted
+/// rather than marked with a character, because a marker column would take
+/// width the labels need.
 fn overlay_suggest(
     frame: &mut Frame,
     session: &Session,
@@ -2034,16 +2003,16 @@ fn overlay_suggest(
     suggest: &crate::suggest::Suggest,
 ) {
     let palette = Palette::from(session);
-    // Never over the chrome: the status bar is where the editor reports things,
-    // and the find bar is where the user is typing.
+    // Never over the chrome: the status bar shows editor messages, and the
+    // find bar is where the user types.
     let text_height = height.saturating_sub(chrome_height(session, height));
     let rows = suggest.rows();
     if rows.is_empty() || text_height < 2 || width < 10 {
         return;
     }
 
-    // One column of padding either side. No border: the list is taller than a
-    // hover box and a frame around it would cost two more rows of the file.
+    // One column of padding on each side. No border, because the list is taller
+    // than a hover box and a border would hide two more rows of the file.
     let inner = width.saturating_sub(2).max(1);
     let entries: Vec<String> = rows
         .iter()
@@ -2052,8 +2021,8 @@ fn overlay_suggest(
             match detail {
                 Some(detail) => {
                     // The detail is trimmed first, so a long signature loses its
-                    // tail rather than pushing the label off the row: the label
-                    // is what is being chosen between.
+                    // end rather than pushing the label off the row. The label
+                    // is what the user chooses by.
                     let room = inner.saturating_sub(columns(&head) + 2);
                     if room >= 4 {
                         format!("{head}  {}", truncate_to(detail, room))
@@ -2064,9 +2033,9 @@ fn overlay_suggest(
                 None => head,
             }
         })
-        // Trimming the detail is not enough on its own: a label longer than the
-        // terminal still overflows, and an unbounded row breaks every row after
-        // it because the padding is computed from a saturating subtraction.
+        // Trimming the detail is not sufficient. A label longer than the
+        // terminal still overflows, and an overlong row breaks every following
+        // row because the padding uses a saturating subtraction.
         .map(|entry| truncate_to(&entry, inner))
         .collect();
 
@@ -2094,8 +2063,7 @@ fn overlay_suggest(
         let entry = &entries[index];
         let pad = box_width.saturating_sub(columns(entry) + 2);
         let text = format!(" {entry}{} ", " ".repeat(pad));
-        // Inverted for the selection, which reads as "this one" without a
-        // character of its own.
+        // The selection is inverted, so it needs no marker character.
         let (fg, bg) = if index == suggest.selected_row() {
             (palette.status_bg, palette.status_fg)
         } else {
@@ -2142,9 +2110,9 @@ mod tests {
 
     /// A session pinned to the Linux keymap.
     ///
-    /// Not `Session::with_defaults()`: that builds the keymap for the host, and
-    /// a test that presses `ctrl+k` would be pressing an unbound key on macOS,
-    /// where the default is `cmd+k`.
+    /// Not `Session::with_defaults()`, which builds the keymap for the host. On
+    /// macOS the default is `cmd+k`, so a test pressing `ctrl+k` would press an
+    /// unbound key.
     fn session(text: &str) -> Session {
         let mut session = Session::new(
             deco_config::Settings::with_defaults(),
@@ -2157,8 +2125,8 @@ mod tests {
 
     /// A session sized the way the frontend sizes one, with regions showing.
     ///
-    /// The two-step is what `app::resize` does: the session is given what is
-    /// left after the bars, and the renderer is given the whole terminal.
+    /// The two steps match `app::resize`: the session gets the space left after
+    /// the bars, and the renderer gets the whole terminal.
     fn with_chrome(side_bar: bool, panel: bool, width: usize, height: usize) -> Session {
         let mut session = session("fn main() {\n    println!(\"hi\");\n}\n");
         session.resize(width, height);
@@ -2195,7 +2163,7 @@ mod tests {
         let frame = render(&session, 72, 12);
         let rows: Vec<String> = frame.rows.iter().map(|r| r.plain()).collect();
         assert!(rows[0].starts_with(" EXPLORER"), "{:?}", rows[0]);
-        // A collapsed directory, then the file, chevron for the one that opens.
+        // A collapsed directory, then the file; only the directory has a chevron.
         assert!(rows[2].starts_with(" ▸ src"), "{:?}", rows[2]);
         assert!(rows[3].starts_with("   Cargo.toml"), "{:?}", rows[3]);
     }
@@ -2246,7 +2214,7 @@ mod tests {
         let frame = render(&session, 72, 12);
         let row = frame.rows[2].plain();
         assert!(row.contains('…'), "{row:?}");
-        // One row per file, whatever the name's length.
+        // One row per file, regardless of name length.
         assert!(
             !frame.rows[3].plain().contains('a'),
             "{:?}",
@@ -2261,7 +2229,7 @@ mod tests {
         let first = frame.rows[0].plain();
 
         assert!(first.starts_with(" SIDE BAR"), "{first:?}");
-        // The rule sits where the layout put it, and the text starts past it.
+        // The rule is where the layout placed it, and the text starts after it.
         let rule = session.regions().side_bar_rule.expect("showing");
         assert_eq!(first.chars().nth(rule), Some('│'), "{first:?}");
         assert!(first[rule..].contains("fn main"), "{first:?}");
@@ -2298,8 +2266,8 @@ mod tests {
 
     #[test]
     fn the_two_rules_join_where_they_meet() {
-        // `│` butted against a run of `─` reads as two borders that happen to
-        // touch rather than as one drawn frame.
+        // A `│` next to a run of `─` looks like two separate borders rather than
+        // one frame.
         let session = with_chrome(true, true, 72, 12);
         let frame = render(&session, 72, 12);
         let rule_row = session.regions().panel_rule.expect("showing");
@@ -2311,7 +2279,7 @@ mod tests {
 
     #[test]
     fn every_row_is_still_exactly_the_window_wide() {
-        // The thing region stitching is most likely to get wrong.
+        // The case region stitching is most likely to get wrong.
         for (side_bar, panel) in [(true, false), (false, true), (true, true)] {
             let session = with_chrome(side_bar, panel, 72, 12);
             let frame = render(&session, 72, 12);
@@ -2346,8 +2314,8 @@ mod tests {
 
     #[test]
     fn a_region_with_the_keyboard_takes_the_caret_off_the_text() {
-        // Two carets, or one where typing does not go, is a lie about where the
-        // next keystroke lands.
+        // Two carets, or one where typing does not go, would misrepresent where
+        // the next keystroke goes.
         let mut session = with_chrome(true, false, 72, 10);
         assert!(render(&session, 72, 10).cursor.is_some());
 
@@ -2542,8 +2510,8 @@ mod tests {
 
     #[test]
     fn wide_characters_do_not_overflow_the_row() {
-        // Ten CJK characters are twenty columns; padding by character count
-        // would push this row well past the right edge.
+        // Ten CJK characters are twenty columns. Padding by character count
+        // would push this row past the right edge.
         let frame = render(&session("漢字漢字漢字漢字漢字"), 20, 3);
         for row in &frame.rows {
             assert_eq!(columns(&row.plain()), 20, "row was {:?}", row.plain());
@@ -2588,8 +2556,7 @@ mod tests {
 
     #[test]
     fn a_clean_file_shows_no_problem_counters() {
-        // A permanent `0 errors` is noise; the absence of the marker is the
-        // signal.
+        // No marker is shown when there are no problems.
         let session = session("fn main() {}\n");
         let text = status_text(&session);
         assert!(
@@ -2620,8 +2587,7 @@ mod tests {
 
     #[test]
     fn hints_do_not_appear_in_the_tally() {
-        // They are not problems the user has to act on, and the bar has room
-        // for the two that are.
+        // Information and hints do not require action, so they are not counted.
         let mut session = session("fn main() {}\n");
         session.set_diagnostics(vec![problem(0, deco_lsp::Severity::Hint)]);
         let text = status_text(&session);
@@ -2630,8 +2596,8 @@ mod tests {
 
     #[test]
     fn the_status_bar_still_fills_the_width_with_problems_shown() {
-        // The counters lengthen the right-hand side; the row must still be
-        // exactly as wide as the terminal or the previous frame shows through.
+        // The counters lengthen the right-hand side. The row must still be
+        // exactly as wide as the terminal, or the previous frame remains visible.
         let mut session = session("fn main() {}\n");
         session.set_diagnostics(vec![problem(0, deco_lsp::Severity::Error)]);
         for width in [20, 40, 80] {
@@ -2674,8 +2640,8 @@ mod tests {
 
     #[test]
     fn a_hover_box_goes_above_the_cursor_when_it_would_not_fit_below() {
-        // A box hanging off the bottom of the terminal is worse than one
-        // covering the line above.
+        // The box goes above the cursor rather than being cut off at the
+        // bottom of the terminal.
         let mut session = session(&"line\n".repeat(20));
         session.resize(40, 9);
         session.view.selections = deco_core::SelectionSet::caret(deco_core::Position::new(8, 0));
@@ -2696,8 +2662,8 @@ mod tests {
 
     #[test]
     fn the_status_bar_is_never_covered_by_a_hover() {
-        // It is where the editor reports everything else, including why a hover
-        // might be wrong.
+        // The status bar shows all other editor messages, so the hover must not
+        // cover it.
         let session = session("fn main() {}\n");
         let frame = render_with_hover(&session, 40, 6, Some(&hover(&"x\n".repeat(20))));
         let last = frame.rows.last().unwrap().plain();
@@ -2729,7 +2695,7 @@ mod tests {
     #[test]
     fn a_wide_character_does_not_push_the_border_off_the_edge() {
         // Wrapping by character count rather than by column would break the
-        // right border on any CJK identifier.
+        // right border for a CJK identifier.
         let session = session("fn main() {}\n");
         let frame = render_with_hover(
             &session,
@@ -2769,8 +2735,8 @@ mod tests {
 
     #[test]
     fn rendering_without_a_hover_is_unchanged() {
-        // `render` is the same function with no overlay, so every existing
-        // assertion about layout still holds.
+        // `render` is the same function without an overlay, so the existing
+        // layout assertions still apply.
         let session = session("fn main() {}\n");
         assert_eq!(
             render(&session, 40, 10),
@@ -2786,7 +2752,7 @@ mod tests {
 
     #[test]
     fn a_word_longer_than_the_box_is_cut_rather_than_overflowing() {
-        // The alternative is a broken border.
+        // Otherwise the border would break.
         let lines = wrap("supercalifragilistic", 8, 10);
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].chars().count(), 8);
@@ -2794,7 +2760,7 @@ mod tests {
 
     #[test]
     fn wrapping_drops_a_leading_blank_line_and_any_trailing_ones() {
-        // A gap above the top border, or below the last line, is just a hole.
+        // No empty line after the top border or after the last line.
         assert_eq!(wrap("\n\nx\n\n\n", 10, 10), vec!["x"]);
     }
 
@@ -2830,8 +2796,8 @@ mod tests {
 
     #[test]
     fn the_completion_list_wins_over_a_hover() {
-        // Both want the space beside the cursor, and the list is what the user
-        // is interacting with.
+        // Both use the space beside the cursor, and the user is interacting
+        // with the list.
         let session = session("fn main() {}\n");
         let frame = render_with_overlays(
             &session,
@@ -2847,7 +2813,7 @@ mod tests {
 
     #[test]
     fn the_selected_row_is_inverted_rather_than_marked() {
-        // A marker column would cost width the labels need.
+        // A marker column would take width the labels need.
         let session = session("fn main() {}\n");
         let mut suggest = completion(&["a", "b"]);
         suggest.next();
@@ -2881,7 +2847,7 @@ mod tests {
 
     #[test]
     fn a_long_detail_is_trimmed_before_the_label() {
-        // The label is what is being chosen between, so it keeps its room.
+        // The user chooses by label, so the label keeps its space.
         let session = session("fn main() {}\n");
         let mut suggest = completion(&["push"]);
         // Rebuild with a detail long enough to need cutting.
@@ -3078,7 +3044,7 @@ mod tests {
         let frame = render(&session, 20, 8);
         let row = find_row(&frame);
         assert_eq!(row.chars().count(), 20);
-        // The tail is what matters: the caret is at the end of what was typed.
+        // The end of the query stays visible, because the caret is there.
         assert!(row.contains('z'), "{row:?}");
         assert!(
             !row.contains("abc"),
@@ -3090,8 +3056,8 @@ mod tests {
 
     #[test]
     fn a_narrow_bar_drops_the_readouts_before_the_query() {
-        // A search term you cannot see is a search term you cannot correct, so
-        // the count goes first and the toggles second.
+        // The query must stay visible so it can be corrected. The count is
+        // dropped first and the toggles second.
         let session = searching("foo\n", "foo");
         let wide = find_row(&render(&session, 40, 8));
         assert!(
@@ -3141,8 +3107,8 @@ mod tests {
             .iter()
             .flat_map(|span| span.text.chars().map(move |_| span.bg))
             .collect();
-        // The first match is still selected — closing the bar does not deselect —
-        // but the second is back to plain text.
+        // The first match is still selected, because closing the bar does not
+        // deselect, but the second is plain text again.
         assert_eq!(backgrounds[gutter], palette.selection_bg);
         assert_eq!(backgrounds[gutter + 4], palette.bg);
     }
@@ -3166,12 +3132,12 @@ mod tests {
 
     #[test]
     fn a_one_row_terminal_still_renders_something() {
-        // Not enough room for both bars; the status bar wins, since it is where
-        // the editor says what is wrong.
+        // Not enough room for both bars. The status bar is kept, because it
+        // shows editor messages.
         //
-        // It used to say that and then draw both anyway: two rows into a one-row
-        // window, which a terminal answers by scrolling. The frame is now as tall
-        // as the window it is painted into, whatever is open.
+        // Previously both rows were drawn into a one-row window, which makes a
+        // terminal scroll. The frame is now exactly as tall as the window,
+        // whatever is open.
         let frame = render(&searching("foo\n", "foo"), 40, 1);
         assert_eq!(frame.rows.len(), 1);
         assert!(
@@ -3317,8 +3283,8 @@ mod tests {
 
     #[test]
     fn a_servers_classification_wins_over_the_lexers_guess() {
-        // The case the whole feature exists for: `Widget` is capitalised, so the
-        // lexer calls it a type; a server that says it is a variable is right.
+        // The main use case: `Widget` is capitalised, so the lexer classifies it
+        // as a type, but the server correctly classifies it as a variable.
         let mut session = session("let Widget = 1;\n");
         let Some(expected) = semantic_colour(&session, "variable") else {
             // The bundled theme has no rule for this token type, so there is
@@ -3351,8 +3317,8 @@ mod tests {
 
     #[test]
     fn a_token_type_the_theme_does_not_style_falls_back_to_the_lexer() {
-        // Not to the plain foreground: losing the keyword colour because a server
-        // also had an opinion about it would be a regression.
+        // Not to the plain foreground. The keyword must keep its colour when the
+        // server also classifies it.
         let mut session = session("let x = 1;\n");
         session.semantic_tokens = vec![semantic("nonsenseTokenType", 0, 0, 3)];
         let gutter = gutter_width(&session);
@@ -3431,9 +3397,9 @@ mod tests {
 
     /// A session with exactly `names` open as tabs, the first one active.
     ///
-    /// Built from scratch rather than through `session()`, which already opens a
-    /// file — the first open below replaces the pristine untitled tab, so the
-    /// count comes out exact.
+    /// Built directly rather than through `session()`, which already opens a
+    /// file. The first open below replaces the unmodified untitled tab, so the
+    /// tab count is exact.
     fn tabbed(names: &[&str]) -> Session {
         let mut session = Session::new(
             deco_config::Settings::with_defaults(),
@@ -3540,7 +3506,7 @@ mod tests {
     fn a_hover_box_never_covers_the_tab_bar() {
         let mut session = tabbed(&["a.rs", "b.rs"]);
         // The cursor is on the first text row, so a box drawn above it would
-        // land on the bar if nothing stopped it.
+        // cover the bar unless prevented.
         session.view.selections = SelectionSet::caret(Position::ZERO);
         let hover = deco_lsp::Hover {
             contents: "one\ntwo\nthree\nfour".to_owned(),
@@ -3553,12 +3519,10 @@ mod tests {
 
     // ---- Syntax highlighting --------------------------------------------
 
-    /// The foreground colour of every cell of row 0, one entry per column.
-    /// The same group, described as though it did not have the keyboard.
+    /// The same group, marked as not having keyboard focus.
     ///
-    /// Stands in for a second group until there is one, so the rules a split
-    /// depends on — one caret, and match highlighting only where the query ran —
-    /// are asserted before anything relies on them.
+    /// Stands in for a second group, so the rules a split depends on (one caret,
+    /// and match highlighting only where the query ran) are tested directly.
     fn unfocused_copy<'a>(pane: &deco_editor::Pane<'a>) -> deco_editor::Pane<'a> {
         deco_editor::Pane {
             document: pane.document,
@@ -3591,6 +3555,7 @@ mod tests {
             .collect()
     }
 
+    /// The foreground colour of every cell of row 0, one entry per column.
     fn foregrounds(frame: &Frame) -> Vec<Rgba> {
         frame.rows[0]
             .spans
@@ -3673,9 +3638,8 @@ mod tests {
 
     #[test]
     fn highlighting_survives_a_selection_over_it() {
-        // The background says selected, the foreground still says keyword: losing
-        // the highlighting under a selection would make selected code unreadable
-        // in a different way from unselected code.
+        // The background shows the selection and the foreground still shows the
+        // keyword colour, so selected code keeps its highlighting.
         let mut session = session("let x = 1;\n");
         session.view.selections =
             SelectionSet::single(Selection::new(Position::new(0, 0), Position::new(0, 3)));
@@ -3792,16 +3756,16 @@ mod tests {
         let frame = render(&session, 60, 14);
         let all: String = frame.rows.iter().map(Row::plain).collect();
         assert!(all.contains("Toggle Line Comment"), "{all:?}");
-        // The identifier is shown too: it is what a keybindings.json refers to.
+        // The identifier is also shown, because keybindings.json refers to it.
         assert!(all.contains("editor.action.commentLine"));
         assert!(prompt_line(&frame).contains("Command:"));
     }
 
     #[test]
     fn the_prompt_counts_the_matching_commands() {
-        // Counted from the session rather than written in, so adding a command
-        // whose title happens to contain "comment" does not fail a test that is
-        // about the readout's wording.
+        // Counted from the session rather than hard-coded, so adding a command
+        // whose title contains "comment" does not break this test of the
+        // readout's wording.
         let session = palette("comment");
         let matches = session.prompt.as_ref().expect("open").matches();
         assert!(matches > 1, "several commands should match");
@@ -3863,9 +3827,8 @@ mod tests {
             1 + 1 + deco_editor::prompt::MAX_ROWS
         );
 
-        // …of a screen that has the rows to spare. On one that does not, the list
-        // is what gives way, so that the frame is never taller than the terminal
-        // it is painted into.
+        // …on a screen with enough rows. On a shorter screen the list shrinks,
+        // so the frame is never taller than the terminal.
         assert_eq!(chrome_height(&session, 5), 5);
         assert_eq!(render(&session, 60, 5).rows.len(), 5);
     }
@@ -4029,10 +3992,10 @@ mod tests {
 
     #[test]
     fn an_unfocused_group_does_not_highlight_the_find_matches() {
-        // The query was never run against its document, so marking text there
-        // would be marking what nothing had searched. Its *selection* is still
-        // drawn — that belongs to the group's own view, not to the search — so
-        // this counts the find colour specifically rather than anything coloured.
+        // The query was not run against its document, so nothing there should be
+        // marked as a match. Its *selection* is still drawn, because it belongs
+        // to the group's view, not to the search. The test therefore counts the
+        // find colour specifically.
         let session = searching("hello hello\n", "hello");
         let palette = Palette::from(&session);
         let focused = &session.panes()[0];
@@ -4117,17 +4080,16 @@ mod tests {
 
     #[test]
     fn drawing_and_typing_do_not_get_slower_as_the_file_gets_longer() {
-        // "Lightweight and fast" is the claim the whole project is for, and it rested
-        // on assertion. What makes it true is that the hot paths are bounded by the
+        // Tests the "lightweight and fast" goal. The hot paths are bounded by the
         // *window*: the lexer resumes from the earliest line an edit touched, the wrap
-        // and the draw walk the visible rows, and the rope makes an edit in the middle
-        // of ten megabytes cost what one at the start costs.
+        // and the draw walk only the visible rows, and the rope makes an edit in the
+        // middle of ten megabytes cost the same as one at the start.
         //
         // Asserted as a **ratio** rather than a time, so a loaded CI runner slows both
-        // halves together and cannot fail this on its own. The allowance is an order of
-        // magnitude, because what it is here to catch is an accidental `O(file)` — a
-        // walk from line zero, a re-lex of everything, a `to_string()` of the buffer —
-        // and those cost two hundred times more, not ten.
+        // halves equally and does not cause a failure. The allowance is an order of
+        // magnitude, because the test targets an accidental `O(file)` operation (a
+        // walk from line zero, a full re-lex, a `to_string()` of the buffer), which
+        // costs about two hundred times more, not ten.
         let small = opened(&many_lines(1_000));
         let large = opened(&many_lines(200_000));
 
@@ -4143,7 +4105,7 @@ mod tests {
         );
 
         // Typing in the *middle*, which is the worst case for anything that rescans
-        // from the top and the best case for nothing.
+        // from the top.
         let mut small = small;
         let mut large = large;
         let key = deco_keymap::keys::Chord::parse("x").expect("a bound key");
@@ -4166,8 +4128,8 @@ mod tests {
 
     #[test]
     fn only_the_visible_rows_are_laid_out() {
-        // The structural half of the same claim, and the one that cannot be flaky: the
-        // work is bounded by the window whatever the timings say.
+        // The structural part of the same check, which does not depend on timing:
+        // the work is bounded by the window.
         let session = opened(&many_lines(200_000));
         let rows = session
             .view
@@ -4189,9 +4151,9 @@ mod tests {
 
     #[test]
     fn a_control_character_never_reaches_the_terminal_as_itself() {
-        // The one that matters: `\x1b]52;c;…` is OSC 52, which writes the clipboard on
-        // every terminal that supports it. Passing a document's bytes through would
-        // make "open this file" mean "let this file talk to your terminal".
+        // The most important case: `\x1b]52;c;…` is OSC 52, which writes the clipboard
+        // on every terminal that supports it. Passing a document's bytes through would
+        // let any opened file control the terminal.
         let session = session(HOSTILE);
         let frame = render(&session, 40, 6);
         let all: String = frame.rows.iter().map(Row::plain).collect();
@@ -4214,8 +4176,8 @@ mod tests {
 
     #[test]
     fn the_setting_chooses_the_glyph_or_a_blank_and_not_the_byte() {
-        // `renderControlCharacters: false` hides the marker. It cannot mean "send the
-        // byte", which is not a rendering option.
+        // `renderControlCharacters: false` hides the marker. It never sends the byte
+        // itself.
         let mut settings = deco_config::Settings::with_defaults();
         settings.set(
             deco_config::Scope::User,
@@ -4235,8 +4197,8 @@ mod tests {
 
     #[test]
     fn a_substitution_costs_no_columns() {
-        // A Control Pictures glyph is one column, as a control character was counted
-        // to be, so nothing that was laid out around it moves.
+        // A Control Pictures glyph is one column, the same width a control character
+        // was counted as, so the surrounding layout does not change.
         let frame = render(&session(HOSTILE), 40, 6);
         for row in &frame.rows {
             assert_eq!(row.plain().chars().count(), 40, "{:?}", row.plain());
@@ -4245,9 +4207,9 @@ mod tests {
 
     #[test]
     fn the_painter_sanitises_what_the_renderer_did_not() {
-        // A file name reaches the tab bar and a search result carries a line of
-        // somebody else's file into a prompt row. Both come from outside the document,
-        // so the last line of defence is at the write.
+        // A file name reaches the tab bar, and a search result puts a line from
+        // another file into a prompt row. Both come from outside the document, so the
+        // final safeguard is applied when writing.
         assert_eq!(sanitise("plain"), "plain");
         assert_eq!(sanitise("a\u{1b}b\u{7}c"), "a␛b␇c");
         assert_eq!(sanitise("\u{7f}"), "␡");
@@ -4258,10 +4220,10 @@ mod tests {
 
     #[test]
     fn a_settings_file_cannot_reach_the_terminal_through_a_problem_message() {
-        // The sharper case, and the reason `sanitise` is exported from the crate root:
-        // a problem message quotes what a settings file said, the binary prints it to
-        // the real terminal *before* the alternate screen opens, and a cloned
-        // repository's `.vscode/settings.json` is somebody else's text.
+        // The more serious case, and the reason `sanitise` is exported from the crate
+        // root. A problem message quotes a settings file, the binary prints it to the
+        // real terminal *before* the alternate screen opens, and a cloned repository's
+        // `.vscode/settings.json` is untrusted text.
         let mut settings = deco_config::Settings::with_defaults();
         settings.set(
             deco_config::Scope::User,
@@ -4314,9 +4276,9 @@ mod tests {
 
     #[test]
     fn all_marks_every_space_and_tab() {
-        // A tab is one arrow at the column it starts on, and blank for the rest of
-        // its span — the same way VS Code draws it. Filling the span with dots would
-        // make one tab indistinguishable from the spaces it replaces.
+        // A tab is one arrow at its starting column, then blank for the rest of its
+        // span, as in VS Code. Filling the span with dots would make a tab look like
+        // the spaces it replaces.
         let frame = render(&whitespace("  a b\tc\n", "all"), 40, 6);
         assert_eq!(text_of(&frame, 0), "··a·b→  c");
     }
@@ -4343,8 +4305,8 @@ mod tests {
 
     #[test]
     fn selection_is_the_default_and_marks_only_what_is_selected() {
-        // VS Code's default, and the least intrusive useful mode: whitespace appears
-        // exactly where you are looking at it.
+        // VS Code's default and the least intrusive useful mode: whitespace is shown
+        // only inside the selection.
         let mut session = session("a  b  c\n");
         assert_eq!(
             session.document.settings.render_whitespace,
@@ -4389,8 +4351,8 @@ mod tests {
 
     #[test]
     fn a_ruler_tints_its_column_under_the_text_and_past_the_end() {
-        // Under the text is where it matters: the column a ruler warns about is one
-        // only a long line reaches.
+        // The ruler must be visible under text, because only a long line reaches
+        // the column a ruler marks.
         let session = ruled(&format!("{}\n", "x".repeat(20)), &[8]);
         let frame = render(&session, 40, 6);
         let tint = Palette::from(&session).ruler_bg;
@@ -4411,7 +4373,7 @@ mod tests {
 
     #[test]
     fn a_selection_wins_over_a_ruler() {
-        // The selection is what the user is doing; a ruler is furniture.
+        // The selection takes precedence over the ruler.
         let mut session = ruled("xxxxxxxxxxxx\n", &[4]);
         session.view.selections = SelectionSet::single(Selection::new(
             deco_core::Position::new(0, 0),
@@ -4435,7 +4397,7 @@ mod tests {
 
     #[test]
     fn interval_numbers_every_tenth_line_and_the_caret_s() {
-        // The caret's line is the one you are about to quote in a stack trace.
+        // The caret's line is always numbered.
         let mut settings = deco_config::Settings::with_defaults();
         settings.set(
             deco_config::Scope::User,
@@ -4464,8 +4426,7 @@ mod tests {
 
     #[test]
     fn the_status_bar_says_what_one_tab_inserts() {
-        // Not visible from the text, and it is what decides whether a diff is one
-        // line or forty.
+        // Not visible from the text, and it affects the size of a diff.
         let frame = render(&session("fn a() {\n    b();\n}\n"), 60, 8);
         let bar = frame.rows.last().unwrap().plain();
         assert!(bar.contains("Spaces: 4"), "{bar:?}");
@@ -4480,8 +4441,8 @@ mod tests {
 
     #[test]
     fn a_file_that_overrode_the_setting_says_so() {
-        // Two-space text where `editor.tabSize` says four. Without the marker a guess
-        // is indistinguishable from the setting being wrong.
+        // Two-space text where `editor.tabSize` is four. Without the marker, the
+        // detected value would look like an incorrect setting.
         let frame = render(&session("const a = {\n  b: 1,\n};\n"), 60, 8);
         let bar = frame.rows.last().unwrap().plain();
         assert!(bar.contains("Spaces: 2 (detected)"), "{bar:?}");
@@ -4578,8 +4539,8 @@ mod tests {
         session.set_workspace_root("/w");
         session.run("workbench.view.scm", None, 0);
         session.resize(80, 13);
-        // Told apart from a clean tree, which is a different thing to be
-        // looking at and a different thing to do next.
+        // Distinguished from a clean tree, which is a different situation that
+        // calls for a different next step.
         let joined = side_bar_lines(&session).join("\n");
         assert!(joined.contains("not a git repository"), "{joined}");
     }
@@ -4604,10 +4565,9 @@ mod tests {
 
     #[test]
     fn a_workspace_with_no_git_says_nothing_rather_than_something_empty() {
-        // Three different situations reach the renderer as `None` — nobody has
-        // asked yet, there is no git, this is not a repository — and all three
-        // mean the same thing on screen. A stray separator would be the one
-        // visible difference between them.
+        // Three situations reach the renderer as `None`: status not requested
+        // yet, no git, and not a repository. All three show nothing, so no stray
+        // separator may appear.
         let before = render(&session("fn a() {}\n"), 100, 8)
             .rows
             .last()
@@ -4711,8 +4671,8 @@ mod tests {
             Some("one\ntwo\nthree\n".to_owned()),
         );
         session.refresh_diffs();
-        // Nothing is left to draw beside, so the mark belongs to the line that
-        // took its place — on the cell's top edge, where the removed line was.
+        // The removed line no longer exists, so the mark goes on the following
+        // line, at the cell's top edge where the removed line was.
         assert_eq!(marks(&session), " ▔  ");
     }
 
@@ -4740,8 +4700,8 @@ mod tests {
             "git.enabled",
             serde_json::Value::Bool(false),
         );
-        // Filled anyway: a setting changed after a run must take what is on
-        // screen with it, not wait for the next one.
+        // Filled anyway: a setting changed after a status run must remove the
+        // segment immediately, without waiting for the next run.
         session.fill_scm(Some(scm("main", 3)));
         let bar = render(&session, 100, 8).rows.last().unwrap().plain();
         assert!(!bar.contains("main"), "{bar:?}");
@@ -4749,7 +4709,7 @@ mod tests {
 
     #[test]
     fn a_file_that_agrees_with_the_setting_says_nothing_extra() {
-        // Which is most files, and a permanent note about nothing is noise.
+        // This is the common case, so no marker is shown.
         let frame = render(&session("fn a() {\n    b();\n}\n"), 60, 8);
         let bar = frame.rows.last().unwrap().plain();
         assert!(!bar.contains("detected"), "{bar:?}");
@@ -4776,8 +4736,8 @@ mod tests {
 
     #[test]
     fn only_a_lines_first_row_carries_its_number() {
-        // A number on every row would read as lines the file does not have, and
-        // `ctrl+g` would send you somewhere else than the row you counted to.
+        // A number on every row would suggest lines the file does not have, and
+        // `ctrl+g` would go to a different row than the one counted.
         let session = wrapping("aaaa bbbb cccc dddd eeee ffff\nsecond\n", 24);
         let frame = render(&session, 24, 8);
         let gutters: Vec<String> = frame
@@ -4791,8 +4751,8 @@ mod tests {
 
     #[test]
     fn the_same_line_unwrapped_is_truncated_at_the_edge() {
-        // The behaviour wrapping replaces, and the reason the setting is worth
-        // having: without it the rest of the line is simply not on screen.
+        // The behaviour without wrapping: the rest of the line is not on
+        // screen.
         let session = session("the quick brown fox jumps over it\n");
         let frame = render(&session, 24, 8);
         assert_eq!(frame.rows[0].plain(), "  1 the quick brown fox ");
@@ -4845,8 +4805,8 @@ mod tests {
 
     #[test]
     fn a_continuation_row_matches_the_lines_own_indent() {
-        // VS Code's default, and the reason a wrapped block still reads as one block:
-        // at column zero the second row sits beside the unindented lines around it.
+        // VS Code's default. It keeps a wrapped block visually grouped; at column
+        // zero the second row would line up with the surrounding unindented lines.
         let frame = render(&indented(NESTED, 34, "same"), 34, 8);
         assert_eq!(frame.rows[1].plain(), "  2     let x = one two three four");
         assert_eq!(frame.rows[2].plain(), "        five six;                 ");
@@ -4874,9 +4834,9 @@ mod tests {
     #[test]
     fn an_indent_that_would_leave_no_room_is_dropped() {
         // Past half the width a wrapped line is more indent than text, and a deeply
-        // nested one would be wrapped into a column a few characters wide. Dropped
-        // rather than trimmed: a partial indent lines the continuation up with
-        // nothing.
+        // nested line would wrap into a column a few characters wide. The indent is
+        // dropped rather than reduced, because a partial indent aligns the
+        // continuation with nothing.
         let deep = format!("{}one two three four five\n", " ".repeat(18));
         let frame = render(&indented(&deep, 34, "same"), 34, 8);
         assert_eq!(
@@ -4888,8 +4848,8 @@ mod tests {
 
     #[test]
     fn the_caret_sits_after_the_indent_on_a_continuation_row() {
-        // The row's text starts at the indent, so the caret has to as well — or it is
-        // drawn beside the character it is on.
+        // The row's text starts at the indent, so the caret must include it too.
+        // Otherwise it is drawn next to its character.
         let mut session = indented(NESTED, 34, "same");
         // Character 31 is the `f` of `five`, the first on the second row.
         session.view.selections = SelectionSet::caret(deco_core::Position::new(1, 31));
@@ -4903,9 +4863,9 @@ mod tests {
 
     #[test]
     fn down_moves_by_screen_column_across_the_indent() {
-        // The goal column is relative to the row's own text, so `down` from three
-        // columns into row 0's text lands three columns into row 1's — which is a
-        // different document column, and the same place on screen.
+        // The goal column is relative to the row's text, so `down` from three
+        // columns into row 0's text lands three columns into row 1's. That is a
+        // different document column but the same screen position.
         let mut session = indented(NESTED, 34, "same");
         session.view.selections = SelectionSet::caret(deco_core::Position::new(1, 11));
         let before = render(&session, 34, 8).cursor.expect("a caret");
@@ -4917,9 +4877,9 @@ mod tests {
 
     #[test]
     fn a_tab_on_a_continuation_row_is_measured_from_that_rows_start() {
-        // A row is what has tab stops on screen. The break here is at column 22,
+        // Tab stops on screen are counted per row. The break here is at column 22,
         // which is not a multiple of the tab size, so measuring from the line's
-        // start instead would put the `c` one column along rather than three.
+        // start would put the `c` one column along rather than three.
         let session = wrapping(&format!("{}b\tc\n", "a".repeat(22)), 26);
         let frame = render(&session, 26, 8);
         assert_eq!(frame.rows[1].plain(), "    b   c                 ");

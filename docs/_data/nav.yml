@@ -1,6 +1,6 @@
-# The sidebar, in reading order. `path` is the source file, which is what the
-# layout matches against `page.path` to find the current entry — and what the
-# previous/next links at the foot of a page are ordered by.
+# The sidebar, in reading order. `path` is the source file. The layout matches
+# it against `page.path` to find the current entry. The previous/next links at
+# the bottom of a page follow this order.
 #
 # A new page in this directory is not in the navigation until it is listed here.
 

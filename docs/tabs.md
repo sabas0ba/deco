@@ -11,8 +11,7 @@ deco holds one document per tab. The tab bar is shown when two or more documents
 | `ctrl+w` | `workbench.action.closeActiveEditor` |
 | `ctrl+n` | `workbench.action.files.newUntitledFile` |
 
-All four are also in the command palette. `deco a.rs b.rs c.rs` opens each file
-in its own tab, with the first one focused.
+All four are also in the command palette. `deco a.rs b.rs c.rs` opens each file in its own tab and focuses the first one.
 
 ## What a tab keeps
 
@@ -20,89 +19,48 @@ Each tab retains its text, **undo history**, cursor and scroll position, syntax 
 
 Each tab retains its find bar and matches while inactive. Two tabs can retain different searches.
 
-The **search string is shared** even though the bar is not, which is what VS Code
-does — opening find in another file shows the same query, and `F3` in a tab you
-have not searched yet looks for the last thing you looked for.
+The **search string is shared** between tabs even though the bar is not, as in VS Code. Opening find in another file shows the same query, and `F3` in a tab that has not been searched uses the last query.
 
-A *different document* in the same tab still drops the matches, because there they
-really are stale.
+Opening a *different document* in the same tab clears the matches, because they no longer apply.
 
-While the editor is split, both groups show the same tab and therefore the same
-find state, so moving between them closes the bar: its current match is where the
-*other* group's cursor is. A find bar per group needs a tab list per group, which
-is the other half of splitting.
+While the editor is split, both groups show the same tab and therefore share the find state. Moving between groups closes the bar, because its current match is at the *other* group's cursor. A find bar per group requires a tab list per group, which is not implemented yet.
 
 ## The rules, and why
 
-- **A file already open is switched to, not opened twice.** Two tabs onto one
-  file would be two divergent copies of it in deco, because a tab *is* a document
-  and there is no separate view to open a second one in. That is a fact about this
-  editor rather than an argument against the idea: VS Code shows one file twice all
-  the time, as several views onto one buffer, and so does deco — with
-  [`ctrl+\`](#splitting), which is where a second view lives. Paths are compared with their `.` and `..` segments resolved, so
-  the spelling that got there first does not decide — `deco src/main.rs` and the
-  same file picked from `ctrl+p` are one tab. **Symlinks still defeat it**: two
-  names for one file through a link are two tabs, which is the answer VS Code
-  gives too, and telling them apart needs the filesystem the core deliberately
-  does not have.
-- **A dirty tab refuses to close, by name**: `main.rs has unsaved changes — save
-  it first`. Losing edits to a keystroke is the worst thing an editor can do — but
-  a refusal with no way past it is a trap rather than a safeguard, so
-  [reverting](#throwing-changes-away) is the override.
-- **Closing the last tab leaves an untitled document.** The session always shows
-  something.
-- **Opening a file replaces a pristine untitled tab** — untouched, unnamed,
-  empty — rather than sitting beside it. That is VS Code's rule, and it is what
-  keeps `deco file.rs` from starting with an empty tab next to the file.
-- The dirty marker in the bar is the same `*` the status bar uses, so the two
-  read as one vocabulary.
+- **An open file is switched to, not opened twice.** In deco a tab *is* a document, with no separate view layer, so two tabs for one file would be two diverging copies. To show one file twice, use a split with [`ctrl+\`](#splitting), which gives two views of one buffer, as VS Code does. Paths are compared after resolving `.` and `..` segments, so `deco src/main.rs` and the same file chosen from `ctrl+p` use one tab. **Symlinks are not resolved**: two names for one file through a link open two tabs, as in VS Code. Detecting this would require filesystem access, which the core does not have.
+- **A dirty tab refuses to close and names the file**: `main.rs has unsaved changes — save it first`. [Reverting](#throwing-changes-away) discards the changes so the tab can be closed.
+- **Closing the last tab leaves an untitled document.** The session always shows a document.
+- **Opening a file replaces a pristine untitled tab** (unmodified, unnamed and empty) rather than opening beside it. This is VS Code's rule, and it prevents `deco file.rs` from starting with an empty tab next to the file.
+- The dirty marker in the bar is the same `*` used in the status bar.
 
 ## Language servers follow the active tab
 
-Switching tabs tells the server which file is on screen (`didClose`/`didOpen`),
-and switching to a file of a different language switches to that language's
-server. A server publishes diagnostics for every file it knows about all along;
-only the visible document's reach the screen, so a tab returning from the
-background collects what it missed from the stored set.
+Switching tabs tells the server which file is on screen (`didClose`/`didOpen`). Switching to a file in a different language switches to that language's server. A server publishes diagnostics for every file it knows about, but only the visible document's diagnostics are displayed. When a tab becomes active again, its diagnostics are taken from the stored set.
 
-**Go-to-definition across files now opens a new tab** (or switches to the tab
-already holding the file). It previously refused to jump while the current
-document had unsaved changes, because jumping replaced the document — with tabs,
-nothing is at risk and the refusal is gone.
+**Go-to-definition across files now opens a new tab** (or switches to the tab already holding the file). It previously refused to jump while the current document had unsaved changes, because jumping replaced the document. With tabs, the current document is kept, so the restriction has been removed.
 
 ## Colours
 
-The bar uses the theme's own tab keys — `tab.activeBackground`,
-`tab.activeForeground`, `tab.inactiveBackground`, `tab.inactiveForeground`,
-`editorGroupHeader.tabsBackground` — with sensible fallbacks for themes that do
-not set them.
+The bar uses the theme's tab colour keys (`tab.activeBackground`, `tab.activeForeground`, `tab.inactiveBackground`, `tab.inactiveForeground`, `editorGroupHeader.tabsBackground`), with fallbacks for themes that do not set them.
 
 ## Saving several at once
 
-`ctrl+k s` writes every tab with unsaved changes, and reports how many.
+`ctrl+k s` writes every tab with unsaved changes and reports how many were written.
 
 ![Editing two tabs and saving both with ctrl+k s](img/save-all.svg)
- Each write
-is reported back individually, so one that fails leaves *that* tab dirty rather
-than marking the batch saved — a tab that looks saved and is not is how work gets
-lost. The reason goes where a reader can find it, since a status bar has one line
-and several failures would each shorten the last.
 
-A dirty **untitled** document is counted and skipped: there is no filename to
-write to, and inventing one would put your work somewhere you did not ask for.
+Each write result is reported individually, so a failed write leaves *that* tab dirty instead of the whole batch being marked saved. The failure reason is stored where it can be read later, because the one-line status bar cannot show several failures.
 
-Each tab is written through its **own** settings, not the active tab's:
-`files.insertFinalNewline` can be set per language, so a batch that saves a
-`.md` and a `.txt` gives each the ending its own configuration asks for.
+A dirty **untitled** document is counted and skipped, because it has no filename to write to and deco does not invent one.
+
+Each tab is written with its **own** settings, not the active tab's. `files.insertFinalNewline` can be set per language, so a batch that saves a `.md` and a `.txt` applies each file's configuration.
 
 | Key | Command |
 | --- | --- |
 | `ctrl+s` | `workbench.action.files.save` |
 | `ctrl+k s` | `workbench.action.files.saveAll` |
 
-The loop and its reporting live in the core, and only the write itself belongs to
-the frontend — so both frontends say the same thing about the same batch, and the
-behaviour is tested with no filesystem involved.
+The loop and its reporting are in the core, and only the write itself is in the frontend. Both frontends therefore report the same results for the same batch, and the behaviour is tested without a filesystem.
 
 ## Saving somewhere else
 
@@ -112,10 +70,7 @@ behaviour is tested with no filesystem involved.
 
 Saving under a new name reruns language detection. For example, saving `notes.txt` as `notes.toml` enables the TOML lexer and `[toml]` settings. A language selected manually with `ctrl+k m` remains selected.
 
-A relative path is taken against the workspace root and `~` expands, so `~/notes.md`
-and `docs/notes.md` both work. Resolving against the process's working directory
-instead would mean a path that worked when deco was launched from the project and
-not when it was launched from anywhere else.
+A relative path is resolved against the workspace root and `~` is expanded, so `~/notes.md` and `docs/notes.md` both work. Relative paths do not depend on the directory deco was launched from.
 
 | Key | Command |
 | --- | --- |
@@ -123,79 +78,49 @@ not when it was launched from anywhere else.
 | `ctrl+k s` | `workbench.action.files.saveAll` |
 | `ctrl+shift+s` | `workbench.action.files.saveAs` |
 
-**`ctrl+s` on an untitled document opens the save-as prompt**, as VS Code does.
-It has no filename and one is never invented for it — the save key makes saving
-possible instead of reporting that it is not.
+**`ctrl+s` on an untitled document opens the save-as prompt**, as in VS Code. deco does not generate a filename for it.
 
-The path the prompt hands back is **exactly what was typed**; the frontend resolves
-it, writes, and reports back the path it settled on. Resolving needs a home
-directory and a working directory, and the core has neither.
+The prompt returns the path **exactly as typed**. The frontend resolves it, writes the file, and reports the resolved path. Resolving requires a home directory and a working directory, which the core does not have.
 
 ## Throwing changes away
 
-`Revert File` in the palette re-reads the document from disk, and
-`Revert and Close Editor` closes it afterwards. Neither has a default key, as in
-VS Code.
+`Revert File` in the palette re-reads the document from disk, and `Revert and Close Editor` also closes it. Neither has a default key, as in VS Code.
 
-**Re-read rather than remembered.** Keeping a second copy of every open file to
-revert to would double what a large one costs, and re-reading is also what
-"revert" means when the file has changed underneath you.
+**Reverting re-reads the file instead of using a stored copy.** Storing a second copy of every open file would double the memory used by large files, and re-reading also picks up changes made to the file on disk.
 
 Reverting creates an undo entry, so `ctrl+z` restores the previous buffer contents. If reading the file fails, the buffer remains unchanged.
 
-An **untitled** document reverts to empty, since there is nothing to re-read and
-empty is what it was. That is also the route out of a scratch buffer that could
-otherwise be neither saved nor closed.
+An **untitled** document reverts to empty, since there is no file to re-read and it started empty. This is also how to close a scratch buffer without saving it.
 
 ## Quitting with work unsaved
 
-`ctrl+q` refuses once and names what is unsaved — `2 tabs have unsaved changes:
-a.txt, b.rs` — and a second `ctrl+q` quits anyway.
+`ctrl+q` refuses once and lists the unsaved documents, for example `2 tabs have unsaved changes: a.txt, b.rs`. A second `ctrl+q` quits anyway.
 
 The second `ctrl+q` must be the **next keystroke**. Any intervening key cancels the pending quit confirmation.
 
-The check is the session's, over every tab rather than the one on screen, so both
-frontends inherit it. Refusing to close one unsaved document with `ctrl+w` while
-dropping all of them on `ctrl+q` applied the principle to the narrower of the two
-paths.
+The session performs the check over every tab, not only the visible one, so both frontends use it. This applies the same protection as `ctrl+w` to quitting.
 
 ## Splitting
 
-`ctrl+\` gives the file a second view beside the first, and `ctrl+1` / `ctrl+2`
-move the keyboard between them.
+`ctrl+\` opens a second view of the file beside the first, and `ctrl+1` / `ctrl+2` move keyboard focus between them.
 
 ![Splitting, scrolling one group, editing, and closing the split](img/split.svg)
 
-**One buffer, two views.** Two documents would be two divergent copies of one file
-and whichever was saved last would win — which is exactly what tabs refuse. So an
-edit in either group shows in both, and there is one undo history; what each group
-keeps of its own is the **scroll position and the cursor**, which is the point.
-Scroll the second group to the end of a function and the first stays at the top.
+**One buffer, two views.** Two documents would be two diverging copies of one file, and the last one saved would overwrite the other. An edit in either group therefore appears in both, and there is one undo history. Each group keeps its own **scroll position and cursor**. Scrolling the second group to the end of a function leaves the first at the top.
 
-The new group takes the keyboard, because you split in order to work in it.
+The new group receives keyboard focus.
 
-`ctrl+w` closes the second group before it closes any tab: having split, the first
-thing that key should do is put the screen back. Moving between groups closes the
-find bar, since its matches were found against the other view and its current match
-is where that group's cursor was.
+`ctrl+w` closes the second group before it closes any tab, so after a split it first restores the single view. Moving between groups closes the find bar, because its matches were found in the other view and its current match is at that group's cursor.
 
 | Key | Command |
 | --- | --- |
 | `ctrl+\` | `workbench.action.splitEditor` |
 | `ctrl+1` / `ctrl+2` | `workbench.action.focusFirstEditorGroup` / `…Second…` |
 
-Each column is drawn with its own gutter, and the widths differ by at most one cell
-so neither is short of the other for no reason. A rule marks the boundary: a blank
-column reads as part of whichever file has short lines.
+Each column is drawn with its own gutter, and the widths differ by at most one cell. A rule marks the boundary, because a blank column would look like part of the file with shorter lines.
 
-**Two groups, and both show the same file.** A third group, and two groups holding
-*different* files, both need each group to keep its own tab list — today there is
-one list on the session and both groups draw from it. `ctrl+3` says there is no
-third group rather than doing nothing.
+**Two groups, and both show the same file.** A third group, or two groups with *different* files, requires a tab list per group. Currently the session has one list, which both groups use. `ctrl+3` reports that there is no third group.
 
 ## Not built yet
 
-No mouse: tabs and groups are switched from the keyboard. A bar wider than
-the terminal truncates rather than scrolling — every tab is still reachable with
-`ctrl+tab`. The GPU frontend switches tabs but does not draw the bar, because it
-has no chrome to draw it in yet, and it draws one group rather than two.
+There is no mouse support; tabs and groups are switched from the keyboard. A bar wider than the terminal is truncated rather than scrolled, and every tab is still reachable with `ctrl+tab`. The GPU frontend switches tabs but does not draw the bar, because it has no chrome yet, and it draws one group rather than two.

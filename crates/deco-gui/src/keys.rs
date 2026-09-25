@@ -1,9 +1,9 @@
 //! Translating window-system key events into deco chords.
 //!
-//! A window system reports far more than a terminal does — real modifier state,
-//! physical keys, press and release — so this conversion loses much less than
-//! the terminal one. It is kept separate from the render loop so it can be
-//! tested without opening a window.
+//! A window system reports more than a terminal: real modifier state, physical
+//! keys, and press and release events. This conversion therefore loses less
+//! information than the terminal one. It is separate from the render loop so it
+//! can be tested without opening a window.
 
 use deco_keymap::keys::{Chord, Key, Modifiers, NamedKey};
 use winit::event::{ElementState, KeyEvent};
@@ -20,8 +20,8 @@ pub fn chord_from_event(event: &KeyEvent, modifiers: ModifiersState) -> Option<C
 /// The conversion itself, taking only the fields it needs.
 ///
 /// `KeyEvent` carries a platform-specific field with no public constructor, so
-/// it cannot be built in a test. Taking the parts separately is what lets every
-/// case below be covered without opening a window.
+/// it cannot be built in a test. Taking the parts separately allows the tests
+/// to cover every case without opening a window.
 pub fn chord_from_parts(
     logical_key: &WinitKey,
     state: ElementState,
@@ -43,10 +43,10 @@ pub fn chord_from_parts(
             let c = text.chars().next()?;
             Key::Char(c.to_lowercase().next().unwrap_or(c))
         }
-        // The space bar is a character here, not a named key: a terminal has no
-        // way to report it as anything else, and a `keybindings.json` has to mean
-        // the same thing in both frontends. It is also what lets an unbound space
-        // type a space, since `Session::handle_chord` types `Key::Char`.
+        // The space bar maps to a character, not a named key. A terminal can only
+        // report it as a character, and `keybindings.json` must mean the same
+        // thing in both frontends. This also lets an unbound space type a space,
+        // because `Session::handle_chord` types `Key::Char`.
         WinitKey::Named(WinitNamed::Space) => Key::Char(' '),
         WinitKey::Named(named) => Key::Named(match named {
             WinitNamed::Enter => NamedKey::Enter,
@@ -80,11 +80,11 @@ pub fn chord_from_parts(
             WinitNamed::F10 => NamedKey::F(10),
             WinitNamed::F11 => NamedKey::F(11),
             WinitNamed::F12 => NamedKey::F(12),
-            // Modifier keys arrive as their own events; treating them as chords
-            // would fire a binding every time the user reached for Shift.
+            // Modifier keys arrive as separate events. Treating them as chords
+            // would trigger a binding whenever the user pressed Shift.
             _ => return None,
         }),
-        // Dead keys and unidentified keys carry nothing to bind to.
+        // Dead keys and unidentified keys cannot be bound.
         _ => return None,
     };
 
@@ -94,7 +94,7 @@ pub fn chord_from_parts(
 /// Whether a chord should be allowed to type a character.
 ///
 /// The window system already delivers composed text for dead keys and IME
-/// input, so this only has to reject chords that were reaching for a command.
+/// input, so this only rejects chords that use a command modifier.
 pub fn types_text(chord: &Chord) -> bool {
     matches!(chord.key, Key::Char(_))
         && !chord.modifiers.ctrl
@@ -123,7 +123,7 @@ mod tests {
 
     #[test]
     fn an_uppercase_character_is_lowercased_with_shift_from_the_modifier_state() {
-        // Unlike a terminal, the window system tells us Shift is down, so the
+        // Unlike a terminal, the window system reports the Shift state, so the
         // character itself does not have to be inspected.
         assert_eq!(
             press(character("A"), ModifiersState::SHIFT).unwrap(),
@@ -167,11 +167,10 @@ mod tests {
 
     #[test]
     fn the_space_bar_is_the_character_it_types() {
-        // winit reports it as a named key, and a terminal cannot report it as
-        // anything but a character. The character is the representation both
-        // agree on, so a `keybindings.json` means the same thing in both — and
-        // an unbound space still types a space, which `Session::handle_chord`
-        // decides by matching `Key::Char`.
+        // winit reports it as a named key, and a terminal can only report it as
+        // a character. Both frontends use the character, so `keybindings.json`
+        // means the same thing in both. An unbound space still types a space,
+        // because `Session::handle_chord` matches `Key::Char`.
         let chord = press(WinitKey::Named(WinitNamed::Space), ModifiersState::empty()).unwrap();
         assert_eq!(chord, Chord::parse("space").unwrap());
         assert_eq!(chord.key, Key::Char(' '));

@@ -1,15 +1,14 @@
 //! What `git` says about a workspace.
 //!
-//! deco does what VS Code does: it runs the `git` binary and reads its output.
-//! No library is linked, so this crate's only dependency is `thiserror` and a
-//! machine without git has the feature *absent* rather than broken.
+//! Like VS Code, deco runs the `git` binary and reads its output. No library is
+//! linked, so this crate's only dependency is `thiserror`. On a machine without
+//! git, the feature is unavailable rather than broken.
 //!
-//! The split is the one the rest of deco uses. [`status`] is a pure parser —
-//! hand it the text `git status --porcelain=v2` writes and it hands back a
-//! [`Status`], with no process, no filesystem and no clock involved, so every
-//! shape git can produce is a test with a string literal in it. [`git`] is the
-//! part that spawns, and is deliberately thin: one function that runs an
-//! argument vector in a directory and returns stdout.
+//! [`status`] is a pure parser. It takes the text written by
+//! `git status --porcelain=v2` and returns a [`Status`], without processes,
+//! filesystem access or clocks, so each output format can be tested with a
+//! string literal. [`git`] spawns the process. Its core is one function that
+//! runs an argument vector in a directory and returns stdout.
 //!
 //! ```
 //! use deco_scm::{Head, parse};

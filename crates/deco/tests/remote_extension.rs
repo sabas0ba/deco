@@ -1,16 +1,15 @@
 //! An extension reading files in a remote session.
 //!
 //! The capability broker has always decided *whether* an extension may read a
-//! path. What it never decided is *where* the read happens, because until now no
-//! read happened at all — `fs.readFile` was answered "deco does not implement
-//! this yet". Once it is implemented, a remote session has a wrong answer
-//! available to it: reading whatever is at that path on this machine, which is
-//! not the checkout being edited and which nothing in the reply would reveal.
+//! path. It did not decide *where* the read happens, because previously no read
+//! happened: `fs.readFile` was answered "deco does not implement this yet". With
+//! reads implemented, a remote session could read the path on this machine
+//! instead. That is not the checkout being edited, and the reply would not show
+//! the difference.
 //!
-//! So these tests are about the *where*. The far end is a real
-//! `deco --server`, the extension is a real Node process, and the interesting
-//! assertion is the one where the two disagree: a path this machine can read and
-//! the server refuses.
+//! These tests therefore check *where* the read happens. The remote side is a
+//! real `deco --server` and the extension is a real Node process. The key
+//! assertion uses a path that this machine can read but the server rejects.
 //!
 //! `#[ignore]`d, like every other test that needs Node — `cargo xtask host-test`
 //! runs them in the CI job that has one.
@@ -43,9 +42,9 @@ fn point_at_the_host() {
 
 /// A workspace on the "remote", plus a file outside it on this machine.
 ///
-/// Both are real directories on this disk, because the far end of these tests is
-/// this machine. What makes them mean different things is the server: it serves
-/// one of them and refuses everything outside it.
+/// Both are real directories on this disk, because the remote side in these
+/// tests is this machine. The server distinguishes them: it serves one and
+/// rejects everything outside it.
 struct World {
     root: PathBuf,
     workspace: PathBuf,
@@ -90,9 +89,9 @@ fn install(world: &World, path: &Path) -> PathBuf {
         ),
     )
     .expect("a manifest");
-    // Both scopes are declared so that the interesting failure is the server's
-    // refusal rather than the broker's: what these tests are about is where the
-    // read goes, and a capability that was never declared would stop it earlier.
+    // Both scopes are declared so that a failure comes from the server rather
+    // than the broker. These tests check where the read goes, and an undeclared
+    // capability would stop it earlier.
     std::fs::write(
         directory.join("extension.js"),
         format!(
@@ -126,11 +125,11 @@ fn session() -> Session {
         deco_ext::sandbox::SANDBOX_KEY,
         serde_json::json!("process"),
     );
-    // `allow` rather than the default `prompt`: there is nowhere to ask for
-    // consent yet, so a prompting session refuses every declared capability and
-    // these tests would be asserting about that instead of about where a read
-    // goes. A person wanting extensions to read files today makes the same
-    // choice, and it is the deliberate downgrade the setting says it is.
+    // `allow` rather than the default `prompt`: there is no consent prompt yet,
+    // so a prompting session rejects every declared capability, and these tests
+    // would test that instead of where a read goes. Users who want extensions to
+    // read files currently make the same choice, which the setting documents as
+    // an intentional downgrade.
     settings.set(
         Scope::User,
         deco_ext::capability::DEFAULT_POLICY_KEY,
@@ -195,9 +194,9 @@ fn read_through(world: &World, path: &Path, files: &mut Files<'_>) -> String {
 /// An extension that stats `file` and lists `directory`, and reports both.
 fn inspector(world: &World, file: &Path, directory: &Path) -> PathBuf {
     // `installed` rather than `directory`: the parameter above is what the
-    // extension will *list*, and a local of the same name silently shadowed it —
-    // the generated extension asked about its own install directory and the
-    // refusal that produced looked like a broker bug.
+    // extension will *list*. A local variable with the same name previously
+    // shadowed it, so the generated extension listed its own install directory,
+    // and the resulting rejection looked like a broker bug.
     let installed = world.root.join("inspector/acme.inspector-1.0.0");
     std::fs::create_dir_all(&installed).expect("a directory");
     std::fs::write(
@@ -299,9 +298,9 @@ module.exports = {{ activate }};
 #[test]
 #[ignore = "needs Node; run by `cargo xtask host-test`"]
 fn an_extension_creates_moves_and_deletes_on_the_far_end() {
-    // The write side, through a real host and a real server. What makes this
-    // checkable is that the assertions are about the *server's* workspace on
-    // disk: nothing here writes to it except through the connection.
+    // The write side, through a real host and a real server. The assertions
+    // check the *server's* workspace on disk, which nothing here writes to
+    // except through the connection.
     let world = world("writes");
     let extensions = editor_extension(&world);
     point_at_the_host();
@@ -333,8 +332,8 @@ fn an_extension_creates_moves_and_deletes_on_the_far_end() {
     );
     hosts.shutdown();
 
-    // Created, then renamed, then copied, then the copy deleted — all of it on
-    // the machine the server is serving.
+    // Created, renamed, copied, and the copy deleted, all on the machine the
+    // server is serving.
     assert!(world.workspace.join("made/deeper").is_dir());
     assert!(!world.workspace.join("made/deeper/one.txt").exists());
     assert_eq!(
@@ -349,10 +348,10 @@ fn an_extension_creates_moves_and_deletes_on_the_far_end() {
 #[test]
 #[ignore = "needs Node; run by `cargo xtask host-test`"]
 fn an_extension_stats_and_lists_the_far_end_rather_than_this_machine() {
-    // The read side of the filesystem API, over the connection. The list is what
-    // makes this checkable: the far end's workspace holds `notes.txt`, and the
-    // directory this machine would list at the same path holds the same thing —
-    // so the assertion that matters is the one below, where the two disagree.
+    // The read side of the filesystem API, over the connection. The remote
+    // workspace holds `notes.txt`, and the directory this machine would list at
+    // the same path holds the same file, so the check that the two sides
+    // differ is the one below.
     let world = world("inspect");
     std::fs::write(world.workspace.join("notes.txt"), "from the far end\n").expect("a file");
     let extensions = inspector(
@@ -398,10 +397,10 @@ fn an_extension_stats_and_lists_the_far_end_rather_than_this_machine() {
 #[test]
 #[ignore = "needs Node; run by `cargo xtask host-test`"]
 fn a_stat_in_a_remote_session_goes_through_the_server_and_not_around_it() {
-    // The same disagreement the read test uses, for the other half of the API.
-    // `private.txt` sits outside the directory the server serves, and the
-    // session's workspace root is the whole world — so the broker allows it and
-    // only the server's own rule can stop it.
+    // The same local/remote difference as the read test, for the other half of
+    // the API. `private.txt` is outside the directory the server serves, and the
+    // session's workspace root is the whole test directory, so the broker allows
+    // it and only the server's own rule can reject it.
     let world = world("stat-around");
     let extensions = inspector(&world, &world.outside.clone(), &world.root.clone());
     point_at_the_host();
@@ -429,12 +428,12 @@ fn a_stat_in_a_remote_session_goes_through_the_server_and_not_around_it() {
         said
     };
 
-    // Served here, it works.
+    // Served locally, it succeeds.
     let locally = inspect(&mut Files::Here);
     assert!(locally.contains("type=1"), "{locally}");
 
-    // Served through the connection, the server refuses it by name — which is
-    // what proves the stat crossed the connection rather than going around it.
+    // Through the connection, the server rejects it with a reason. This shows
+    // that the stat went through the connection rather than around it.
     let mut client = serve(&world.workspace);
     let remotely = inspect(&mut Files::Remote(&mut client));
     assert!(
@@ -465,15 +464,15 @@ fn an_extension_reads_the_far_ends_file_through_the_connection() {
 #[test]
 #[ignore = "needs Node; run by `cargo xtask host-test`"]
 fn a_remote_session_reads_through_the_server_and_not_around_it() {
-    // The assertion this file exists for. `private.txt` is readable on this
+    // The main assertion of this file. `private.txt` is readable on this
     // machine and outside the directory the server serves, so:
     //
     //   - served locally, the extension gets its contents;
-    //   - served through the connection, the server refuses it by name.
+    //   - served through the connection, the server rejects it with a reason.
     //
-    // Which means a passing local case and a refused remote case together prove
-    // the read really crossed the connection. Answering from this machine's disk
-    // in a remote session would be invisible in the reply and would hand an
+    // A passing local case and a rejected remote case together show that the
+    // read went through the connection. Reading from this machine's disk in a
+    // remote session would not be visible in the reply and would give an
     // extension a file the session is not editing.
     let world = world("not-around");
 

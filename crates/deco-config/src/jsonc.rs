@@ -1,15 +1,15 @@
 //! A JSONC (JSON with Comments) reader.
 //!
-//! Every configuration file VS Code owns — `settings.json`, `keybindings.json`,
-//! `*.code-workspace`, theme files, `launch.json` — is JSONC: JSON plus `//`
-//! and `/* */` comments and tolerated trailing commas. Reading them with a
-//! plain JSON parser fails on the very first user file, so this module strips
-//! the extensions before handing off to `serde_json`.
+//! VS Code's configuration files (`settings.json`, `keybindings.json`,
+//! `*.code-workspace`, theme files, `launch.json`) are JSONC: JSON plus `//`
+//! and `/* */` comments and trailing commas. A plain JSON parser rejects most
+//! user files, so this module strips these extensions before passing the text
+//! to `serde_json`.
 //!
 //! The stripper rewrites in place, replacing every removed byte with a space
-//! and preserving newlines. That keeps byte offsets identical between the
-//! original text and the text `serde_json` sees, so parse errors still point at
-//! the right line and column of the file the user actually wrote.
+//! and preserving newlines. Byte offsets stay identical between the original
+//! text and the text `serde_json` sees, so parse errors point at the correct
+//! line and column of the user's file.
 
 use serde_json::Value;
 
@@ -49,17 +49,17 @@ enum State {
 
 /// Rewrites `input` into equivalent strict JSON of the same byte length.
 ///
-/// Comments become spaces and trailing commas become spaces. Exposed because
-/// tests and error reporting both benefit from seeing the intermediate form.
+/// Comments and trailing commas become spaces. Public so that tests and error
+/// reporting can inspect the intermediate form.
 pub fn strip(input: &str) -> Result<String, JsoncError> {
     let bytes = input.as_bytes();
     let mut out = bytes.to_vec();
     let mut state = State::Normal;
     let mut comment_start = 0usize;
     // Byte indices of the two most recent structurally significant characters.
-    // Two are needed, not one: `[1, 2,]` has a trailing comma to strip, but
-    // `{"a": ,}` has a *missing value*, and blanking that comma would push the
-    // resulting parse error onto the wrong line.
+    // Two are needed: `[1, 2,]` has a trailing comma to strip, but `{"a": ,}`
+    // has a *missing value*. Blanking that comma would move the resulting parse
+    // error to the wrong line.
     let mut last_significant: Option<usize> = None;
     let mut prev_significant: Option<usize> = None;
     let mut i = 0usize;
@@ -94,10 +94,10 @@ pub fn strip(input: &str) -> Result<String, JsoncError> {
                     i += 2;
                 }
                 b'}' | b']' => {
-                    // A trailing comma is legal in JSONC and fatal in JSON — but
-                    // only when it actually follows a value. A comma preceded by
-                    // `:`, `,`, `{` or `[` is a genuine syntax error, so it is
-                    // left in place for `serde_json` to report where it is.
+                    // A trailing comma is legal in JSONC and invalid in JSON, but
+                    // only when it follows a value. A comma preceded by `:`, `,`,
+                    // `{` or `[` is a syntax error, so it is left in place for
+                    // `serde_json` to report at its position.
                     if let Some(comma) = last_significant {
                         let follows_a_value = prev_significant
                             .map(|p| !matches!(out[p], b':' | b',' | b'{' | b'['))
@@ -186,8 +186,8 @@ fn line_column(text: &str, byte_idx: usize) -> (usize, usize) {
 
 /// Parses a JSONC document into a [`Value`].
 ///
-/// A leading UTF-8 BOM is accepted: Windows editors write them and VS Code
-/// tolerates them, so refusing would reject files the user considers fine.
+/// A leading UTF-8 BOM is accepted. Windows editors write one and VS Code
+/// accepts it.
 pub fn parse(input: &str) -> Result<Value, JsoncError> {
     let input = input.strip_prefix('\u{feff}').unwrap_or(input);
     let stripped = strip(input)?;
@@ -262,8 +262,8 @@ mod tests {
 
     #[test]
     fn handles_escaped_backslash_before_quote() {
-        // The string ends at the quote after the escaped backslash; if the
-        // escape state were wrong the rest of the file would be swallowed.
+        // The string ends at the quote after the escaped backslash. With a wrong
+        // escape state, the rest of the file would be read as part of the string.
         let src = r#"{"path": "C:\\", "b": 1}"#;
         assert_eq!(parse(src).unwrap(), json!({"path": "C:\\", "b": 1}));
     }
@@ -337,7 +337,7 @@ mod tests {
 
     #[test]
     fn a_comma_that_is_not_a_trailing_comma_is_left_alone() {
-        // `{,}` and `[,]` are malformed, not JSONC niceties.
+        // `{,}` and `[,]` are malformed, not JSONC trailing commas.
         assert!(parse("{,}").is_err());
         assert!(parse("[,]").is_err());
         assert!(parse(r#"{"a": 1,, }"#).is_err());

@@ -1,25 +1,24 @@
 //! Running `git status` without making the editor wait for it.
 //!
-//! [`deco_scm`] blocks: it spawns `git`, waits, and parses what came back. On
-//! deco's own checkout that is a few milliseconds, and on a working tree with
-//! a million files it is not — so the wait happens on a thread and the answer
-//! is collected later, the same bargain the language server's stdio pump
-//! makes.
+//! [`deco_scm`] is blocking: it spawns `git`, waits, and parses the output. On
+//! deco's own checkout that takes a few milliseconds, but on a working tree with
+//! a million files it takes much longer. The wait therefore happens on a thread
+//! and the result is collected later, as with the language server's stdio pump.
 //!
-//! What this adds on top of the crate is the *when*:
+//! This module decides *when* to run:
 //!
-//! - **Only when the session says so.** [`Session::scm_wanted`] is set by a
-//!   save or a file operation, never by a keystroke. A process per character
-//!   would be absurd, and a status bar that is a moment stale after a write is
-//!   not.
-//! - **One at a time.** A second run while the first is still going would
-//!   race to fill the same field, and the loser's answer would be the one on
-//!   screen. If something changes while a run is in flight the flag is still
-//!   set when it lands, so the next poll starts a fresh one.
-//! - **An absence is remembered.** No `git` on the machine, and no repository
-//!   here, are permanent for the session: asking again on every save would be
-//!   a spawn per save to learn what was already known. Anything else — git
-//!   refusing, output that did not parse — is transient and is retried.
+//! - **Only when the session requests it.** [`Session::scm_wanted`] is set by a
+//!   save or a file operation, never by a keystroke. Spawning a process per
+//!   character would be too expensive, and a status bar that is briefly stale
+//!   after a write is acceptable.
+//! - **One at a time.** Two concurrent runs would race to fill the same field,
+//!   and the run that finished last would determine what is shown. If something
+//!   changes while a run is in flight, the flag is still set when the run
+//!   finishes, so the next poll starts a new run.
+//! - **Permanent unavailability is remembered.** A missing `git` executable and
+//!   a folder that is not a repository do not change during the session, so
+//!   they are not checked again on every save. Other errors, such as git
+//!   rejecting the command or unparseable output, are transient and are retried.
 
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -81,8 +80,8 @@ enum RemoteInFlight {
 /// A second connection whose worker owns every blocking remote git call.
 ///
 /// File reads and extension requests keep using the session's primary
-/// connection. A status walk or a commit hook on this one can therefore take
-/// its time without stopping the editor from painting or serving either.
+/// connection. A slow status walk or commit hook on this connection therefore
+/// does not block drawing or those requests.
 struct Remote {
     requests: Sender<RemoteRequest>,
     responses: Receiver<RemoteResponse>,
@@ -176,44 +175,42 @@ impl Drop for Remote {
 /// Runs `git status` for one workspace, off the event loop.
 pub struct Scm {
     git: Git,
-    /// The working tree to ask about. `None` when deco was started without a
-    /// workspace — a lone file has no repository to report on.
+    /// The working tree to query. `None` when deco was started without a
+    /// workspace, because a single file has no repository to report on.
     root: Option<PathBuf>,
-    /// The run that has not answered yet.
+    /// The run that has not finished yet.
     inflight: Option<Receiver<Result<Status, ScmError>>>,
-    /// A local diff comparison that has not answered yet.
+    /// A local diff comparison that has not finished yet.
     comparison: Option<Receiver<(ComparisonRequest, Result<Comparison, ScmError>)>>,
-    /// A local branch listing or checkout preview that has not answered yet.
+    /// A local branch listing or checkout preview that has not finished yet.
     checkout: Option<Receiver<CheckoutAnswer>>,
-    /// Where the repository begins, once it has been asked.
+    /// The repository root, once it has been queried.
     ///
     /// Not the same as [`Scm::root`], which is the folder deco was started in.
-    /// Opening a subdirectory of a repository is ordinary, and every path git
-    /// reports — and every path it will answer about — is relative to the
-    /// repository, so the two have to be told apart.
+    /// Opening a subdirectory of a repository is common, and every path git
+    /// reports or accepts is relative to the repository root, so the two must be
+    /// kept separate.
     repo_root: Option<PathBuf>,
-    /// Why there will never be an answer, once that is known.
+    /// Why status will never be available, once that is known.
     ///
-    /// Kept rather than shown. There is nowhere to put it yet: the panel that
-    /// would hold an output view is
+    /// Stored but not shown. The panel that would hold an output view is
     /// [built and empty](https://github.com/sabas0ba/deco/blob/main/docs/chrome.md),
-    /// and a message on the status bar for "this folder is not a repository"
-    /// would be a line of noise for everyone who opened a folder that is not
-    /// one. A reader exists so the reason is not lost, and so a test can
-    /// assert deco knew why rather than merely showing nothing.
+    /// and a status bar message such as "this folder is not a repository"
+    /// would be unnecessary noise for every folder that is not a repository.
+    /// The accessor keeps the reason available and lets tests check it.
     unavailable: Option<String>,
-    /// Present when git lives behind the remote protocol rather than here.
+    /// Present when git runs through the remote protocol rather than locally.
     remote: Option<Remote>,
-    /// The far end's workspace, used to keep repository paths in the same
-    /// absolute-or-relative coordinates as the session's document paths.
+    /// The remote workspace, used to keep repository paths in the same
+    /// absolute-or-relative form as the session's document paths.
     remote_workspace: Option<PathBuf>,
 }
 
 impl Scm {
-    /// A runner for `root`, using whatever `git.path` named.
+    /// A runner for `root`, using the executable named by `git.path`.
     ///
-    /// The setting is VS Code's, and reading it here rather than at each spawn
-    /// means a machine with git somewhere unusual is configured once.
+    /// The setting comes from VS Code. It is read once here rather than at each
+    /// spawn.
     pub fn new(settings: &deco_config::Settings, root: Option<PathBuf>) -> Self {
         let program = settings
             .get_str("git.path", None)
@@ -234,7 +231,7 @@ impl Scm {
         }
     }
 
-    /// A runner whose git process and repository are on the far end.
+    /// A runner whose git process and repository are on the remote machine.
     pub fn remote(client: deco_remote::Client, workspace: PathBuf) -> Self {
         match Remote::new(client) {
             Ok(remote) => Self {
@@ -262,14 +259,14 @@ impl Scm {
         }
     }
 
-    /// Where the repository begins, asking git once if nobody has yet.
+    /// The repository root, queried from git on first use.
     ///
-    /// Every path the view holds is repository-relative, so anything that acts
-    /// on one — opening it, staging it — needs this rather than the folder
-    /// deco was started in. Resolving it lazily *inside the gutter's fetch*
-    /// was the bug: with `git.decorations.enabled` off, or a workspace opened
-    /// with no file, nothing ever asked, and staging `sub/a.rs` from
-    /// `/repo/sub` would have gone looking for `/repo/sub/sub/a.rs`.
+    /// Every path in the view is repository-relative, so operations such as
+    /// opening or staging a file need this root rather than the folder deco was
+    /// started in. It was previously resolved only inside the gutter's fetch.
+    /// With `git.decorations.enabled` off, or a workspace opened with no file,
+    /// it was never resolved, and staging `sub/a.rs` from `/repo/sub` used
+    /// `/repo/sub/sub/a.rs`.
     fn repository_root(&mut self, session: &mut Session) -> Option<PathBuf> {
         if let Some(found) = self.repo_root.clone() {
             return Some(found);
@@ -278,8 +275,8 @@ impl Scm {
         match self.git.root(&root) {
             Ok(found) => {
                 self.repo_root = Some(found.clone());
-                // The session needs it too, to turn a row's path back into
-                // something it can open.
+                // The session also needs it to convert a row's path into a
+                // path it can open.
                 session.set_repository_root(Some(found.clone()));
                 Some(found)
             }
@@ -292,24 +289,24 @@ impl Scm {
         }
     }
 
-    /// Why there is no status, when that is settled. `None` while it might yet
-    /// work.
+    /// Why status is permanently unavailable. `None` while it may still become
+    /// available.
     pub fn unavailable(&self) -> Option<&str> {
         self.unavailable.as_deref()
     }
 
     /// Starts a run if one is wanted, and collects one that has finished.
     ///
-    /// Returns whether the session changed, which is what the loop redraws on.
-    /// Collecting first so that a save made while git was thinking starts its
-    /// own run on this same poll rather than the next one.
+    /// Returns whether the session changed, so the loop knows when to redraw.
+    /// Collecting happens first, so a save made while git was running starts
+    /// its own run in the same poll rather than the next one.
     pub fn poll(&mut self, session: &mut Session) -> bool {
         if self.remote.is_some() {
             return self.poll_remote(session);
         }
-        // Compatibility with a remote server that predates the SCM methods:
-        // there is deliberately no local root to run against, but the fresh
-        // session's question still has to be marked answered once.
+        // Compatibility with a remote server that predates the SCM methods.
+        // There is intentionally no local root to run against, but the new
+        // session's request still has to be marked as handled once.
         if self.root.is_none() && self.unavailable.is_some() && session.scm_wanted() {
             session.scm_started();
             return false;
@@ -345,11 +342,11 @@ impl Scm {
 
         match response {
             Some(RemoteResponse::Status(Ok((root, status)))) => {
-                // Remote documents keep the spelling used to open them. The
-                // common CLI form is relative (`src/main.rs`); handing its SCM
-                // row an absolute root would open the same file a second time
-                // under a different PathBuf. Preserve absolute coordinates only
-                // when the active document already uses them.
+                // Remote documents keep the path form used to open them. The
+                // common CLI form is relative (`src/main.rs`). Giving its SCM row
+                // an absolute root would open the same file a second time under
+                // a different PathBuf. Keep absolute paths only when the active
+                // document already uses them.
                 let root = match (&self.remote_workspace, &session.document.path) {
                     (Some(workspace), Some(path)) if !path.is_absolute() => root
                         .strip_prefix(workspace)
@@ -363,7 +360,7 @@ impl Scm {
                 changed = true;
             }
             Some(RemoteResponse::Status(Err(error))) => {
-                // A refusal is one answer, not a permanent absence: an index
+                // A rejected request is not necessarily permanent: an index
                 // lock or an in-progress rebase may be gone by the next save.
                 session.fill_scm(None);
                 if error.contains("begins outside the served workspace") {
@@ -375,7 +372,7 @@ impl Scm {
                 changed = true;
             }
             Some(RemoteResponse::Committed { path, result }) => {
-                // The local path does the same on error: no committed text is
+                // Same as the local path on error: showing no committed text is
                 // safer than drawing a gutter against guessed contents.
                 session.fill_committed(path, result.unwrap_or(None));
                 changed = true;
@@ -466,8 +463,8 @@ impl Scm {
         }
 
         if session.scm_wanted() {
-            // Taken before the request begins, preserving a save that happens
-            // while the remote is still walking the working tree.
+            // Cleared before the request begins, so a save made while the remote
+            // side is still walking the working tree sets the flag again.
             session.scm_started();
             if remote.requests.send(RemoteRequest::Status).is_ok() {
                 remote.inflight = Some(RemoteInFlight::Status);
@@ -498,12 +495,12 @@ impl Scm {
 
     /// Fetches the committed text of one file the session is missing.
     ///
-    /// One per poll rather than all at once: this is a process each, and the
-    /// file being looked at is the first one asked about, so the gutter that
-    /// matters fills in immediately and the rest follow over the next few
-    /// turns. Blocking, unlike the status — `git show` of one blob is a read
-    /// of one object rather than a walk of the working tree, and putting it on
-    /// a thread would mean a second channel for a wait that does not happen.
+    /// Fetches one file per poll rather than all at once, because each fetch is
+    /// a separate process. The file being viewed is requested first, so its
+    /// gutter fills in immediately and the others follow over the next few
+    /// polls. Unlike status, this is blocking: `git show` of one blob reads one
+    /// object rather than walking the working tree, so a thread and a second
+    /// channel are not needed.
     fn fetch_committed(&mut self, session: &mut Session) -> bool {
         if self.unavailable.is_some() {
             return false;
@@ -511,22 +508,22 @@ impl Scm {
         let Some(path) = session.committed_wanted() else {
             return false;
         };
-        // Asked once and kept. Without it every path would be stripped against
-        // the folder deco was started in, which is only the repository root
-        // when nobody opened a subdirectory — and when they did, the blob
-        // fetched would be a different file's, silently.
+        // Queried once and cached. Without it every path would be stripped
+        // against the folder deco was started in. That folder is the repository
+        // root only when no subdirectory was opened. Otherwise the fetched blob
+        // would belong to a different file, with no error.
         let Some(repo_root) = self.repository_root(session) else {
-            // Answered rather than left standing: a repository that cannot say
-            // where it begins cannot say what a file used to hold either, and
-            // the alternative is asking on every poll for the rest of the
-            // session.
+            // Record an empty result rather than leaving the request pending. If
+            // the repository root cannot be determined, the committed text
+            // cannot be read either, and leaving it pending would repeat the
+            // query on every poll for the rest of the session.
             session.fill_committed(path, None);
             return true;
         };
-        // The cache is keyed by the path the editor holds; git answers about
-        // paths relative to the repository. A file outside it — opened with
-        // `ctrl+o` — has no answer here, and saying so is what stops it being
-        // asked about on every poll.
+        // The cache is keyed by the editor's path, but git uses paths relative
+        // to the repository. A file outside the repository, for example one
+        // opened with `ctrl+o`, gets an empty result. Recording that result
+        // prevents a query on every poll.
         let text = match path.strip_prefix(&repo_root) {
             Ok(relative) => self.git.committed(&repo_root, relative).unwrap_or(None),
             Err(_) => None,
@@ -552,10 +549,10 @@ impl Scm {
             }
             return;
         }
-        // Resolved rather than fallen back to the workspace folder. The paths
-        // in an operation are repository-relative, and running them from the
-        // wrong directory does not fail loudly — it names a file that is not
-        // there, or worse, one that is.
+        // Resolve the repository root instead of falling back to the workspace
+        // folder. Operation paths are repository-relative. Running them from the
+        // wrong directory does not necessarily fail: the path may name a missing
+        // file or a different existing file.
         let Some(root) = self.repository_root(session) else {
             session.git_operation_failed(operation, "there is no repository here");
             return;
@@ -700,7 +697,7 @@ impl Scm {
         }
     }
 
-    /// Takes the answer, if there is one waiting.
+    /// Takes the result, if one is waiting.
     fn collect(&mut self, session: &mut Session) -> bool {
         let Some(receiver) = self.inflight.as_ref() else {
             return false;
@@ -713,9 +710,9 @@ impl Scm {
             }
             Ok(Err(error)) => {
                 self.inflight = None;
-                // A run that failed still answers the question the session
-                // asked. Without this the flag would stay set and every poll
-                // would spawn another git.
+                // A failed run still completes the session's request. Without
+                // this the flag would stay set and every poll would spawn
+                // another git process.
                 session.fill_scm(None);
                 if permanent(&error) {
                     self.unavailable = Some(error.to_string());
@@ -723,9 +720,10 @@ impl Scm {
                 true
             }
             Err(TryRecvError::Empty) => false,
-            // The thread died without sending — a panic in the parser, which
-            // is a bug rather than a state. Treated as an answer of "nothing"
-            // so the editor carries on and the flag does not spin.
+            // The thread exited without sending, which means a panic in the
+            // parser. This is a bug, not a repository state. It is treated as
+            // an empty result so the editor continues and the flag does not
+            // trigger a new run on every poll.
             Err(TryRecvError::Disconnected) => {
                 self.inflight = None;
                 session.fill_scm(None);
@@ -734,27 +732,26 @@ impl Scm {
         }
     }
 
-    /// Spawns a run, if the session wants one and nothing stands in the way.
+    /// Spawns a run if the session wants one and no run is blocked.
     fn start(&mut self, session: &mut Session) {
         if self.inflight.is_some() || self.unavailable.is_some() || !session.scm_wanted() {
             return;
         }
         let Some(root) = self.root.clone() else {
-            // No workspace, so nothing to ask about — and the question is
-            // marked asked rather than left standing, or every poll would come
-            // back here.
+            // No workspace, so there is nothing to query. The request is still
+            // marked as started, otherwise every poll would return here.
             session.scm_started();
             return;
         };
-        // Before the thread rather than after it answers: a save while this
-        // run is in flight has to set the flag again and be noticed.
+        // Clear the flag before starting the thread, not after it finishes, so
+        // a save during this run sets the flag again and is detected.
         session.scm_started();
         let (sender, receiver) = mpsc::channel();
         let git = self.git.clone();
-        // Detached: nothing joins it. The channel is the only thing the thread
-        // touches, and dropping the receiver on shutdown is what tells it that
-        // nobody is listening — a `git status` outliving the editor by a few
-        // milliseconds is not worth a shutdown handshake.
+        // Detached: nothing joins the thread. It only uses the channel, and
+        // dropping the receiver on shutdown ends communication. A `git status`
+        // that outlives the editor by a few milliseconds does not need a
+        // shutdown handshake.
         std::thread::spawn(move || {
             let _ = sender.send(git.status(&root));
         });
@@ -769,16 +766,17 @@ impl Scm {
 
 /// Whether this is a state rather than a failure.
 ///
-/// No git and no repository will still be true after the next save, so asking
-/// again would spawn a process to learn what is known. Everything else might
-/// not be: a repository mid-rebase can refuse, and a `git status` that failed
-/// once because the index was locked will work on the next try.
+/// A missing git executable and a missing repository do not change after the
+/// next save, so checking again would spawn a process for a known result. Other
+/// errors can be temporary: a repository in the middle of a rebase can reject a
+/// command, and a `git status` that failed because the index was locked can
+/// succeed on the next try.
 fn permanent(error: &ScmError) -> bool {
     matches!(error, ScmError::NoBinary(_) | ScmError::NotARepository(_))
 }
 
-/// The remote protocol carries refusals as text, so the three states that
-/// cannot change during this server's lifetime are recognised at this edge.
+/// The remote protocol sends errors as text, so the three states that cannot
+/// change during this server's lifetime are recognised by their messages here.
 fn remote_permanent(error: &str) -> bool {
     error.contains("is not on this machine")
         || error.contains("is not inside a git repository")
@@ -798,8 +796,8 @@ mod tests {
         )
     }
 
-    /// Drives polls until the run lands, so a test does not depend on how fast
-    /// `git` is on the machine running it.
+    /// Polls until the run finishes, so a test does not depend on how fast `git`
+    /// is on the machine running it.
     fn settle(scm: &mut Scm, session: &mut Session) {
         for _ in 0..2_000 {
             scm.poll(session);
@@ -816,8 +814,8 @@ mod tests {
         let mut session = session();
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let mut scm = Scm::new(&session.settings, Some(root.clone()));
-        // A contributor's machine may have no git, and failing there for a
-        // reason that is not their change is worse than saying why it skipped.
+        // A contributor's machine may have no git. Skip with a message instead
+        // of failing for a reason unrelated to their change.
         if matches!(scm.git.status(&root), Err(ScmError::NoBinary(_))) {
             eprintln!("skipped: no git on this machine");
             return;
@@ -843,7 +841,7 @@ mod tests {
             "the reason is kept even though there is nowhere to show it"
         );
 
-        // Whatever happens next, no second process.
+        // A later change must not start a second process.
         session.scm_changed();
         scm.poll(&mut session);
         assert!(
@@ -898,14 +896,14 @@ mod tests {
             return;
         }
 
-        // A run is in flight, and the file is written while it is.
+        // A run is in flight, and the file is written during the run.
         scm.poll(&mut session);
         assert!(scm.inflight.is_some(), "the first poll starts one");
         session.scm_changed();
 
-        // Whenever that first run lands, the second must follow it — otherwise
-        // the bar sits showing a status taken before the write, and nothing
-        // asks again until the *next* save.
+        // When the first run finishes, a second run must start. Otherwise the
+        // bar shows a status taken before the write, and no new query runs
+        // until the *next* save.
         for _ in 0..2_000 {
             scm.poll(&mut session);
             if session.scm_status().is_some() && scm.inflight.is_some() {
@@ -925,7 +923,7 @@ mod tests {
             eprintln!("skipped: no git on this machine");
             return;
         }
-        // This very file, committed, with an edit that is not.
+        // This file, which is committed, opened with uncommitted content.
         let path = root.join("src/scm.rs");
         session.open(path.clone(), "// nothing like the committed text\n");
 
@@ -956,9 +954,9 @@ mod tests {
             eprintln!("skipped: no git on this machine");
             return;
         }
-        // `ctrl+o` reaches anywhere. Nothing here can say what HEAD had for it,
-        // and answering "nothing" is what stops the question being asked on
-        // every poll for the rest of the session.
+        // `ctrl+o` can open any path. HEAD has no content for a file outside the
+        // repository, and recording an empty result prevents a query on every
+        // poll for the rest of the session.
         let outside = PathBuf::from("/etc/hostname");
         session.open(outside.clone(), "elsewhere\n");
         scm.poll(&mut session);

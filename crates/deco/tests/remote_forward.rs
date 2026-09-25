@@ -1,14 +1,13 @@
 //! A forwarded port, end to end, with this binary as both halves.
 //!
-//! `deco-remote` tests the pieces — parsing a spec, refusing a non-loopback
-//! target, freeing the port on drop — against no network at all. This runs the
-//! whole thing: a real listener stands in for the dev server on the remote, the
-//! real `deco --forward-to` is the far end of the tunnel, and a real client
-//! connects to the local port and expects its bytes back.
+//! `deco-remote` tests the individual parts (parsing a spec, rejecting a
+//! non-loopback target, freeing the port on drop) without any network. This
+//! file runs the whole path: a real listener stands in for the dev server on
+//! the remote, the real `deco --forward-to` is the remote side of the tunnel,
+//! and a real client connects to the local port and expects its bytes back.
 //!
-//! The only thing missing is `ssh host` in front of the command, which is the
-//! same substitution `remote_session.rs` makes and is an argument vector tested
-//! next door.
+//! Only the `ssh host` prefix is omitted, as in `remote_session.rs`; that
+//! argument vector is tested separately.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -78,18 +77,18 @@ fn a_forwarded_port_carries_bytes_to_the_service_and_back() {
     )
     .expect("a forward");
 
-    // The point of the whole feature: something connecting to this machine's
-    // port is talking to a service it has no route to.
+    // The purpose of the feature: a client connecting to this machine's port
+    // reaches a service it has no direct route to.
     assert_eq!(round_trip(forward.address(), "hello"), "HELLO");
-    // And the tunnel is not one-shot — a second connection gets its own process.
+    // The tunnel is not single-use; a second connection gets its own process.
     assert_eq!(round_trip(forward.address(), "again"), "AGAIN");
 }
 
 #[test]
 fn two_connections_at_once_each_get_their_own_pipe() {
-    // A single stdio pipe cannot carry two conversations, so a forward that
-    // reused one would interleave them into nonsense. This is what pins that
-    // each connection is its own process.
+    // A single stdio pipe cannot carry two connections, so a forward that
+    // reused one would interleave their data. This test checks that each
+    // connection has its own process.
     let service = shouting_echo_service();
     let forward = Forward::start(
         far_end(service),
@@ -109,8 +108,8 @@ fn two_connections_at_once_each_get_their_own_pipe() {
 
 #[test]
 fn a_forward_to_a_port_with_nothing_on_it_closes_rather_than_hanging() {
-    // A dev server that is not running yet is the everyday case, and the honest
-    // answer is a closed connection rather than a client waiting forever.
+    // A dev server that is not running yet is common. The client should see a
+    // closed connection rather than wait forever.
     let dead = {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("a listener");
         listener.local_addr().expect("an address").port()
@@ -130,16 +129,16 @@ fn a_forward_to_a_port_with_nothing_on_it_closes_rather_than_hanging() {
         .expect("a timeout");
     let _ = stream.write_all(b"anyone there?");
     let mut back = Vec::new();
-    // Ends at end-of-file, with nothing in it. A hang here would be the failure.
+    // Ends at end-of-file with no data. A hang here indicates the failure.
     stream.read_to_end(&mut back).expect("a closed connection");
     assert!(back.is_empty(), "{back:?}");
 }
 
 #[test]
 fn the_far_end_refuses_a_target_that_is_not_loopback() {
-    // The refusal is unit-tested; this is the binary really doing it, because
-    // this is the argument that would make a deco server a route into whatever
-    // network the remote sits in.
+    // The rejection is unit-tested; this checks the binary itself, because this
+    // argument could otherwise make a deco server a route into the remote's
+    // network.
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_deco"))
         .args(["--forward-to", "10.0.0.5:5432", "--stdio"])
         .output()

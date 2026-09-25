@@ -1,18 +1,19 @@
 //! Which language server to run for a language, and how.
 //!
-//! A server is a program the editor launches on the user's behalf, with the
-//! user's privileges, named by a configuration file that may have arrived with
-//! a cloned repository. Two consequences run through this module:
+//! A server is a program the editor launches with the user's privileges. It is
+//! named by a configuration file, which may come from a cloned repository. This
+//! has two consequences for this module:
 //!
-//! - **A command is an argument vector, never a shell string.** The same rule
-//!   `deco-remote` follows, for the same reason: `sh -c "$cmd"` with a `cmd`
-//!   somebody else wrote is remote code execution wearing a configuration
-//!   file's clothes. There is no field here that a shell ever sees.
-//! - **A workspace cannot silently introduce one.** Settings layer as they do
-//!   everywhere in deco, but a server definition arriving from workspace scope
-//!   is marked [`Trust::Workspace`] so the editor can require confirmation
-//!   before running it. Nothing in this module launches anything; it decides
-//!   what *would* be launched, and says where the instruction came from.
+//! - **A command is an argument vector, never a shell string.** `deco-remote`
+//!   follows the same rule for the same reason: `sh -c "$cmd"` with a `cmd`
+//!   written by someone else allows arbitrary code execution through a
+//!   configuration file. No field here is ever passed to a shell.
+//! - **A workspace cannot add a server without confirmation.** Settings are
+//!   layered as elsewhere in deco, but a server definition from workspace
+//!   scope is marked [`Trust::Workspace`] so the editor can require
+//!   confirmation before running it. This module does not launch anything. It
+//!   determines what *would* be launched and records where the definition
+//!   came from.
 
 /// A program and its arguments.
 ///
@@ -30,7 +31,7 @@ pub struct Command {
 pub enum Trust {
     /// Shipped with deco.
     BuiltIn,
-    /// From the user's own settings. They wrote it; it is theirs.
+    /// From the user's own settings.
     User,
     /// From `.vscode/settings.json` or similar inside the project.
     ///
@@ -80,9 +81,9 @@ pub enum ConfigError {
     },
     /// A program name or argument contained a NUL or a newline.
     ///
-    /// Rejected rather than escaped. No legitimate program name contains
-    /// either, and both are exactly what an injection attempt looks like when
-    /// the value is later written to a file, a log or another process's stdin.
+    /// Rejected, not escaped. No legitimate program name contains either, and
+    /// both can be used for injection when the value is later written to a
+    /// file, a log or another process's stdin.
     #[error("server `{id}` has a {field} containing a control character")]
     ControlCharacter {
         /// The offending server id.
@@ -179,9 +180,9 @@ impl ServerConfig {
                 check(&id, "environment variable", value)?;
                 env.push((name.clone(), value.to_owned()));
             }
-            // Object iteration order is already sorted for a serde_json map,
-            // but pinning it here keeps the child's environment reproducible
-            // regardless of the map implementation underneath.
+            // A serde_json map already iterates in sorted order. Sorting here
+            // keeps the child's environment reproducible if the map
+            // implementation changes.
             env.sort();
         }
 
@@ -224,10 +225,9 @@ impl ServerRegistry {
 
     /// Reads a `{ "<id>": { … } }` map from settings.
     ///
-    /// Returns the registry alongside the definitions it refused, so a single
-    /// bad entry costs its own server rather than every server. A configuration
-    /// file that silently disables language support is worse than one that
-    /// reports what it could not read.
+    /// Returns the registry and the errors for rejected definitions. An invalid
+    /// entry disables only its own server, and the error is reported instead
+    /// of silently disabling language support.
     pub fn from_json(value: &serde_json::Value, trust: Trust) -> (Self, Vec<ConfigError>) {
         let mut registry = Self::new();
         let mut problems = Vec::new();
@@ -252,10 +252,10 @@ impl ServerRegistry {
 
     /// Merges another registry over this one.
     ///
-    /// Later definitions win, matching how every other setting in deco layers.
-    /// The replacement carries the incoming definition's trust, so a workspace
-    /// override of a user server still requires confirmation — otherwise
-    /// shadowing a familiar id would be a way to launder an untrusted command.
+    /// Later definitions win, as with every other layered setting in deco. The
+    /// replacement keeps the incoming definition's trust, so a workspace
+    /// override of a user server still requires confirmation. Otherwise an
+    /// untrusted command could become trusted by reusing a familiar id.
     pub fn merge(&mut self, other: Self) {
         for config in other.servers {
             match self.servers.iter_mut().find(|s| s.id == config.id) {
@@ -267,16 +267,14 @@ impl ServerRegistry {
 
     /// The servers that handle a language, most preferred first.
     ///
-    /// Anything the user configured comes before a built-in, because a built-in
-    /// is a guess and a configuration is an instruction — someone who defines
-    /// their own Rust server means it to be used instead of the bundled
-    /// `rust-analyzer` entry, not alongside it.
+    /// Configured servers come before built-ins. A built-in is a default, and a
+    /// user who defines their own Rust server intends it to replace the
+    /// bundled `rust-analyzer` entry.
     ///
     /// Within each group the order is the order of definition, which is settings
-    /// order: user before workspace. That matters because a workspace-defined
-    /// server needs confirmation before it runs, and if it came first a cloned
-    /// repository could push the user's own working server out of the way
-    /// simply by defining a competing one.
+    /// order: user before workspace. A workspace-defined server needs
+    /// confirmation before it runs. If it came first, a cloned repository could
+    /// displace the user's own server by defining a competing one.
     pub fn for_language(&self, language_id: &str) -> Vec<&ServerConfig> {
         let matching = self.servers.iter().filter(|s| s.handles(language_id));
         let (configured, built_in): (Vec<_>, Vec<_>) =
@@ -319,10 +317,9 @@ impl ServerRegistry {
 
 /// Definitions deco ships with.
 ///
-/// Deliberately short. Each entry assumes only that the program is on `PATH`,
-/// which is the one thing deco can neither install nor verify — so a missing
-/// server has to be an ordinary "not found" at launch rather than something
-/// this table pretends to know.
+/// The list is intentionally short. Each entry assumes only that the program
+/// is on `PATH`, which deco cannot install or verify. A missing server is
+/// reported as an ordinary "not found" error at launch.
 pub fn built_in() -> ServerRegistry {
     let mut registry = ServerRegistry::new();
     for (id, languages, program, args) in [
@@ -396,8 +393,8 @@ mod tests {
 
     #[test]
     fn arguments_stay_separate_and_are_never_joined() {
-        // The whole point of the argv representation: an argument containing a
-        // space is one argument, not two, and no shell ever re-splits it.
+        // With the argv representation, an argument containing a space is one
+        // argument, and no shell splits it again.
         let server = config(json!({
             "languages": ["rust"],
             "command": "my server",
@@ -426,7 +423,7 @@ mod tests {
 
     #[test]
     fn a_definition_with_no_languages_is_refused() {
-        // Nothing would ever start it, so accepting it just hides a typo.
+        // Nothing would start it, so accepting it would hide a typo.
         for value in [
             json!({"command": "x"}),
             json!({"command": "x", "languages": []}),
@@ -441,8 +438,8 @@ mod tests {
 
     #[test]
     fn a_control_character_is_refused_rather_than_escaped() {
-        // A newline in a program name is not a quoting problem to solve; it is
-        // what an injection attempt looks like.
+        // A newline in a program name indicates an injection attempt, so it is
+        // rejected instead of quoted.
         for value in [
             json!({"languages": ["rust"], "command": "ra\nevil"}),
             json!({"languages": ["rust"], "command": "ra", "args": ["a\0b"]}),
@@ -490,8 +487,8 @@ mod tests {
 
     #[test]
     fn one_bad_definition_does_not_cost_the_others() {
-        // A configuration file that silently disables every language because of
-        // one typo is worse than one that reports what it could not read.
+        // One typo must not silently disable every language. The invalid entry
+        // is reported and the others are kept.
         let (registry, problems) = ServerRegistry::from_json(
             &json!({
                 "good": {"languages": ["rust"], "command": "ra"},
@@ -556,8 +553,8 @@ mod tests {
 
     #[test]
     fn a_workspace_override_of_a_user_server_still_needs_confirmation() {
-        // Otherwise shadowing a familiar id would launder an untrusted command
-        // into a trusted slot.
+        // Otherwise an untrusted command could become trusted by reusing a
+        // familiar id.
         let (mut base, _) = ServerRegistry::from_json(
             &json!({"ra": {"languages": ["rust"], "command": "rust-analyzer"}}),
             Trust::User,
@@ -608,8 +605,8 @@ mod tests {
 
     #[test]
     fn env_ordering_is_stable() {
-        // A child process's environment should not depend on map iteration
-        // order, or a bug will reproduce only sometimes.
+        // The child process's environment must not depend on map iteration
+        // order, so that bugs reproduce consistently.
         let server = config(json!({
             "languages": ["rust"],
             "command": "ra",

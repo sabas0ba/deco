@@ -10,23 +10,20 @@ authors.workspace = true
 
 [dependencies]
 # For `fs.search`: the server matches with `deco_core::search::find_all`, the
-# same function the find bar and the local project search use. Two definitions
-# of what counts as a match would drift, and a search that finds different
-# things depending on which machine the files are on is worse than none.
+# same function the find bar and the local project search use. Remote and local
+# searches therefore use one definition of a match.
 deco-core.workspace = true
-# For `settings.read`: the server resolves *its own* machine-settings path with
-# the same rules the editor uses for a configuration directory, so the file a
-# person edits on the remote is the file a connected session is served.
+# For `settings.read`: the server resolves the remote machine's settings path
+# with the same configuration-directory rules as the editor. A connected session
+# is served the same file that is edited on the remote.
 deco-config.workspace = true
 deco-scm.workspace = true
 # For `--remote-install-download`: the checksum of a downloaded release is
-# computed here rather than by whatever `sha256sum` is on the PATH. The transfer
-# and the decompression are chores that can be delegated; deciding whether the
-# bytes are the ones the project published is the question being asked, and an
-# editor that asked something else whether it had checked would not be checking.
+# computed in-process, not by a `sha256sum` found on the PATH. Transfer and
+# decompression may use external tools. Checksum verification does not.
 #
-# The same crate `cargo xtask dist` writes SHA256SUMS with, so the hash is
-# produced and verified by one implementation.
+# `cargo xtask dist` uses the same crate to write SHA256SUMS, so one
+# implementation produces and verifies the hash.
 sha2 = "0.11"
 serde.workspace = true
 serde_json.workspace = true

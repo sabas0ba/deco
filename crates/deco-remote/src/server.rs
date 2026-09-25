@@ -1,45 +1,44 @@
-//! The far end: `deco --server --stdio`, running where the files are.
+//! The remote server: `deco --server --stdio`, running where the files are.
 //!
-//! [`crate::transport`] has always known how to *start* this — the
-//! command it builds ends in `deco --server --stdio` — and there was nothing on
-//! the other side of it. This is that side: a loop over [`crate::frame`]
-//! messages, answering a small set of methods against one directory.
+//! [`crate::transport`] builds the command that starts this server; the command
+//! ends in `deco --server --stdio`. This module implements the server: a loop
+//! over [`crate::frame`] messages that answers a small set of methods against
+//! one directory.
 //!
-//! # One directory, and no way out of it
+//! # Confinement to one directory
 //!
-//! A server started with `--workspace /home/u/project` will read and write inside
-//! that directory and refuse everything else, by name. This is stricter than VS
-//! Code, whose remote server will open any path the account can reach, and the
-//! reason to be stricter is what the client is: whatever is on the other end of
-//! an SSH connection deco did not authenticate itself. A bug in the frontend, a
-//! hijacked session, or a `deco-remote://` link someone else wrote should not be
-//! able to ask for `~/.ssh/id_ed25519`.
+//! A server started with `--workspace /home/u/project` reads and writes only
+//! inside that directory and rejects other paths with an error naming them.
+//! This is stricter than VS Code, whose remote server opens any path the account
+//! can reach. The reason is that deco does not authenticate the client itself;
+//! the client is whatever is on the other end of the SSH connection. A frontend
+//! bug, a hijacked session, or a `deco-remote://` link written by someone else
+//! must not be able to read `~/.ssh/id_ed25519`.
 //!
 //! Confinement is checked on the **canonical** path, so a symlink inside the
-//! workspace pointing outside it is refused too. Checking the path as written
-//! would make `project/link-to-etc/passwd` legal, which is exactly the shape of
-//! the mistake this is here to prevent.
+//! workspace that points outside it is also rejected. Checking the path as
+//! written would allow `project/link-to-etc/passwd`.
 //!
-//! ## The one exception, and why it is not one
+//! ## Exception: machine settings
 //!
-//! `settings.read` answers about a file outside the workspace: this machine's
-//! `machine-settings.json`. It takes **no path**. A client cannot name a file,
-//! only ask for "this machine's settings", and receives whatever is at the one
-//! path the server computes for itself. The rule above is about what a client
-//! can *reach*, and by that measure nothing changed — there is still exactly
-//! one directory it can steer a read into.
+//! `settings.read` returns a file outside the workspace: this machine's
+//! `machine-settings.json`. It takes **no path**. A client cannot name a file;
+//! it can only request this machine's settings, and receives the file at the
+//! one path the server computes itself. The confinement rule limits which paths
+//! a client can reach, and that set is unchanged: reads can still target only
+//! the workspace directory.
 //!
-//! The server also does not *act* on what it returns. It resolves no theme,
-//! starts no language server, and nothing in that file changes how `fs.read`
-//! answers. It hands over bytes; the client decides, and treats them as
-//! untrusted. A server that obeyed a settings file would be taking an authority
-//! nobody gave it, which is the thing being avoided — not the reading itself.
+//! The server also does not apply the settings it returns. It resolves no
+//! theme, starts no language server, and the file does not change how `fs.read`
+//! behaves. It returns the bytes; the client decides what to do with them and
+//! treats them as untrusted. The restriction is on the server applying the
+//! settings, not on reading them.
 //!
-//! # What it does not do yet
+//! # Not yet implemented
 //!
-//! No extension hosts and no watching for changes. The methods below are what
-//! opening, listing and saving a file need, source control on the machine holding
-//! the repository, plus the one that hands over this machine's settings.
+//! Extension hosts and file watching are not implemented. The methods below
+//! cover opening, listing and saving files, source control on the machine that
+//! holds the repository, and reading this machine's settings.
 
 use std::io::{BufRead, Write};
 use std::path::{Component, Path, PathBuf};
@@ -51,24 +50,24 @@ use crate::frame::{self, Message};
 
 /// The protocol version this server speaks.
 ///
-/// Sent in the handshake and checked by the client, so a new frontend against an
-/// old server fails with a sentence rather than by half-working.
+/// Sent in the handshake and checked by the client, so a new frontend connected
+/// to an old server fails with a clear error instead of partially working.
 pub const PROTOCOL_VERSION: &str = "1";
 
-/// The handshake, which every session begins with.
+/// The handshake method, sent first in every session.
 pub const HANDSHAKE: &str = "$/handshake";
 
 /// How many entries a listing will return.
 ///
-/// The same bound the local file walk uses: a listing is for a picker, and a
-/// picker over a hundred thousand files is not a picker.
+/// The same limit as the local file walk. Listings feed a picker, which is not
+/// usable with a hundred thousand files.
 pub const MAX_LISTED: usize = 10_000;
 
 /// The largest file the server will read or write.
 ///
-/// Below the frame ceiling, because the text has to fit in a frame with room for
-/// the JSON around it — and because a client asking for a 4GB file over SSH has
-/// asked for something that will not work regardless.
+/// Lower than the frame limit, because the text must fit in a frame together
+/// with the surrounding JSON. Transferring a multi-gigabyte file over SSH would
+/// not work in any case.
 pub const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
 
 /// Why a request was refused.
@@ -77,10 +76,10 @@ pub enum ServerError {
     /// The path escapes the workspace.
     #[error("{path} is outside the workspace this server was started for")]
     OutsideWorkspace {
-        /// What was asked for, as it was written.
+        /// The requested path, as written.
         path: String,
     },
-    /// The path could not be resolved at all.
+    /// The path could not be resolved.
     #[error("{path} cannot be read: {reason}")]
     Unreadable {
         /// What was asked for.
@@ -106,8 +105,8 @@ pub enum ServerError {
     },
     /// The file is not UTF-8.
     ///
-    /// Refused rather than replaced with substitution characters: deco would then
-    /// write those back on save, quietly corrupting the file.
+    /// Rejected rather than decoded with replacement characters, which deco would
+    /// write back on save and thereby corrupt the file.
     #[error("{path} is not valid UTF-8, and deco will not guess at it")]
     NotText {
         /// What was asked for.
@@ -115,9 +114,8 @@ pub enum ServerError {
     },
     /// The path is inside the workspace and could not be written.
     ///
-    /// Its own variant rather than reusing the read one: a failed write reported
-    /// as "cannot be read" sends whoever is diagnosing it to look at permissions
-    /// on the wrong operation.
+    /// A separate variant from the read error, so that a failed write is not
+    /// reported as "cannot be read" and misdirect diagnosis.
     #[error("{path} cannot be written: {reason}")]
     Unwritable {
         /// What was asked for.
@@ -125,7 +123,7 @@ pub enum ServerError {
         /// What the operating system said.
         reason: String,
     },
-    /// The method is not one this server has.
+    /// The server does not implement the method.
     #[error("this server does not implement {method}")]
     UnknownMethod {
         /// What was asked for.
@@ -139,7 +137,7 @@ pub enum ServerError {
         /// What it wanted.
         what: String,
     },
-    /// Git could not answer or carry out a source-control request.
+    /// Git failed to answer or carry out a source-control request.
     #[error("source control is unavailable: {reason}")]
     SourceControl {
         /// What git said.
@@ -177,23 +175,22 @@ pub struct Server {
     /// The canonical workspace root. Every path is resolved against it and must
     /// stay inside it.
     root: PathBuf,
-    /// Where `settings.read` looks, decided at startup.
+    /// The file `settings.read` returns, determined at startup.
     ///
-    /// Held rather than computed per request so that the answer to "which file
-    /// does this server serve as its machine settings" is fixed for the life of
-    /// the connection — a path that could change under a running session would
-    /// be one a client could be told two different things about.
+    /// Stored rather than computed per request so that the machine-settings path
+    /// stays fixed for the lifetime of the connection. Otherwise a client could
+    /// receive different paths within one session.
     machine_settings: Option<PathBuf>,
-    /// Git on the machine holding the files.
+    /// Git on the machine that holds the files.
     git: Git,
 }
 
 impl Server {
     /// Binds a server to `root`.
     ///
-    /// The root is canonicalised once, here, so that every later comparison is
-    /// between two resolved paths — comparing a resolved path against an
-    /// unresolved root is how `..` and symlinks get through.
+    /// The root is canonicalised once here, so every later comparison is between
+    /// two resolved paths. Comparing a resolved path with an unresolved root
+    /// would let `..` and symlinks bypass the check.
     pub fn new(root: impl AsRef<Path>) -> std::io::Result<Self> {
         Ok(Self {
             root: root.as_ref().canonicalize()?,
@@ -204,9 +201,9 @@ impl Server {
 
     /// The same server, serving `path` as its machine settings.
     ///
-    /// For tests, and for anyone embedding this: the default reads the process
-    /// environment, which a test cannot change without changing it for every
-    /// other test running beside it.
+    /// For tests and embedders. The default path is read from the process
+    /// environment, which a test cannot change without affecting other tests
+    /// running in parallel.
     pub fn serving_machine_settings(mut self, path: Option<PathBuf>) -> Self {
         self.machine_settings = path;
         self
@@ -219,11 +216,10 @@ impl Server {
 
     /// Resolves a client-supplied path inside the workspace.
     ///
-    /// Relative paths are taken as relative to the root, which is how a client
-    /// refers to a file it saw in a listing. An absolute path is allowed only if
-    /// it is already inside the root — a client that learned a path from a
-    /// listing has one, and a client that guessed at `/etc/passwd` gets a refusal
-    /// naming the reason.
+    /// Relative paths are resolved against the root, matching the paths a client
+    /// receives from a listing. An absolute path is allowed only if it is inside
+    /// the root. A path such as `/etc/passwd` is rejected with an error that
+    /// states the reason.
     pub fn resolve(&self, path: &str) -> Result<PathBuf, ServerError> {
         let asked = Path::new(path);
         let joined = if asked.is_absolute() {
@@ -232,10 +228,10 @@ impl Server {
             self.root.join(asked)
         };
 
-        // Canonicalising needs the file to exist, which a path being written for
-        // the first time does not. So the *parent* is canonicalised — it must
-        // exist, since a file cannot be created in a directory that does not —
-        // and the name is put back on afterwards.
+        // Canonicalisation requires the file to exist, which is not the case for
+        // a new file. In that case the parent is canonicalised instead, since a
+        // file can only be created in an existing directory, and the file name
+        // is appended afterwards.
         let (base, name) = match joined.file_name() {
             Some(name) if joined.exists() => (joined.clone(), Some(name.to_owned())),
             Some(name) => (
@@ -277,10 +273,10 @@ impl Server {
     /// server's one-directory boundary.
     ///
     /// Opening a subdirectory of a repository is useful locally, where the
-    /// process already has the user's ambient filesystem authority. A remote
-    /// server has a narrower contract: it must not reveal or change paths above
-    /// the workspace it was explicitly given. Such a repository is therefore
-    /// refused instead of silently expanding the session's reach.
+    /// process already has the user's full filesystem access. A remote server
+    /// must not reveal or change paths above the workspace it was given, so a
+    /// repository that starts above the workspace is rejected instead of
+    /// extending the session's access.
     fn repository_root(&self) -> Result<PathBuf, ServerError> {
         let repository = self
             .git
@@ -378,14 +374,14 @@ impl Server {
 
     /// Answers one request.
     ///
-    /// Returns the reply to send. A notification produces `None`, and an
-    /// unrecognised method produces an error reply rather than silence: a client
-    /// waiting for an answer it will never get is worse than one told no.
+    /// Returns the reply to send. A notification produces `None`. An
+    /// unrecognised method produces an error reply rather than no reply, so the
+    /// client does not wait indefinitely.
     pub fn handle(&mut self, message: Message) -> Option<Message> {
         let (id, method, params) = match message {
             Message::Request { id, method, params } => (id, method, params),
-            // Nothing here is driven by notifications yet, and answering one
-            // would be a protocol error.
+            // No notifications are handled yet, and replying to one would be a
+            // protocol error.
             Message::Notification { .. } | Message::Response { .. } => return None,
         };
 
@@ -424,8 +420,8 @@ impl Server {
             HANDSHAKE => Ok(json!({
                 "protocol": PROTOCOL_VERSION,
                 "workspace": self.root.display().to_string(),
-                // What this server can do, so a client need not discover it by
-                // being refused.
+                // Supported methods, so a client does not have to probe for
+                // them by sending requests.
                 "methods": [
                     "fs.read",
                     "fs.write",
@@ -447,35 +443,31 @@ impl Server {
                     "$/shutdown"
                 ],
             })),
-            // The machine's own settings, handed over rather than acted on.
+            // Returns this machine's settings without applying them.
             //
-            // This is the one method that answers about a path outside the
-            // workspace, and it is shaped so that it does not weaken the rule
-            // above: it takes **no path**. A client cannot ask for a file of
-            // its choosing, only for "this machine's settings", and gets
-            // whatever is at the one path this server computes. So the
-            // property that matters — an unauthenticated client cannot roam
-            // the filesystem — is untouched.
+            // This is the only method that reads a path outside the workspace.
+            // It takes **no path**: a client cannot choose a file, only request
+            // this machine's settings, and receives the file at the one path
+            // this server computes. An unauthenticated client still cannot
+            // access arbitrary files.
             //
-            // Nor does the server *use* what it reads. It does not resolve a
-            // theme, start a language server, or let the file change how
-            // `fs.read` answers; it returns bytes and the client decides. That
-            // distinction is the whole reason this is allowed to exist: a
-            // server that obeyed a settings file would be taking an authority
-            // nobody gave it, and this one does not obey it.
+            // The server does not apply what it reads. It does not resolve a
+            // theme, start a language server, or change how `fs.read` behaves;
+            // it returns the bytes and the client decides. The method is
+            // allowed only because the server does not act on the file.
             //
-            // The client treats the result as an untrusted layer, which is why
-            // a server definition arriving this way still has to be confirmed.
+            // The client treats the result as an untrusted layer, so a server
+            // definition received this way still requires confirmation.
             "settings.read" => {
                 let paths = self.machine_settings.clone();
                 let path = paths
                     .as_ref()
                     .map(|path| path.display().to_string())
                     .unwrap_or_default();
-                // A missing file is `null` rather than an error: having no
-                // machine settings is the ordinary state, and the path is
-                // reported either way so `--print-config` can say where this
-                // server looked.
+                // A missing file returns `null` rather than an error, because
+                // having no machine settings is normal. The path is returned in
+                // both cases so `--print-config` can show where the server
+                // looked.
                 let text = match paths.as_ref().map(std::fs::read_to_string) {
                     Some(Ok(text)) => Some(text),
                     Some(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => None,
@@ -554,9 +546,9 @@ impl Server {
                         break;
                     }
                     // `symlink_metadata`, so a link is reported as a link rather
-                    // than as whatever it points at — which may be outside the
-                    // workspace, and is a thing the client should learn about
-                    // before it follows it.
+                    // than as its target. The target may be outside the
+                    // workspace, and the client should know that before
+                    // following it.
                     let Ok(metadata) = entry.metadata() else {
                         continue;
                     };
@@ -565,8 +557,8 @@ impl Server {
                         "kind": kind_of(&metadata),
                     }));
                 }
-                // Sorted, because `read_dir` promises no order and a list that
-                // reshuffles between calls is one nothing can be compared against.
+                // Sorted because `read_dir` guarantees no order, and the result
+                // should be stable between calls.
                 listed.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
                 Ok(json!({ "entries": listed }))
             }
@@ -581,13 +573,13 @@ impl Server {
             }
             "fs.delete" => {
                 let asked = path("path")?;
-                // Confined first, which is also what refuses a link pointing out
-                // of the workspace: `resolve` follows the last component.
+                // Confinement is checked first. Because `resolve` follows the
+                // last component, this also rejects a link pointing outside the
+                // workspace.
                 self.resolve(&asked)?;
-                // And then removed *as it was named*, not as it resolved. Those
-                // are different paths for a symbolic link inside the workspace,
-                // and deleting the resolved one removes the file the link points
-                // at while leaving the link — which is the wrong file, silently.
+                // The path is then removed as named, not as resolved. For a
+                // symbolic link inside the workspace these differ: deleting the
+                // resolved path would remove the link's target and keep the link.
                 let resolved = self.named(&asked)?;
                 let recursive = params["recursive"].as_bool().unwrap_or(false);
                 let metadata = std::fs::symlink_metadata(&resolved).map_err(|error| {
@@ -596,10 +588,9 @@ impl Server {
                         reason: error.to_string(),
                     }
                 })?;
-                // A directory is only removed when the caller said `recursive`.
-                // `remove_dir_all` on a request that did not ask for it would turn
-                // "delete this" into "delete everything under this", and the
-                // caller's own word is the only thing that distinguishes them.
+                // A non-empty directory is removed only when the caller sets
+                // `recursive`. Without it, `remove_dir` is used, which fails for
+                // a directory with contents.
                 let outcome = if metadata.is_dir() && !metadata.is_symlink() {
                     if recursive {
                         std::fs::remove_dir_all(&resolved)
@@ -607,9 +598,9 @@ impl Server {
                         std::fs::remove_dir(&resolved)
                     }
                 } else {
-                    // A symbolic link is removed as a link, never followed: what
-                    // it points at may be somewhere this server would refuse to
-                    // touch, and deleting through one would be a way around that.
+                    // A symbolic link is removed as a link and never followed.
+                    // Its target may be outside the workspace, and deleting
+                    // through the link would bypass confinement.
                     std::fs::remove_file(&resolved)
                 };
                 outcome.map_err(|error| ServerError::Unwritable {
@@ -619,9 +610,9 @@ impl Server {
                 Ok(json!({ "deleted": true }))
             }
             "fs.rename" | "fs.copy" => {
-                // Both ends resolved, and both therefore confined: a rename whose
-                // source was outside the workspace would be a way to reach in, and
-                // one whose target was outside would be a way to reach out.
+                // Both source and target are resolved and therefore confined. A
+                // source outside the workspace would import an outside file, and
+                // a target outside would export a workspace file.
                 let from = params["source"]
                     .as_str()
                     .ok_or_else(|| ServerError::BadParams {
@@ -761,9 +752,8 @@ impl Server {
 
     /// Every file under `from`, as paths relative to the workspace root.
     ///
-    /// Relative because that is what the client shows and what it will ask for
-    /// next, and because the remote's directory layout is not the frontend's
-    /// business.
+    /// Paths are relative because the client displays and requests relative
+    /// paths, and it does not need the remote's directory layout.
     fn list(&self, from: &Path) -> Vec<String> {
         let mut found = Vec::new();
         let mut stack = vec![from.to_path_buf()];
@@ -781,8 +771,8 @@ impl Server {
                     break;
                 }
                 let name = entry.file_name().unwrap_or_default().to_string_lossy();
-                // The same ones the local walk skips, and for the same reason:
-                // nobody opens a file from `.git` on purpose, and walking it is
+                // The same entries the local walk skips, for the same reason:
+                // files in `.git` are rarely opened directly, and walking it is
                 // most of the cost of walking a repository.
                 if name.starts_with('.') || name == "node_modules" || name == "target" {
                     continue;
@@ -801,11 +791,11 @@ impl Server {
     /// The path as it was named, with everything above the last component
     /// resolved and confined.
     ///
-    /// [`Server::resolve`] answers "what does this end up being", which is the
-    /// right question for reading and writing and the wrong one for deleting: a
-    /// link resolves to its target, and a delete means the link. So the parent is
-    /// canonicalised — that is what stops an intermediate link from leading
-    /// outside — and the final name is put back on untouched.
+    /// [`Server::resolve`] returns the final target, which is correct for reading
+    /// and writing but not for deleting: a link resolves to its target, while a
+    /// delete refers to the link itself. This method canonicalises the parent,
+    /// which prevents an intermediate link from leading outside, and appends the
+    /// final name unchanged.
     fn named(&self, path: &str) -> Result<PathBuf, ServerError> {
         let asked = Path::new(path);
         let joined = if asked.is_absolute() {
@@ -814,8 +804,7 @@ impl Server {
             self.root.join(asked)
         };
         let (Some(parent), Some(name)) = (joined.parent(), joined.file_name()) else {
-            // No last component to preserve, so there is nothing this does that
-            // `resolve` does not.
+            // No last component to preserve, so this is the same as `resolve`.
             return self.resolve(path);
         };
         let parent = parent
@@ -832,15 +821,16 @@ impl Server {
         Ok(parent.join(name))
     }
 
-    /// Resolves a path that does not exist yet, and whose parents may not either.
+    /// Resolves a path that does not exist yet, and whose parents may not exist
+    /// either.
     ///
-    /// [`Server::resolve`] canonicalises the parent, which a nested
-    /// `createDirectory` does not have. So the deepest ancestor that *does* exist
-    /// is canonicalised and confined, and the missing tail is appended to it.
+    /// [`Server::resolve`] canonicalises the parent, which may not exist for a
+    /// nested `createDirectory`. This method canonicalises and confines the
+    /// deepest existing ancestor instead, and appends the missing tail to it.
     ///
-    /// The tail cannot climb back out: the path is folded first, so a `..` has
-    /// already been resolved against the components before it and cannot survive
-    /// into the part that is appended after the confinement check.
+    /// The tail cannot escape the workspace. The path is folded first, so each
+    /// `..` is resolved against the preceding components and cannot remain in
+    /// the part appended after the confinement check.
     fn resolve_for_creation(&self, path: &str) -> Result<PathBuf, ServerError> {
         let asked = Path::new(path);
         let joined = if asked.is_absolute() {
@@ -848,8 +838,8 @@ impl Server {
         } else {
             self.root.join(asked)
         };
-        // Folded lexically: `a/../b` becomes `b`, and a `..` with nothing before
-        // it stays put so the confinement check below sees it and refuses.
+        // Folded lexically: `a/../b` becomes `b`. A `..` with nothing before it
+        // is kept, so the confinement check below rejects it.
         let mut folded = PathBuf::new();
         for component in joined.components() {
             match component {
@@ -863,7 +853,7 @@ impl Server {
             }
         }
 
-        // The deepest ancestor that exists, which is what can be canonicalised.
+        // Find the deepest existing ancestor, which can be canonicalised.
         let mut existing = folded.clone();
         let mut tail: Vec<std::ffi::OsString> = Vec::new();
         while !existing.exists() {
@@ -895,14 +885,13 @@ impl Server {
 
     /// Searches every file in the workspace for `needle`.
     ///
-    /// Here rather than on the client because the files are here — that is the
-    /// whole of it. A client walking its own disk in a remote session searches
-    /// the wrong machine and reports matches in files the editor is not showing,
-    /// which is why this used to be refused instead.
+    /// The search runs on the server because the files are here. A client that
+    /// searched its own disk in a remote session would search the wrong machine
+    /// and report matches in files the editor is not showing; before this
+    /// method existed, remote search was rejected for that reason.
     ///
-    /// Synchronous and bounded, like the local one it replaces. The bounds are
-    /// reported rather than hidden, so "500 matches" and "the first 500 of many"
-    /// are distinguishable.
+    /// Synchronous and bounded, like the local search it replaces. Truncation is
+    /// reported, so "500 matches" and "the first 500 of many" can be told apart.
     fn search(&self, needle: &str, options: deco_core::search::SearchOptions) -> serde_json::Value {
         let mut matches = Vec::new();
         let mut truncated = false;
@@ -917,15 +906,16 @@ impl Server {
                 break;
             }
             let path = self.root.join(&relative);
-            // Size first, so a huge file costs a `stat` rather than a read.
+            // Check the size first, so a huge file costs a `stat` rather than a
+            // read.
             let Ok(metadata) = std::fs::metadata(&path) else {
                 continue;
             };
             if metadata.len() > MAX_SEARCHED_BYTES {
                 continue;
             }
-            // Not UTF-8 is how a binary file presents itself here, and skipping
-            // it is right: a match inside a PNG is not a search result.
+            // Files that are not UTF-8 are treated as binary and skipped; a
+            // match inside a PNG is not a useful result.
             let Ok(text) = std::fs::read_to_string(&path) else {
                 continue;
             };
@@ -945,9 +935,9 @@ impl Server {
                     "path": relative,
                     "line": range.start.line,
                     "character": range.start.character,
-                    // Trimmed and cut here rather than on the client: the whole
-                    // point of a limit is that the bytes are not sent, and a
-                    // minified line is one match and a megabyte.
+                    // Trimmed and truncated here rather than on the client, so
+                    // the bytes are not sent. A minified line can be one match
+                    // and a megabyte long.
                     "text": line.chars().take(200).collect::<String>(),
                 }));
             }
@@ -962,43 +952,40 @@ impl Server {
 
 /// How many matches a search reports before it stops.
 ///
-/// The same number the editor's own search stops at, and for the same reason: a
-/// term that appears ten thousand times is not being read one occurrence at a
-/// time. Enforced here rather than trusted to the client, because the client is
-/// whatever is on the other end of a connection this server did not authenticate.
+/// The same limit as the editor's local search: a term with ten thousand
+/// occurrences is not reviewed one by one. It is enforced by the server rather
+/// than the client, because the server does not authenticate the client.
 pub const MAX_MATCHES: usize = 500;
 
 /// Largest file a search will read.
 ///
-/// Much smaller than [`MAX_FILE_BYTES`], which is what a person can ask to
-/// *open*. A minified bundle or a checked-in database is not what anyone means by
-/// "search my project", and reading it is most of what the search would cost.
+/// Much smaller than [`MAX_FILE_BYTES`], the limit for opening a file. Minified
+/// bundles and checked-in databases are rarely what a project search is for, and
+/// reading them would dominate the cost of the search.
 pub const MAX_SEARCHED_BYTES: u64 = 1 << 20;
 
-/// Where this machine's settings for a connected session live.
+/// The path of this machine's settings for a connected session.
 ///
-/// The one path in this file not derived from `--workspace`, and the reason
-/// `settings.read` takes no argument: the server computes it, so the client
-/// cannot name it. `machine-settings.json` rather than `settings.json` — see
-/// [`deco_config::paths::ConfigPaths::machine_settings`] for why the two are
-/// separate.
+/// This is the only path in this file not derived from `--workspace`, and the
+/// reason `settings.read` takes no argument: the server computes the path, so
+/// the client cannot choose it. It is `machine-settings.json` rather than
+/// `settings.json`; see [`deco_config::paths::ConfigPaths::machine_settings`]
+/// for why the two are separate.
 ///
-/// `None` on a machine with no home directory, where a server is being run in
-/// an environment stripped of the variables the rules need. That is not an
-/// error: it is the same answer as having no machine settings, which is also
-/// the ordinary case.
+/// `None` when the environment lacks the variables needed to locate a home or
+/// configuration directory. This is not an error; it is treated the same as
+/// having no machine settings, which is the common case.
 fn machine_settings_path() -> Option<PathBuf> {
     use deco_config::paths::{ConfigPaths, Env, Layout};
     ConfigPaths::deco(&Env::from_process(), Layout::host()).map(|paths| paths.machine_settings)
 }
 
-/// What kind of thing a directory entry is, in VS Code's numbering.
+/// The type of a directory entry, using VS Code's `FileType` values.
 ///
-/// `Unknown = 0`, `File = 1`, `Directory = 2`, `SymbolicLink = 64`, and a link is
-/// the *sum* — 65 for a link to a file. deco's own protocol carries VS Code's
-/// numbers rather than a spelling of its own, because the extension API these
-/// eventually reach is VS Code's and translating twice is one translation too
-/// many.
+/// `Unknown = 0`, `File = 1`, `Directory = 2`, `SymbolicLink = 64`. A link is
+/// the sum, for example 65 for a link to a file. The protocol uses VS Code's
+/// values directly because they are passed to VS Code's extension API, which
+/// avoids a second translation.
 fn kind_of(metadata: &std::fs::Metadata) -> u32 {
     let mut kind = if metadata.is_dir() { 2 } else { 1 };
     if metadata.is_symlink() {
@@ -1009,10 +996,10 @@ fn kind_of(metadata: &std::fs::Metadata) -> u32 {
 
 /// A file's stat, in the shape VS Code's `FileStat` has.
 ///
-/// Times in milliseconds since the epoch, which is what JavaScript counts in. A
-/// time the platform will not give up becomes 0 rather than a guess: an extension
-/// comparing timestamps should see an obviously absent one, not a plausible wrong
-/// one.
+/// Times are in milliseconds since the epoch, as used by JavaScript. A time the
+/// platform does not provide is reported as 0 rather than estimated, so an
+/// extension comparing timestamps sees a clearly missing value instead of a
+/// plausible wrong one.
 fn stat_of(metadata: &std::fs::Metadata) -> serde_json::Value {
     let millis = |time: std::io::Result<std::time::SystemTime>| -> u64 {
         time.ok()
@@ -1028,10 +1015,10 @@ fn stat_of(metadata: &std::fs::Metadata) -> serde_json::Value {
     })
 }
 
-/// A relative path with `/` separators, whatever this platform uses.
+/// A relative path with `/` separators, regardless of this platform's separator.
 ///
-/// The wire is one format: a client on Windows talking to a server on Linux must
-/// not have to guess which end's separator a path came from.
+/// The wire format uses one separator, so a Windows client connected to a Linux
+/// server does not have to guess which separator a path uses.
 fn slashed(path: &Path) -> String {
     path.components()
         .filter_map(|component| match component {
@@ -1134,9 +1121,8 @@ mod tests {
         let mut server = with_machine_settings(&root, "present", Some(r#"{"a": 1}"#));
         let said = ask(&mut server, "settings.read", json!({})).expect("a reply");
         assert_eq!(said["text"], r#"{"a": 1}"#);
-        // The path too, so `--print-config` can say where the far end looked
-        // rather than leaving "why is my remote setting not applying" to
-        // guesswork.
+        // The path is also returned, so `--print-config` can show where the
+        // remote side looked.
         assert!(
             said["path"]
                 .as_str()
@@ -1148,8 +1134,8 @@ mod tests {
 
     #[test]
     fn a_machine_with_no_settings_is_null_rather_than_an_error() {
-        // The ordinary case. An error here would make every connection to an
-        // unconfigured machine look like a broken one.
+        // The common case. An error here would make every connection to an
+        // unconfigured machine appear to fail.
         let root = workspace("machine-settings-absent");
         let mut server = with_machine_settings(&root, "absent", None);
         let said = ask(&mut server, "settings.read", json!({})).expect("a reply");
@@ -1159,8 +1145,8 @@ mod tests {
 
     #[test]
     fn a_server_with_nowhere_to_look_answers_the_same_as_one_with_nothing_there() {
-        // No home directory, so no configuration directory. Not an error: it
-        // holds no machine settings, which is what the client needs to know.
+        // No home directory means no configuration directory. This is not an
+        // error; the server reports that there are no machine settings.
         let root = workspace("machine-settings-nowhere");
         let mut server = Server::new(&root)
             .expect("a server")
@@ -1172,11 +1158,10 @@ mod tests {
 
     #[test]
     fn reading_machine_settings_takes_no_path_from_the_client() {
-        // The property that lets this method exist at all. Every other method
-        // is confined to the workspace; this one reaches outside it, so it must
-        // not be steerable. A `path` in the params is ignored rather than
-        // honoured — and the file that would have been reached is one the
-        // workspace rule would refuse.
+        // This method is allowed only because of this property. Every other
+        // method is confined to the workspace; this one reads outside it, so the
+        // client must not be able to choose the path. A `path` parameter is
+        // ignored, and the file it names is outside the workspace.
         let root = workspace("machine-settings-unsteerable");
         let outside = root.join("..").join("secret.json");
         std::fs::write(&outside, r#"{"stolen": true}"#).expect("a file");
@@ -1206,8 +1191,8 @@ mod tests {
             .as_array()
             .expect("methods")
             .contains(&json!("fs.read")));
-        // Canonical, so a client comparing it against a path it was given later
-        // is comparing like with like.
+        // Canonical, so a client can compare it directly with paths it receives
+        // later.
         assert_eq!(
             said["workspace"].as_str().map(PathBuf::from),
             Some(root.canonicalize().expect("canonical"))
@@ -1234,8 +1219,8 @@ mod tests {
             "fn main() { println!(); }\n"
         );
 
-        // A file that does not exist yet: the parent is what has to be inside the
-        // workspace, since the file itself cannot be canonicalised.
+        // For a file that does not exist yet, the parent must be inside the
+        // workspace, because the file itself cannot be canonicalised.
         ask(
             &mut server,
             "fs.write",
@@ -1251,10 +1236,9 @@ mod tests {
         let root = workspace("outside");
         let mut server = Server::new(&root).expect("a server");
 
-        // A file that really is one directory up. Without it the interesting
-        // spellings below are refused on Windows for *not existing* — the paths
-        // are Unix-shaped — and this would pass without checking confinement at
-        // all.
+        // Create a real file one directory up. Otherwise the Unix-style paths
+        // below would be rejected on Windows because they do not exist, and the
+        // test would pass without checking confinement.
         std::fs::write(
             root.parent().expect("a parent").join("secrets.txt"),
             "secret\n",
@@ -1266,10 +1250,9 @@ mod tests {
             assert!(error.contains("outside the workspace"), "{asked}: {error}");
         }
 
-        // These are Unix paths, so on Windows they are refused for not existing
-        // rather than for escaping. Both are refusals, which is what matters
-        // here; the exact reason is checked above with a file that is really
-        // there.
+        // These are Unix paths, so on Windows they are rejected because they do
+        // not exist rather than because they escape. Either rejection is
+        // acceptable here; the exact reason is checked above with a real file.
         for asked in ["/etc/passwd", "/etc/./passwd"] {
             let error = ask(&mut server, "fs.read", json!({ "path": asked }))
                 .expect_err(&format!("{asked} should be refused"));
@@ -1278,7 +1261,7 @@ mod tests {
                 "{asked}: {error}"
             );
         }
-        // And writing, which is the direction that does damage.
+        // Writes outside the workspace are also rejected.
         let error = ask(
             &mut server,
             "fs.write",
@@ -1298,8 +1281,8 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn a_symlink_out_of_the_workspace_is_refused_too() {
-        // The reason confinement is checked on the canonical path. Checked as
-        // written, `escape/passwd` is inside the workspace and reads /etc/passwd.
+        // This is why confinement is checked on the canonical path. Checked as
+        // written, `escape/passwd` is inside the workspace but reads /etc/passwd.
         let root = workspace("symlink");
         std::os::unix::fs::symlink("/etc", root.join("escape")).expect("a symlink");
         let mut server = Server::new(&root).expect("a server");
@@ -1334,7 +1317,7 @@ mod tests {
 
     #[test]
     fn an_absolute_path_inside_the_workspace_is_allowed() {
-        // What a client has after a listing, or after a handshake told it the root.
+        // A client obtains such paths from a listing or from the handshake's root.
         let root = workspace("absolute");
         let mut server = Server::new(&root).expect("a server");
         let inside = root
@@ -1370,9 +1353,8 @@ mod tests {
 
     #[test]
     fn a_file_that_is_not_text_is_refused_rather_than_mangled() {
-        // Replacing the invalid bytes would mean writing the replacements back on
-        // save, which turns "deco opened my binary" into "deco corrupted my
-        // binary".
+        // Replacing the invalid bytes would write the replacements back on save
+        // and corrupt the file.
         let root = workspace("binary");
         std::fs::write(root.join("blob.bin"), [0xff, 0xfe, 0x00, 0x01]).expect("a file");
         let mut server = Server::new(&root).expect("a server");
@@ -1384,8 +1366,7 @@ mod tests {
 
     #[test]
     fn a_method_this_server_does_not_have_is_an_error_and_not_silence() {
-        // A client waiting for a reply that never comes is worse off than one
-        // told no.
+        // An error reply prevents the client from waiting indefinitely.
         let root = workspace("unknown");
         let mut server = Server::new(&root).expect("a server");
         let error = ask(&mut server, "fs.deleteEverything", json!({})).expect_err("unknown");
@@ -1453,7 +1434,8 @@ mod tests {
 
     #[test]
     fn shutdown_is_answered_and_then_the_session_ends() {
-        // Answered first: a client that asked to stop should learn that it did.
+        // The request is answered first, so the client learns that the server
+        // is stopping.
         let root = workspace("shutdown");
         let mut server = Server::new(&root).expect("a server");
         let mut input = Vec::new();
@@ -1468,14 +1450,15 @@ mod tests {
             frame::read(&mut replies).expect("a frame"),
             Some(Message::Response { id: 1, .. })
         ));
-        // Nothing after it: the second request was never read.
+        // No further replies: the second request was never read.
         assert_eq!(frame::read(&mut replies).expect("a frame"), None);
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
     fn a_workspace_that_does_not_exist_is_refused_at_startup() {
-        // Rather than serving a root that will fail every request afterwards.
+        // Rejected at startup instead of serving a root on which every request
+        // would fail.
         assert!(Server::new("/nowhere/at/all/really").is_err());
     }
 
@@ -1494,11 +1477,11 @@ mod tests {
         let matches = found["matches"].as_array().expect("matches");
         assert_eq!(matches.len(), 1, "{matches:?}");
         assert_eq!(matches[0]["path"], "src/main.rs");
-        // Zero-based, like every other position on this wire.
+        // Zero-based, like every other position in this protocol.
         assert_eq!(matches[0]["line"], 1);
         assert_eq!(matches[0]["character"], 8);
-        // Trimmed by the server: the indentation is not what a person is reading
-        // the result for, and sending it is bytes over a link.
+        // Trimmed by the server: indentation is not useful in a result and would
+        // add bytes to the transfer.
         assert_eq!(matches[0]["text"], "let needle = 1;");
         assert_eq!(found["truncated"], false);
         let _ = std::fs::remove_dir_all(&root);
@@ -1506,8 +1489,8 @@ mod tests {
 
     #[test]
     fn a_search_honours_the_same_options_the_find_bar_does() {
-        // The reason this server depends on `deco-core` at all: one definition of
-        // what a match is, so a term that matches in the find bar matches here.
+        // This server depends on `deco-core` so that it shares the find bar's
+        // definition of a match.
         let root = workspace("search-options");
         std::fs::write(root.join("src/main.rs"), "Needle needles needle\n").expect("a file");
         let mut server = Server::new(&root).expect("a server");
@@ -1541,8 +1524,8 @@ mod tests {
 
     #[test]
     fn a_search_stops_at_its_limit_and_says_so() {
-        // Enforced here rather than trusted to the client, which is whatever is
-        // on the other end of a connection this server did not authenticate.
+        // Enforced by the server rather than the client, because the server
+        // does not authenticate the client.
         let root = workspace("search-limit");
         let line = "needle\n".repeat(MAX_MATCHES + 50);
         std::fs::write(root.join("src/main.rs"), line).expect("a file");
@@ -1560,13 +1543,13 @@ mod tests {
     #[test]
     fn a_search_skips_what_it_should_not_read() {
         let root = workspace("search-skips");
-        // Binary: a match inside a PNG is not a search result.
+        // Binary files are skipped.
         std::fs::write(root.join("src/blob.bin"), [0xff, 0xfe, b'n', b'e', 0x00]).expect("a file");
         // Over the search limit, which is far smaller than the open limit.
         let big = "needle\n".repeat((MAX_SEARCHED_BYTES as usize / 7) + 10);
         std::fs::write(root.join("src/huge.txt"), big).expect("a file");
         std::fs::write(root.join("src/small.txt"), "needle\n").expect("a file");
-        // And a directory the walk does not enter at all.
+        // A directory the walk skips.
         std::fs::create_dir_all(root.join(".git")).expect("a directory");
         std::fs::write(root.join(".git/config"), "needle\n").expect("a file");
         let mut server = Server::new(&root).expect("a server");
@@ -1589,8 +1572,7 @@ mod tests {
         let found = ask(&mut server, "fs.search", json!({ "needle": "" })).expect("a search");
         assert!(found["matches"].as_array().expect("matches").is_empty());
 
-        // And a missing needle is a bad request rather than an empty answer: the
-        // client asked something this cannot interpret.
+        // A missing needle is a bad request rather than an empty result.
         assert!(ask(&mut server, "fs.search", json!({})).is_err());
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1601,8 +1583,8 @@ mod tests {
         let mut server = Server::new(&root).expect("a server");
 
         let file = ask(&mut server, "fs.stat", json!({ "path": "src/main.rs" })).expect("a stat");
-        // VS Code's `FileType`: 1 is a file, 2 is a directory. Carried rather
-        // than translated, because the API these reach is VS Code's.
+        // VS Code's `FileType`: 1 is a file, 2 is a directory. The values are
+        // passed through unchanged because they reach VS Code's API.
         assert_eq!(file["stat"]["type"], 1);
         assert_eq!(file["stat"]["size"], 13);
         assert!(file["stat"]["mtime"].as_u64().unwrap_or(0) > 0);
@@ -1610,7 +1592,7 @@ mod tests {
         let directory = ask(&mut server, "fs.stat", json!({ "path": "src" })).expect("a stat");
         assert_eq!(directory["stat"]["type"], 2);
 
-        // And the confinement rule is the same one every other method follows.
+        // The same confinement rule applies as for every other method.
         let error = ask(&mut server, "fs.stat", json!({ "path": "../secrets.txt" }))
             .expect_err("a refusal");
         assert!(error.contains("outside the workspace"), "{error}");
@@ -1636,8 +1618,8 @@ mod tests {
                 )
             })
             .collect();
-        // One level: `deeper` is named, and what is inside it is not. And sorted,
-        // because `read_dir` promises no order.
+        // One level: `deeper` is listed, but its contents are not. Entries are
+        // sorted because `read_dir` guarantees no order.
         assert_eq!(
             entries,
             [
@@ -1649,8 +1631,8 @@ mod tests {
 
         let error =
             ask(&mut server, "fs.dir", json!({ "path": "src/main.rs" })).expect_err("a refusal");
-        // A file is not a directory, and the operating system's own words say so
-        // better than a paraphrase would.
+        // A file is not a directory. The error includes the operating system's
+        // message rather than a paraphrase.
         assert!(error.contains("cannot be read"), "{error}");
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1658,8 +1640,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_symbolic_link_is_reported_as_one_rather_than_as_what_it_points_at() {
-        // Following it would report on a file that may be outside the workspace
-        // entirely, which is the one thing this server exists to be careful about.
+        // Following the link would report on a file that may be outside the
+        // workspace.
         let root = workspace("link");
         std::os::unix::fs::symlink(root.join("src/main.rs"), root.join("src/link.rs"))
             .expect("a symlink");
@@ -1713,8 +1695,8 @@ mod tests {
 
     #[test]
     fn a_directory_with_something_in_it_needs_the_caller_to_say_recursive() {
-        // The distinction between "delete this" and "delete everything under
-        // this" is the caller's own word, and nothing here supplies it for them.
+        // Only the caller's `recursive` flag permits deleting a directory's
+        // contents; the server never sets it.
         let root = workspace("delete-recursive");
         let mut server = Server::new(&root).expect("a server");
 
@@ -1737,8 +1719,9 @@ mod tests {
 
     #[test]
     fn a_move_is_confined_at_both_ends() {
-        // A rename whose source is outside would be a way to reach in, and one
-        // whose target is outside a way to reach out. Both are refused by name.
+        // A source outside the workspace would import an outside file, and a
+        // target outside would export a workspace file. Both are rejected with
+        // an error naming the path.
         let root = workspace("move-outside");
         std::fs::write(
             root.parent().expect("a parent").join("outside-move.txt"),
@@ -1777,14 +1760,12 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_link_out_of_the_workspace_cannot_be_deleted_through() {
-        // Stricter than it strictly has to be, and deliberately: removing the
-        // link itself would only touch a directory entry inside the workspace,
-        // but every path this server acts on is confined *after* being
-        // canonicalised, and carving out an exception for one operation is how a
-        // confinement rule stops being one rule.
+        // Intentionally stricter than necessary. Removing the link would only
+        // change a directory entry inside the workspace, but every path this
+        // server acts on is confined after canonicalisation, and no operation
+        // is exempt from that rule.
         //
-        // The thing that would be unforgivable is deleting what the link points
-        // at, and that is what this pins.
+        // The critical property is that the link's target is never deleted.
         let root = workspace("delete-link");
         let outside = root.parent().expect("a parent").join("kept.txt");
         std::fs::write(&outside, "still here\n").expect("a file");
@@ -1796,8 +1777,8 @@ mod tests {
         assert!(error.contains("outside the workspace"), "{error}");
         assert!(outside.exists(), "the link's target must be untouched");
 
-        // And a link that stays inside is removed as a link, leaving what it
-        // points at where it is.
+        // A link inside the workspace is removed as a link, and its target is
+        // kept.
         std::os::unix::fs::symlink(root.join("src/main.rs"), root.join("src/inside.rs"))
             .expect("a symlink");
         ask(&mut server, "fs.delete", json!({ "path": "src/inside.rs" })).expect("a delete");

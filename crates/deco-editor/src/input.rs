@@ -1,37 +1,35 @@
 //! One line of editable text, with a caret and no selection.
 //!
-//! The find bar's query, its replacement, the go-to-line box and the command
-//! palette's filter are the same thing four times over. They share this type
-//! rather than each keeping a `String` and an index, because a second copy of the
-//! character/byte arithmetic would be a second place for it to be wrong on any
-//! text outside ASCII.
+//! The find bar's query and replacement, the go-to-line box and the command
+//! palette's filter all use this type instead of each keeping a `String` and an
+//! index. This keeps the character/byte offset conversion, which is easy to get
+//! wrong for non-ASCII text, in one place.
 //!
 //! # Why it consumes commands
 //!
-//! A one-line input in VS Code is a real text input inside the editor, so while
-//! it has focus `editorTextFocus` is false but `textInputFocus` is true — and
-//! every editing command bound to `textInputFocus` (`left`, `backspace`,
-//! `ctrl+v`) still resolves, with the input handling it. deco has no DOM to do
-//! that layering, so [`Input::consume`] does it explicitly: it claims the
-//! text-editing commands and lets everything else through to the editor.
+//! A one-line input in VS Code is a real text input inside the editor. While it
+//! has focus, `editorTextFocus` is false but `textInputFocus` is true, so every
+//! editing command bound to `textInputFocus` (`left`, `backspace`, `ctrl+v`)
+//! still resolves and the input handles it. deco has no DOM, so
+//! [`Input::consume`] implements this explicitly: it takes the text-editing
+//! commands and passes everything else through to the editor.
 //!
-//! That is why `ctrl+v` with a prompt open pastes into the prompt and not into
-//! the document, and why `ctrl+z` cannot silently rewrite the file behind one.
+//! As a result, `ctrl+v` with a prompt open pastes into the prompt and not into
+//! the document, and `ctrl+z` cannot change the file behind an open prompt.
 //!
 //! # One selection, and it is the whole line
 //!
 //! There is a caret and no ranged selection, so `ctrl+c` and `ctrl+x` act on the
-//! whole line. They are still swallowed rather than passed through: a `ctrl+x`
-//! that cut a line out of the document while the user was editing a search term
-//! would be a genuine loss.
+//! whole line. They are still consumed rather than passed through, so that
+//! `ctrl+x` does not cut a line from the document while the user is editing a
+//! search term.
 //!
-//! The one selection a field can be in is *all of it*, which is the state a
-//! seeded field opens in and the state `ctrl+a` puts it in. It exists because a
-//! seed the first keystroke appends to is a seed that costs the user: pressing
-//! `ctrl+shift+f` on `fn` and typing `println` searched for `fnprintln`. So the
-//! next thing typed replaces the line, the next deletion removes it, and moving
-//! the caret collapses back to an ordinary caret — the part of a selection these
-//! fields need, without the arithmetic of one that can start and end anywhere.
+//! The only selection a field can have is the whole line. A seeded field opens
+//! in this state, and `ctrl+a` sets it. Without it, the first keystroke would
+//! append to the seed: pressing `ctrl+shift+f` on `fn` and typing `println`
+//! searched for `fnprintln`. While the line is selected, typing replaces it,
+//! deleting removes it, and moving the caret clears the selection. This covers
+//! what these fields need without supporting arbitrary selection ranges.
 
 use serde_json::Value;
 
@@ -43,10 +41,11 @@ pub struct Input {
     text: String,
     /// Caret offset, counted in characters.
     caret: usize,
-    /// Whether the whole line is selected — see the module docs.
+    /// Whether the whole line is selected. See the module docs.
     ///
-    /// The only selection this field has. It is not a range because no caller
-    /// needs one: a seed is replaced whole or it is edited from the caret.
+    /// This is the only selection this field has. It is not a range because no
+    /// caller needs one: a seed is either replaced entirely or edited from the
+    /// caret.
     selected: bool,
 }
 
@@ -75,11 +74,10 @@ impl Input {
 
     /// Replaces the text and selects all of it, so the next key replaces it.
     ///
-    /// What a field opens in when it is seeded with an answer the user is
-    /// expected to edit or discard — the save-as path, the find query, the
-    /// project-search term. Not for a seed that is a *prefix* to continue, like
-    /// the directory `ctrl+o` opens with: there the first keystroke belongs at
-    /// the end, which is what [`Input::set`] gives.
+    /// Used for a seed the user is expected to edit or discard, such as the
+    /// save-as path, the find query or the project-search term. For a seed that
+    /// is a *prefix* to continue, such as the directory `ctrl+o` opens with, use
+    /// [`Input::set`] so the first keystroke is added at the end.
     pub fn seed(&mut self, text: String) {
         self.set(text);
         self.selected = !self.text.is_empty();
@@ -87,8 +85,8 @@ impl Input {
 
     /// Whether the whole line is selected.
     ///
-    /// For the renderer: a field whose next keystroke will replace everything in
-    /// it has to look different from one that will append.
+    /// Used by the renderer to distinguish a field whose next keystroke replaces
+    /// all text from one whose next keystroke inserts.
     pub fn selected(&self) -> bool {
         self.selected
     }
@@ -103,16 +101,16 @@ impl Input {
     /// Applies a command, if it is one this field owns.
     ///
     /// Returns whether the command was consumed. See the module docs for why this
-    /// exists rather than being expressed in `when` clauses alone.
+    /// is needed in addition to `when` clauses.
     pub fn consume(
         &mut self,
         command: &str,
         args: Option<&Value>,
         clipboard: &mut dyn Clipboard,
     ) -> bool {
-        // A fully selected line behaves the way a selection does anywhere else,
-        // which is the whole point of having one: what is typed replaces it, what
-        // deletes removes all of it, and moving the caret collapses it.
+        // A fully selected line behaves like any other selection: typing
+        // replaces it, deleting removes all of it, and moving the caret clears
+        // it.
         if self.selected {
             match command {
                 "type" | "editor.action.clipboardPasteAction" => self.clear(),
@@ -124,10 +122,9 @@ impl Input {
                 | "cursorBottom" | "cursorWordLeft" | "cursorWordEndRight" => {
                     self.selected = false;
                 }
-                // Copy and cut already act on the whole line, and select-all is
-                // what put the field here. Anything else is not this field's, so
-                // it leaves the selection alone rather than collapsing it on a
-                // key that never reached the text.
+                // Copy and cut already act on the whole line, and select-all set
+                // this state. Other commands are not handled by this field, so
+                // they do not clear the selection.
                 _ => {}
             }
         }
@@ -177,8 +174,8 @@ impl Input {
                 self.caret = (self.caret + 1).min(self.len());
                 true
             }
-            // A one-line field has no notion of the top or bottom of a document,
-            // so `ctrl+home` and `home` mean the same thing here.
+            // A one-line field has no document top or bottom, so `ctrl+home`
+            // and `home` do the same thing here.
             "cursorHome" | "cursorTop" => {
                 self.caret = 0;
                 true
@@ -209,16 +206,14 @@ impl Input {
                 self.clear();
                 true
             }
-            // The whole line, since that is the only selection there is. It used
-            // to be swallowed as a no-op, which left `ctrl+a` doing nothing at
-            // all in a field the user wanted to empty.
+            // Selects the whole line, the only selection available. It was
+            // previously consumed as a no-op, so `ctrl+a` did nothing.
             "editor.action.selectAll" => {
                 self.selected = !self.text.is_empty();
                 true
             }
-            // Swallowed rather than handled. There is nothing to undo or redo in
-            // one line of text — and letting these through would apply them to
-            // the document, which is not where the user is looking.
+            // Consumed without effect. The field has no undo history, and
+            // passing these through would apply them to the document.
             "undo" | "redo" => true,
             _ => false,
         }
@@ -226,9 +221,9 @@ impl Input {
 
     /// Inserts `text` at the caret, dropping line breaks.
     ///
-    /// A newline it cannot represent would be invisible in a one-line field;
-    /// `enter` is bound to a command in every prompt that uses this, so this only
-    /// guards against a pasted or scripted one.
+    /// A newline would be invisible in a one-line field. `enter` is bound to a
+    /// command in every prompt that uses this type, so this only affects pasted
+    /// or scripted text.
     fn insert_str(&mut self, text: &str) {
         for c in text.chars().filter(|c| *c != '\n' && *c != '\r') {
             let byte = self.byte_offset(self.caret);
@@ -250,9 +245,9 @@ impl Input {
 
     /// Byte offset of character offset `index`.
     ///
-    /// The caret is counted in characters so that arrow keys move one visible
-    /// thing at a time, but `String` is indexed in bytes, and any text outside
-    /// ASCII makes the two differ.
+    /// The caret is counted in characters so that arrow keys move one character
+    /// at a time. `String` is indexed in bytes, and the two differ for non-ASCII
+    /// text.
     fn byte_offset(&self, index: usize) -> usize {
         self.text
             .char_indices()
@@ -290,8 +285,8 @@ impl Input {
 
 /// The word rule for a one-line field.
 ///
-/// Deliberately not `deco_core::search`'s: that one describes the *document's*
-/// words, and a search query is not a document.
+/// This intentionally differs from `deco_core::search`, which defines words in
+/// the document, not in a search query.
 fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
@@ -330,8 +325,8 @@ mod tests {
 
     #[test]
     fn the_caret_is_counted_in_characters_not_bytes() {
-        // The whole reason this is one type rather than a `String` and an index
-        // at each call site.
+        // This is the main reason for a shared type instead of a `String` and an
+        // index at each call site.
         let mut input = input("naïve");
         assert_eq!(input.caret(), 5);
         run(&mut input, "deleteLeft");
@@ -392,8 +387,8 @@ mod tests {
 
     #[test]
     fn an_empty_seed_selects_nothing() {
-        // Otherwise `selected` would be true of a field with nothing in it, and
-        // the renderer would have an empty selection to draw.
+        // Otherwise an empty field would report `selected`, and the renderer
+        // would draw an empty selection.
         assert!(!seeded("").selected());
     }
 
@@ -448,8 +443,8 @@ mod tests {
 
     #[test]
     fn select_all_selects_the_whole_line_so_the_next_key_replaces_it() {
-        // It used to be swallowed as a no-op, which left `ctrl+a` doing nothing
-        // in a field the user was trying to empty.
+        // Regression: select-all was consumed as a no-op, so `ctrl+a` did
+        // nothing.
         let mut typing = input("foo");
         assert!(run(&mut typing, "editor.action.selectAll"));
         assert!(typing.selected());
@@ -472,8 +467,7 @@ mod tests {
 
     #[test]
     fn a_command_the_field_does_not_own_leaves_the_selection_alone() {
-        // The selection belongs to this field; a key that never reached the text
-        // has no business collapsing it.
+        // A command the field does not handle must not clear its selection.
         let mut input = seeded("foo");
         assert!(!run(&mut input, "cursorUp"));
         assert!(input.selected());

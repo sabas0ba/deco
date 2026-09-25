@@ -1,11 +1,11 @@
 //! Translating terminal key events into deco chords.
 //!
-//! Terminals are lossy about modifiers. Most of them deliver `Ctrl+A` as the
+//! Terminals lose modifier information. Most of them deliver `Ctrl+A` as the
 //! control character `0x01` with no letter attached, and many cannot report
-//! `Shift` on a printable key at all because the shifted character *is* the
-//! report. The conversions here undo as much of that as the terminal allows,
-//! and are kept apart from the event loop so every case can be tested without a
-//! terminal attached.
+//! `Shift` on a printable key because they send the shifted character instead.
+//! The conversions here restore as much of that information as the terminal
+//! allows. They are separate from the event loop so every case can be tested
+//! without a terminal attached.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use deco_keymap::keys::{Chord, Key, Modifiers, NamedKey};
@@ -29,9 +29,9 @@ pub fn chord_from_event(event: KeyEvent) -> Option<Chord> {
 
     let key = match event.code {
         KeyCode::Char(c) => {
-            // An uppercase letter means Shift was held whether or not the
-            // terminal said so. Punctuation is left alone: `!` is Shift+1 on a
-            // US layout and something else entirely elsewhere, so inferring
+            // An uppercase letter means Shift was held, even if the terminal did
+            // not report it. Punctuation is left unchanged: `!` is Shift+1 on a
+            // US layout but a different key on other layouts, so inferring Shift
             // from the character would be wrong on most keyboards.
             if c.is_uppercase() {
                 modifiers.shift = true;
@@ -60,7 +60,7 @@ pub fn chord_from_event(event: KeyEvent) -> Option<Chord> {
         KeyCode::PageDown => Key::Named(NamedKey::PageDown),
         KeyCode::F(n) if (1..=19).contains(&n) => Key::Named(NamedKey::F(n)),
         // Some terminals report Ctrl+Space as NUL under this code rather than as
-        // `Char(' ')` with Control. Either way it is the space bar.
+        // `Char(' ')` with Control. Both map to the space key.
         KeyCode::Null => Key::Char(' '),
         _ => return None,
     };
@@ -114,8 +114,8 @@ mod tests {
 
     #[test]
     fn shifted_punctuation_is_not_second_guessed() {
-        // `!` is Shift+1 on a US layout and something else elsewhere; adding
-        // Shift here would break every non-US keyboard.
+        // `!` is Shift+1 on a US layout but a different key on other layouts.
+        // Adding Shift here would break non-US keyboards.
         let chord = chord(KeyCode::Char('!'), KeyModifiers::NONE);
         assert_eq!(chord.key, Key::Char('!'));
         assert!(!chord.modifiers.shift);
@@ -144,9 +144,9 @@ mod tests {
     #[test]
     fn ctrl_space_reaches_the_binding_however_the_terminal_spells_it() {
         // crossterm's unix parser turns the NUL a terminal sends for Ctrl+Space
-        // into `Char(' ')` with CONTROL; other paths use `Null`. Both have to
-        // arrive as the chord `ctrl+space` resolves to, or the default binding
-        // for Trigger Suggest is one nothing can press.
+        // into `Char(' ')` with CONTROL; other paths use `Null`. Both must
+        // produce the `ctrl+space` chord, otherwise the default binding for
+        // Trigger Suggest cannot be pressed.
         for code in [KeyCode::Char(' '), KeyCode::Null] {
             assert_eq!(
                 chord(code, KeyModifiers::CONTROL),

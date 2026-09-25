@@ -3,49 +3,47 @@ name: CI
 # Every step here is a `cargo xtask` subcommand or a package script, so any
 # failure can be reproduced locally with the same command — see xtask/src/main.rs.
 #
-# Actions are pinned to commit SHAs rather than tags: a tag is mutable, so
-# `@v4` means "whatever that repository decides to put there", which is write
-# access to this workflow. The trailing comment records which release each SHA
-# was, and .github/dependabot.yml keeps them moving.
+# Actions are pinned to commit SHAs rather than tags. A tag is mutable, so a
+# tag reference such as `@v4` runs whatever the action's repository puts there.
+# The trailing comment records the release of each SHA, and
+# .github/dependabot.yml updates the pins.
 #
 #
 # What runs when, and why
 # -----------------------
 #
-# Actions bills a job by wall-clock minutes, rounded up, per job. At this
-# repository's size that rounding is most of the bill: the work in a pull
-# request's run is about nine minutes, but spread over ten jobs it was charged
-# as thirteen, because ten runners each paid for a checkout, a toolchain, a
-# cache restore and a partial final minute. So the shape of the saving is two
-# things — fewer runners per event, and each check on the rarest event that
-# still answers the question it is asking.
+# Actions bills each job by wall-clock minutes, rounded up. At this
+# repository's size the rounding is most of the cost: a pull request run does
+# about nine minutes of work, but split over ten jobs it was billed as
+# thirteen, because each runner paid for a checkout, a toolchain, a cache
+# restore and a partial final minute. The workflow therefore uses fewer
+# runners per event, and runs each check on the least frequent event that
+# still detects the failures it looks for.
 #
 #   every push to a pull request   `check` and `test`. Formatting, lints,
 #                                  rustdoc, commit messages, the documentation
 #                                  images, the workspace test suite and the
-#                                  extension host. This is the per-commit
-#                                  regression signal and nothing else.
+#                                  extension host. These are the per-commit
+#                                  regression checks.
 #
 #   a merge to main                `test` alone. Actions runs a pull request's
 #                                  jobs against the merge of the head and the
-#                                  base, so `check` has already answered for
-#                                  this exact tree; what it has not answered is
-#                                  whether main moved underneath the branch
-#                                  after that run, and only the tests can see a
-#                                  conflict that merges cleanly.
+#                                  base, so `check` has already run on this
+#                                  tree. The tests detect the remaining case:
+#                                  main changed after that run and the two
+#                                  changes conflict semantically without a
+#                                  merge conflict.
 #
 #   daily, on main                 `cross`, `cross-build`, `msrv` and
-#                                  `supply-chain`. None of these asks a
-#                                  per-commit question. The Windows and macOS
+#                                  `supply-chain`. None of these depends on
+#                                  individual commits. The Windows and macOS
 #                                  substitutes and the packaging path break
-#                                  when a dependency or a target moves, not
-#                                  when a function is renamed; the advisory
-#                                  database changes without this repository
-#                                  changing at all; and the MSRV floor moves
-#                                  when a dependency raises its own. A day is a
-#                                  short enough leash for all four, and
-#                                  `ci:full` pulls them forward onto a branch
-#                                  that needs them.
+#                                  when a dependency or a target changes. The
+#                                  advisory database changes independently of
+#                                  this repository. The MSRV changes when a
+#                                  dependency raises its own. A daily run is
+#                                  frequent enough for all four, and `ci:full`
+#                                  runs them on a branch that needs them.
 #
 #   a pull request labelled        everything above, plus `test-platforms` and
 #   `ci:full`, or a manual         `cross-build-platforms` on real macOS and
@@ -55,43 +53,41 @@ name: CI
 #                                  `cross-build` and `cross-build-platforms`.
 #                                  release.yml builds all seven targets with the
 #                                  same `cargo xtask dist` on the same tag, and
-#                                  its copy is the one whose output ships — so a
-#                                  second copy here, four of it on premium
-#                                  runners, was the most expensive thing in the
-#                                  repository being built to be thrown away.
+#                                  its output is what ships. Building them here
+#                                  as well duplicated the most expensive jobs
+#                                  in the repository, four of them on premium
+#                                  runners.
 #
-# The premium runners are the reason the tiers are drawn where they are: a
-# macOS minute bills at ten times a Linux one and a Windows minute at two, so
-# they are reserved for the moment their answer is worth what it costs, which
-# is the moment something ships. Between tags the substitute is
-# `cargo xtask cross`: a `cargo check` for all four shipped Apple and Windows
-# triples, which needs no SDK because it stops before the link step, and the
-# test suite built for `x86_64-pc-windows-gnu` and run under Wine — real
-# Windows binaries executing the `#[cfg(windows)]` paths, process spawning
-# included.
+# The tiers are set by the cost of the premium runners. A macOS minute bills at
+# ten times a Linux minute and a Windows minute at two, so these runners are
+# used when a release is built. Between tags `cargo xtask cross` is used
+# instead. It runs `cargo check` for all four shipped Apple and Windows
+# triples, which needs no SDK because it stops before linking. It also builds
+# the test suite for `x86_64-pc-windows-gnu` and runs it under Wine, which
+# executes the `#[cfg(windows)]` paths, including process spawning, in real
+# Windows binaries.
 #
-# What that substitute does not reach is macOS at runtime, the MSVC ABI, and
-# anywhere Wine's Win32 differs from Microsoft's; `xtask/src/cross.rs` says so
-# in full. Since it now runs daily rather than per push, a regression confined
-# to those paths can land on main and go unseen for a day, and one confined to
-# real macOS or MSVC can wait until a tag. That is the cost this trade accepts.
-# Label a pull request `ci:full` to pay for the real thing early — worth doing
-# for anything platform-specific, and for a dependency bump, which is what
-# moves `msrv` and `supply-chain`.
+# `cargo xtask cross` does not cover macOS at runtime, the MSVC ABI, or
+# differences between Wine's Win32 and Microsoft's; `xtask/src/cross.rs`
+# describes the gaps. Because it runs daily, a regression in those paths can
+# reach main and remain undetected for up to a day, and one specific to real
+# macOS or MSVC can remain undetected until a tag. Label a pull request
+# `ci:full` to run the premium jobs early. Do this for platform-specific
+# changes and for dependency updates, which affect `msrv` and `supply-chain`.
 
 on:
   push:
     branches: [main]
     tags: ['v*']
-  # `labeled` is here so that adding `ci:full` starts the platform jobs without
-  # needing an empty commit to push. It fires for any label, though, so every
-  # job below checks that the label added was that one before starting — a
-  # runner that boots only to skip its steps has already been paid for.
+  # `labeled` lets adding `ci:full` start the platform jobs without pushing an
+  # empty commit. It fires for any label, so every job below checks that the
+  # added label is `ci:full`. A runner that starts and then skips its steps is
+  # still billed.
   pull_request:
     types: [opened, synchronize, reopened, labeled]
-  # The daily tier. Runs on main, which is the only branch a schedule can name.
-  # 03:11 rather than the hour, because a cron on the hour queues behind
-  # everyone else's.
+  # The daily tier. A schedule always runs on the default branch (main).
+  # 03:11 rather than on the hour, because scheduled runs on the hour are
+  # queued longer.
   schedule:
     - cron: '11 3 * * *'
   workflow_dispatch:
@@ -107,34 +103,29 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
 
-# Each job carries its own copy of the condition that selects its tier, and the
-# copies are long. There is no way to share them: YAML anchors are not expanded
-# by Actions, `env` is not readable from a job-level `if`, and a gate job to
-# carry one as an output would be a whole runner started to compute a boolean —
-# a rounded-up minute, which at these tier sizes is a fifth of a pull request's
-# bill.
+# Each job has its own copy of the condition that selects its tier. The copies
+# cannot be shared: Actions does not expand YAML anchors, `env` is not readable
+# from a job-level `if`, and a gate job that exposes the condition as an output
+# would start a runner only to compute a boolean. That costs a rounded-up
+# minute, about a fifth of a pull request's bill at these tier sizes.
 #
-# The clause every pull-request condition repeats,
+# Every pull-request condition repeats this clause:
 #
 #     github.event.action != 'labeled' || github.event.label.name == 'ci:full'
 #
-# is the `labeled` trigger being paid for honestly: the trigger fires for every
-# label, and without this the tenth label on a pull request started a full run
-# of jobs whose answers had not changed since the ninth.
+# The `labeled` trigger fires for every label. Without the clause, each label
+# added to a pull request would start a full run of unchanged jobs.
 
 jobs:
-  # Per-commit. Everything that can only be answered by looking at this commit,
-  # and that a reviewer should not have to wait for a merge to learn.
+  # Per-commit. Checks that depend only on this commit, reported before merge.
   #
-  # The commit-message and documentation checks are steps rather than jobs of
-  # their own. A separate job would re-run checkout, the toolchain and the cache
-  # — three more third-party actions executing, for a check that reads strings —
-  # would rebuild xtask, which this job has already built, and would be billed a
-  # rounded-up minute for about a second of work.
+  # The commit-message and documentation checks are steps rather than separate
+  # jobs. A separate job would run checkout, the toolchain and the cache again
+  # (three more third-party actions for a check that reads strings), rebuild
+  # xtask, and be billed a rounded-up minute for about a second of work.
   #
-  # The MSRV check used to sit alongside these on every push. It is on the daily
-  # tier now: the floor moves when a dependency raises its own, not when this
-  # repository changes.
+  # The MSRV check is in the daily tier, not here, because the MSRV changes when
+  # a dependency raises its own, not when this repository changes.
   check:
     name: Format, lint and docs
     if: >-
@@ -147,9 +138,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # The whole history, so the merge base with the base branch exists for
-          # the commit-message check below. A shallow clone has nothing to diff
-          # against.
+          # Fetch the full history so the commit-message check below can find
+          # the merge base with the base branch. A shallow clone does not
+          # contain it.
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
@@ -161,26 +152,25 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libx11-dev libxkbcommon-dev
       - run: cargo xtask ci --lint-only
-      # Only on a pull request: there is nothing to compare a push to main
-      # against, and the convention was adopted partway through this history, so
-      # the earlier commits would fail a check they were never held to.
+      # Only on a pull request. A push to main has no base range to compare,
+      # and the convention was adopted partway through the history, so earlier
+      # commits would fail the check.
       - name: Commit messages
         if: github.event_name == 'pull_request'
         run: cargo xtask commitlint --range "origin/${{ github.base_ref }}..HEAD"
-      # The documentation's animations are rendered by the editor itself, so a
-      # behaviour change that nobody regenerated them for would otherwise leave
-      # the documentation describing an editor that no longer exists.
+      # The editor renders the documentation's animations. This check fails when
+      # a behaviour change is committed without regenerating them.
       - name: Documentation is up to date
         run: cargo xtask docs --check
 
-  # Per-commit, and the one job that also runs on a merge to main. A semantic
-  # conflict between two branches that each merged cleanly is invisible to
-  # every other check here, and the tests are what sees it.
+  # Per-commit, and the only job that also runs on a merge to main. Only the
+  # tests detect a semantic conflict between two branches that each merged
+  # cleanly.
   #
-  # The extension host's suite is a step here rather than a job of its own for
-  # the reason `check` gives, with one addition: it is the longest single thing
-  # CI runs, so pairing it with the short workspace suite fills a minute that
-  # was being rounded up anyway.
+  # The extension host's suite is a step rather than a separate job for the
+  # reason given for `check`. It is also the longest single step in CI, so
+  # running it with the short workspace suite uses time in a billed minute that
+  # would otherwise be rounded up.
   test:
     name: Test (ubuntu-latest)
     if: >-
@@ -194,8 +184,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          # 22 and not 20: `--permission` is only the flag's stable name from
-          # v22.13, and the host passes it. See `extension-host/package.json`.
+          # 22, not 20: the host passes `--permission`, which is the flag's
+          # stable name from v22.13. See `extension-host/package.json`.
           node-version: '22'
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
@@ -208,19 +198,17 @@ jobs:
       # The GUI crate's tests cover key mapping and layout, neither of which
       # needs a display, so --all-features is safe on a headless runner.
       - run: cargo xtask ci --test-only
-      # Everything `cargo xtask host-test` runs: the host's own suite, and the
-      # Rust side against the real host — the only place the two ends meet, and
-      # the only job that has a Node to meet them with.
+      # `cargo xtask host-test` runs the host's own suite and the Rust side
+      # against the real host. This is the only test of the two together, and
+      # the only job with Node installed.
       - run: cargo xtask host-test
 
-  # Daily on main, and on demand. What a Linux runner can say about the
-  # platforms it is not.
+  # Daily on main, and on demand. Checks Windows and macOS from a Linux runner.
   #
-  # `cargo xtask cross` with no flag is both halves — the type check for every
-  # shipped Apple and Windows triple, then the Wine run — which used to be two
-  # jobs passing the same source through two runners. One job shares the
-  # checkout and the cache between them, and the type check still fails first,
-  # which is the order that costs least when something is wrong.
+  # `cargo xtask cross` with no flag runs both parts: the type check for every
+  # shipped Apple and Windows triple, then the Wine run. One job shares the
+  # checkout and the cache between them. The type check runs first, so a type
+  # error fails the job before the slower Wine run.
   cross:
     name: Windows and macOS from Linux
     if: >-
@@ -236,10 +224,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
           toolchain: stable
-          # The four the type check compiles, plus the GNU triple the Wine pass
-          # builds and runs. cross.rs keeps its own list; a target added there
-          # and not here fails on the missing `std`, with the `rustup target add`
-          # to run.
+          # The four targets of the type check, plus the GNU triple for the Wine
+          # run. cross.rs has its own list. A target added there but not here
+          # fails on the missing `std`, and the error shows the
+          # `rustup target add` command to run.
           targets: >-
             x86_64-pc-windows-msvc,
             aarch64-pc-windows-msvc,
@@ -249,20 +237,20 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: cross
-      # `wine64` rather than `wine`: the metapackage depends on the 32-bit
-      # stack, which means enabling the i386 architecture and downloading a
-      # second Wine for binaries this repository does not build. It installs to
-      # /usr/lib/wine/wine64 without touching PATH, which is where cross.rs
-      # looks last.
+      # `wine64` rather than `wine`. The `wine` metapackage depends on the
+      # 32-bit stack, which requires the i386 architecture and a second Wine
+      # for binaries this repository does not build. `wine64` installs to
+      # /usr/lib/wine/wine64 without changing PATH; cross.rs checks that path
+      # last.
       - name: Install the MinGW toolchain and Wine
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends mingw-w64 wine64
       - run: cargo xtask cross
 
-  # Daily. The MSRV floor moves when a dependency raises its own, which arrives
-  # as a dependabot pull request rather than as a commit here — so once a day,
-  # and on `ci:full` for the bump itself.
+  # Daily. The MSRV changes when a dependency raises its own, which arrives as
+  # a dependabot pull request. Label that pull request `ci:full` to run this
+  # job on it.
   msrv:
     name: Minimum supported Rust version
     if: >-
@@ -284,15 +272,14 @@ jobs:
         with:
           toolchain: ${{ steps.msrv.outputs.version }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      # The terminal editor is what the MSRV promise covers. deco-gui tracks
-      # wgpu's much newer minimum, and xtask is tooling rather than shipped
-      # code, so neither is bound by it. Invoked directly rather than through
-      # xtask because xtask itself would not build on this toolchain.
+      # The MSRV applies to the terminal editor. deco-gui follows wgpu's much
+      # newer minimum, and xtask is not shipped, so both are excluded. Cargo
+      # is invoked directly because xtask does not build on this toolchain.
       - run: cargo check --locked --workspace --exclude deco-gui --exclude xtask
 
-  # Daily. A newly published advisory turns this red without anything here
-  # changing, which is exactly the check a schedule is for: running it per push
-  # asked the same question of the same dependency graph several times a day.
+  # Daily. A newly published advisory can fail this job without any change in
+  # the repository, so it runs on a schedule. Running it on every push checked
+  # the same dependency graph several times a day.
   supply-chain:
     name: Supply chain
     if: >-
@@ -312,16 +299,14 @@ jobs:
       - name: Install cargo-deny
         run: cargo install cargo-deny --locked --version ^0.18
       # RustSec advisories, non-crates.io sources, banned crates and licences.
-      # See deny.toml for what each check is defending against.
+      # See deny.toml for the purpose of each check.
       - run: cargo xtask deny
 
-  # Daily, and not on a tag. Packaging is the release path, and what breaks it is
-  # a target or a cross toolchain moving rather than a change to the editor — so
-  # this proves the path once a day instead of on every push, which is what
-  # catches a break before a release rather than during one. On the tag itself
-  # release.yml builds these same three targets with the same
-  # `cargo xtask dist`, so a copy here would be the second build of an artifact
-  # only one of which can ship.
+  # Daily, and not on a tag. Packaging usually breaks when a target or a cross
+  # toolchain changes, not when the editor changes. A daily run detects this
+  # before a release. On a tag, release.yml builds the same three targets with
+  # the same `cargo xtask dist`, so building them here would duplicate that
+  # work.
   #
   # Only the terminal binary is cross-built: a cross toolchain has no
   # target-side graphics libraries for the GPU frontend.
@@ -370,10 +355,9 @@ jobs:
       - run: cargo xtask dist --target ${{ matrix.target }}
 
   # Premium, on a tag and on demand. The test suite on real macOS and Windows.
-  # Kept separate rather than folded into `test` as a matrix because a job's
-  # `if` cannot read the `matrix` context, so a matrix entry cannot exclude
-  # itself — and a job that starts only to skip its steps has already paid for
-  # the runner.
+  # This is a separate job, not a matrix in `test`, because a job's `if` cannot
+  # read the `matrix` context. A matrix entry cannot exclude itself, and a job
+  # that starts only to skip its steps is still billed.
   test-platforms:
     name: Test (${{ matrix.os }})
     if: >-
@@ -395,11 +379,11 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo xtask ci --test-only
 
-  # Premium, on demand only. `cross-build` above says why a tag is missing from
-  # the condition; here it matters most, because these four are the most
-  # expensive jobs in the repository and release.yml runs all four on the same
-  # tag. What is left is the two events release.yml does not cover: a branch
-  # labelled `ci:full`, and a manual run.
+  # Premium, on demand only. A tag is excluded for the reason given for
+  # `cross-build`: release.yml runs all four builds on the same tag, and these
+  # are the most expensive jobs in the repository. This job runs only on the
+  # two events release.yml does not cover: a pull request labelled `ci:full`,
+  # and a manual run.
   cross-build-platforms:
     name: Cross build ${{ matrix.target }}
     if: >-

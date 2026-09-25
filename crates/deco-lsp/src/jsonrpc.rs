@@ -1,14 +1,14 @@
 //! JSON-RPC 2.0 as the Language Server Protocol uses it, and its framing.
 //!
-//! Deliberately separate from `deco-remote`'s wire format even though both are
-//! length-prefixed JSON. That one is a protocol deco defines on both ends and
-//! can tag however it likes; this one is fixed by a specification and spoken by
-//! programs written by other people, so it has to match exactly — `"jsonrpc":
-//! "2.0"` on every message, ids that may be a number *or* a string, and an
-//! `error` object with a numeric code.
+//! This is separate from `deco-remote`'s wire format, although both are
+//! length-prefixed JSON. deco defines both sides of the `deco-remote` protocol
+//! and can choose its own tagging. This protocol is fixed by a specification
+//! and implemented by third-party programs, so it must match exactly:
+//! `"jsonrpc": "2.0"` on every message, ids that may be a number *or* a
+//! string, and an `error` object with a numeric code.
 //!
-//! The one piece of real subtlety is telling the three message kinds apart.
-//! They are distinguished by which fields are present, not by a tag:
+//! The difficult part is distinguishing the three message kinds. They are
+//! identified by which fields are present, not by a tag:
 //!
 //! | `id` | `method` | kind |
 //! | --- | --- | --- |
@@ -16,12 +16,12 @@
 //! | no | yes | notification |
 //! | yes | no | response |
 //!
-//! `#[serde(untagged)]` is the obvious way to express that and the wrong one:
-//! it tries each variant in order and takes the first that deserialises, so a
-//! request whose `params` happen to fit a response shape decodes as the wrong
-//! thing and the failure appears far from its cause. This module decodes into
-//! one permissive struct and then classifies, so an ambiguous message is a
-//! named error rather than a silent mis-parse.
+//! `#[serde(untagged)]` is not suitable here. It tries each variant in order
+//! and takes the first that deserialises, so a request whose `params` fit a
+//! response shape is decoded as the wrong kind, and the failure appears far
+//! from its cause. This module decodes into one permissive struct and then
+//! classifies it, so an ambiguous message produces a named error instead of
+//! an incorrect parse.
 
 use std::io::{BufRead, Write};
 
@@ -29,9 +29,9 @@ use serde::{Deserialize, Serialize};
 
 /// A request identifier.
 ///
-/// LSP permits either a number or a string, and a server that was given a
-/// string id must be answered with the same string. deco only ever allocates
-/// numbers, but it receives both, because servers send requests too.
+/// LSP permits either a number or a string, and a request with a string id
+/// must be answered with the same string. deco only allocates numbers, but it
+/// receives both because servers also send requests.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum RequestId {
@@ -84,8 +84,8 @@ pub struct Notification {
 pub struct Response {
     /// The id being answered.
     pub id: RequestId,
-    /// The result, on success. `null` is a valid successful result — several
-    /// methods return it — so this is `Some(Value::Null)` rather than `None`.
+    /// The result, on success. `null` is a valid successful result returned by
+    /// several methods, so it is `Some(Value::Null)` rather than `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<serde_json::Value>,
     /// The failure, on error. Exactly one of `result` and `error` is present.
@@ -156,8 +156,8 @@ pub enum ErrorCode {
     ServerNotInitialized = -32002,
     /// The request was cancelled via `$/cancelRequest`.
     RequestCancelled = -32800,
-    /// The document changed while the request was in flight, so the answer
-    /// would have referred to text that no longer exists.
+    /// The document changed while the request was pending, so the response
+    /// would refer to text that no longer exists.
     ContentModified = -32801,
 }
 
@@ -193,10 +193,10 @@ impl ErrorCode {
 
     /// Whether a failed request is worth reporting to the user.
     ///
-    /// A cancellation is something the editor asked for, and a
-    /// `ContentModified` means the user typed while the server was thinking.
-    /// Both are routine; surfacing them would fill the screen with noise during
-    /// ordinary editing.
+    /// The editor requests cancellations itself, and `ContentModified` means
+    /// the user edited the document while the request was being processed.
+    /// Both occur routinely, and reporting them would show many irrelevant
+    /// errors during ordinary editing.
     pub fn is_expected(self) -> bool {
         matches!(self, Self::RequestCancelled | Self::ContentModified)
     }
@@ -283,18 +283,18 @@ pub enum ProtocolError {
 
 /// The largest frame that will be read.
 ///
-/// A language server is a subprocess, not a trusted part of the editor: a
-/// runaway or hostile one announcing `Content-Length: 999999999999` should get
-/// an error rather than an allocation the size of the machine's memory.
+/// A language server is a subprocess, not a trusted part of the editor. A
+/// faulty or malicious server that sends `Content-Length: 999999999999` gets
+/// an error instead of an allocation the size of the machine's memory.
 pub const MAX_FRAME_BYTES: usize = 128 * 1024 * 1024;
 
 /// Classifies a decoded JSON value.
 pub fn classify(value: serde_json::Value) -> Result<Message, ProtocolError> {
-    // Whether `result` is *present* has to be read from the object itself.
-    // Deserialising it as `Option<Value>` collapses `"result": null` and an
-    // absent `result` into the same `None`, and the difference is the whole
-    // meaning of the message: `null` is how `textDocument/definition` says
-    // "nothing here", while absent means this is not a response at all.
+    // Whether `result` is *present* must be read from the object itself.
+    // Deserialising it as `Option<Value>` maps both `"result": null` and an
+    // absent `result` to `None`, but they mean different things.
+    // `textDocument/definition` returns `null` when there is no result, while
+    // an absent `result` means the message is not a successful response.
     let has_result = value
         .as_object()
         .is_some_and(|object| object.contains_key("result"));
@@ -306,8 +306,8 @@ pub fn classify(value: serde_json::Value) -> Result<Message, ProtocolError> {
         None
     };
 
-    // Absent is tolerated: a handful of servers omit it. A *wrong* version is
-    // not, because it means the peer is speaking something else entirely.
+    // An absent version is accepted because some servers omit it. A *wrong*
+    // version is rejected because the peer uses a different protocol.
     if let Some(version) = &raw.jsonrpc {
         if version != "2.0" {
             return Err(ProtocolError::UnsupportedVersion {
@@ -373,14 +373,14 @@ pub fn to_value(message: &Message) -> serde_json::Value {
     }
     .expect("a message is always representable as JSON");
 
-    // `jsonrpc` lives here rather than as a struct field so that a caller
-    // cannot construct a message without it, and so that it cannot be set to
-    // anything but "2.0".
+    // `jsonrpc` is added here rather than stored in a struct field, so a
+    // caller cannot construct a message without it or with a value other than
+    // "2.0".
     if let Some(object) = value.as_object_mut() {
         object.insert("jsonrpc".into(), serde_json::Value::String("2.0".into()));
-        // A successful response with a `null` result must still carry the
-        // member; serde skips `None` but `Some(Null)` survives, and the
-        // distinction matters to servers that check for its presence.
+        // A successful response with a `null` result must still include the
+        // member. serde skips `None` but keeps `Some(Null)`, and some servers
+        // check whether the member is present.
         if let Message::Response(response) = message {
             if response.result.is_none() && response.error.is_none() {
                 object.insert("result".into(), serde_json::Value::Null);
@@ -393,8 +393,8 @@ pub fn to_value(message: &Message) -> serde_json::Value {
 /// Writes one message, framed.
 pub fn write(out: &mut impl Write, message: &Message) -> Result<(), ProtocolError> {
     let body = serde_json::to_vec(&to_value(message))?;
-    // No `Content-Type`: the specification's default is the only one anybody
-    // implements, and some servers reject the header outright.
+    // No `Content-Type`. Servers implement only the specification's default,
+    // and some reject the header.
     write!(out, "Content-Length: {}\r\n\r\n", body.len())?;
     out.write_all(&body)?;
     out.flush()?;
@@ -493,17 +493,17 @@ mod tests {
 
     #[test]
     fn a_request_is_not_mistaken_for_an_empty_response() {
-        // The failure an `#[serde(untagged)]` enum produces: both carry `id`,
-        // and every field of a response is optional, so a request decodes as a
-        // response with nothing in it and the method is silently lost.
+        // An `#[serde(untagged)]` enum fails here. Both kinds have `id`, and
+        // every field of a response is optional, so a request is decoded as an
+        // empty response and the method is lost.
         let message = decode(json!({"jsonrpc": "2.0", "id": 1, "method": "shutdown"}));
         assert_eq!(message.method(), Some("shutdown"));
     }
 
     #[test]
     fn a_null_result_is_a_successful_response_not_an_absent_one() {
-        // `textDocument/definition` answers `null` for "no definition here",
-        // which is a successful answer and must not be read as an error.
+        // `textDocument/definition` returns `null` when there is no
+        // definition. This is a successful response, not an error.
         let Message::Response(response) = decode(json!({"id": 1, "result": null})) else {
             panic!("expected a response");
         };
@@ -522,8 +522,8 @@ mod tests {
 
     #[test]
     fn a_string_id_is_preserved_exactly() {
-        // A server that sends `"id": "3"` must be answered with the string, not
-        // the number. Coercing here would leave its request unanswered forever.
+        // A request with `"id": "3"` must be answered with the string, not the
+        // number. Converting the id would leave the request unanswered.
         let Message::Request(request) =
             decode(json!({"id": "3", "method": "window/showMessageRequest"}))
         else {
@@ -543,8 +543,8 @@ mod tests {
 
     #[test]
     fn a_response_with_both_a_result_and_an_error_is_refused() {
-        // Ambiguous by the specification. Picking one would mean sometimes
-        // reporting success for a call that failed.
+        // The specification does not allow both. Choosing one could report
+        // success for a call that failed.
         assert!(matches!(
             classify(json!({"id": 1, "result": 1, "error": {"code": -1, "message": "x"}})),
             Err(ProtocolError::NotAMessage { .. })
@@ -644,8 +644,8 @@ mod tests {
 
     #[test]
     fn the_body_length_is_counted_in_bytes_not_characters() {
-        // A header counting characters truncates the body mid-way through a
-        // multi-byte sequence, and every subsequent frame is misaligned.
+        // A length counted in characters truncates the body inside a
+        // multi-byte sequence, and every later frame is misaligned.
         let message = Message::Notification(Notification {
             method: "window/logMessage".into(),
             params: Some(json!({"message": "日本語のログ"})),
@@ -703,8 +703,8 @@ mod tests {
 
     #[test]
     fn a_truncated_header_is_an_error_not_a_clean_end() {
-        // Distinguishing this from a clean exit is what tells the editor the
-        // server crashed rather than shut down.
+        // This must be distinguished from a clean exit so the editor can tell
+        // that the server crashed rather than shut down.
         assert!(matches!(
             read(&mut std::io::Cursor::new(b"Content-Length: 5".as_ref())),
             Err(ProtocolError::Io(_))
@@ -723,8 +723,8 @@ mod tests {
 
     #[test]
     fn cancellation_and_content_modified_are_expected_failures() {
-        // These arrive during ordinary typing; reporting them would bury the
-        // errors that do matter.
+        // These occur during ordinary typing. Reporting them would hide the
+        // relevant errors.
         assert!(ErrorCode::RequestCancelled.is_expected());
         assert!(ErrorCode::ContentModified.is_expected());
         assert!(!ErrorCode::InternalError.is_expected());

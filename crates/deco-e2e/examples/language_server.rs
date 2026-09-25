@@ -1,25 +1,24 @@
-//! A language server that answers, for scenarios about the editor.
+//! A working language server for editor scenarios.
 //!
-//! `deco-lsp` already has a fake server, and it is a different instrument: that
-//! one acts out failure modes — dying at startup, answering with garbage,
-//! leaving a request hanging — to exercise the client's recovery. This one does
-//! the opposite. It behaves impeccably and answers every request with something
-//! recognisable, so that a scenario can press `f12` and ask whether the caret
-//! moved, press `ctrl+space` and ask whether the list on screen holds what the
-//! server sent.
+//! `deco-lsp` has a separate fake server for a different purpose. It simulates
+//! failures (exiting at startup, sending invalid responses, never answering a
+//! request) to test the client's recovery. This server behaves correctly and
+//! answers every request with recognisable content. A scenario can press `f12`
+//! and check that the caret moved, or press `ctrl+space` and check that the list
+//! on screen contains what the server sent.
 //!
-//! The two are worth having separately. A server that misbehaves cannot tell you
-//! whether go-to-definition works, and a server that works cannot tell you what
-//! happens when one dies mid-session.
+//! Both servers are needed. A failing server cannot test whether
+//! go-to-definition works, and a working server cannot test what happens when a
+//! server exits during a session.
 //!
 //! The role is `argv[1]`, because `deco.lsp.servers` in `settings.json` can pass
-//! `args` and cannot pass environment variables — so this is also the shape a
-//! user's own configuration has to be able to express.
+//! `args` but not environment variables. This matches what a user's own
+//! configuration can express.
 //!
-//! Everything it answers is derived from what it was *asked*: a definition lands
-//! in the URI the request named, diagnostics are published against the URI the
-//! editor opened. That is deliberate — it means a scenario sees the editor's own
-//! path-to-URI mapping and back, rather than a path this file made up.
+//! Every response is derived from the request: a definition is in the URI the
+//! request named, and diagnostics are published for the URI the editor opened.
+//! A scenario therefore tests the editor's path-to-URI mapping in both
+//! directions, rather than a path defined in this file.
 
 use std::io::{self, BufRead, Write};
 
@@ -33,7 +32,7 @@ fn serve(role: &str) -> i32 {
     let mut input = stdin.lock();
     let stdout = io::stdout();
     let mut output = stdout.lock();
-    // The document the editor last opened, so that answers can be about it.
+    // The document the editor last opened, used in responses.
     let mut open_uri = String::new();
 
     loop {
@@ -43,11 +42,10 @@ fn serve(role: &str) -> i32 {
 
         match method.as_str() {
             "initialize" => {
-                // Every capability this server really answers, and none it does
-                // not: the editor turns these into `editorHas…Provider` context
-                // keys, which is what decides whether `f12` is bound to anything
-                // at all. A server claiming more than it does would make a
-                // scenario about an unbound key impossible to write.
+                // Exactly the capabilities this server implements. The editor
+                // converts them to `editorHas…Provider` context keys, which
+                // determine whether keys such as `f12` are bound. Claiming extra
+                // capabilities would prevent testing an unbound key.
                 let offers_hover = role != "no-hover";
                 let offers_rename = role != "no-rename";
                 send(
@@ -65,9 +63,8 @@ fn serve(role: &str) -> i32 {
                             "referencesProvider": true,
                             "documentSymbolProvider": true,
                             "renameProvider": offers_rename,
-                            // With resolving, because the interesting half of a
-                            // code action is the one that arrives without its
-                            // edit and has to be asked for.
+                            // With resolve support, to test code actions that
+                            // arrive without an edit and must be resolved.
                             "codeActionProvider": {"resolveProvider": true},
                             "documentFormattingProvider": true,
                             "completionProvider": {
@@ -84,8 +81,8 @@ fn serve(role: &str) -> i32 {
                 }
             }
             "textDocument/didChange" => {
-                // A second, different diagnostic once the document has been
-                // edited, so a scenario can tell a stale answer from a fresh one.
+                // A different diagnostic after the document is edited, so a
+                // scenario can distinguish a stale response from a new one.
                 if role == "diagnostics" {
                     publish(&mut output, &open_uri, 2);
                 }
@@ -103,9 +100,9 @@ fn serve(role: &str) -> i32 {
                     },
                 }),
             ),
-            // Line 2, character 0 of whichever file was asked about. A scenario
-            // asserts the caret landed there, which it can only do if the
-            // editor's URI mapping survived the round trip.
+            // Line 2, character 0 of the requested file. A scenario asserts that
+            // the caret moved there, which requires the editor's URI mapping to
+            // work in both directions.
             "textDocument/definition" => send(
                 &mut output,
                 &serde_json::json!({
@@ -143,10 +140,9 @@ fn serve(role: &str) -> i32 {
                     ],
                 }),
             ),
-            // Four actions, each covering a different answer the editor has to
-            // have: one that arrives ready to apply, one whose edit only exists
-            // after `codeAction/resolve`, one the server says is unavailable,
-            // and one that is a bare `Command`.
+            // Four actions, one for each case the editor must handle: one ready
+            // to apply, one whose edit is only available from
+            // `codeAction/resolve`, one marked unavailable, and a bare `Command`.
             "textDocument/codeAction" => {
                 let open = uri_of(&params);
                 send(
@@ -173,9 +169,8 @@ fn serve(role: &str) -> i32 {
                             {
                                 "title": "Extract into function",
                                 "kind": "refactor.extract",
-                                // No edit: it comes back from `resolve`, and
-                                // `data` is how this server recognises which
-                                // action it is being asked about.
+                                // No edit: `resolve` returns it. The server uses
+                                // `data` to identify the action.
                                 "data": {"assist": "extract", "uri": open},
                             },
                             {
@@ -188,8 +183,8 @@ fn serve(role: &str) -> i32 {
                     }),
                 );
             }
-            // The same action back with its edit filled in, which is the whole
-            // contract: what arrives here is what the editor was sent.
+            // Returns the received action with its edit added. The action
+            // received here is the one the editor was sent.
             "codeAction/resolve" => {
                 let open = params
                     .get("data")
@@ -214,9 +209,9 @@ fn serve(role: &str) -> i32 {
                 );
             }
             // Both occurrences of `greet` in the open file, and the one in
-            // `helper.rs` — which the editor has not opened. That second file is
-            // the point of the scenario: the answer to a rename is mostly about
-            // files nobody is looking at.
+            // `helper.rs`, which the editor has not opened. The scenario tests
+            // that second file, because a rename mostly changes files that are
+            // not open.
             "textDocument/rename" => {
                 let new_name = params
                     .get("newName")
@@ -241,9 +236,9 @@ fn serve(role: &str) -> i32 {
                         "id": id,
                         "result": {"documentChanges": [
                             {
-                                // No version: this server does not track them,
-                                // and saying so is more honest than sending a
-                                // number the editor would then check against.
+                                // No version, because this server does not track
+                                // versions. Sending a number would make the
+                                // editor check it.
                                 "textDocument": {"uri": open, "version": null},
                                 "edits": [edit(1, 4, 9), edit(4, 3, 8)],
                             },
@@ -289,8 +284,8 @@ fn serve(role: &str) -> i32 {
                 }),
             ),
             // One edit covering the first line, replacing it with a canonical
-            // form. Narrow on purpose: a whole-document rewrite would pass even
-            // if the editor applied the edit at the wrong offset.
+            // form. The edit is small on purpose: a whole-document rewrite would
+            // pass even if the editor applied the edit at the wrong offset.
             "textDocument/formatting" => send(
                 &mut output,
                 &serde_json::json!({
@@ -311,9 +306,9 @@ fn serve(role: &str) -> i32 {
             ),
             "exit" => return 0,
             other => {
-                // Every request is answered, as a real server must: one left
-                // hanging would stall the client. Notifications carry no id and
-                // are answered with nothing, which is also correct.
+                // Answer every request, as a real server must, because an
+                // unanswered request stalls the client. Notifications have no id
+                // and get no response.
                 if let Some(id) = id {
                     if !id.is_null() {
                         eprintln!("fake server: nothing to say about {other}");
@@ -328,8 +323,8 @@ fn serve(role: &str) -> i32 {
     }
 }
 
-/// Publishes one diagnostic against `uri`, worded so a scenario can tell which
-/// round it came from.
+/// Publishes one diagnostic for `uri`, with a message that identifies the
+/// round.
 fn publish(output: &mut impl Write, uri: &str, round: u32) {
     send(
         output,

@@ -18,9 +18,9 @@ use crate::render::{self, Frame};
 
 /// Restores the terminal when it goes out of scope.
 ///
-/// A panic inside the event loop must not leave the user in a raw-mode
-/// alternate screen with no echo, so teardown is tied to the stack rather than
-/// to reaching the end of `run`.
+/// A panic inside the event loop must not leave the terminal in raw mode on the
+/// alternate screen with no echo, so teardown runs on drop rather than at the
+/// end of `run`.
 struct TerminalGuard;
 
 impl TerminalGuard {
@@ -36,9 +36,8 @@ impl Drop for TerminalGuard {
         // Nothing useful can be done about a failure here, and returning early
         // would skip the rest of the restoration.
         //
-        // The cursor shape is restored along with the screen: `editor.cursorStyle`
-        // is deco's business while deco is running, and leaving somebody's shell
-        // with an editor's caret shape is not.
+        // The cursor shape is restored along with the screen. `editor.cursorStyle`
+        // applies only while deco is running and must not persist in the shell.
         let _ = execute!(
             io::stdout(),
             cursor::SetCursorStyle::DefaultUserShape,
@@ -49,17 +48,16 @@ impl Drop for TerminalGuard {
     }
 }
 
-/// The caret shape `editor.cursorStyle` asks for, or `None` to leave the
-/// terminal's own alone.
+/// The caret shape set by `editor.cursorStyle`, or `None` to keep the
+/// terminal's own shape.
 ///
-/// `None` when the setting was never written down. A terminal's caret is already
-/// configured — a block, in most — and replacing it with VS Code's default on behalf
-/// of somebody who never mentioned it would be deco overruling a preference it was
-/// not asked about. Setting the key, even to its default value, is asking.
+/// Returns `None` when the user has not set the key. The terminal's caret is
+/// already configured, usually as a block, and deco does not replace it with VS
+/// Code's default. Setting the key, even to its default value, applies it.
 ///
-/// Two shapes have no terminal equivalent and collapse: DECSCUSR has a bar, a block
-/// and an underline, and no thin or hollow variant of any of them. So `line-thin`
-/// draws as `line` and `block-outline` as `block`, which is closer than refusing.
+/// Two shapes have no terminal equivalent. DECSCUSR has a bar, a block and an
+/// underline, with no thin or hollow variants. `line-thin` is drawn as `line`
+/// and `block-outline` as `block`, as the closest available shapes.
 fn wanted_cursor_style(session: &Session) -> Option<deco_config::CursorStyle> {
     let language = session.document.language();
     let scope = session.settings.source_of("editor.cursorStyle", language)?;
@@ -72,9 +70,8 @@ fn wanted_cursor_style(session: &Session) -> Option<deco_config::CursorStyle> {
 /// The DECSCUSR shape for a style.
 fn to_decscusr(style: deco_config::CursorStyle) -> cursor::SetCursorStyle {
     use deco_config::CursorStyle;
-    // Blinking, which is VS Code's `editor.cursorBlinking` default. deco does not
-    // resolve that setting, so there is one answer rather than a choice, and this is
-    // the one that matches the editor being imitated.
+    // Always blinking, which is VS Code's `editor.cursorBlinking` default. deco
+    // does not resolve that setting.
     match style {
         CursorStyle::Line | CursorStyle::LineThin => cursor::SetCursorStyle::BlinkingBar,
         CursorStyle::Block | CursorStyle::BlockOutline => cursor::SetCursorStyle::BlinkingBlock,
@@ -103,11 +100,11 @@ fn paint(out: &mut impl Write, frame: &Frame, style: Option<cursor::SetCursorSty
                 SetForegroundColor(to_crossterm(span.fg)),
                 SetBackgroundColor(to_crossterm(span.bg))
             )?;
-            // Nothing reaches the terminal without being made printable first. A
-            // document's own text is already substituted by the renderer; this catches
-            // the rest — a file name with an escape byte in it, a search result
-            // carrying a line of somebody else's file — because a terminal interprets
-            // what it is written, and `\x1b]52;c;…` writes the clipboard.
+            // All text is made printable before it reaches the terminal. The renderer
+            // already substitutes document text. This covers everything else, such as
+            // a file name containing an escape byte or a search result containing a
+            // line from another file. A terminal interprets what is written to it, and
+            // `\x1b]52;c;…` writes the clipboard.
             out.write_all(render::sanitise(&span.text).as_bytes())?;
         }
         queue!(out, ResetColor)?;
@@ -124,14 +121,13 @@ fn paint(out: &mut impl Write, frame: &Frame, style: Option<cursor::SetCursorSty
 
 /// Whether `files.autoSave: "afterDelay"` is due.
 ///
-/// A pure function of the three facts that decide it, so the rule is testable without
-/// a terminal and without waiting a second for one.
+/// A pure function of its three inputs, so the rule is testable without a terminal
+/// and without waiting for the delay.
 ///
-/// The clock is this side's: `deco-editor` is handed `now_ms` per keystroke and owns
-/// no timer, which is what keeps every command deterministic under test. An idle timer
-/// therefore lives in the event loop, where the idle already happens — the poll that
-/// lets a language server's diagnostics arrive is the same poll that notices the delay
-/// has passed.
+/// The frontend owns the clock. `deco-editor` receives `now_ms` per keystroke and
+/// has no timer, which keeps every command deterministic under test. The idle timer
+/// therefore lives in the event loop. The same poll that receives language server
+/// diagnostics also detects that the delay has passed.
 fn auto_save_due(settings: &deco_config::EditorSettings, idle_ms: u64, dirty: bool) -> bool {
     dirty
         && settings.auto_save == deco_config::AutoSave::AfterDelay
@@ -145,11 +141,11 @@ pub fn run(session: &mut Session, path: Option<PathBuf>) -> Result<()> {
 
 /// The remote's matches as palette entries, minus what `files.exclude` hides.
 ///
-/// The server applies its own skip list — `.git`, `node_modules`, `target` — and
-/// knows nothing of this user's settings, so the rest of the filtering happens
-/// here. Which means a `files.exclude` pattern can make a search report fewer
-/// than the server counted; the count shown is the one after filtering, because
-/// that is the one on screen.
+/// The server applies its own skip list (`.git`, `node_modules`, `target`) and
+/// does not know the user's settings, so the remaining filtering happens here.
+/// A `files.exclude` pattern can therefore make a search report fewer matches
+/// than the server counted. The count shown is the count after filtering, which
+/// matches what is on screen.
 fn remote_matches(
     found: &deco_remote::Search,
     settings: &deco_config::Settings,
@@ -160,8 +156,8 @@ fn remote_matches(
         .filter(|entry| !crate::files::excluded_by_settings(settings, &entry.path))
         .map(|entry| {
             deco_editor::commands::PaletteEntry::at(
-                // The id is what opening one asks the server for, and in a
-                // remote session that is the path relative to its workspace.
+                // The id is the path requested from the server when the entry
+                // is opened. In a remote session it is relative to the workspace.
                 &entry.path,
                 &format!("{}:{}: {}", entry.path, entry.line + 1, entry.text),
                 deco_core::position::Position::new(entry.line, entry.character),
@@ -172,10 +168,10 @@ fn remote_matches(
 
 /// The distinct files a set of matches named, in the order they first appeared.
 ///
-/// A search reports one entry per *match*, and a file with twenty of them is
-/// still one file to open and one transaction to build. Deduplicated in place
-/// rather than through a set, so the order the search found them in survives —
-/// which is the order the files are opened in, and so the order of the tabs.
+/// A search reports one entry per *match*, but a file with many matches is
+/// opened once and gets one transaction. Deduplication is done in place rather
+/// than through a set to keep the search order. That order determines the order
+/// in which files are opened, and therefore the tab order.
 fn matched_paths(matches: impl Iterator<Item = PathBuf>) -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = Vec::new();
     for path in matches {
@@ -188,9 +184,9 @@ fn matched_paths(matches: impl Iterator<Item = PathBuf>) -> Vec<PathBuf> {
 
 /// A session whose files live on another machine.
 ///
-/// Carries what the editor needs beyond the connection itself: language servers
-/// have to be started over there too, and that needs the transport as well as
-/// the directory the far end is serving.
+/// Holds what the editor needs in addition to the connection. Language servers
+/// are also started on the remote machine, which requires the transport and the
+/// directory the remote side is serving.
 pub struct RemoteSession {
     /// The connection files are read and written through.
     pub client: deco_remote::Client,
@@ -205,14 +201,13 @@ pub struct RemoteSession {
 
 /// The editor, optionally against a remote workspace.
 ///
-/// `remote` present means every file the session reads and writes lives on the
-/// other end of it. That is a mode rather than a per-document property, because
-/// deco does not open local and remote files in one window: the workspace is one
-/// place, and half of one would make every path ambiguous.
+/// When `remote` is present, every file the session reads and writes is on the
+/// remote machine. This is a session mode rather than a per-document property.
+/// deco does not open local and remote files in one window, because mixing them
+/// would make every path ambiguous.
 ///
-/// Nothing is left doing the wrong thing quietly any more: language servers run
-/// on the machine holding the files and project search happens there too, which
-/// in both cases is the only place that could work.
+/// Language servers and project search both run on the machine that holds the
+/// files, because only that machine can read them.
 pub fn run_with(
     session: &mut Session,
     path: Option<PathBuf>,
@@ -243,11 +238,10 @@ pub fn run_with(
             )?;
         }
 
-        // Waiting with a timeout rather than blocking on `event::read`, so a
-        // language server's diagnostics arrive while the user is idle instead of
-        // on their next keystroke. The interval is a compromise: short enough
-        // that results feel immediate, long enough that an idle editor is not
-        // spinning.
+        // Wait with a timeout rather than blocking on `event::read`, so language
+        // server diagnostics arrive while the user is idle instead of on the next
+        // keystroke. The interval is short enough for results to appear promptly
+        // and long enough that an idle editor does not busy-loop.
         if !event::poll(LSP_POLL_INTERVAL)? {
             driver.idle(session, elapsed_ms(started))?;
             continue;
@@ -268,8 +262,8 @@ pub fn run_with(
         }
     }
 
-    // Before the terminal guard restores the screen, so a server that takes a
-    // moment to stop does so while the editor still looks alive.
+    // Shut down before the terminal guard restores the screen, so the editor
+    // stays visible while a slow server stops.
     driver.shutdown();
     Ok(())
 }
@@ -291,28 +285,29 @@ pub enum Flow {
 
 /// Everything a [`Driver`] needs that it cannot work out from the session.
 ///
-/// The three that are read from the process by default — the home directory, the
-/// extension directories and the terminal size — are fields rather than calls
-/// buried in the loop, so a test can put a driver in a temporary home instead of
-/// the one the test runner happens to have.
+/// The values read from the process by default (the home directory, the
+/// extension directories and the terminal size) are fields rather than calls
+/// inside the loop. A test can then use a temporary home directory instead of
+/// the test runner's.
 pub struct Options {
     /// The file deco was started with. Relative paths and the language server's
     /// workspace root are resolved against its directory.
     pub started_with: Option<PathBuf>,
     /// Present when every file this session reads and writes is on another
-    /// machine — and, with it, where language servers are started.
+    /// machine. It also determines where language servers are started.
     pub remote: Option<RemoteSession>,
     /// Every directory that may hold installed extensions.
     pub extension_roots: Vec<PathBuf>,
     /// Where extension permission decisions are remembered between sessions.
     ///
-    /// `None` remembers nothing past this session, which is what a scenario wants
-    /// and what deco does when it cannot work out where its configuration lives.
+    /// `None` keeps decisions only for this session. Scenarios use this, and deco
+    /// uses it when it cannot determine its configuration directory.
     pub permissions_file: Option<PathBuf>,
     /// What a leading `~` in a typed path expands to.
     pub home: Option<PathBuf>,
-    /// What a relative typed path is taken against when the session has no file
-    /// to name a workspace — `deco` on its own, and then a save-as.
+    /// The base for a relative typed path when the session has no file that
+    /// defines a workspace, for example a save-as after starting `deco` with no
+    /// arguments.
     pub cwd: Option<PathBuf>,
     /// The terminal size, in cells.
     pub size: (u16, u16),
@@ -338,12 +333,11 @@ impl Default for Options {
 
 /// The event loop, with the terminal taken out of it.
 ///
-/// [`run_with`] is this plus a source of events and a painter: it reads keys from
-/// crossterm and writes frames to stdout, and everything in between — what a chord
-/// does, which of its outcomes need a filesystem, when an idle editor saves — is
-/// here. The split is what lets the loop be driven by a test with no terminal
-/// attached, against a real workspace on disk, rather than being reachable only by
-/// a person holding a keyboard.
+/// [`run_with`] adds an event source and a painter to this type. It reads keys
+/// from crossterm and writes frames to stdout. Everything else is here: what a
+/// chord does, which of its outcomes need a filesystem, and when an idle editor
+/// saves. This split lets a test drive the loop without a terminal, against a
+/// real workspace on disk.
 pub struct Driver {
     lsp: Lsp,
     hosts: crate::extensions::Hosts,
@@ -360,16 +354,16 @@ pub struct Driver {
     edited_at: Option<u64>,
     /// Where the file tree is rooted, if there is a workspace.
     ///
-    /// Kept rather than recomputed per keystroke so the tree cannot end up
-    /// reading one root while it was built against another.
+    /// Stored rather than recomputed per keystroke, so the tree always reads
+    /// from the root it was built against.
     tree_root: Option<PathBuf>,
-    /// What `git` says about the workspace, collected off the loop.
+    /// The workspace's `git` status, collected outside the loop.
     scm: crate::scm::Scm,
 }
 
 impl Driver {
-    /// Starts a language server, walks the extension directories and sizes the
-    /// session — everything the loop does once, before its first keystroke.
+    /// Starts a language server, scans the extension directories and sizes the
+    /// session. These are the one-time steps before the first keystroke.
     pub fn start(session: &mut Session, options: Options) -> Self {
         let Options {
             started_with,
@@ -398,23 +392,23 @@ impl Driver {
         let mut lsp =
             Lsp::with_location(session, workspace_root(started_with.as_deref()), location);
         // Started the same way in both cases. A remote session runs its servers on
-        // the machine holding the files, which is the only place one could read
+        // the machine that holds the files, because only that machine can read
         // them.
         lsp.attach(session);
         session.frontend_commands = frontend_commands();
 
-        // Where the file tree is rooted. The same answer the language server and
-        // quick open get, so `ctrl+p` and the tree are looking at one workspace.
-        // On a remote session that is the workspace the server was given, which
-        // is a path on the far machine.
+        // The file tree root. The language server and quick open use the same
+        // root, so `ctrl+p` and the tree show the same workspace. In a remote
+        // session it is the workspace given to the server, a path on the remote
+        // machine.
         let tree_root = workspace_roots.clone();
         if let Some(root) = tree_root.clone() {
             session.set_workspace_root(root);
         }
 
-        // What is installed, listed in the palette whether or not it has started:
-        // invoking one of these is what starts it. The walk happens here for the same
-        // reason the theme walk does — the core has no filesystem.
+        // Installed extensions are listed in the palette whether or not they have
+        // started. Invoking one starts it. The scan happens here, like the theme
+        // scan, because the core has no filesystem access.
         let catalogue = crate::extensions::discover(&extension_roots);
         session.problems.extend(catalogue.problems.iter().cloned());
         session
@@ -426,11 +420,11 @@ impl Driver {
             hosts: {
                 let hosts = crate::extensions::Hosts::rooted(
                     catalogue,
-                    // The workspace as the machine holding it spells it, which in a
-                    // remote session is a directory on the far end. An extension
-                    // granted `readFile: workspace` gets exactly the directory the
-                    // session is editing, and nothing when there is no workspace at
-                    // all.
+                    // The workspace path as the machine holding it names it. In a
+                    // remote session this is a directory on the remote machine. An
+                    // extension granted `readFile: workspace` gets exactly the
+                    // directory the session is editing, and nothing when there is
+                    // no workspace.
                     workspace_roots.into_iter().collect(),
                 );
                 match permissions_file {
@@ -454,8 +448,8 @@ impl Driver {
                 ),
                 None => crate::scm::Scm::new(
                     &session.settings,
-                    // An older remote does not advertise the SCM methods. Its
-                    // path must still never be handed to this machine's git.
+                    // An older remote server does not advertise the SCM methods.
+                    // Its path must still never be passed to the local git.
                     tree_root.clone().filter(|_| !is_remote),
                 ),
             },
@@ -468,23 +462,20 @@ impl Driver {
         self.dirty
     }
 
-    /// The frame to paint, and the acknowledgement that it has been.
+    /// Returns the frame to paint and marks the driver as drawn.
     pub fn frame(&mut self, session: &mut Session) -> Frame {
-        // The find bar costs a row, so the text area's height depends on
-        // whether it is open — which the last keypress may have changed.
+        // The find bar uses a row, so the text area's height depends on whether
+        // it is open, which the last keypress may have changed.
         resize(session, self.width, self.height);
-        // The marks are derived from the buffer, so they are brought up to
-        // date here rather than in the renderer: `render` holds the session by
-        // shared reference, and a diff per frame would be the alternative.
-        // Cheap when nothing has been typed — one version compare per document.
+        // The marks are derived from the buffer, so they are updated here rather
+        // than in the renderer. `render` holds the session by shared reference,
+        // and the alternative would be a diff per frame. When nothing has been
+        // typed, this is one version comparison per document.
         session.refresh_diffs();
         self.dirty = false;
-        // Both overlays, not just the hover. The completion list was built,
-        // filtered, navigable with the arrow keys and acceptable with `tab` —
-        // and never drawn, because this call asked for a frame with a hover in
-        // it and no way to mention the list. `render_with_overlays` has existed
-        // the whole time, along with the rule for what happens when both are
-        // present: the list wins, since it is the one being interacted with.
+        // Pass both overlays, not just the hover, so the completion list is
+        // drawn. When both are present, the list is shown because it is the one
+        // being interacted with.
         render::render_with_overlays(
             session,
             self.width as usize,
@@ -502,12 +493,12 @@ impl Driver {
         self.dirty = true;
     }
 
-    /// Collects whatever the language server and the extension hosts have said.
+    /// Collects pending messages from the language server and the extension hosts.
     pub fn poll(&mut self, session: &mut Session, now_ms: u64) {
         // Destructured so the language server and the hosts can both be
-        // advanced while the connection is borrowed: their file requests are
-        // served through the same connection the editor reads and writes with,
-        // because in a remote session that is where the files are.
+        // advanced while the connection is borrowed. Their file requests use the
+        // same connection the editor reads and writes with, because in a remote
+        // session the files are on the remote machine.
         let Self {
             lsp,
             hosts,
@@ -521,8 +512,8 @@ impl Driver {
         };
         *dirty |= lsp.poll(session, &mut files);
         hosts.poll(session, &mut files, now_ms);
-        // After the others rather than beside them: a `git status` that landed
-        // this turn should be on the same frame as whatever caused it.
+        // Polled after the others, so a `git status` result that arrives in this
+        // iteration appears on the same frame as the change that caused it.
         *dirty |= self.scm.poll(session);
         if session.take_checkout_completed() {
             reload_after_checkout(session, lsp, remote.as_mut(), self.tree_root.as_deref());
@@ -530,10 +521,11 @@ impl Driver {
         }
     }
 
-    /// A moment with no keystroke in it: the same poll, plus the auto-save clock.
+    /// Handles an interval with no keystroke: the same poll, plus the auto-save
+    /// check.
     ///
-    /// Checked on the idle path only. A save while keys are still arriving would be
-    /// a write per keystroke, which is the thing the delay exists to avoid.
+    /// Checked on the idle path only. Saving while keys are still arriving would
+    /// write once per keystroke, which the delay exists to prevent.
     pub fn idle(&mut self, session: &mut Session, now_ms: u64) -> Result<()> {
         self.poll(session, now_ms);
         let Some(at) = self.edited_at else {
@@ -552,14 +544,14 @@ impl Driver {
         Ok(())
     }
 
-    /// Stops the language server. The loop is over.
+    /// Stops the language server and the source-control worker after the loop ends.
     pub fn shutdown(&mut self) {
         self.lsp.detach();
         self.scm.shutdown();
     }
 
-    /// One keystroke, all the way through: what the core makes of it, and then
-    /// whichever of its outcomes needs something the core does not have.
+    /// Processes one keystroke. The core handles the chord, then this method
+    /// handles any outcome that needs resources the core does not have.
     pub fn key(&mut self, session: &mut Session, chord: Chord, now_ms: u64) -> Result<Flow> {
         let Self {
             lsp,
@@ -576,17 +568,16 @@ impl Driver {
             ..
         } = self;
         *dirty = true;
-        // Remembered before the chord runs: a printable key both inserts
-        // itself and narrows an open list, and afterwards there is no way
-        // to tell which key it was.
+        // Recorded before the chord runs. A printable key both inserts itself
+        // and narrows an open list, and the key cannot be recovered afterwards.
         let typed = printable(&chord);
-        // Remembered so a tab switch can be seen afterwards: the chord
-        // may put a different document on screen, and the language
-        // server has to be told which file it is now looking at.
+        // Recorded to detect a tab switch. The chord may show a different
+        // document, and the language server must be told which file is active.
         let path_before = session.document.path.clone();
         let was_dirty = session.document.dirty;
-        // And the language, which `ctrl+k m` can change without the
-        // document changing — a different language is a different server.
+        // The language is recorded too. `ctrl+k m` can change it without
+        // changing the document, and a different language uses a different
+        // server.
         let language_before = session.document.language().map(str::to_owned);
         let was_backspace = chord.key
             == deco_keymap::keys::Key::Named(deco_keymap::keys::NamedKey::Backspace)
@@ -600,7 +591,7 @@ impl Driver {
                 save(session, remote.as_mut())?;
                 lsp.saved(session);
             }
-            // The picker named a theme; reading it is this side's job.
+            // The picker selected a theme. The frontend reads it.
             Outcome::LoadTheme { label, path } => match load_theme(&label, path.as_deref()) {
                 Ok(theme) => {
                     if let Outcome::Message(report) = session.set_theme(theme) {
@@ -612,22 +603,21 @@ impl Driver {
                     session.problems.push(error);
                 }
             },
-            // The prompt named a path; writing it is this side's job, and
-            // so is working out what it meant.
+            // The prompt returned a path. The frontend resolves it and writes
+            // the file.
             Outcome::SaveAs(target) => {
-                // In a remote session the typed name belongs to the far end, so
-                // it is left exactly as it was typed. `resolve_path` is about
-                // *this* machine — `~` expansion, this process's working
-                // directory — and a name resolved here would be one the server
-                // has never heard of. The rest of the session's paths are the
-                // far end's, relative to the workspace it serves, and a session
-                // with half its paths in each namespace can no longer save
-                // anything: the server refuses every path outside what it
-                // serves, which is what a locally resolved absolute path is.
+                // In a remote session the typed name refers to the remote side,
+                // so it is used exactly as typed. `resolve_path` applies to the
+                // local machine (`~` expansion and this process's working
+                // directory), and a locally resolved name would be unknown to
+                // the server. The session's other paths are remote paths relative
+                // to the served workspace. The server rejects every path outside
+                // that workspace, including a locally resolved absolute path, so
+                // mixing the two namespaces would make every later save fail.
                 //
-                // Which also answers "can save-as copy this onto my laptop":
-                // no. The workspace is one place, as `run_with` says, and half
-                // of one would make every path ambiguous.
+                // Save-as therefore cannot copy a remote file to the local
+                // machine. As described in `run_with`, a session has a single
+                // workspace.
                 let target = match remote {
                     Some(_) => target,
                     None => resolve_path(&target, path.as_deref(), home.as_deref(), cwd.as_deref()),
@@ -643,7 +633,7 @@ impl Driver {
                         if let Outcome::Message(report) = session.rename_to(target) {
                             session.status = Some(report);
                         }
-                        // A different path is a different document to a
+                        // A different path is a different document to the
                         // server, and possibly a different language.
                         lsp.attach(session);
                         lsp.saved(session);
@@ -654,18 +644,16 @@ impl Driver {
                     }
                 }
             }
-            // The core asked for the file as it is on disk; reading it is
-            // this side's job.
+            // The core requested the file's contents on disk. The frontend
+            // reads it.
             Outcome::Revert => {
                 let target = session.document.path.clone();
-                // Read wherever the file actually is. In a remote session the
-                // document's path is the far end's, relative to the workspace it
-                // serves, so reading it here resolves it against this process's
-                // working directory instead — which either fails for a file that
-                // exists perfectly well over there, or finds an unrelated local
-                // file. Revert is the one command whose whole job is to discard
-                // unsaved work, which makes reading the wrong file the worst
-                // thing it could do.
+                // Read the file from the machine that holds it. In a remote
+                // session the path is relative to the remote workspace. Reading
+                // it locally would resolve it against this process's working
+                // directory, which either fails or finds an unrelated local file.
+                // Revert discards unsaved work, so reading the wrong file must
+                // be avoided.
                 let read = target.as_deref().map(|target| match remote.as_mut() {
                     Some(client) => client
                         .read(&target.display().to_string())
@@ -680,9 +668,8 @@ impl Driver {
                         lsp.changed(session);
                     }
                     Some(Err(error)) => {
-                        // The edits stay: throwing them away because the
-                        // file could not be read would lose work to a
-                        // failure that had nothing to do with it.
+                        // Keep the unsaved edits. A read failure must not
+                        // discard them.
                         let path = target.unwrap_or_default();
                         session.status =
                             Some(format!("could not read {}: {error}", path.display()));
@@ -690,20 +677,14 @@ impl Driver {
                     None => {}
                 }
             }
-            // The prompt asked what to look for; walking the workspace is
-            // this side's job.
-            // Searched on the far end, because that is where the files are.
-            // This used to be refused: a local walk in a remote session
-            // searches the wrong machine and reports matches in files the
-            // editor is not showing.
-            // Chosen out of the list below: the decision is taken back, and the
-            // extension asks again the next time it wants that.
+            // The user chose a remembered permission to forget. The decision is
+            // withdrawn, and the extension asks again the next time it needs
+            // that permission.
             Outcome::ForgetExtensionPermission(chosen) => {
                 hosts.forget_permission(session, &chosen);
             }
             // The user answered an extension's permission request. The request
-            // itself has been waiting in `hosts` since it was asked about; this is
-            // what finally sends it a reply.
+            // has been waiting in `hosts`; this sends the reply.
             Outcome::ExtensionConsent { allow } => {
                 let mut files = match remote.as_mut() {
                     Some(client) => crate::extensions::Files::Remote(client),
@@ -711,20 +692,24 @@ impl Driver {
                 };
                 hosts.answer_consent(session, allow, &mut files, now_ms);
             }
-            // The name has been typed; asking what it would change is the
-            // language server's business, and applying the answer needs a
-            // filesystem — so both halves are here rather than in the core.
+            // The new name has been entered. The language server computes the
+            // changes and applying them needs a filesystem, so both steps are
+            // handled here rather than in the core.
             Outcome::Rename { new_name } => lsp.request_rename(session, &new_name),
-            // Which action was chosen; the list it indexes is the frontend's.
+            // The chosen action. The list it indexes belongs to the frontend.
             Outcome::CodeAction(id) => {
-                // Through the connection when there is one: the action's edit
-                // names files on the machine the server is running on.
+                // Use the connection when there is one, because the action's edit
+                // names files on the machine where the server runs.
                 let mut files = match remote.as_mut() {
                     Some(client) => crate::extensions::Files::Remote(client),
                     None => crate::extensions::Files::Here,
                 };
                 lsp.run_code_action(session, &id, &mut files);
             }
+            // The prompt returned a search query. The frontend searches the
+            // workspace. In a remote session the search runs on the remote
+            // machine, because the files are there. A local search would
+            // report matches in files the editor is not showing.
             Outcome::SearchInFiles { query, options } if remote.is_some() => {
                 let client = remote.as_mut().expect("a remote session");
                 match client.search(&query, options) {
@@ -738,8 +723,8 @@ impl Driver {
                             ));
                         }
                     }
-                    // A failed search leaves the session alone: nothing was
-                    // opened and nothing changed, so there is nothing to undo.
+                    // A failed search leaves the session unchanged. Nothing was
+                    // opened or modified, so there is nothing to undo.
                     Err(error) => {
                         session.status = Some(format!("could not search the remote: {error}"))
                     }
@@ -756,9 +741,9 @@ impl Driver {
                     ));
                 }
             }
-            // The search says *which files*; the session decides what the edit
-            // is and makes it one undoable action. Both halves are needed here
-            // because only this side knows where the files are.
+            // The search finds *which files* match. The session builds the edit
+            // as one undoable action. Both steps run here because only the
+            // frontend knows where the files are.
             Outcome::ReplaceInFiles {
                 query,
                 replacement,
@@ -794,8 +779,8 @@ impl Driver {
                 };
 
                 match searched {
-                    // A failed search leaves the session alone: nothing was
-                    // opened and nothing changed, so there is nothing to undo.
+                    // A failed search leaves the session unchanged. Nothing was
+                    // opened or modified, so there is nothing to undo.
                     Err(message) => session.status = Some(message),
                     Ok((paths, _)) if paths.is_empty() => {
                         session.status = Some(format!("no matches for `{query}`"));
@@ -816,9 +801,9 @@ impl Driver {
                             Ok(applied) => {
                                 let mut report = applied.summary(&format!("Replaced `{query}`"));
                                 // The search stopped early, so there may be
-                                // occurrences it never saw. Said plainly: a
-                                // replace-all that was not all is the one thing
-                                // a user must not have to guess at.
+                                // occurrences it did not find. The report says
+                                // so explicitly, because the user must know
+                                // whether every occurrence was replaced.
                                 if truncated {
                                     report.push_str(
                                         " — the search hit its limit, so there may be more",
@@ -826,26 +811,25 @@ impl Driver {
                                 }
                                 session.status = Some(report);
                             }
-                            // Nothing was changed: the plan is built before
-                            // anything is applied, which is what building one is
-                            // for.
+                            // Nothing was changed, because the whole plan is
+                            // built before anything is applied.
                             Err(error) => session.status = Some(error.to_string()),
                         }
                     }
                 }
             }
             Outcome::SaveAll => {
-                // The loop and the reporting are the core's; only the
-                // write is this side's, because only this side has a
-                // filesystem.
+                // The core runs the loop and builds the report. The frontend
+                // only performs the write, because only the frontend has
+                // filesystem access.
                 let outcome = session.save_all(write_file);
                 if let Outcome::Message(report) = outcome {
                     session.status = Some(report);
                 }
                 lsp.saved(session);
             }
-            // The tree decided what should happen to a file; doing it needs a
-            // filesystem, which is this side.
+            // The source-control view chose an operation. Performing it needs
+            // the filesystem, which the frontend has.
             Outcome::GitOperation(operation) => {
                 scm.apply(session, &operation);
                 *dirty = true;
@@ -868,13 +852,12 @@ impl Driver {
                     .map(|explorer| explorer.root().to_path_buf());
                 match perform(&operation, remote.as_mut(), root.as_deref()) {
                     Ok(()) => {
-                        // What the file looks like now, so undoing this rename
-                        // can tell it apart from whatever might replace it.
-                        // Before `file_operation_done`, which is what puts the
-                        // undo entry in reach.
-                        // A rename's destination, or what a create just made:
-                        // both undo by acting on a path, and both need to know
-                        // the thing at that path is still theirs.
+                        // Record the current state of a rename's destination or
+                        // a newly created path. Both are undone by acting on that
+                        // path, and the stamp lets undo detect whether something
+                        // else has replaced it. This runs before
+                        // `file_operation_done`, which makes the undo entry
+                        // available.
                         let made = match &operation {
                             deco_editor::FileOperation::Rename { to, .. } => Some(to),
                             deco_editor::FileOperation::CreateFile(path)
@@ -885,42 +868,37 @@ impl Driver {
                             session.stamp_last_undo(stamp);
                         }
                         session.file_operation_done(&operation);
-                        // A delete may have detached open documents; the server
-                        // still has them open under URIs that name nothing.
+                        // A delete may have detached open documents. The server
+                        // still has them open under URIs that no longer exist.
                         lsp.close_deleted(session);
-                        // A new file is opened, because creating one you then
-                        // have to go and find is two steps where VS Code has
-                        // one. Nothing is read: it is empty, and reading it back
-                        // to prove that would be a round trip for no answer.
+                        // A new file is opened immediately, as in VS Code. It is
+                        // not read back because it is known to be empty.
                         if let deco_editor::FileOperation::CreateFile(path) = &operation {
                             session.open(path.clone(), "");
                         }
                     }
                     Err(error) => {
                         session.file_operation_failed(&operation, &error.to_string());
-                        // Only for a delete this machine actually attempted. A
-                        // remote session refuses every mutation before touching
-                        // either filesystem, and the paths are the far end's —
-                        // testing them with a local `exists` says "gone" about
-                        // every one of them and would let go of every tab in the
-                        // workspace for a delete that never happened.
+                        // Only for a delete attempted on this machine. A remote
+                        // session rejects every mutation before touching either
+                        // filesystem, and its paths are remote paths. A local
+                        // `exists` check would report every one of them as
+                        // missing and release every tab in the workspace for a
+                        // delete that never happened.
                         if remote.is_none() {
                             reconcile_failure(session, lsp, &operation);
                         }
                     }
                 }
             }
-            // Quick open and search named a file; reading it is this
-            // side's job.
+            // Quick open or search selected a file. The frontend reads it.
             Outcome::OpenFile { path: target, at } => {
                 // Resolved because the path may have been typed: `ctrl+o`
                 // accepts `~/notes.txt` and `src/main.rs`. Quick open and
-                // search hand over absolute paths, for which this is
-                // identity.
-                // In remote mode the path is the server's, relative to
-                // the workspace it serves, and resolving it against a
-                // local directory would produce a path on the wrong
-                // machine.
+                // search pass absolute paths, which resolve to themselves.
+                // In remote mode the path is the server's, relative to the
+                // workspace it serves. Resolving it against a local directory
+                // would produce a path on the wrong machine.
                 let target = match remote {
                     Some(_) => target,
                     None => resolve_path(&target, path.as_deref(), home.as_deref(), cwd.as_deref()),
@@ -936,7 +914,7 @@ impl Driver {
                         session.open(target, &text);
                         if let Some(at) = at {
                             // Clamped, because the file on disk may have
-                            // moved on since it was searched.
+                            // changed since it was searched.
                             let at = session.document.buffer.clamp_position(at);
                             session.view.selections = deco_core::SelectionSet::caret(at);
                             session.view.reveal_cursor(
@@ -951,9 +929,9 @@ impl Driver {
                     }
                 }
             }
-            // Commands the core cannot implement because they need a
-            // language server. Named rather than guessed at, so a
-            // mistyped binding still reports as unknown.
+            // Commands the core cannot implement, for example because they
+            // need a language server. Each is matched by name, so a mistyped
+            // binding is still reported as not implemented.
             Outcome::Frontend(command) => match command.as_str() {
                 "editor.action.showHover" => lsp.request_hover(session),
                 "editor.action.revealDefinition" => lsp.request_definition(session),
@@ -961,8 +939,8 @@ impl Driver {
                 "editor.action.rename" => lsp.offer_rename(session),
                 "editor.action.quickFix" => lsp.request_code_actions(session),
                 "workbench.action.gotoSymbol" => lsp.request_document_symbols(session),
-                // The extension directories have to be walked from here,
-                // for the same reason the file list is.
+                // The extension directories are scanned here, for the same
+                // reason as the file list: the core has no filesystem access.
                 "workbench.action.selectTheme" => {
                     let available = crate::themes::list(extension_roots);
                     session.offer_themes(crate::themes::rows(&available));
@@ -971,9 +949,9 @@ impl Driver {
                 "editor.action.triggerSuggest" => {
                     lsp.request_completion(session, deco_lsp::requests::CompletionTrigger::Invoked)
                 }
-                // The workspace has to be walked from here: the core has
-                // no filesystem.
-                // The listing has to come from wherever the files are.
+                // The workspace is listed here because the core has no
+                // filesystem access. The listing comes from the machine that
+                // holds the files.
                 "workbench.action.quickOpen" if remote.is_some() => {
                     let client = remote.as_mut().expect("just checked");
                     match client.list() {
@@ -1013,14 +991,14 @@ impl Driver {
                 "acceptSelectedSuggestion" => {
                     lsp.accept(session, now_ms);
                 }
-                // An extension's command, whose identifier is whatever is
-                // installed rather than anything written down here. Asked
-                // last so that no core command can be shadowed by one.
-                // Offered before the extension commands are looked at, because it
-                // is deco's own command rather than one an extension registered.
+                // Matched before the extension commands, because it is deco's
+                // own command rather than one an extension registered.
                 "deco.extensions.forgetPermission" => {
                     hosts.offer_permissions(session);
                 }
+                // An extension command. Its identifier depends on what is
+                // installed. Checked last so an extension cannot shadow a
+                // core command.
                 other if hosts.run_command(session, other) => {}
                 other => {
                     session.status = Some(format!("{other} is not implemented yet"));
@@ -1035,21 +1013,21 @@ impl Driver {
             reload_after_checkout(session, lsp, remote.as_mut(), tree_root.as_deref());
         }
 
-        // While the find bar has the keyboard, a keystroke narrows the
-        // query and the document never sees it. A completion list left
-        // open underneath would be narrowed by text that was never
-        // typed into the file — so it goes, along with any hover.
+        // While the find bar or a prompt has keyboard focus, keystrokes edit
+        // the query, not the document. A completion list left open would be
+        // narrowed by text that was not typed into the file, so it is closed
+        // along with any hover.
         if session.find.visible() || session.prompt.is_some() {
             lsp.dismiss_suggest();
             lsp.dismiss_hover();
         }
-        // A printable key both typed itself and narrowed the list; a
-        // backspace both deleted and widened it. Both after the command,
-        // so the list and the document agree about what has been typed.
+        // A printable key both typed itself and narrowed the list. A
+        // backspace both deleted and widened it. Both are handled after the
+        // command, so the list and the document match.
         else if let Some(c) = typed {
             if !lsp.typed(session, c) {
-                // No list was open, so this may be a trigger character —
-                // `.` or `::` — that should open one.
+                // No list was open, so this may be a trigger character, such
+                // as `.` or `::`, that should open one.
                 if lsp
                     .completion_triggers()
                     .iter()
@@ -1064,51 +1042,49 @@ impl Driver {
         } else if was_backspace {
             lsp.backspaced(session);
         }
-        // The chord may have switched tabs — ctrl+tab, ctrl+w, a file
-        // opened from a jump. `attach` is idempotent, so calling it for
-        // the same document costs a comparison; for a new one it sends
+        // The chord may have switched tabs, for example with ctrl+tab, ctrl+w
+        // or a jump that opened a file. `attach` is idempotent, so for the same
+        // document it is only a comparison. For a new document it sends
         // didClose/didOpen or starts the right server, and the stored
-        // diagnostics for the returning document are collected.
+        // diagnostics for the document are collected.
         if session.document.path != path_before
             || session.document.language().map(str::to_owned) != language_before
         {
-            // A hover or completion list anchored in the old document
-            // would describe text that is no longer on screen — or, after
-            // a language change, would be the old server's answer about a
-            // file it is no longer responsible for.
+            // A hover or completion list from the old document would describe
+            // text that is no longer on screen. After a language change it
+            // would come from a server no longer responsible for the file.
             lsp.dismiss_hover();
             lsp.dismiss_suggest();
             lsp.attach(session);
             lsp.refresh_diagnostics(session);
         }
-        // After the command, not before: the server has to be told
-        // about the text as it now is.
+        // After the command, so the server receives the current text.
         lsp.changed(session);
-        // A hover describing where the cursor was is worse than none.
+        // Close a hover that describes the previous cursor position.
         *dirty |= lsp.cursor_moved(session);
 
-        // The auto-save clock restarts on every edit, so a delay measured
-        // from the *first* keystroke of a paragraph cannot fire in the middle
-        // of typing it. Cleared when the document is clean again, whether
-        // this keystroke saved it or undid its way back.
+        // The auto-save timer restarts on every edit, so it does not fire
+        // while the user is still typing. It is cleared when the document is
+        // clean again, whether this keystroke saved it or undid back to the
+        // saved state.
         if session.document.dirty {
             *edited_at = Some(now_ms);
         } else if was_dirty {
             *edited_at = None;
         }
 
-        // Whatever that keystroke was, it may have opened a directory in the
-        // tree — `ctrl+b` showing it for the first time, `right` on a folder, a
-        // reveal walking down to a file. Answering here rather than inside each
-        // arm keeps the tree's reading in one place, and one place is where it
-        // has to be to be turned into something asynchronous later.
+        // Any keystroke may have opened a directory in the tree, for example
+        // `ctrl+b` showing it for the first time, `right` on a folder, or a
+        // reveal expanding down to a file. Filling the tree here rather than in
+        // each arm keeps directory reading in one place, which makes it easier
+        // to make asynchronous later.
         if let Some(root) = tree_root.clone() {
             fill_tree(session, &root, remote.as_mut())?;
         }
         Ok(Flow::Continue)
     }
 
-    /// What the extension hosts have been up to, for a test or a status line.
+    /// The extension hosts' state, for a test or a status line.
     pub fn hosts(&self) -> &crate::extensions::Hosts {
         &self.hosts
     }
@@ -1121,10 +1097,9 @@ impl Driver {
 
 /// Re-reads every open file after Git replaced the working tree.
 ///
-/// A file absent on the target branch is detached rather than silently closed:
-/// its old text remains visible and dirty, so it cannot be lost. All buffers
-/// were required to be clean before checkout, making that conservative copy
-/// safe and unambiguous.
+/// A file absent on the target branch is detached rather than closed. Its old
+/// text remains visible and marked dirty, so it is not lost. All buffers had to
+/// be clean before checkout, so this copy is unambiguous.
 fn reload_after_checkout(
     session: &mut Session,
     lsp: &mut Lsp,
@@ -1163,11 +1138,11 @@ fn reload_after_checkout(
 
 /// The commands this frontend implements, for the command palette.
 ///
-/// Only the ones the core cannot run on its own — every one of these needs the
-/// language-server client that lives here. The core cannot know which of the
-/// commands it hands onward a frontend has wired up, so each frontend says: a
-/// palette offering `Go to References`, which this one answers with "not
-/// implemented yet", would be worse than one that leaves it out.
+/// Only the commands the core cannot run on its own, because they need the
+/// language-server client or other resources in this frontend. The core cannot
+/// know which forwarded commands a frontend implements, so each frontend lists
+/// its own. This keeps the palette from offering a command such as `Go to
+/// References` that would only report "not implemented yet".
 pub fn frontend_commands() -> Vec<deco_editor::commands::PaletteEntry> {
     [
         ("editor.action.showHover", "Show Hover"),
@@ -1195,9 +1170,9 @@ pub fn frontend_commands() -> Vec<deco_editor::commands::PaletteEntry> {
 
 /// Tells the session how much of the terminal is text.
 ///
-/// The remainder is chrome — the status bar, and the find bar when it is open —
-/// so this has to be redone whenever either the terminal or the find bar changes
-/// size, or the last line of the file ends up underneath the bar.
+/// The remainder is chrome: the status bar, and the find bar when it is open.
+/// This must be recomputed whenever the terminal or the find bar changes size,
+/// or the last line of the file is hidden under the bar.
 fn resize(session: &mut Session, width: u16, height: u16) {
     let height = height as usize;
     let text_height = height.saturating_sub(render::chrome_height(session, height));
@@ -1207,10 +1182,9 @@ fn resize(session: &mut Session, width: u16, height: u16) {
 /// The character a chord types, if it types one.
 ///
 /// Mirrors the rule in `Session::handle_chord`: an unmodified printable key
-/// inserts itself, and anything with Ctrl, Alt or Meta was reaching for a
-/// command. Duplicated deliberately rather than exposed from the core — the core
-/// decides what a key *does*, and this only needs to know what was typed so the
-/// completion list can be narrowed by the same character.
+/// inserts itself, and a key with Ctrl, Alt or Meta is a command. The rule is
+/// duplicated rather than exposed from the core. The core decides what a key
+/// *does*; this only needs the typed character to narrow the completion list.
 fn printable(chord: &deco_keymap::keys::Chord) -> Option<char> {
     use deco_keymap::keys::Key;
     match chord.key {
@@ -1227,21 +1201,22 @@ fn printable(chord: &deco_keymap::keys::Chord) -> Option<char> {
 
 /// How long to wait on the terminal before checking the language server.
 ///
-/// A language server has nothing to do with the keyboard, so the loop cannot
-/// simply block on input. 50ms is below the threshold at which a diagnostic
-/// feels delayed, and 20 wakeups a second on an idle editor is not measurable.
+/// Language server messages do not arrive through the keyboard, so the loop
+/// cannot block on input. 50ms is below the threshold at which a diagnostic
+/// appears delayed, and 20 wakeups a second on an idle editor has no measurable
+/// cost.
 const LSP_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Carries out one of the tree's file operations.
 ///
-/// The core has already decided it is allowed — the name is a name, the path is
-/// inside the workspace, nothing in the listing is in the way. What is left is
-/// the part that can still fail for reasons no amount of checking predicts: a
-/// permission, a full disk, another program getting there first.
+/// The core has already validated the operation: the name is valid, the path is
+/// inside the workspace, and nothing in the listing conflicts. The remaining
+/// failures cannot be predicted by checks, such as permissions, a full disk, or
+/// another program changing the file first.
 ///
-/// `create_new` rather than `File::create` for a new file, so that a file which
-/// appeared between the check and here is not silently truncated. That race is
-/// exactly why the frontend re-checks rather than trusting the tree's listing.
+/// A new file uses `create_new` rather than `File::create`, so a file that
+/// appeared after the check is not silently truncated. This race is why the
+/// frontend checks again rather than trusting the tree's listing.
 fn perform(
     operation: &deco_editor::FileOperation,
     remote: Option<&mut deco_remote::Client>,
@@ -1250,19 +1225,19 @@ fn perform(
     use deco_editor::FileOperation;
 
     if remote.is_some() {
-        // The protocol reads, writes and lists; it has no create, rename or
-        // delete. Refused by name rather than half-done locally, which would
-        // change a file on this machine and report success about the other one.
+        // The protocol supports read, write and list, but not create, rename or
+        // delete. Reject the operation explicitly. Performing it locally would
+        // change a file on this machine and report success for the remote one.
         return Err(io::Error::other(
             "changing files over a remote connection is not implemented yet",
         ));
     }
 
-    // The session checked that the path is inside the workspace, but it can only
-    // compare the *spelling*: it has no filesystem. A directory replaced by a
-    // symlink since the tree listed it resolves elsewhere, and every call below
-    // follows it — so `New File` in a `src` that is now a link to `/outside`
-    // would write there, having been told it was writing inside the workspace.
+    // The session checked that the path is inside the workspace, but without a
+    // filesystem it can only compare the path text. A directory replaced by a
+    // symlink after the tree listed it resolves elsewhere, and every call below
+    // follows the link. `New File` in a `src` that is now a link to `/outside`
+    // would therefore write outside the workspace.
     if let Some(root) = root {
         inside_after_links(root, operation.parent().unwrap_or(Path::new("")))?;
     }
@@ -1280,11 +1255,11 @@ fn perform(
             expect,
             directory,
         } => {
-            // The kind the tree was showing, not the kind on disk now. A
-            // directory replaced by a file since it was read would otherwise be
-            // moved as though it were still a directory, and every tab below the
-            // old path retargeted onto a regular file — the same reinterpretation
-            // a delete is already stopped from making.
+            // Check against the kind the tree was showing, not the kind on disk
+            // now. Otherwise a directory replaced by a file since it was read
+            // would be moved as a directory, and every tab below the old path
+            // would be retargeted onto a regular file. Delete has the same
+            // protection.
             match std::fs::symlink_metadata(from) {
                 Ok(meta) if meta.is_dir() == *directory => {}
                 Ok(_) => {
@@ -1299,11 +1274,10 @@ fn perform(
                 }
                 Err(error) => return Err(error),
             }
-            // An undo carries what the file looked like when it was moved. If
-            // that no longer matches, something replaced it, and moving *that*
-            // back would be shifting somebody else's file on a keystroke meant
-            // to undo your own — then pointing the buffer at it, so the next
-            // save would write over its contents.
+            // An undo carries the file's stamp from when it was moved. If the
+            // stamp no longer matches, something replaced the file. Moving it
+            // back would move a different file and point the buffer at it, so
+            // the next save would overwrite its contents.
             if let Some(expected) = expect {
                 match stamp_of(from) {
                     Some(now) if &now == expected => {}
@@ -1318,22 +1292,21 @@ fn perform(
                     }
                 }
             }
-            // `rename` would overwrite an existing `to` on Unix. The tree
-            // refused that already, but between its listing and this call is a
-            // window, and silently replacing somebody's file is the one outcome
-            // worth a second check.
+            // `rename` would overwrite an existing `to` on Unix. The tree already
+            // rejected that, but the destination can appear between its listing
+            // and this call, so check again to avoid silently replacing a file.
             //
-            // Not on a case-only rename, though. On the case-insensitive
-            // filesystems macOS and Windows usually have, `Foo.rs` *is*
-            // `foo.rs`, so this check sees the source itself and would refuse
-            // every change of capitalisation. Canonicalising both tells the two
-            // cases apart: same file, or a different one in the way.
+            // A case-only rename is exempt. On the case-insensitive filesystems
+            // that macOS and Windows usually use, `Foo.rs` and `foo.rs` are the
+            // same file, so this check would find the source itself and reject
+            // every change of capitalisation. Canonicalising both paths
+            // distinguishes the same file from a different file in the way.
             //
-            // `symlink_metadata` rather than `exists`, which follows links: a
-            // dangling symlink at the destination answers `false` to `exists`
-            // and would be silently replaced. The tree cannot show one either —
-            // `list_dir` reports only real files and directories — so it is
-            // invisible from both sides, and needs no race to be hit.
+            // `symlink_metadata` is used rather than `exists`, which follows
+            // links. A dangling symlink at the destination returns `false` from
+            // `exists` and would be silently replaced. The tree does not show
+            // such links either, because `list_dir` reports only real files and
+            // directories, so this case occurs even without a race.
             if std::fs::symlink_metadata(to).is_ok() && !same_file(from, to) {
                 return Err(io::Error::new(
                     io::ErrorKind::AlreadyExists,
@@ -1342,11 +1315,11 @@ fn perform(
             }
             std::fs::rename(from, to)
         }
-        // Dispatched on what the tree was showing when this was confirmed, not
-        // on what is on disk now. The tree has no watcher, so if a file has been
-        // replaced by a directory since, asking the disk would find a directory
-        // and delete it recursively — having asked the user about a file.
-        // `remove_file` on a directory fails, which is the refusal wanted.
+        // Dispatched on what the tree was showing when the user confirmed, not
+        // on what is on disk now. The tree has no watcher. If a file has since
+        // been replaced by a directory, checking the disk would find a directory
+        // and delete it recursively after the user confirmed deleting a file.
+        // `remove_file` on a directory fails, which is the intended result.
         FileOperation::Delete {
             path,
             directory: true,
@@ -1355,18 +1328,17 @@ fn perform(
             path,
             directory: false,
         } => std::fs::remove_file(path),
-        // Undoing a create. `remove_dir` rather than `remove_dir_all` — it
-        // fails on a directory with anything in it, which is exactly the
-        // refusal wanted, and gets it from the operating system rather than
-        // from a check with a race under it.
+        // Undoing a create. `remove_dir` is used rather than `remove_dir_all`
+        // because it fails on a non-empty directory. The operating system
+        // enforces this, so there is no race with a separate check.
         FileOperation::DeleteIfEmpty {
             path,
             directory,
             expect,
         } => {
-            // Empty is not an identity. Another program can remove what was
-            // created and leave a different empty file or directory in its
-            // place, and undoing the create would delete that instead.
+            // Being empty does not identify the entry. Another program can
+            // remove what was created and leave a different empty file or
+            // directory in its place, and undoing the create would delete it.
             if let Some(expected) = expect {
                 match stamp_of(path) {
                     Some(now) if &now == expected => {}
@@ -1386,11 +1358,11 @@ fn perform(
                     )
                 })
             } else {
-                // A file has to be checked, there being no "unlink if empty".
-                // The window between this and the unlink is real and the cost of
-                // losing it is small: something written in that instant is lost.
-                // Refusing outright would be worse — it would mean a create
-                // could never be undone on a filesystem anyone else is using.
+                // A file must be checked explicitly because there is no
+                // "unlink if empty". Data written between this check and the
+                // unlink is lost. This window is accepted, because refusing
+                // instead would mean a create could never be undone on a
+                // filesystem shared with other programs.
                 match std::fs::metadata(path) {
                     Ok(meta) if meta.len() > 0 => Err(io::Error::other(format!(
                         "{} has been written to since it was created — delete it \
@@ -1405,24 +1377,24 @@ fn perform(
     }
 }
 
-/// Puts the tree and the tabs back in step after a mutation reported failure.
+/// Resynchronises the tree and the tabs after a mutation reported failure.
 ///
-/// Only for one this machine actually attempted: a remote session refuses every
-/// mutation before touching either filesystem, and the paths are the far end's,
-/// so a local `exists` would say "gone" about all of them.
+/// Only for a mutation attempted on this machine. A remote session rejects every
+/// mutation before touching either filesystem, and its paths are remote paths,
+/// so a local `exists` would report all of them as missing.
 fn reconcile_failure(session: &mut Session, lsp: &mut Lsp, operation: &deco_editor::FileOperation) {
-    // Whatever failed, the listing that said it would work is now suspect — a
-    // create refused because another program claimed the name means the tree is
-    // missing that name, and without a re-read every retry fails against the
-    // same stale picture. There is no watcher to notice it any other way.
+    // After any failure, the listing that allowed the operation may be stale.
+    // For example, a create rejected because another program took the name
+    // means the tree is missing that name, and without a re-read every retry
+    // fails the same way. There is no watcher to detect this otherwise.
     if let Some(parent) = operation.parent() {
         session.invalidate_directory(parent);
-        // But re-reading it is no use if it is not a directory any more.
-        // `list_dir` answers an unreadable or non-directory path with an empty
-        // listing, so the tree would go on showing it as an empty folder for
-        // good — and every create in it would go on failing — while the entry
-        // that would correct it sits in the listing *above*. So that one is
-        // re-read too, and what the tree remembers below is dropped.
+        // Re-reading the parent does not help if it is no longer a directory.
+        // `list_dir` returns an empty listing for an unreadable or
+        // non-directory path, so the tree would keep showing an empty folder
+        // and every create in it would keep failing. The entry that would
+        // correct this is in the listing above, so that listing is re-read too
+        // and the cached subtree below is dropped.
         if !parent.is_dir() {
             if let Some(above) = parent.parent() {
                 session.invalidate_directory(above);
@@ -1431,16 +1403,17 @@ fn reconcile_failure(session: &mut Session, lsp: &mut Lsp, operation: &deco_edit
         }
     }
 
-    // And a failed rename's *source*, subtree and all. The usual reason a
-    // rename fails is that something changed underneath it — including the
-    // source being removed — and the parent alone leaves that directory's own
-    // cached listing describing children it may no longer have. Recreate it
-    // under the old name later and they come back for good, because expanding a
-    // directory whose listing is already `Known` asks for nothing.
+    // Also invalidate a failed rename's *source* and its subtree. A rename
+    // usually fails because something changed, possibly including removal of
+    // the source. Invalidating only the parent would leave the source's cached
+    // listing describing children it may no longer have. If the directory is
+    // later recreated under the old name, those stale entries would reappear
+    // permanently, because expanding a directory whose listing is already
+    // `Known` does not re-read it.
     //
-    // Invalidated rather than forgotten: the source usually still exists, the
-    // rename having failed for some other reason, so re-reading it is right and
-    // throwing away its expansion is not.
+    // Invalidated rather than forgotten, because the source usually still
+    // exists. Re-reading it is correct, and discarding its expansion state is
+    // not.
     if let deco_editor::FileOperation::Rename { from, .. } = operation {
         session.invalidate_subtree(from);
     }
@@ -1448,11 +1421,11 @@ fn reconcile_failure(session: &mut Session, lsp: &mut Lsp, operation: &deco_edit
     reconcile_failed_delete(session, lsp, operation);
 }
 
-/// Puts the tree and the tabs back in step after a delete reported failure.
+/// Resynchronises the tree and the tabs after a delete reported failure.
 ///
-/// `remove_dir_all` can take part of a tree and then stop, so "it failed" does
-/// not mean "nothing happened". Everything here is driven by what is on disk
-/// now rather than by what was asked for.
+/// `remove_dir_all` can delete part of a tree and then stop, so a failure does
+/// not mean nothing was deleted. Everything here is based on what is on disk now
+/// rather than on what was requested.
 fn reconcile_failed_delete(
     session: &mut Session,
     lsp: &mut Lsp,
@@ -1465,45 +1438,44 @@ fn reconcile_failed_delete(
         _ => return,
     };
 
-    // What the tree knew, taken *before* anything is invalidated: invalidating
-    // turns those listings back into "not read yet", and a scan afterwards finds
-    // nothing to check. Which is what made the whole tree half of the evidence
-    // below dead — only an open tab could ever have raised the barrier.
+    // Collect the paths the tree knew *before* anything is invalidated.
+    // Invalidating resets those listings to "not read yet", so a scan afterwards
+    // would find nothing to check, and only open tabs could trigger the
+    // barrier below.
     let known: Vec<PathBuf> = if recursive {
         session.known_paths_under(path)
     } else {
         Vec::new()
     };
 
-    // And the subtree: the directory itself may survive, so re-reading its
-    // parent rediscovers it and leaves its own listing — and every expanded one
-    // below — describing files that have gone.
+    // Invalidate the subtree as well. The directory itself may survive, and
+    // re-reading only its parent would leave its own listing, and every
+    // expanded listing below it, describing files that no longer exist.
     session.invalidate_subtree(path);
 
-    // Only a recursive delete can half happen: `remove_file` and `remove_dir`
-    // either did it or did not. And even a recursive failure need not mean
-    // anything went — a `PermissionDenied` on the directory itself stops it
-    // before it opens anything. So the barrier goes up on *evidence* rather
-    // than on the error kind: something the tree knew about, or something a tab
-    // is holding, has actually gone.
+    // Only a recursive delete can partially succeed. `remove_file` and
+    // `remove_dir` either succeed or do not. Even a recursive failure may have
+    // deleted nothing, for example a `PermissionDenied` on the directory itself.
+    // The barrier is therefore raised on *evidence* rather than on the error
+    // kind: a path the tree knew about, or a file an open tab holds, no longer
+    // exists.
     //
-    // Bounded by what had been read, which is what is on screen — the tree only
-    // knows the directories somebody expanded. A file removed out of a
-    // collapsed directory is invisible here, and so is the undo it would have
-    // invalidated; naming that is better than a check that walks a workspace to
-    // answer a question about a keystroke.
+    // The check is limited to what has been read, because the tree only knows
+    // directories that were expanded. A file removed from a collapsed directory
+    // is not detected here, and neither is the undo it would invalidate. This
+    // limitation is accepted to avoid walking the whole workspace on a
+    // keystroke.
     let mut anything_went = known
         .iter()
         .any(|known| matches!(known.try_exists(), Ok(false)));
 
-    // Per file, because half a directory survives and only the disk knows which
-    // half.
+    // Checked per file, because part of a directory may survive and only the
+    // disk shows which part.
     for held in session.open_paths_under(path) {
-        // `try_exists` rather than `exists`, which answers `false` for a file it
-        // cannot stat. The same permission problem that stopped the delete can
-        // hide a file that is still there, and letting go of a tab whose file
-        // survived is the wrong way to be wrong. Only a definite `false`
-        // detaches; an error leaves the tab attached.
+        // `try_exists` rather than `exists`, which returns `false` for a file it
+        // cannot stat. The permission problem that stopped the delete can also
+        // hide a file that still exists, and its tab must not be detached. Only
+        // a definite `false` detaches; an error leaves the tab attached.
         if matches!(held.try_exists(), Ok(false)) {
             anything_went = true;
             session.detach_tabs_under(&held);
@@ -1515,16 +1487,15 @@ fn reconcile_failed_delete(
     lsp.close_deleted(session);
 }
 
-/// Refuses a directory that resolves outside `root` once symlinks are followed.
+/// Rejects a directory that resolves outside `root` once symlinks are followed.
 ///
-/// `canonicalize` is what turns the session's spelling-based check into one
-/// about where the path actually leads. It closes the case that matters in
-/// practice — a link sitting in the workspace, put there by a build or a
-/// package manager — but not a racing one: something can still replace an
-/// ancestor between this and the call below. Closing *that* needs `openat` with
-/// `O_NOFOLLOW` and a directory handle per component, which the standard library
-/// has on no platform. `docs/files.md` names the window, next to the rename one
-/// it is a cousin of.
+/// `canonicalize` turns the session's text-based check into a check of where
+/// the path actually leads. This covers the common case of a link in the
+/// workspace created by a build or a package manager. It does not cover a race:
+/// an ancestor can still be replaced between this check and the operation.
+/// Preventing that requires `openat` with `O_NOFOLLOW` and a directory handle
+/// per component, which the standard library does not provide on any platform.
+/// `docs/files.md` documents this window next to the related rename window.
 fn inside_after_links(root: &Path, dir: &Path) -> io::Result<()> {
     let real_root = std::fs::canonicalize(root)?;
     let real_dir = std::fs::canonicalize(dir)?;
@@ -1542,7 +1513,8 @@ fn inside_after_links(root: &Path, dir: &Path) -> io::Result<()> {
     ))
 }
 
-/// What the file at `path` looks like, or `None` if it cannot be seen.
+/// The size and modification time of the file at `path`, or `None` if it cannot
+/// be read.
 fn stamp_of(path: &Path) -> Option<deco_editor::files::Stamp> {
     let meta = std::fs::symlink_metadata(path).ok()?;
     Some(deco_editor::files::Stamp {
@@ -1553,11 +1525,11 @@ fn stamp_of(path: &Path) -> Option<deco_editor::files::Stamp> {
 
 /// Whether two paths name the same file on disk.
 ///
-/// By canonicalising rather than comparing strings, so that a case-only rename
-/// on a case-insensitive filesystem is recognised as the file renaming itself.
-/// A path that cannot be canonicalised is not the same file as anything — the
-/// caller only asks when `to` exists, so failing here means something changed
-/// underneath and refusing is the safe answer.
+/// Compares canonical paths rather than strings, so a case-only rename on a
+/// case-insensitive filesystem is recognised as the same file. A path that
+/// cannot be canonicalised is treated as a different file. The caller only asks
+/// when `to` exists, so a failure here means something changed and rejecting
+/// the rename is the safe result.
 fn same_file(a: &Path, b: &Path) -> bool {
     match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
         (Ok(a), Ok(b)) => a == b,
@@ -1567,11 +1539,11 @@ fn same_file(a: &Path, b: &Path) -> bool {
 
 /// Answers every directory listing the file tree is waiting on.
 ///
-/// A loop rather than one listing, because the tree asks for one at a time and
-/// answering can reveal the next: opening the tree onto `src/deep/main.rs` needs
-/// `src` before it can know it wants `src/deep`. Bounded by [`files::MAX_DEPTH`]
-/// so a symlink that contains itself cannot spin here — the same guard, and the
-/// same reason, as the walk's.
+/// A loop rather than one listing, because the tree requests one at a time and
+/// each answer can produce the next request. Revealing `src/deep/main.rs` needs
+/// `src` before the tree can request `src/deep`. Bounded by [`files::MAX_DEPTH`]
+/// so a self-referencing symlink cannot cause an endless loop, the same guard
+/// the walk uses.
 fn fill_tree(
     session: &mut Session,
     root: &Path,
@@ -1583,18 +1555,17 @@ fn fill_tree(
             return Ok(());
         };
         let entries = match remote.as_mut() {
-            // The remote lists the whole workspace at once — that is the only
-            // listing the protocol has — so a directory's contents are derived
-            // from it. Wasteful next to a per-directory call, and no more so
-            // than `ctrl+p`, which does the same list on every press. A
-            // `list_dir` on the wire is the obvious improvement and is a
-            // protocol change rather than a local one.
+            // The protocol only lists the whole workspace, so a directory's
+            // contents are derived from that listing. This is less efficient
+            // than a per-directory call, but no worse than `ctrl+p`, which
+            // requests the same list on every press. A `list_dir` method would
+            // improve this and requires a protocol change.
             Some(client) => match client.list() {
                 Ok(files) => remote_children(&files, root, &dir),
                 Err(error) => {
                     session.status = Some(format!("could not list the remote: {error}"));
-                    // Filled empty rather than left pending, or the tree asks
-                    // for the same unreachable directory on every keystroke.
+                    // Filled empty rather than left pending. Otherwise the tree
+                    // requests the same unreachable directory on every keystroke.
                     Vec::new()
                 }
             },
@@ -1607,9 +1578,9 @@ fn fill_tree(
 
 /// What `dir` directly contains, out of a flat list of every file under `root`.
 ///
-/// Directories are inferred from the paths rather than reported: a flat listing
-/// names files, and every path with something after `dir/` implies a directory
-/// that the tree has to be able to show and expand.
+/// Directories are inferred from the paths because a flat listing contains only
+/// files. Every path with another component after `dir/` implies a directory
+/// that the tree must be able to show and expand.
 fn remote_children(files: &[String], root: &Path, dir: &Path) -> Vec<deco_editor::explorer::Entry> {
     let prefix = match dir.strip_prefix(root) {
         Ok(rest) if rest.as_os_str().is_empty() => String::new(),
@@ -1641,10 +1612,9 @@ fn remote_children(files: &[String], root: &Path, dir: &Path) -> Vec<deco_editor
 
 /// The directory to hand a language server as its workspace root.
 ///
-/// The file's own directory, which is the honest answer while deco has no
-/// concept of an open folder: a server given a root it cannot make sense of
-/// indexes the wrong tree, and one given none falls back to single-file mode,
-/// which is worse than a directory that is merely narrow.
+/// The file's own directory, because deco has no concept of an open folder. A
+/// server given an unsuitable root indexes the wrong tree. A server given no
+/// root falls back to single-file mode, which is worse than a narrow directory.
 fn workspace_root(path: Option<&Path>) -> Option<PathBuf> {
     let path = path?;
     let absolute = if path.is_absolute() {
@@ -1655,30 +1625,28 @@ fn workspace_root(path: Option<&Path>) -> Option<PathBuf> {
     absolute.parent().map(Path::to_path_buf)
 }
 
-/// Works out what a typed path meant.
+/// Resolves a typed path.
 ///
-/// `~` is expanded, and a relative path is taken against the workspace root —
-/// which is the directory the editor was started in or the directory of the file
-/// it was started with, the same root quick open walks. Resolving against the
-/// process's working directory instead would mean a path that worked when deco was
-/// launched from the project and not when it was launched from anywhere else.
+/// `~` is expanded, and a relative path is resolved against the workspace root:
+/// the directory the editor was started in or the directory of the file it was
+/// started with, the same root quick open walks. Resolving against the process's
+/// working directory instead would make a path work only when deco was launched
+/// from the project directory.
 ///
-/// An absolute path is returned unchanged, so callers that already have one — quick
-/// open, search results, a go-to-definition jump — can go through here too.
+/// An absolute path is returned unchanged, so callers that already have one
+/// (quick open, search results, a go-to-definition jump) can also use this.
 ///
-/// `home` and `cwd` are passed in rather than read here, so that the rule can be
-/// exercised against directories a test controls instead of whichever ones the
-/// machine running the tests happens to have.
+/// `home` and `cwd` are parameters rather than read here, so tests can use
+/// directories they control instead of those on the test machine.
 ///
-/// The working directory is the fallback for a session that was started with no
-/// file — `deco` on its own, then `ctrl+s` and a name — and it is a fallback
-/// rather than nothing for a sharp reason. A relative path returned from here
-/// reaches [`Session::rename_to`] as the document's path and never compares equal
-/// to the absolute one every other way of opening that same file produces, so
-/// saving an untitled buffer as `notes.txt` and then choosing `notes.txt` from
-/// quick open opened it twice, in two buffers with two undo histories. That is
-/// the bug `deco::startup::absolute` exists to prevent for a path on the command
-/// line; this is the other door into it.
+/// The working directory is the fallback for a session started with no file,
+/// for example `deco` with no arguments, then `ctrl+s` and a name. Without the
+/// fallback, a relative path from here would reach [`Session::rename_to`] as the
+/// document's path and never compare equal to the absolute path produced by
+/// every other way of opening the same file. Saving an untitled buffer as
+/// `notes.txt` and then choosing `notes.txt` from quick open would open it
+/// twice, in two buffers with separate undo histories. `deco::startup::absolute`
+/// prevents the same bug for a path on the command line.
 fn resolve_path(
     typed: &Path,
     started_with: Option<&Path>,
@@ -1701,16 +1669,15 @@ fn resolve_path(
     match workspace_root(started_with).or_else(|| cwd.map(Path::to_path_buf)) {
         Some(root) => root.join(typed),
         // Neither a workspace nor a readable working directory. The path is
-        // handed onward as it was typed, which is what deco did before it
-        // resolved anything.
+        // returned as typed.
         None => typed.to_path_buf(),
     }
 }
 
 /// Every directory that may hold installed extensions.
 ///
-/// deco's own and VS Code's, so a theme installed for VS Code is offered here
-/// without being copied — the same one-way borrowing that applies to settings.
+/// deco's own and VS Code's, so a theme installed for VS Code is offered without
+/// being copied. Settings are also read from VS Code in the same one-way manner.
 fn extension_roots() -> Vec<PathBuf> {
     let env = deco_config::paths::Env::from_process();
     let layout = deco_config::paths::Layout::host();
@@ -1746,27 +1713,26 @@ fn write_file(path: &Path, contents: &str) -> std::result::Result<(), String> {
 }
 
 /// Writes the open document to disk.
-/// Writes the open document to disk.
 ///
-/// **Only ever to its own path.** This used to fall back to the file deco was
-/// started with when the document had none, which was true of a session holding
-/// exactly one document and became a silent overwrite the moment tabs arrived: an
-/// untitled tab and the started-with file are two different documents. The
-/// parameter is gone rather than merely unused, so nothing can aim a write at the
-/// wrong file again.
+/// **Only to its own path.** This previously fell back to the file deco was
+/// started with when the document had no path. That was correct with a single
+/// document but caused a silent overwrite once tabs were added, because an
+/// untitled tab and the started-with file are different documents. The
+/// parameter was removed rather than left unused, so no write can target the
+/// wrong file.
 ///
-/// A document with no path never reaches here — [`Session`] turns `ctrl+s` into the
-/// save-as prompt instead — but the arm stays as a guard rather than a `panic!`.
+/// A document with no path does not reach here, because [`Session`] turns
+/// `ctrl+s` into the save-as prompt. The arm remains as a guard rather than a
+/// `panic!`.
 fn save(session: &mut Session, remote: Option<&mut deco_remote::Client>) -> Result<()> {
     let Some(path) = session.document.path.clone() else {
         session.status = Some("This document has no filename yet".to_owned());
         return Ok(());
     };
 
-    // A failed remote write is reported and *not* fatal: the connection can drop
-    // while the editor is perfectly able to keep the text and try again. A failed
-    // local write is still fatal, as it was, because the alternative is an editor
-    // that says "saved" about a disk that refused.
+    // A failed remote write is reported and is *not* fatal. The connection can
+    // drop while the editor keeps the text and can retry. A failed local write
+    // remains fatal, so the editor never reports "saved" when the write failed.
     if let Some(client) = remote {
         let asked = path.display().to_string();
         return match client.write(&asked, &session.save_contents()) {
@@ -1808,7 +1774,7 @@ mod tests {
         let path = dir.join("taken.rs");
         std::fs::write(&path, "someone else got here first\n").unwrap();
 
-        // The tree's listing said this name was free; the disk disagrees.
+        // The tree's listing showed this name as free, but the file exists.
         let error = perform(
             &deco_editor::FileOperation::CreateFile(path.clone()),
             None,
@@ -1899,8 +1865,7 @@ mod tests {
             Some(&dir),
         )
         .unwrap();
-        // Created, then typed in and saved — which is the whole point of having
-        // created it.
+        // Created, then edited and saved.
         std::fs::write(&path, "fn main() {}\n").unwrap();
 
         perform(
@@ -1919,7 +1884,7 @@ mod tests {
             "the work is still there"
         );
 
-        // Still empty, and it goes.
+        // A file that is still empty is deleted.
         let untouched = dir.join("untouched.rs");
         perform(
             &deco_editor::FileOperation::CreateFile(untouched.clone()),
@@ -1976,8 +1941,8 @@ mod tests {
         let from = dir.join("real.rs");
         std::fs::write(&from, "moving\n").unwrap();
         let to = dir.join("link.rs");
-        // A symlink to nothing: `exists` answers false for it, and the tree
-        // cannot show it either.
+        // A dangling symlink. `exists` returns false for it, and the tree does
+        // not show it.
         #[cfg(unix)]
         std::os::unix::fs::symlink(dir.join("nowhere.rs"), &to).unwrap();
         #[cfg(not(unix))]
@@ -2020,7 +1985,7 @@ mod tests {
         // `src` was a directory when the tree listed it; it is a link now.
         std::os::unix::fs::symlink(&outside, workspace.join("src")).unwrap();
 
-        // The session's own check passes: the spelling is inside the workspace.
+        // The session's text-based check passes: the path is inside the workspace.
         let wanted = workspace.join("src").join("planted.rs");
         assert!(wanted.starts_with(&workspace));
 
@@ -2056,8 +2021,8 @@ mod tests {
         .unwrap();
         let stamp = stamp_of(&to).expect("it is there");
 
-        // Another program takes `b.rs` away and leaves something else in its
-        // place. Undoing the rename must not move *that*.
+        // Another program removes `b.rs` and puts a different file in its
+        // place. Undoing the rename must not move the new file.
         std::fs::remove_file(&to).unwrap();
         std::fs::write(&to, "somebody else's, and longer\n").unwrap();
 
@@ -2126,8 +2091,8 @@ mod tests {
         .unwrap();
         let stamp = stamp_of(&made).expect("it is there");
 
-        // Removed and replaced by a *different* empty file. Emptiness alone
-        // cannot tell them apart, which is the point.
+        // Removed and replaced by a *different* empty file, which emptiness
+        // alone cannot distinguish.
         std::fs::remove_file(&made).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(10));
         std::fs::File::create(&made).unwrap();
@@ -2141,9 +2106,9 @@ mod tests {
             None,
             Some(&dir),
         );
-        // On a filesystem whose timestamps are too coarse to tell the two
-        // apart, this legitimately goes through — the stamp is evidence, not
-        // proof, and the test says so rather than pretending otherwise.
+        // On a filesystem whose timestamps are too coarse to distinguish the
+        // two, the delete succeeds. The stamp is a heuristic, not proof, so the
+        // test only asserts when the delete was rejected.
         if refused.is_err() {
             assert!(made.exists(), "the replacement was left alone");
         }
@@ -2165,7 +2130,7 @@ mod tests {
     fn a_rename_refuses_a_source_that_is_no_longer_what_was_shown() {
         let dir = scratch("rename-type");
         let was_a_dir = dir.join("d");
-        // The tree read a directory; something has since put a file there.
+        // The tree read a directory, which has since been replaced by a file.
         std::fs::write(&was_a_dir, "not a directory any more\n").unwrap();
 
         perform(
@@ -2209,7 +2174,7 @@ mod tests {
             .contains(&inner.join("a.rs")));
 
         // `d` becomes a file. Creating in it fails, and re-reading `d` alone
-        // would answer "empty folder" for ever.
+        // would always return an empty folder.
         std::fs::remove_dir_all(&inner).unwrap();
         std::fs::write(&inner, "now a file\n").unwrap();
         let mut lsp = Lsp::new(&mut session, None);
@@ -2219,10 +2184,10 @@ mod tests {
             &deco_editor::FileOperation::CreateFile(inner.join("new.rs")),
         );
 
-        // Re-reading `d` alone proves nothing: invalidating it empties what the
-        // tree knows either way, and `list_dir` would answer "empty folder"
-        // for ever. The listing *above* is what has to be asked for again, so
-        // that `d` stops being shown as a directory at all.
+        // Checking `d` alone is not sufficient: invalidating it empties what the
+        // tree knows either way, and `list_dir` would keep returning an empty
+        // folder. The listing *above* must be re-read so that `d` is no longer
+        // shown as a directory.
         read_tree(&mut session, &dir);
         let row = session
             .explorer()
@@ -2237,7 +2202,7 @@ mod tests {
 
     #[test]
     fn a_failed_rename_makes_the_tree_re_read_its_source() {
-        // The wiring, not just the model: a failed rename has to reach
+        // Tests the frontend path, not just the model. A failed rename must call
         // `invalidate_subtree`, or the source directory keeps showing children
         // it may no longer have.
         let dir = scratch("failed-rename");
@@ -2264,7 +2229,7 @@ mod tests {
         );
         assert_eq!(session.directory_wanted(), None, "and wants nothing");
 
-        // The rename fails, because `d` went away underneath it.
+        // The rename fails because `d` was removed.
         std::fs::remove_dir_all(&inner).unwrap();
         let mut lsp = Lsp::new(&mut session, None);
         reconcile_failure(
@@ -2278,8 +2243,8 @@ mod tests {
             },
         );
 
-        // Specifically the *source's* listing. Invalidating the parent alone
-        // would satisfy a looser assertion and prove nothing about this fix.
+        // Check the *source's* listing specifically. Invalidating only the
+        // parent would pass a looser assertion without testing this fix.
         assert!(
             session.known_paths_under(&inner).is_empty(),
             "the source's own listing must be asked for again rather than \
@@ -2291,10 +2256,10 @@ mod tests {
 
     #[test]
     fn a_partial_delete_raises_the_barrier_from_what_the_tree_knew() {
-        // The evidence the barrier rests on is what the tree had *read*, so a
-        // partial delete has to be caught even when no tab was open on any of
-        // it. Taking that snapshot after invalidating the subtree silently
-        // disabled this whole half.
+        // The barrier uses what the tree had *read* as evidence, so a partial
+        // delete must be detected even when no tab was open on any of it.
+        // Taking the snapshot after invalidating the subtree previously
+        // disabled this check.
         let dir = scratch("partial-evidence");
         let inner = dir.join("d");
         std::fs::create_dir_all(&inner).unwrap();
@@ -2310,8 +2275,8 @@ mod tests {
         session.set_workspace_root(&dir);
         read_tree(&mut session, &dir);
 
-        // Something to lose, recorded before `d` is read — creating invalidates
-        // the directory it lands in.
+        // An undoable operation, recorded before `d` is read, because creating
+        // invalidates the directory the new entry is in.
         session.run("workbench.files.action.focusFilesExplorer", None, 0);
         let deco_editor::Outcome::FileOperation(created) = session.create_in_tree("kept.rs", false)
         else {
@@ -2344,8 +2309,8 @@ mod tests {
             "and the create is undoable"
         );
 
-        // A recursive delete that took one child and then stopped. No tab was
-        // ever open on any of it.
+        // A recursive delete that removed one child and then stopped. No tab
+        // was open on any of it.
         std::fs::remove_file(inner.join("a.rs")).unwrap();
         let mut lsp = Lsp::new(&mut session, None);
         reconcile_failed_delete(
@@ -2367,7 +2332,7 @@ mod tests {
 
     #[test]
     fn a_remote_directorys_contents_come_out_of_the_flat_listing() {
-        // What `fs.list` answers: every file, relative to the workspace.
+        // The `fs.list` response: every file, relative to the workspace.
         let files = vec![
             "Cargo.toml".to_owned(),
             "src/main.rs".to_owned(),
@@ -2409,10 +2374,9 @@ mod tests {
 
     /// An absolute path made of `parts`, on any platform.
     ///
-    /// Not a literal `/w/src/main.rs`: that is absolute on Unix and **relative** on
-    /// Windows, where a root needs a drive letter or a UNC prefix. A test that
-    /// hard-coded one would be asserting about the host rather than about
-    /// [`resolve_path`].
+    /// Not a literal `/w/src/main.rs`, which is absolute on Unix and **relative**
+    /// on Windows, where a root needs a drive letter or a UNC prefix. A hard-coded
+    /// path would make the test depend on the host rather than on [`resolve_path`].
     fn absolute(parts: &[&str]) -> PathBuf {
         let mut path = std::env::current_dir().expect("a working directory");
         for part in parts {
@@ -2462,16 +2426,16 @@ mod tests {
 
     #[test]
     fn a_clean_document_is_never_saved() {
-        // Otherwise an idle editor would rewrite the same bytes every second, and a
-        // file's modification time is something other tools watch.
+        // Otherwise an idle editor would rewrite the same bytes repeatedly and
+        // change the modification time, which other tools watch.
         let settings = auto_save("afterDelay");
         assert!(!auto_save_due(&settings, 60_000, false));
     }
 
     #[test]
     fn the_delay_cannot_be_set_to_zero() {
-        // Zero would mean a write per keystroke, which is what the delay exists to
-        // avoid.
+        // Zero would mean a write per keystroke, which the delay exists to
+        // prevent.
         let mut settings = deco_config::Settings::with_defaults();
         settings
             .load_layer(
@@ -2489,9 +2453,8 @@ mod tests {
 
     #[test]
     fn the_focus_values_are_reported_rather_than_silently_ignored() {
-        // A setting that does nothing and says nothing is worse than one that is
-        // refused, so this goes in the session's problem list — where an unknown
-        // colour theme already goes.
+        // An unsupported value must be reported rather than silently ignored.
+        // It goes in the session's problem list, like an unknown colour theme.
         for value in ["onFocusChange", "onWindowChange"] {
             let problem = auto_save(value)
                 .unsupported()
@@ -2505,16 +2468,15 @@ mod tests {
 
     #[test]
     fn a_cursor_style_nobody_set_leaves_the_terminals_own_alone() {
-        // A terminal's caret is already configured, and replacing it with VS Code's
-        // default on behalf of somebody who never mentioned it would be deco
-        // overruling a preference it was not asked about.
+        // The terminal's caret is already configured. deco does not replace it
+        // with VS Code's default unless the user sets the key.
         assert_eq!(wanted_cursor_style(&configured("{}")), None);
     }
 
     #[test]
     fn setting_the_style_is_asking_for_it_even_at_its_default_value() {
-        // Writing the key down is the ask; which value it holds is a separate
-        // question. `line` is the default *value*, not the absence of one.
+        // Setting the key applies it regardless of its value. `line` is the
+        // default *value*, not an unset key.
         assert_eq!(
             wanted_cursor_style(&configured(r#"{"editor.cursorStyle": "line"}"#)),
             Some(deco_config::CursorStyle::Line)
@@ -2560,7 +2522,7 @@ mod tests {
 
     #[test]
     fn saving_an_untitled_document_writes_nothing() {
-        // The regression guard for a silent overwrite: `save` used to fall back to
+        // Regression test for a silent overwrite. `save` previously fell back to
         // the file deco was started with, so `ctrl+n`, a keystroke and `ctrl+s`
         // replaced an unrelated file and reported `Saved a.rs`.
         let dir = std::env::temp_dir().join(format!("deco-save-{}", std::process::id()));
@@ -2585,8 +2547,8 @@ mod tests {
 
     #[test]
     fn an_absolute_path_is_left_alone() {
-        // Quick open, search results and go-to-definition all hand over absolute
-        // paths, so this has to be identity for them.
+        // Quick open, search results and go-to-definition all pass absolute
+        // paths, which must be returned unchanged.
         let target = absolute(&["w", "src", "main.rs"]);
         assert_eq!(
             resolve_path(&target, Some(&absolute(&["elsewhere", "a.rs"])), None, None),
@@ -2596,9 +2558,8 @@ mod tests {
 
     #[test]
     fn a_relative_path_is_taken_against_the_workspace_root() {
-        // Not the process's working directory: a path that worked when deco was
-        // launched from the project and not from anywhere else would be worse than
-        // one that always means the same thing.
+        // Not the process's working directory, so a path means the same thing
+        // regardless of where deco was launched.
         assert_eq!(
             resolve_path(
                 Path::new("src/main.rs"),
@@ -2612,10 +2573,8 @@ mod tests {
 
     #[test]
     fn a_tilde_expands_to_the_home_directory() {
-        // A directory this test names, rather than whichever one the machine
-        // running it has: the rule is the same either way, and a fixture that
-        // depends on the runner's `$HOME` is a test that passes for a reason it
-        // is not asserting.
+        // Use a directory chosen by the test rather than the runner's `$HOME`,
+        // so the result does not depend on the machine.
         let home = absolute(&["home", "u"]);
         assert_eq!(
             resolve_path(Path::new("~/notes.txt"), None, Some(&home), None),
@@ -2626,8 +2585,8 @@ mod tests {
 
     #[test]
     fn a_tilde_with_no_home_to_expand_to_is_left_as_typed() {
-        // Nothing sensible to expand to, and inventing a directory would be worse
-        // than handing the path onward as it was written.
+        // With no home directory, the path is returned as typed rather than
+        // expanded to an invented directory.
         assert_eq!(
             resolve_path(Path::new("~/notes.txt"), None, None, None),
             PathBuf::from("~/notes.txt")
@@ -2636,11 +2595,12 @@ mod tests {
 
     #[test]
     fn a_relative_path_with_no_workspace_falls_back_to_the_working_directory() {
-        // The bug this pins: `deco` with no file, then `ctrl+s` and a name, used
-        // to store the name unresolved. Every other way of opening that same file
-        // produces an absolute path, which never compares equal to a relative one
-        // — so the file opened a second time, in a second buffer, with a second
-        // undo history, and whichever tab was saved last won.
+        // Regression test: `deco` with no file, then `ctrl+s` and a name,
+        // previously stored the name unresolved. Every other way of opening the
+        // same file produces an absolute path, which never compares equal to a
+        // relative one. The file was then opened a second time, in a second
+        // buffer with a separate undo history, and the last tab saved overwrote
+        // the other.
         let cwd = absolute(&["home", "u", "project"]);
         assert_eq!(
             resolve_path(Path::new("notes.txt"), None, None, Some(&cwd)),
@@ -2650,8 +2610,9 @@ mod tests {
 
     #[test]
     fn the_workspace_root_still_wins_over_the_working_directory() {
-        // The fallback is a fallback. A session started with a file resolves
-        // against that file's directory, wherever deco was launched from.
+        // The working directory is only a fallback. A session started with a
+        // file resolves against that file's directory, wherever deco was
+        // launched from.
         let root = absolute(&["w", "notes.txt"]);
         let cwd = absolute(&["somewhere", "else"]);
         assert_eq!(
@@ -2663,7 +2624,7 @@ mod tests {
     #[test]
     fn a_tilde_inside_a_name_is_part_of_the_name() {
         // `~backup` is a file called `~backup`, and `a~b` is not a home directory.
-        // Only a leading `~` on its own component means one.
+        // Only a leading `~` as a whole component refers to the home directory.
         assert_eq!(
             resolve_path(
                 Path::new("~backup"),
@@ -2705,10 +2666,10 @@ mod tests {
 
     #[test]
     fn painting_never_emits_a_span_s_own_escape_sequence() {
-        // The regression guard for the whole class, asserted at the write rather than
-        // on the substitution: OSC 52 sets the clipboard on every terminal that
-        // supports it, and a span's text can come from a file name or a search result
-        // rather than from the renderer's own substitution.
+        // Regression test for this class of bug, asserted on the output rather than
+        // on the substitution. OSC 52 sets the clipboard on every terminal that
+        // supports it, and a span's text can come from a file name or a search
+        // result that did not pass through the renderer's substitution.
         let frame = Frame {
             rows: vec![crate::render::Row {
                 spans: vec![crate::render::Span {

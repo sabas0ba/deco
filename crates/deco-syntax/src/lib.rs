@@ -7,29 +7,28 @@
 //!
 //! The lexer recognises tokens but does not resolve declarations or types.
 //!
-//! VS Code's own highlighting is a set of regular-expression grammars — a lexer
-//! too, not a parser. So for *colouring*, a lexer gets most of the way: keywords,
-//! strings, comments, numbers, and calls are all lexical. What it cannot do is
-//! anything that needs structure — telling a type from a variable by how it was
-//! declared, or highlighting a language embedded in another (SQL inside a string,
-//! CSS inside HTML).
+//! VS Code's own highlighting uses regular-expression grammars, which are also a
+//! lexer rather than a parser. For *colouring*, a lexer covers most cases:
+//! keywords, strings, comments, numbers, and calls are all lexical. It cannot
+//! handle anything that needs structure, such as distinguishing a type from a
+//! variable by its declaration, or highlighting a language embedded in another
+//! (SQL inside a string, CSS inside HTML).
 //!
-//! The alternative was tree-sitter, which means a generated C parser per language,
-//! compiled on every target. That is a dependency per language and a C toolchain
-//! in the build for a feature whose visible output a lexer already produces. When
-//! the lexer's limits start to matter, a real parser is the answer — and the
-//! language server's semantic tokens, which `deco-theme` can already style, are
-//! the other half of that answer.
+//! The alternative was tree-sitter, which requires a generated C parser per
+//! language, compiled on every target. That adds a dependency per language and a
+//! C toolchain to the build, while a lexer already produces most of the visible
+//! output. If the lexer's limits become a problem, a real parser is needed. The
+//! language server's semantic tokens, which `deco-theme` can already style, also
+//! cover part of that gap.
 //!
 //! # Scope names are specific but not language-suffixed
 //!
 //! Emitted scopes look like `keyword.control` and `string.quoted.double`, not
 //! `keyword.control.rust`. A theme pattern matches a scope when it is a
 //! whole-segment prefix of it, so `keyword` and `keyword.control` both style
-//! `keyword.control`, which is what themes actually contain. A rule written for
-//! `keyword.control.rust` specifically would not match — rare enough to be worth
-//! the simplicity of one static string per token kind rather than one per kind per
-//! language.
+//! `keyword.control`; themes typically use these forms. A rule written for
+//! `keyword.control.rust` would not match. Such rules are rare, so this crate
+//! uses one static string per token kind instead of one per kind per language.
 
 pub mod languages;
 
@@ -82,11 +81,11 @@ pub struct Syntax {
     /// `states[i]` is the state entering line `i`; `states[0]` is always
     /// [`State::Normal`].
     ///
-    /// Behind a `RefCell` because this is a memoisation cache and nothing else.
-    /// Rendering is a pure function of the session and the terminal size — that is
-    /// what lets the whole layout be asserted in CI with no terminal attached — and
-    /// threading `&mut` up through the render path to serve a cache would trade
-    /// that away for nothing observable.
+    /// Stored in a `RefCell` because it is only a memoisation cache. Rendering is
+    /// a pure function of the session and the terminal size, which allows the
+    /// whole layout to be asserted in CI with no terminal attached. Passing `&mut`
+    /// through the render path only for this cache would lose that property
+    /// without any visible benefit.
     states: RefCell<Vec<State>>,
 }
 
@@ -112,9 +111,9 @@ impl Syntax {
 
     /// Forgets what was known from `line` onwards.
     ///
-    /// Called after an edit. Everything above the edit is still true — a change on
-    /// line 900 cannot alter what line 3 left open — which is what keeps editing a
-    /// large file from re-lexing all of it.
+    /// Called after an edit. States above the edit remain valid, because a change
+    /// on line 900 cannot alter what line 3 left open. Editing a large file
+    /// therefore does not re-lex all of it.
     pub fn invalidate_from(&mut self, line: usize) {
         let states = self.states.get_mut();
         // `line + 1` entries survive: the state *entering* the edited line is
@@ -128,9 +127,9 @@ impl Syntax {
     /// The spans for `line`.
     ///
     /// Lexes forward from the last line whose state is known, so jumping to the
-    /// end of a file lexes it once. That is the cost of multi-line strings and
-    /// block comments existing at all: nothing can know what line 9000 is inside
-    /// without having read what came before it.
+    /// end of a file lexes it once. This is required by multi-line strings and
+    /// block comments: the state entering line 9000 depends on all lines before
+    /// it.
     pub fn spans(&self, buffer: &Buffer, line: usize) -> Vec<Span> {
         let Some(language) = self.language else {
             return Vec::new();
@@ -266,9 +265,9 @@ fn lex(language: &Language, text: &str, entry: State) -> (Vec<Span>, State) {
 
         if c.is_ascii_digit() {
             let start = cursor.utf16;
-            // Deliberately loose: `0xFF`, `1_000`, `1.5e3` and `1.2.3` all lex as
-            // one number. A colouring pass has no reason to reject a malformed
-            // literal — the compiler will, with a better message.
+            // Intentionally permissive: `0xFF`, `1_000`, `1.5e3` and `1.2.3` all
+            // lex as one number. Highlighting does not reject malformed literals;
+            // the compiler reports them with a better message.
             while cursor
                 .peek()
                 .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.')
@@ -364,9 +363,9 @@ fn classify(language: &Language, word: &str, cursor: &Cursor<'_>) -> Option<&'st
     if language.types.contains(&word) {
         return Some(scopes::TYPE);
     }
-    // An identifier immediately followed by `(` is a call. Lexical, cheap, and
-    // worth a great deal of what highlighting is for; it is also why a keyword is
-    // checked first, so `if (x)` does not colour `if` as a function.
+    // An identifier followed by `(` is a call. This is a cheap lexical check
+    // that is useful for highlighting. Keywords are checked first so that
+    // `if (x)` does not colour `if` as a function.
     if cursor.next_visible() == Some('(') {
         return Some(scopes::FUNCTION);
     }
@@ -669,8 +668,8 @@ mod tests {
 
     #[test]
     fn highlighting_after_an_edit_reflects_the_new_text() {
-        // The property that matters: invalidation must not leave a stale state
-        // that colours the rest of the file as a comment.
+        // Invalidation must not leave a stale state that colours the rest of the
+        // file as a comment.
         let mut syntax = Syntax::new(Some("rust"));
         let opened = Buffer::from_text("/* a\nlet x = 1;");
         for line in 0..2 {

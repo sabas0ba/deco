@@ -2,9 +2,7 @@
 
 ![ctrl+b and ctrl+j opening the side bar and the panel, and typing still going into the text](img/chrome.svg)
 
-deco divides its window into three regions: the **editor**, a **side bar** down
-one edge, and a **panel** across the bottom. `ctrl+b` and `ctrl+j` show and hide
-them, with VS Code's own command identifiers.
+deco divides its window into three regions: the **editor**, a **side bar** along one edge, and a **panel** along the bottom. `ctrl+b` and `ctrl+j` show and hide the side bar and panel. The commands use VS Code's identifiers.
 
 | Key | Command |
 | --- | --- |
@@ -21,27 +19,21 @@ The side bar displays the [file tree](files.md) or [source-control view](git.md)
 
 The frontend supplies the available rectangle, and the session calculates the editor, side-bar and panel rectangles. Rendering and word wrapping use this same layout so text and cursor positions agree.
 
-The panel comes off the bottom before the side bar comes off the side, so the
-side bar runs the full height beside both. That is VS Code's arrangement, and
-the reason a terminal in the panel is as wide as the editor rather than as wide
-as the window.
+The panel's rows are taken from the bottom before the side bar's columns are taken from the side. The side bar spans the full height beside both the editor and the panel, so the panel has the width of the editor rather than the window. This matches VS Code's layout.
 
 The side bar requests 30 columns and the panel requests 10 rows. In smaller windows, each region shrinks or is omitted if its minimum size cannot fit. The layout preserves a minimum editor size and limits each region to at most half the available dimension.
 
-A region that does not fit is **not the same as one that is hidden**. The
-visibility you asked for is remembered, the window is simply too small to honour
-it, and it says so:
+A region that does not fit is **not the same as one that is hidden**. The requested visibility is kept, and deco reports that the window is too small:
 
 ```text
 no room for the side bar in this window
 ```
 
-Widen the window and it appears, with no second keypress.
+When the window becomes large enough, the region appears without another keypress.
 
 ## Where the keyboard is
 
-Focus is part of the session, so the keymap can route keys the way VS Code does.
-The context keys are VS Code's:
+Focus is stored in the session, so the keymap can route keys as VS Code does. The context keys use VS Code's names:
 
 | Key | Means |
 | --- | --- |
@@ -51,37 +43,22 @@ The context keys are VS Code's:
 
 Visibility and keyboard focus are separate. `ctrl+b` shows the side bar while retaining editor focus. The animation above demonstrates typing into the document with both regions open.
 
-While a region has the keyboard, the editor's own commands do not reach the
-document — typing, motion, undo, the clipboard. They act on the text, and the
-text is not what has focus. That is enforced on the command rather than as a
-`when` clause on each binding, because the fallback that types an unbound
-printable key never goes through the keymap at all and a clause could not reach
-it. The text caret is hidden while another region has keyboard focus.
+While a region has keyboard focus, text commands such as typing, motion, undo and clipboard operations do not change the document. The check is in the commands rather than in a `when` clause on each binding, because unbound printable keys are inserted by a fallback that does not use the keymap. The text caret is hidden while another region has keyboard focus.
 
-`workbench.action.focusActiveEditorGroup` is the way back, and hiding a region
-that has the keyboard gives it back on its own.
+`workbench.action.focusActiveEditorGroup` returns focus to the editor. Hiding a region that has focus also returns focus to the editor.
 
 ## Settings
 
-`workbench.sideBar.location` is read with VS Code's meaning — `"left"` (the
-default) or `"right"`. It applies to the window and ignores per-language overrides, so switching between documents does not move the side bar.
+`workbench.sideBar.location` has the same meaning as in VS Code: `"left"` (the default) or `"right"`. It applies to the window and ignores per-language overrides, so switching between documents does not move the side bar.
 
-There is no setting for the width. VS Code has none either — it remembers a
-width you dragged, and deco [writes no files](configuration.md) to remember one
-in.
+There is no setting for the width. VS Code has no such setting either; it stores a width set by dragging. deco [writes no files](configuration.md) in which to store one.
 
 ## Both frontends
 
-The split is shared; only the units differ. The terminal renderer draws the
-regions in cells, and the GPU frontend multiplies the same rectangles by its font
-metrics. The GPU frontend paints the rules with the same box-drawing characters
-rather than as filled rectangles, because it has no way to fill one yet — there
-is no quad pipeline in it, which is also why selections are laid out there but
-not yet drawn.
+Both frontends use the same layout; only the units differ. The terminal renderer draws the regions in cells, and the GPU frontend multiplies the same rectangles by its font metrics. The GPU frontend draws the dividing rules with box-drawing characters rather than filled rectangles because it has no quad pipeline yet. For the same reason, it calculates selection positions but does not draw selections yet.
 
 ## Not built yet
 
 The panel has no implemented views. `` ctrl+` `` (`workbench.action.terminal.toggleTerminal`) reports that the terminal is not implemented. Terminal support requires a PTY and terminal rendering. See the [roadmap](roadmap.md) for planned panel features.
 
-A region cannot be resized or dragged to the other side; the setting is the only
-way to move the side bar. Persisting resized dimensions would also require storage for view state.
+A region cannot be resized or dragged to the other side. The setting is the only way to move the side bar. Persisting resized dimensions would also require storage for view state.

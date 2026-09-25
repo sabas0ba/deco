@@ -28,7 +28,7 @@ test('the filesystem module cannot be required', () => {
 
 test('the node: prefix does not bypass the block', () => {
   sandboxed(() => {
-    // Blocking only the bare name would leave an obvious hole.
+    // Blocking only the bare name would let the prefixed form through.
     assert.throws(() => require('node:fs'), { code: 'DECO_CAPABILITY_DENIED' });
     assert.throws(() => require('node:child_process'), { code: 'DECO_CAPABILITY_DENIED' });
   });

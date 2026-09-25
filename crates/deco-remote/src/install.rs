@@ -1,60 +1,59 @@
-//! Getting a deco onto the remote in the first place.
+//! Installing deco on the remote.
 //!
-//! Everything else in this crate assumes the far end already has a `deco` to
-//! run. This is the part that puts one there — and it is the part where the
-//! interesting decision is not technical.
+//! The rest of this crate assumes the remote environment already has a `deco`
+//! to run. This module installs one.
 //!
-//! # What this is allowed to do
+//! # Install policy
 //!
-//! Pointing an editor at a machine is not the same as authorising it to install
-//! software there, so nothing here happens on its own. A session that finds no
-//! `deco` on the remote fails and says that `--remote-install` exists; it does
-//! not helpfully fix it. The rules that follow from that:
+//! Connecting an editor to a machine does not authorise it to install software
+//! there, so nothing here runs automatically. A session that finds no `deco` on
+//! the remote fails and mentions `--remote-install`; it does not install deco
+//! itself. The rules are:
 //!
-//! - **Only when asked.** There is no code path that installs without the
-//!   caller having decided to.
-//! - **Never a binary that cannot run.** The remote is asked what it is before
-//!   anything is sent, so a platform that does not match this machine's is
-//!   answered — by a refusal, or by fetching the build that does run there —
-//!   rather than by an upload that fails later with `Exec format error`.
-//! - **Never over something that is not a deco.** If the destination already
-//!   holds a program that does not identify itself as deco, it is left alone.
-//!   `--remote-server-path /usr/bin/vim` is a typo, not an instruction.
-//! - **Never a half-written binary at the destination.** The upload goes to a
-//!   temporary name beside it and is renamed once complete, so an interrupted
-//!   install leaves the old deco — or nothing — rather than a truncated file
-//!   that is executable and broken.
+//! - **Only when requested.** No code path installs without an explicit request
+//!   from the caller.
+//! - **Never a binary that cannot run.** The remote platform is detected before
+//!   anything is sent. If it differs from this machine, the install is either
+//!   rejected or uses a downloaded build for that platform, instead of uploading
+//!   a binary that later fails with `Exec format error`.
+//! - **Never over a file that is not deco.** If the destination holds a program
+//!   that does not identify itself as deco, it is left unchanged.
+//!   `--remote-server-path /usr/bin/vim` is treated as a typo.
+//! - **Never a partially written binary at the destination.** The upload goes to
+//!   a temporary name in the same directory and is renamed when complete. An
+//!   interrupted install leaves the old deco, or nothing, rather than a
+//!   truncated executable.
 //!
 //! # When the remote is a different platform
 //!
-//! Uploading *this* machine's binary works when both ends match: Linux to Linux,
-//! and every WSL and container case. A macOS laptop provisioning a Linux server
-//! needs a binary this machine does not have, and getting one means reaching the
-//! network — which is a larger authority than "copy the file I am already
-//! running", and so is asked for separately.
+//! Uploading this machine's binary works when both platforms match: Linux to
+//! Linux, and every WSL and container case. A macOS laptop provisioning a Linux
+//! server needs a binary it does not have. Obtaining one requires network access,
+//! which is a broader permission than copying the running binary, so it requires
+//! a separate opt-in.
 //!
-//! [`ForOther`] is that ask, and it is a parameter rather than a setting: the
-//! only way to reach [`fetch`](crate::fetch) from here is for a caller to have
-//! passed [`ForOther::Download`], which `--remote-install` alone does not.
-//! Without it a mismatch is still refused, exactly as before.
+//! [`ForOther`] is that opt-in, passed as a parameter rather than read from a
+//! setting. [`fetch`](crate::fetch) is reached from here only when the caller
+//! passes [`ForOther::Download`], which `--remote-install` alone does not do.
+//! Without it, a platform mismatch is rejected.
 //!
 //! The remote is assumed to have a POSIX shell and `uname`, `mkdir`, `dd`,
-//! `chmod` and `mv`. That is the same assumption already made by running
-//! `deco --server` over `ssh`.
+//! `chmod` and `mv`. Running `deco --server` over `ssh` already makes the same
+//! assumption.
 
 use std::io::Read;
 
 use crate::transport::{command_for, Command, TransportOptions};
 use crate::Authority;
 
-/// What running a command on the remote produced.
+/// The result of running a command on the remote.
 #[derive(Debug, Clone, Default)]
 pub struct Output {
     /// The exit status, or `None` if the process was killed by a signal.
     pub status: Option<i32>,
-    /// Standard output, as text. Nothing here is expected to be binary.
+    /// Standard output, as text. No command here is expected to print binary data.
     pub stdout: String,
-    /// Standard error, kept because it is usually the only useful diagnosis.
+    /// Standard error, kept because it usually contains the only useful diagnostic.
     pub stderr: String,
 }
 
@@ -67,9 +66,9 @@ impl Output {
 
 /// Something that can run a command on the remote.
 ///
-/// A trait rather than a concrete transport so that the decisions in this
-/// module — what to refuse, in what order to do things — can be tested without
-/// a second machine. [`TransportRunner`] is the real one.
+/// A trait rather than a concrete transport so that this module's logic, such
+/// as what to reject and in which order to run steps, can be tested without a
+/// second machine. [`TransportRunner`] is the real implementation.
 pub trait Runner {
     /// Runs `argv` on the remote, feeding `stdin` to it if given.
     ///
@@ -107,7 +106,7 @@ impl Runner for TransportRunner {
     }
 }
 
-/// Spawns `command` on this machine, which is where every transport starts.
+/// Spawns `command` on this machine, where every transport command starts.
 fn run_locally(command: &Command, stdin: Option<&mut dyn Read>) -> Result<Output, std::io::Error> {
     use std::process::{Command as OsCommand, Stdio};
 
@@ -122,16 +121,16 @@ fn run_locally(command: &Command, stdin: Option<&mut dyn Read>) -> Result<Output
         .stderr(Stdio::piped())
         .spawn()?;
 
-    // Written on this thread while the child's output is not being read, which
-    // is safe only because nothing here sends more than a binary and the
-    // pipes involved are drained by `wait_with_output` afterwards. A command
-    // that produced megabytes of stdout while reading stdin could deadlock;
-    // none of the ones below does.
+    // Stdin is written on this thread while the child's output is not being
+    // read. This is safe only because the input is at most a binary and
+    // `wait_with_output` drains the pipes afterwards. A command that wrote
+    // megabytes of stdout while reading stdin could deadlock; none of the
+    // commands used here does.
     if let Some(source) = stdin {
         let mut sink = child.stdin.take().expect("stdin was piped");
         std::io::copy(source, &mut sink)?;
-        // Dropped explicitly: `dd` reads until end of file, and leaving the pipe
-        // open would hang the wait below rather than fail it.
+        // Dropped explicitly because `dd` reads until end of file. Leaving the
+        // pipe open would make the wait below hang.
         drop(sink);
     }
 
@@ -146,13 +145,13 @@ fn run_locally(command: &Command, stdin: Option<&mut dyn Read>) -> Result<Output
 /// Why an install did not happen.
 #[derive(Debug, thiserror::Error)]
 pub enum InstallError {
-    /// The remote could not be asked what it is.
+    /// The remote platform could not be probed.
     #[error("could not ask the remote what it is: {0}")]
     Probe(String),
-    /// The remote answered, but not in a way this understands.
+    /// The probe output could not be parsed.
     #[error("the remote did not say what it is; it answered `{answer}`")]
     Unrecognised {
-        /// What came back.
+        /// The probe output.
         answer: String,
     },
     /// The remote is a different platform from this machine.
@@ -203,14 +202,14 @@ pub enum InstallError {
     },
 }
 
-/// What the remote said it is.
+/// The platform reported by the remote.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Platform {
     /// The operating system, in Rust's spelling: `linux`, `macos`.
     pub os: String,
     /// The architecture, in Rust's spelling: `x86_64`, `aarch64`.
     pub arch: String,
-    /// The home directory of whoever the transport logs in as.
+    /// The home directory of the account the transport logs in as.
     pub home: String,
 }
 
@@ -224,7 +223,7 @@ impl Platform {
         }
     }
 
-    /// `os-arch`, which is what the mismatch message names.
+    /// `os-arch`, as shown in the mismatch message.
     pub fn name(&self) -> String {
         format!("{}-{}", self.os, self.arch)
     }
@@ -236,9 +235,9 @@ impl Platform {
 
 /// Translates `uname -s` into the name Rust uses for the same system.
 ///
-/// Unknown systems keep their own lowercased name rather than being guessed at:
-/// the only thing this value decides is whether the two ends match, and an
-/// unrecognised name that fails to match is the right outcome.
+/// Unknown systems keep their lowercased name instead of being mapped to a
+/// guess. This value only decides whether the two platforms match, and an
+/// unrecognised name should not match.
 fn os_name(uname: &str) -> String {
     match uname {
         "Linux" => "linux".to_owned(),
@@ -256,12 +255,12 @@ fn arch_name(uname: &str) -> String {
     }
 }
 
-/// Asks the remote what it is and where its home directory is.
+/// Queries the remote platform and home directory.
 ///
-/// One `sh -c` with a constant script, which is the exception to this crate's
-/// no-shell-strings rule and is allowed precisely because nothing is
-/// interpolated into it: `$HOME` is expanded *by the remote*, and no value from
-/// this end appears in the text at all.
+/// This runs one `sh -c` with a constant script. It is the only exception to
+/// this crate's no-shell-strings rule, and it is allowed because nothing is
+/// interpolated into it: the remote expands `$HOME`, and no local value appears
+/// in the script.
 pub fn probe(runner: &mut dyn Runner) -> Result<Platform, InstallError> {
     let argv = [
         "sh".to_owned(),
@@ -290,10 +289,10 @@ pub fn probe(runner: &mut dyn Runner) -> Result<Platform, InstallError> {
             answer: output.stdout.trim().to_owned(),
         });
     }
-    // A trailing slash is stripped so the join below does not produce `//.deco`,
-    // which POSIX allows an implementation to treat as its own thing. A home of
-    // exactly `/` — some minimal images run as root that way — becomes empty,
-    // and `/.deco/bin/deco` is then the right answer rather than an error.
+    // A trailing slash is stripped so the path does not start with `//.deco`,
+    // which POSIX allows implementations to interpret specially. A home of
+    // exactly `/`, used for root on some minimal images, becomes empty, and the
+    // resulting path `/.deco/bin/deco` is correct.
     let home = home.trim_end_matches('/');
     Ok(Platform {
         os: os_name(os.trim()),
@@ -304,9 +303,9 @@ pub fn probe(runner: &mut dyn Runner) -> Result<Platform, InstallError> {
 
 /// Where deco installs itself when no path was given.
 ///
-/// Under the account's own home directory rather than anywhere on the system
-/// path: installing for one user needs no privileges and affects nobody else,
-/// which is the least surprising thing an editor can do to a machine.
+/// The path is under the account's home directory rather than on the system
+/// path. A per-user install needs no privileges and does not affect other
+/// users.
 pub fn default_path(platform: &Platform) -> String {
     format!("{}/.deco/bin/deco", platform.home)
 }
@@ -314,22 +313,21 @@ pub fn default_path(platform: &Platform) -> String {
 /// What is at `path` on the remote.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum AtPath {
-    /// Nothing, so there is a free space to install into.
+    /// Nothing, so the path is free to install into.
     Nothing,
-    /// A deco, which says it is this version.
+    /// A deco reporting this version string.
     Deco(String),
-    /// Something else, which must not be written over.
+    /// Some other file, which must not be overwritten.
     Stranger,
 }
 
-/// Looks at `path` on the remote without writing anything.
+/// Inspects `path` on the remote without writing anything.
 ///
-/// Existence is asked separately from runnability, and the difference is the
-/// whole point: a file that is there but does not answer `--version` — a
-/// `notes.txt` a `--remote-server-path` typo landed on, a binary from another
-/// architecture, something not executable — is a stranger rather than an empty
-/// space. Deciding by "did `--version` work" alone would make each of those
-/// look like nothing was there, and the install would overwrite it.
+/// Existence is checked separately from whether the file runs. A file that
+/// exists but does not answer `--version` is a `Stranger`, not free space.
+/// Examples are a `notes.txt` hit by a `--remote-server-path` typo, a binary
+/// for another architecture, or a non-executable file. Checking `--version`
+/// alone would treat these as absent, and the install would overwrite them.
 fn look_at(runner: &mut dyn Runner, path: &str) -> AtPath {
     let exists = runner
         .run(&["test".to_owned(), "-e".to_owned(), path.to_owned()], None)
@@ -343,8 +341,8 @@ fn look_at(runner: &mut dyn Runner, path: &str) -> AtPath {
         return AtPath::Stranger;
     };
     let said = output.stdout.trim().to_owned();
-    // `deco 0.1.0` — the prefix is what makes this an identification rather than
-    // a guess that anything which answers `--version` is safe to overwrite.
+    // Expected output is `deco 0.1.0`. The prefix identifies deco; answering
+    // `--version` alone does not make a file safe to overwrite.
     if output.ok() && said.starts_with("deco ") {
         AtPath::Deco(said)
     } else {
@@ -352,29 +350,29 @@ fn look_at(runner: &mut dyn Runner, path: &str) -> AtPath {
     }
 }
 
-/// What `ensure` did.
+/// The result of `ensure`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Installed {
-    /// A deco of the wanted version was already there.
+    /// A deco of the requested version was already installed.
     AlreadyThere {
-        /// Where it is.
+        /// The install path.
         path: String,
-        /// What it reports.
+        /// The version it reports.
         version: String,
     },
     /// This machine's binary was sent.
     Sent {
-        /// Where it was put.
+        /// The install path.
         path: String,
-        /// What it reports now that it is there.
+        /// The version it reports after installation.
         version: String,
-        /// What was there before, if anything was.
+        /// The version previously installed, if any.
         replaced: Option<String>,
     },
 }
 
 impl Installed {
-    /// Where the deco is, either way.
+    /// The install path, in either case.
     pub fn path(&self) -> &str {
         match self {
             Self::AlreadyThere { path, .. } | Self::Sent { path, .. } => path,
@@ -382,28 +380,29 @@ impl Installed {
     }
 }
 
-/// Makes sure a deco of this version is on the remote, and says where it is.
+/// Ensures that a deco of this version is on the remote, and returns its path.
 ///
-/// `path` is where to put it; `None` means [`default_path`]. `binary` is the
-/// local file to send, which the caller gets from `std::env::current_exe`
-/// rather than this module reaching for it, so that a test can send something
-/// it chose.
-/// What to do when the remote is not the platform this deco was built for.
+/// `path` is the install path; `None` means [`default_path`]. `binary` is the
+/// local file to send. The caller obtains it from `std::env::current_exe`
+/// instead of this module, so that a test can supply its own file.
+/// What to do when the remote platform differs from the one this deco was built
+/// for.
 ///
-/// An enum rather than a `bool` because the two arms are different authorities,
-/// and a `true` at a call site says which one was chosen far less clearly than a
-/// name does.
+/// An enum rather than a `bool` because the two variants grant different
+/// permissions, and a name at the call site is clearer than `true`.
 pub enum ForOther<'a> {
-    /// Refuse, naming both platforms. What `--remote-install` does on its own.
+    /// Reject, naming both platforms. This is the behaviour of `--remote-install`
+    /// alone.
     Refuse,
-    /// Download the release built for it, check it, and send that.
+    /// Download the release built for the remote platform, verify it, and send
+    /// it.
     ///
-    /// Reaching the network is the part being asked for here, and the only way
-    /// to ask is to construct this.
+    /// This variant grants network access. Constructing it is the only way to
+    /// request that access.
     Download {
         /// How the bytes are retrieved.
         fetcher: &'a mut dyn crate::fetch::Fetcher,
-        /// A directory this may write the checked binary into.
+        /// A directory where the verified binary may be written.
         into: &'a std::path::Path,
     },
 }
@@ -430,17 +429,15 @@ pub fn ensure(
             });
         }
         AtPath::Deco(found) => Some(found),
-        // Refused before the platform check, because "that is not deco" is the
-        // more useful thing to hear about a mistyped path than "that machine is
-        // a different architecture".
+        // Rejected before the platform check, because for a mistyped path "not
+        // deco" is a more useful error than a platform mismatch.
         AtPath::Stranger => return Err(InstallError::NotDeco { path: destination }),
         AtPath::Nothing => None,
     };
 
-    // Which file gets uploaded. Everything after this point treats the two cases
-    // identically — by the time a download has been checked, it is just a local
-    // binary, and the staging, the rename and the does-it-run check are the ones
-    // that were already here.
+    // Select the file to upload. After this point both cases are handled the
+    // same way: a verified download is a local binary, and staging, renaming
+    // and the run check are shared.
     let local = Platform::local();
     let sending = if platform.matches(&local) {
         std::borrow::Cow::Borrowed(binary)
@@ -468,8 +465,8 @@ pub fn ensure(
         None,
     )?;
 
-    // Beside the destination rather than in a temporary directory, so the rename
-    // below cannot cross a filesystem and stop being atomic.
+    // Staged next to the destination rather than in a temporary directory, so
+    // the rename below stays on one filesystem and remains atomic.
     let staged = format!("{destination}.incoming");
     let mut file = std::fs::File::open(sending.as_ref())?;
     step(
@@ -495,10 +492,10 @@ pub fn ensure(
         None,
     )?;
 
-    // Asked rather than assumed: the upload can succeed and still leave
-    // something that will not run — a partially full disk, a `noexec` mount, a
-    // binary needing a libc the remote does not have. Better here than as a
-    // handshake that mysteriously never answers.
+    // Verify that the binary runs. The upload can succeed and still leave a
+    // binary that does not run, for example because of a full disk, a `noexec`
+    // mount, or a missing libc. Detecting it here gives a clearer error than a
+    // handshake that never completes.
     let AtPath::Deco(now) = look_at(runner, &destination) else {
         return Err(InstallError::Unusable {
             path: destination,
@@ -512,8 +509,8 @@ pub fn ensure(
     })
 }
 
-/// Runs one step of the install, turning a non-zero exit into an error that says
-/// which step it was.
+/// Runs one step of the install, turning a non-zero exit into an error that
+/// names the step.
 fn step(
     runner: &mut dyn Runner,
     what: &'static str,
@@ -541,12 +538,12 @@ fn step(
 mod tests {
     use super::*;
 
-    /// A remote that answers from a script rather than existing.
+    /// A fake remote that returns scripted answers.
     #[derive(Default)]
     struct Fake {
-        /// What to answer, matched by the first argument that appears in the key.
+        /// Answers, selected by the first key contained in the joined argv.
         answers: Vec<(&'static str, Output)>,
-        /// Whether something is already at the destination before any of this.
+        /// Whether a file is already at the destination before the install.
         present: bool,
         /// Every argv that was run, in order.
         ran: Vec<Vec<String>>,
@@ -571,8 +568,8 @@ mod tests {
             }
         }
 
-        /// Whether the install has put the binary in place yet, which is what
-        /// makes `test -e` and `--version` answer differently before and after.
+        /// Whether the install has moved the binary into place yet. `test -e`
+        /// and `--version` answer differently before and after.
         fn moved(&self) -> bool {
             self.ran[..self.ran.len() - 1]
                 .iter()
@@ -612,10 +609,10 @@ mod tests {
                 source.read_to_end(&mut swallowed)?;
                 self.sent = swallowed.len();
             }
-            // Asked before the scripted answers, because whether a file is
-            // there is a fact about the fake rather than something a test
-            // spells out — and a fake that said "yes, something is there" to
-            // every `test -e` would make every install look like an overwrite.
+            // Handled before the scripted answers because file existence is
+            // part of the fake's state, not a per-test answer. A fake that
+            // answered yes to every `test -e` would make every install look
+            // like an overwrite.
             if argv[0] == "test" {
                 let there = self.present || self.moved();
                 return Ok(if there { ok("") } else { fails(1, "") });
@@ -628,8 +625,8 @@ mod tests {
             }
             if joined.contains("--version") {
                 // A remote answers `--version` differently before and after an
-                // install, and a fake that ignored that would let the check
-                // *after* the upload pass for the wrong reason.
+                // install. Without this, the check after the upload could pass
+                // for the wrong reason.
                 return Ok(if self.moved() {
                     ok("deco 0.1.0")
                 } else {
@@ -641,7 +638,7 @@ mod tests {
     }
 
     /// A probe answer for a remote that matches this machine, so that the
-    /// platform check is not what a test trips over unless it means to.
+    /// platform check fails only in tests that intend it to.
     fn same_platform() -> Output {
         ok(&format!(
             "{}\n{}\n/home/u\n",
@@ -656,9 +653,9 @@ mod tests {
 
     /// A stand-in for the binary being sent.
     ///
-    /// Named per thread because these tests run in parallel in one process, and
-    /// a shared path meant one test truncating the file another was reading —
-    /// which showed up as a send of zero bytes, occasionally.
+    /// Named per thread because these tests run in parallel in one process.
+    /// With a shared path, one test could truncate the file while another read
+    /// it, which occasionally resulted in sending zero bytes.
     fn binary() -> std::path::PathBuf {
         let path = std::env::temp_dir().join(format!(
             "deco-install-test-binary-{}-{:?}",
@@ -678,14 +675,13 @@ mod tests {
             matches!(&error, InstallError::PlatformMismatch { remote, .. } if remote == "linux-sparc64"),
             "{error}"
         );
-        // The point of refusing early: nothing was written to that machine.
+        // Rejecting early means nothing was written to the remote.
         assert!(
             !fake.programs().contains(&"dd"),
             "sent anyway: {:?}",
             fake.programs()
         );
-        // And the message says what to do instead, because the person hitting
-        // this cannot fix it by retrying.
+        // The message names an alternative, because retrying cannot fix this.
         assert!(
             error.to_string().contains("--remote-server-path"),
             "{error}"
@@ -741,9 +737,9 @@ mod tests {
             ("uname", same_platform()),
             ("--version", ok("deco 0.0.9")),
         ]);
-        // The version answer is fixed, so the check after the upload sees the old
-        // string too; what this pins is that a differing version is a replace
-        // rather than a refusal, and that the old one is reported.
+        // The version answer is fixed, so the check after the upload also sees
+        // the old string. This test checks that a different version is replaced
+        // rather than rejected, and that the old version is reported.
         let outcome =
             ensure(&mut fake, None, &binary(), "0.1.0", ForOther::Refuse).expect("a replacement");
         assert!(
@@ -787,25 +783,25 @@ mod tests {
             .iter()
             .find(|argv| argv[0] == "mv")
             .expect("a move");
-        // Never written directly to the destination: an interrupted upload must
-        // not leave a truncated binary where the next session will run it.
+        // Never written directly to the destination. An interrupted upload must
+        // not leave a truncated binary where the next session runs it.
         assert_eq!(dd[1], "of=/opt/deco/bin/deco.incoming");
         assert_eq!(
             mv[1..],
             ["/opt/deco/bin/deco.incoming", "/opt/deco/bin/deco"]
         );
-        // Staged in the destination's own directory, so the rename cannot cross a
-        // filesystem and stop being atomic.
+        // Staged in the destination's directory, so the rename stays on one
+        // filesystem and remains atomic.
         assert!(mv[1].starts_with("/opt/deco/bin/"), "{:?}", mv[1]);
         assert_eq!(fake.sent, 4096, "the whole binary should be sent");
     }
 
     #[test]
     fn a_file_that_is_there_but_answers_nothing_is_a_stranger_rather_than_free_space() {
-        // The case that makes existence worth asking about separately: a
-        // `--remote-server-path` typo that lands on someone's notes, or a binary
-        // for another architecture. Neither answers `--version`, and deciding by
-        // that alone would read both as "nothing is there" and overwrite them.
+        // This is why existence is checked separately: a `--remote-server-path`
+        // typo that points at a notes file, or a binary for another
+        // architecture. Neither answers `--version`, and checking that alone
+        // would treat both as absent and overwrite them.
         let mut fake = Fake::holding(vec![
             ("uname", same_platform()),
             ("--version", fails(126, "Permission denied")),
@@ -840,14 +836,14 @@ mod tests {
         let said = error.to_string();
         assert!(said.contains("sending the binary"), "{said}");
         assert!(said.contains("No space left on device"), "{said}");
-        // And it stopped there rather than renaming a partial file into place.
+        // The install stopped there instead of renaming a partial file into place.
         assert!(!fake.programs().contains(&"mv"), "{:?}", fake.programs());
     }
 
     #[test]
     fn a_binary_that_arrives_but_will_not_run_is_reported_rather_than_connected_to() {
-        // Everything succeeds except that the installed binary never answers
-        // `--version`: a `noexec` mount, or a libc the remote does not have.
+        // Every step succeeds, but the installed binary does not answer
+        // `--version`, as with a `noexec` mount or a missing libc.
         let mut fake = Fake::answering(vec![
             ("uname", same_platform()),
             ("--version", fails(126, "Permission denied")),
@@ -875,9 +871,9 @@ mod tests {
 
     #[test]
     fn the_probe_interpolates_nothing_of_ours_into_the_shell() {
-        // The one `sh -c` in this crate. It is allowed because the script is a
-        // constant — `$HOME` is expanded by the remote, and no value from this
-        // end reaches the text. If that ever stops being true, this fails.
+        // The only `sh -c` in this crate. It is allowed because the script is a
+        // constant: the remote expands `$HOME`, and no local value is included.
+        // This test fails if that changes.
         let mut fake = Fake::answering(vec![("uname", same_platform())]);
         probe(&mut fake).expect("a platform");
         let script = &fake.ran[0][2];
@@ -886,14 +882,14 @@ mod tests {
 
     #[test]
     fn a_home_directory_with_a_trailing_slash_does_not_double_it() {
-        // `//.deco/bin/deco` is a path POSIX lets an implementation treat as its
-        // own thing, so the slash is stripped rather than joined onto.
+        // POSIX allows implementations to interpret a leading `//` specially,
+        // so the trailing slash is stripped before joining.
         let mut fake = Fake::answering(vec![("uname", ok("Linux\nx86_64\n/home/u/\n"))]);
         let platform = probe(&mut fake).expect("a platform");
         assert_eq!(default_path(&platform), "/home/u/.deco/bin/deco");
 
-        // And `$HOME` of exactly `/` — root on some minimal images — is a real
-        // home rather than a missing one.
+        // A `$HOME` of exactly `/`, used for root on some minimal images, is a
+        // valid home rather than a missing one.
         let mut fake = Fake::answering(vec![("uname", ok("Linux\nx86_64\n/\n"))]);
         let platform = probe(&mut fake).expect("a platform");
         assert_eq!(default_path(&platform), "/.deco/bin/deco");

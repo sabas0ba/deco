@@ -18,9 +18,7 @@ $ deco --print-config             # why isn't my setting applying?
 
 ### A prebuilt binary
 
-Every release carries an archive per platform and one `SHA256SUMS` covering all
-of them, on the
-[releases page](https://github.com/sabas0ba/deco/releases/latest).
+Each release on the [releases page](https://github.com/sabas0ba/deco/releases/latest) provides one archive per platform and one `SHA256SUMS` file covering all archives.
 
 | Platform | Archive |
 | --- | --- |
@@ -32,8 +30,7 @@ of them, on the
 | Windows x86-64 | `deco-x86_64-pc-windows-msvc.zip` |
 | Windows ARM64 | `deco-aarch64-pc-windows-msvc.zip` |
 
-Download the one for your machine, check it against `SHA256SUMS`, and put the
-binary somewhere on your `PATH`:
+Download the archive for your machine, verify it against `SHA256SUMS`, and put the binary on your `PATH`:
 
 ```console
 $ curl -fsSLO https://github.com/sabas0ba/deco/releases/latest/download/deco-x86_64-unknown-linux-gnu.tar.gz
@@ -48,14 +45,9 @@ archive and compare with `Get-FileHash deco-x86_64-pc-windows-msvc.zip`.
 
 **Check the checksum before running the binary.** Compare the downloaded archive with the release's `SHA256SUMS`. Installation uses archive extraction; no shell-script installer is provided.
 
-**Keep the archive's `extension-host/` beside the binary.** Move the whole
-extracted directory rather than the binary alone, or code extensions have no host
-to run in; `deco` looks for it next to itself and at `../share/deco/`, and
-`DECO_HOST_BOOTSTRAP` names it outright. Everything else — editing, themes,
-language servers, remote — works with the binary on its own.
+**Keep the archive's `extension-host/` beside the binary.** Move the whole extracted directory rather than the binary alone; otherwise code extensions cannot start. `deco` looks for the host next to its binary and at `../share/deco/`, and `DECO_HOST_BOOTSTRAP` sets its location explicitly. Editing, themes, language servers and remote work with the binary alone.
 
-macOS binaries are not notarized, so Gatekeeper will quarantine a downloaded one:
-`xattr -d com.apple.quarantine deco` after you have checked the hash.
+macOS binaries are not notarized, so Gatekeeper quarantines a downloaded binary. After checking the hash, run `xattr -d com.apple.quarantine deco`.
 
 ### With cargo
 
@@ -63,11 +55,7 @@ macOS binaries are not notarized, so Gatekeeper will quarantine a downloaded one
 $ cargo install --locked --git https://github.com/sabas0ba/deco --tag v0.1.0 deco
 ```
 
-This installs the terminal build only. It also installs the binary alone, so code
-extensions will not start unless `DECO_HOST_BOOTSTRAP` points at an
-`extension-host/src/bootstrap.js` from a checkout or a release archive. Add
-`--features gui` for the GPU frontend, which costs 111 more crates and the build
-time to match.
+This installs only the terminal build and only the binary, so code extensions do not start unless `DECO_HOST_BOOTSTRAP` points to an `extension-host/src/bootstrap.js` from a checkout or a release archive. Add `--features gui` for the GPU frontend, which adds 111 crates and increases build time accordingly.
 
 ### From a checkout
 
@@ -76,13 +64,11 @@ $ git clone https://github.com/sabas0ba/deco && cd deco
 $ cargo run -p deco -- src/main.rs
 ```
 
-See [Building](#building) for what else the repository can do.
+See [Building](#building) for other build and test commands.
 
 ## Documentation
 
-[`docs/`](docs/README.md) documents each feature with an animation of it
-running, and is published at
-[sabas0ba.github.io/deco](https://sabas0ba.github.io/deco/):
+[`docs/`](docs/README.md) documents each feature with an animation and is published at [sabas0ba.github.io/deco](https://sabas0ba.github.io/deco/):
 
 | | |
 | --- | --- |
@@ -97,22 +83,18 @@ running, and is published at
 | [Language servers](docs/language-servers.md) | Diagnostics, hover, definition, references, completion, symbols, semantic tokens, formatting, rename, code actions |
 | [Configuration](docs/configuration.md) | `settings.json`, `keybindings.json`, themes, and where they are read from |
 | [Extensions](docs/extensions.md) | The capability model, and why an extension gets less power here |
-| [Remote](docs/remote.md) | SSH, container and WSL authorities, and the server that answers on the remote environment |
+| [Remote](docs/remote.md) | SSH, container and WSL authorities, and the server that runs in the remote environment |
 | [Testing](docs/testing.md) | Unit tests, end-to-end scenarios, and what each one is for |
 | [Roadmap](docs/roadmap.md) | What VS Code has that deco does not, the plan for each, and what is worth building because deco is not Electron |
 
-The animations are generated from deco's own renderer by `cargo xtask docs`, and
-`cargo xtask docs --check` runs in CI — so a demonstration cannot show a feature
-behaving in a way the code does not.
+The animations are generated from deco's renderer by `cargo xtask docs`. CI runs `cargo xtask docs --check`, so the animations must match the current code.
 
 ![Multiple cursors added with ctrl+d](docs/img/multi-cursor.svg)
 
 ## Why these choices
 
 **Rust, not Electron.** The editor is a native binary with a rope-backed text
-model. The terminal build pulls in 52 third-party crates in total, and the
-extension host pulls in no npm packages at all — see
-[Dependencies](#dependencies).
+model. The terminal build uses 52 third-party crates in total, and the extension host uses no npm packages. See [Dependencies](#dependencies).
 
 The following measurements use a release build, one file and a 120×40 window:
 
@@ -122,16 +104,9 @@ The following measurements use a release build, one file and a 120×40 window:
 | Draw a frame | 304 µs | 304 µs |
 | One keystroke | 8 µs | 10 µs |
 
-Drawing and typing do not grow with the file, because the hot paths are bounded by
-the **window** rather than the document: the lexer resumes from the earliest line an
-edit touched, the wrap and the draw walk the visible rows, and the rope makes an edit
-in the middle of ten megabytes cost what one at the start costs. Opening is linear, as
-reading a file has to be.
+Drawing and typing time does not grow with the file, because the hot paths are bounded by the **window** rather than the document. The lexer resumes from the earliest line an edit changed, wrapping and drawing process only the visible rows, and the rope makes an edit in the middle of ten megabytes cost the same as one at the start. Opening is linear in the file size.
 
-A test asserts the *shape* of that in CI — drawing and typing at 200,000 lines within
-an order of magnitude of the same at 1,000 — as a ratio rather than a time, so a
-loaded runner cannot fail it on its own. What it is there to catch is an accidental
-walk from line zero, which would cost two hundred times more and not ten.
+A CI test checks this scaling: drawing and typing at 200,000 lines must stay within an order of magnitude of the same operations at 1,000 lines. The test compares a ratio rather than absolute time, so a loaded runner alone does not fail it. It detects an accidental walk from line zero, which would be about two hundred times slower rather than ten.
 
 **VS Code's own identifiers everywhere.** Commands are
 `editor.action.commentLine`, not `deco.comment`. Settings are `editor.tabSize`.
@@ -150,70 +125,43 @@ Context keys are `editorHasSelection`. Implemented features use these identifier
 | Command identifiers | Yes, for implemented commands |
 | Theme extensions from the marketplace | Yes — declarative, no host process; `ctrl+k ctrl+t` lists them |
 | Code extensions (`main`) | Commands run: the palette lists them, choosing one starts a sandboxed host. The surface an extension can reach is registering a command, the message and status-bar calls, the `workspace.fs` family, and `workspace.applyEdit` — everything else is refused by name, see [Extensions](docs/extensions.md#what-an-extension-can-reach-today) |
-| Remote SSH / containers / WSL | Open, edit and save a file on the remote environment with `--remote ssh-remote+host`, `--remote-install` puts deco there if it has none, `--forward 3000` reaches a port on it, language servers and Git run over there, `ctrl+shift+f` searches the remote environment, an extension's file access goes through the connection, and the machine's own `machine-settings.json` layers in as `remote` scope. Extension hosts still run locally — see [Remote](docs/remote.md) |
+| Remote SSH / containers / WSL | Open, edit and save a file on the remote environment with `--remote ssh-remote+host`, `--remote-install` installs deco there if it is missing, `--forward 3000` forwards a remote port, language servers and Git run remotely, `ctrl+shift+f` searches the remote environment, an extension's file access goes through the connection, and the remote machine's `machine-settings.json` is applied as the `remote` scope. Extension hosts still run locally — see [Remote](docs/remote.md) |
 | Language servers (LSP) | Diagnostics, hover, go-to-definition, references, completion, symbols, semantic tokens, formatting, rename (`F2`, across files, one undo step), code actions (`ctrl+.`, with `codeAction/resolve`) |
 | Find and replace (`ctrl+f`, `ctrl+h`, `F3`, `ctrl+d`, `ctrl+shift+l`, `ctrl+shift+h`) | Literal search only — no regular expressions; replace across the workspace is one undoable edit |
-| Search in files (`ctrl+shift+f`) | Yes — bounded and synchronous, and it says so |
+| Search in files (`ctrl+shift+f`) | Yes — bounded and synchronous, and reports when a limit is reached |
 | Command palette (`ctrl+shift+p`), quick open (`ctrl+p`), go to line (`ctrl+g`) | Yes |
-| Side bar and panel (`ctrl+b`, `ctrl+j`, `workbench.sideBar.location`) | Regions, focus and the context keys — see [Chrome](docs/chrome.md). The side bar holds the file tree; the panel is still empty and says what it is waiting for |
-| File tree / explorer (`ctrl+shift+e`, `list.*`, `revealInExplorer`) | Walk it, expand it, open files with it — read one directory at a time, `files.exclude` honoured, works on a remote workspace |
+| Side bar and panel (`ctrl+b`, `ctrl+j`, `workbench.sideBar.location`) | Regions, focus and the context keys — see [Chrome](docs/chrome.md). The side bar holds the file tree; the panel has no views yet and shows a label for the planned view |
+| File tree / explorer (`ctrl+shift+e`, `list.*`, `revealInExplorer`) | Navigate, expand and open files — directories are read one at a time, `files.exclude` is honoured, and remote workspaces are supported |
 | Changing files from the tree (`explorer.newFile`, `explorer.newFolder`, `renameFile`, `deleteFile`) | New file, new folder, rename and delete, with an undo of the tree's own; a rename retargets the open tab. Deleting is confirmed and cannot be undone — there is no trash, so `files.enableTrash` is not honoured. No drag, and none of it over a remote connection yet — see [The file tree](docs/files.md) |
-| Git — status bar, gutter marks, diff view and source-control view (`workbench.view.scm`, `git.stage`, `git.commit`, `git.checkout`) | The branch, its distance from its upstream and how many files differ from `HEAD`; `┃`/`│`/`▔` beside added, changed and removed lines, following the buffer rather than the file on disk; and `ctrl+shift+g` for a view that opens side-by-side diffs, stages, unstages and commits. Local branches can be listed and switched after a preflight that accounts for local work; the same reads and operations run on the far machine in a remote session. No discard and nothing that reaches the network — see [Git](docs/git.md) |
+| Git — status bar, gutter marks, diff view and source-control view (`workbench.view.scm`, `git.stage`, `git.commit`, `git.checkout`) | The branch, its distance from its upstream and how many files differ from `HEAD`; `┃`/`│`/`▔` beside added, changed and removed lines, following the buffer rather than the file on disk; and `ctrl+shift+g` for a view that opens side-by-side diffs, stages, unstages and commits. Local branches can be listed and switched after a preflight that accounts for local work; the same reads and operations run on the remote machine in a remote session. No discard and nothing that reaches the network — see [Git](docs/git.md) |
 | Word wrap (`editor.wordWrap`, `editor.wrappingIndent`, `alt+z`) | Yes in the terminal |
-| Detected indentation (`editor.detectIndentation`) | Yes — the status bar says when a file overruled the setting |
+| Detected indentation (`editor.detectIndentation`) | Yes — the status bar shows when detected indentation overrides the setting |
 | Auto-closing brackets (`editor.autoClosingBrackets`) | Yes — no `autoSurround`, no `autoClosingDelete` |
-| Auto-indent (`editor.autoIndent`) | Yes — `advanced` and `full` resolve to `brackets`, there being no language configuration |
+| Auto-indent (`editor.autoIndent`) | Yes — `advanced` and `full` resolve to `brackets` because there is no language configuration |
 | Trimming an auto-indent (`editor.trimAutoWhitespace`) | Yes — on the next edit rather than the next cursor move |
 | Auto-save (`files.autoSave`) | `off` and `afterDelay`; the focus-driven values are reported as not honoured |
 | Control characters (`editor.renderControlCharacters`) | Yes — and never written to the terminal as themselves, whatever the setting |
-| `renderWhitespace`, `rulers`, `lineNumbers`, `cursorStyle` | Yes in the terminal — `cursorStyle`'s thin and hollow shapes collapse |
+| `renderWhitespace`, `rulers`, `lineNumbers`, `cursorStyle` | Yes in the terminal — `cursorStyle`'s thin and hollow shapes map to the nearest supported shape |
 | `.tmTheme` (plist) themes, `-` scope exclusions | No |
 
-Settings are read from deco's own configuration directory, falling back to VS
-Code's (`Code/User/settings.json`) so an existing setup works without being
-copied. **deco does not write settings files at all** — not VS Code's, not its own.
-Your configuration is a file you own; the cost is that a theme picked with
-`ctrl+k ctrl+t` has to be written down by hand to survive, and the status bar says
-which line to add.
+Settings are read from deco's configuration directory, with VS Code's (`Code/User/settings.json`) as a fallback, so an existing setup works without copying it. **deco does not write settings files**, neither VS Code's nor its own. As a result, a theme selected with `ctrl+k ctrl+t` must be added to the settings manually to persist; the status bar shows the line to add.
 
 ## Extensions, and why they are not like VS Code's
 
-A VS Code extension is arbitrary JavaScript running with your full privileges.
-It can read `~/.ssh/id_ed25519`, open a socket and spawn a shell, and nothing in
-the extension API makes that visible, let alone preventable. Installing one is
-trusting its author and every package in its `node_modules` with everything you
-can reach.
+A VS Code extension is arbitrary JavaScript running with your full privileges. It can read `~/.ssh/id_ed25519`, open a socket and spawn a shell, and the extension API neither exposes nor prevents this. Installing an extension grants its author and every package in its `node_modules` access to everything your account can reach.
 
 deco runs extensions in a separate Node process and restricts their access to system resources through four layers:
 
-0. **A container**, from an image pinned by digest, with `--network=none`,
-   `--read-only`, `--cap-drop=ALL` and **no mount of your workspace** —
-   extensions reach files through the broker, so the container needs no view of
-   the project. If no container runtime is installed, deco refuses to start the
-   host rather than running it with one layer fewer; `"deco.extensions.sandbox":
-   "process"` is the explicit way to ask for that instead. See
-   [Extensions](docs/extensions.md#the-container).
-1. **Node's permission model** (`--permission`, Node 22.13+) blocks filesystem,
-   child-process and worker access below JavaScript, where an extension cannot
-   argue with it. No `--allow-child-process`, no `--allow-fs-write`. Passed
-   inside the container too: a layer is not dropped because another arrived.
-2. **The host bootstrap** removes the network globals and refuses to load `fs`,
-   `net`, `http`, `child_process` and friends, so a blocked call produces a
-   clear error naming its brokered replacement rather than a permission trap.
-   Node's permission model does not cover the network; this layer is why that
-   gap is closed.
-3. **The capability broker** checks every request that does get through.
+0. **A container**, from an image pinned by digest, with `--network=none`, `--read-only`, `--cap-drop=ALL` and **no mount of your workspace**. Extensions access files through the broker, so the container does not need the project. If no container runtime is installed, deco refuses to start the host rather than running it without this layer. `"deco.extensions.sandbox": "process"` explicitly selects running without a container. See [Extensions](docs/extensions.md#the-container).
+1. **Node's permission model** (`--permission`, Node 22.13+) blocks filesystem, child-process and worker access below the JavaScript level, where extension code cannot bypass it. No `--allow-child-process` or `--allow-fs-write` is passed. The flag is also used inside the container, so each layer applies independently.
+2. **The host bootstrap** removes the network globals and refuses to load `fs`, `net`, `http`, `child_process` and similar modules. A blocked call produces a clear error that names its brokered replacement. Node's permission model does not cover the network, and this layer covers that gap.
+3. **The capability broker** checks every request that passes the other layers.
 
 The broker's rules:
 
-- **Deny by default.** A capability the manifest never declared is refused
-  outright and never offered to the user. Consent cannot be manufactured at
-  request time by an extension that did not say up front what it wanted.
-- **Declaration is a ceiling, not a grant.** A declared capability still needs a
-  decision — remembered, prompted for, or refused by policy.
-- **Scopes are checked on resolved paths**, so `workspace` access cannot be
-  walked out of with `..`, and `/project-secrets` does not pass as a child of
-  `/project`.
+- **Deny by default.** A capability not declared in the manifest is refused and never offered to the user, so an extension cannot request consent at runtime for a capability it did not declare.
+- **Declaration is an upper limit, not a grant.** A declared capability still requires a decision: remembered, prompted for, or refused by policy.
+- **Scopes are checked on resolved paths**, so `..` cannot escape `workspace` access, and `/project-secrets` is not treated as a child of `/project`.
 
 An extension declares what it wants in a `deco` section that VS Code ignores:
 
@@ -230,16 +178,9 @@ An extension declares what it wants in a `deco` section that VS Code ignores:
 }
 ```
 
-**Compatibility limitation:** an extension written for VS Code declares nothing, so
-under deco it starts with no capabilities and will break wherever it reaches for
-the filesystem or the network. deco does not guess a declaration on its behalf —
-the alternative to breaking it is granting it everything silently.
-`extensions.permissions.default` chooses between `prompt` (ask once, remember),
-`deny` (right for shared machines and CI) and `allow` (declaration becomes the
-only check).
+**Compatibility limitation:** an extension written for VS Code declares no capabilities, so under deco it starts with none and fails when it accesses the filesystem or the network. deco does not infer a declaration, because the only alternative would be to grant everything without notice. `extensions.permissions.default` selects `prompt` (ask once, remember), `deny` (suitable for shared machines and CI) or `allow` (the declaration is the only check).
 
-Theme and grammar extensions have no `main`, never start a host process, and so
-need no capability at all.
+Theme and grammar extensions have no `main` and never start a host process, so they need no capabilities.
 
 ## Layout
 
@@ -265,149 +206,37 @@ crates/
 extension-host/ the sandboxed Node host and the `vscode` API shim
 ```
 
-Dependencies run one way: `deco-core` depends on nothing of deco's, and the
-frontends depend on everything.
+Dependencies run one way: `deco-core` depends on no other deco crate, and the frontends depend on all of them.
 
 ## What is not built yet
 
-Named plainly, because a list of what works is only useful next to one of what
-does not. This list is the state of what exists; the larger features that do
-not exist *at all* yet — an integrated terminal, tasks, a test runner,
-self-update, debugging — each have a plan in the
-[Roadmap](docs/roadmap.md):
+This section lists missing features and limitations of existing features. Larger features that do not exist yet, such as an integrated terminal, tasks, a test runner, self-update and debugging, each have a plan in the [Roadmap](docs/roadmap.md):
 
-- **Git reviews, stages, commits and switches local branches.** The branch and the
-  changed count are in the status bar, changed lines are marked in the gutter,
-  and `ctrl+shift+g` opens a view with side-by-side diffs that stages, unstages
-  and commits; `git.checkout` lists branches and shows the cost before
-  switching. What it will not do: **discard** anything, because `git clean` has
-  no undo and no trash, or **reach the network**, which needs credentials. A
-  remote session runs status, committed text and writes on the machine holding
-  the repository. The GPU frontend computes the gutter marks but does not paint
-  them yet. See [Git](docs/git.md).
-- **The file tree has no watcher, no mouse and no remote.** `ctrl+b` shows it,
-  `ctrl+shift+e` focuses it, and the arrows walk it; a directory is read when it
-  is opened, so a large workspace costs what is on screen. Creating, renaming
-  and deleting are built, with an undo stack of the tree's own. What is missing:
-  a file another program creates appears only when the directory is read again;
-  it is keyboard-only in both frontends, so there is no drag and therefore no
-  gesture for moving a file to another folder; and the mutations do not yet go
-  over a remote connection. See [The file tree](docs/files.md#not-built-yet).
-- **The panel is built and empty.** `ctrl+j` opens a real region — the split,
-  the focus and VS Code's context keys are all there, and both frontends draw it
-  — but the terminal, problems and output that belong in it do not exist yet. It
-  says so. See [Chrome](docs/chrome.md).
-- **Remote development runs everything except the extension host over there.**
-  `deco --remote ssh-remote+myhost --workspace /home/u/project src/main.rs` starts
-  `deco --server --stdio` on the remote environment, fetches the file, and writes it back on
-  `ctrl+s`; `ctrl+p` lists the remote workspace. The server refuses everything
-  outside the directory it was given, symlinks included. `--remote-install` sends
-  this machine's binary to a remote that has none — only when asked, and never
-  over something that is not deco. `--forward 3000`
-  reaches a port over there, using the remote's own deco as the tunnel so that it
-  works over containers and WSL and not only SSH; both ends are loopback-only.
-  Language servers and Git run on the remote, from the same
-  `deco.lsp.servers` definitions and source-control commands used locally;
-  project search also runs on the machine holding the files, and an extension's
-  `readFile`/`writeFile` are
-  answered through the connection rather than from this machine's disk. The
-  remote's own `machine-settings.json` becomes the `remote` settings layer —
-  untrusted, so a language server it names is confirmed before it runs.
-  `--remote-install-download` provisions a remote of a *different* platform by
-  fetching that release and checking it against the release's own `SHA256SUMS`
-  before sending it — a separate flag from `--remote-install`, because reaching
-  the network is a larger thing to allow than copying the file already running.
-  What is missing: the extension *host* still runs locally, so a capability to
-  run a program runs it here — which the docs say rather than leaving it to be
-  discovered.
-- **A code action that is only a server command is declined.** Diagnostics,
-  hover (`ctrl+k ctrl+i`), go-to-definition (`F12`), references (`shift+f12`),
-  document symbols (`ctrl+shift+o`), completion (`ctrl+space`), semantic tokens,
-  formatting (`ctrl+shift+i`), rename (`F2`) and code actions (`ctrl+.`,
-  including `codeAction/resolve`) work. What `ctrl+.` will not do is run an
-  action whose whole content is a command for the client to execute: that means
-  `workspace/executeCommand`, whose effect comes back as a request asking the
-  editor to change files — the server driving rather than answering — and deco
-  names the command instead of appearing to work. Changes are sent as
-  full-document syncs; the incremental path exists in `deco-lsp` but the editor
-  does not yet track applied ranges, and only the document on screen is
-  synchronised at all.
+- **Git reviews, stages, commits and switches local branches.** The status bar shows the branch and the number of changed files, the gutter marks changed lines, and `ctrl+shift+g` opens a view with side-by-side diffs that stages, unstages and commits. `git.checkout` lists branches and shows the effect before switching. Git support does not **discard** changes, because `git clean` has no undo and no trash, and does not **access the network**, which requires credentials. In a remote session, status, committed text and writes run on the machine that holds the repository. The GPU frontend computes the gutter marks but does not draw them yet. See [Git](docs/git.md).
+- **The file tree has no watcher, no mouse and no remote.** `ctrl+b` shows it, `ctrl+shift+e` focuses it, and the arrow keys navigate it. A directory is read when it is expanded, so the cost of a large workspace depends on the visible rows. Creating, renaming and deleting are built, with a separate undo stack for the tree. Missing: a file created by another program appears only when the directory is read again; the tree is keyboard-only in both frontends, so there is no drag and no way to move a file to another folder; and create, rename and delete do not work over a remote connection yet. See [The file tree](docs/files.md#not-built-yet).
+- **The panel is built and empty.** `ctrl+j` opens the panel region with layout, focus and VS Code's context keys, and both frontends draw it. The terminal, problems and output views are not implemented yet, and the panel shows a label saying so. See [Chrome](docs/chrome.md).
+- **Remote development runs everything except the extension host in the remote environment.** `deco --remote ssh-remote+myhost --workspace /home/u/project src/main.rs` starts `deco --server --stdio` in the remote environment, fetches the file, and writes it back on `ctrl+s`; `ctrl+p` lists the remote workspace. The server refuses all paths outside the directory it was given, including paths reached through symlinks. `--remote-install` sends the local binary to a remote that has no deco, only when requested and only to a deco server. `--forward 3000` forwards a remote port using the remote deco as the tunnel, so it works over containers and WSL as well as SSH; both ends listen only on loopback. Language servers and Git run on the remote, using the same `deco.lsp.servers` definitions and source-control commands as locally. Project search also runs on the machine that holds the files, and an extension's `readFile`/`writeFile` calls are answered through the connection rather than from the local disk. The remote's `machine-settings.json` becomes the `remote` settings layer. It is untrusted, so a language server it defines requires confirmation before it runs. `--remote-install-download` provisions a remote of a *different* platform by downloading that release and checking it against the release's `SHA256SUMS` before sending it. It is separate from `--remote-install` because network access requires a broader permission than copying the running binary. Missing: the extension *host* still runs locally, so a capability to run a program runs it on the local machine.
+- **A code action that is only a server command is declined.** Diagnostics, hover (`ctrl+k ctrl+i`), go-to-definition (`F12`), references (`shift+f12`), document symbols (`ctrl+shift+o`), completion (`ctrl+space`), semantic tokens, formatting (`ctrl+shift+i`), rename (`F2`) and code actions (`ctrl+.`, including `codeAction/resolve`) work. `ctrl+.` does not run an action that consists only of a command for the client to execute. That requires `workspace/executeCommand`, whose effect arrives as a server request to change files. deco reports the command name instead. Changes are sent as full-document syncs. The incremental path exists in `deco-lsp`, but the editor does not yet track applied ranges, and only the visible document is synchronised.
 - **Numeric snippet tab stops and document variables work for completions.** Unique `$1`, `${1}` and
   `${1:arg}` fields support Tab/Shift+Tab navigation and `$0` finishes. The
   [supported subset and demonstration](docs/language-servers.md#snippet-tab-stops)
   describe the limits. Full LSP `snippetSupport` remains false; unsupported
   snippets use the existing text-only fallback and report that in the status bar.
-- **Go-to-definition across files opens a new tab** (or switches to the tab
-  already holding the file), so unsaved work is never at risk. Several results
-  are offered as a list rather than guessed between.
-- **Syntax highlighting is lexical, and terminal-only.** 19 languages are
-  coloured from a hand-written lexer emitting TextMate scopes, which the theme
-  layer resolves exactly as it resolves a real grammar's — see
-  [Syntax highlighting](docs/highlighting.md). What a lexer cannot do is anything
-  structural: a type told from a variable by its declaration, or a language
-  embedded in another. Markdown, HTML and XML are deliberately left plain for that
-  reason, and `ctrl+k m` says which language a file is when its name does not. A
-  language server's **semantic tokens** fill exactly that gap and are
-  drawn over the lexer's colouring where a server provides them. The GPU frontend
-  draws one colour per line.
-- **The extension host is connected, and the surface it can reach is small.** An
-  installed extension's commands are in the palette, choosing one starts the real
-  host under the real `node`, and the session answers its requests through the
-  broker: messages, `workspace.fs` and `workspace.applyEdit`. What is missing is
-  the rest of the API — no activation on opening a file or on startup, no editor
-  state, quick pick, tree views, webviews or debug adapters, and `process`,
-  `net`, `env`, `secrets` and `openExternal` are brokered and then refused by
-  name because nothing implements them. See
-  [What an extension can reach](docs/extensions.md#what-an-extension-can-reach-today).
-- **Search is literal — no regular expressions anywhere.** `ctrl+f` and `ctrl+h`
-  open a find bar with a query, a replacement, a match count and highlighting;
-  `F3`, `enter`, `ctrl+alt+enter` and `alt+c` / `alt+w` work as they do in VS
-  Code, and the multi-cursor keys (`ctrl+d`, `ctrl+shift+l`, `ctrl+k ctrl+d`)
-  search the same way, and `ctrl+shift+f` asks what to look for and searches every
-  file in the workspace with its own matching options. What is missing is regular
-  expressions: `deco-core::search` is deliberately literal, and a regex mode needs
-  its own escaping rules and its own error reporting for an invalid pattern.
-  `alt+r` says so when pressed rather than reporting an unknown command. Nor is
-  there a results view that stays open — the matches are a picker. Replacing
-  across the workspace is built: `ctrl+shift+h` asks what to look for and what to
-  put there, and lands as one undoable edit.
-- **Tabs, splits, quick open and search in files.**
-  Several documents open at once, one per tab (see [Tabs](docs/tabs.md)); `ctrl+p`
-  opens any file in the workspace and `ctrl+shift+f` searches all of them,
-  bounded and saying so; `ctrl+o` types a path for a file outside it, `ctrl+k s`
-  saves every edited tab and `ctrl+shift+s` saves one somewhere else. Every remaining
-  keybinding in that family **names the feature it is waiting on** rather than
-  doing nothing, and a test over the whole default keymap keeps it that way. See
-  [Running commands](docs/commands.md).
-- **The GPU frontend draws text, a gutter and a caret.** Selection and
-  current-line rectangles are computed and tested but not yet painted; there is
-  no scrollbar, minimap or mouse input, and it lays out one line per row with no
-  whitespace markers or rulers, so `editor.wordWrap`, `editor.renderWhitespace` and
-  `editor.rulers` have no effect there — and no chrome, so `ctrl+f` refuses
-  rather than opening a find bar the frontend cannot show.
-- **Four settings deco ships defaults for are read by nothing yet:**
-  `editor.tabCompletion`, `editor.largeFileOptimizations`, `files.encoding` and
-  `workbench.editor.enablePreview`. `editor.largeFileOptimizations` has nothing to
-  turn off so far: VS Code uses it to stop tokenizing and wrapping past a size, and
-  both are already bounded by the window here — see the table above. Shipping a default for a key is a claim about it,
-  so they are named here rather than left to be discovered.
-  (`extensions.host.*` is the unwired host's, below.)
-- **Bidirectional overrides are not marked.** `U+202E` and its relatives can make a
-  line display as something other than what it says — the Trojan Source class. They are
-  printable rather than control characters, so the control-character substitution does
-  not reach them, and VS Code covers them under `editor.unicodeHighlight.*`, which deco
-  does not read.
-- **Word wrap breaks at whitespace rather than by Unicode UAX #14.** Which does
-  not know that a closing bracket may not begin a row; the table that does would be
-  the first dependency added for cosmetics — see
-  [Word wrap](docs/editing.md#word-wrap).
+- **Go-to-definition across files opens a new tab** (or switches to the tab already holding the file), so unsaved work in the current document is kept. Multiple results are shown as a list.
+- **Syntax highlighting is lexical, and terminal-only.** 19 languages are highlighted by a hand-written lexer that emits TextMate scopes, which the theme layer resolves in the same way as scopes from a grammar. See [Syntax highlighting](docs/highlighting.md). A lexer cannot handle structural cases, such as distinguishing a type from a variable by its declaration, or a language embedded in another language. For this reason Markdown, HTML and XML are not highlighted, and `ctrl+k m` sets a file's language when its name does not identify it. A language server's **semantic tokens** cover these cases and are drawn over the lexer's colouring where a server provides them. The GPU frontend draws one colour per line.
+- **The extension host is connected, and the API it can use is small.** An installed extension's commands are listed in the palette. Choosing one starts the host under `node`, and the session answers its requests through the broker: messages, `workspace.fs` and `workspace.applyEdit`. The rest of the API is missing: there is no activation on opening a file or on startup, and no editor state, quick pick, tree views, webviews or debug adapters. `process`, `net`, `env`, `secrets` and `openExternal` pass through the broker and are then refused by name because they are not implemented. See [What an extension can reach](docs/extensions.md#what-an-extension-can-reach-today).
+- **Search is literal — no regular expressions anywhere.** `ctrl+f` and `ctrl+h` open a find bar with a query, a replacement, a match count and highlighting. `F3`, `enter`, `ctrl+alt+enter` and `alt+c` / `alt+w` work as in VS Code, the multi-cursor keys (`ctrl+d`, `ctrl+shift+l`, `ctrl+k ctrl+d`) use the same search, and `ctrl+shift+f` searches every file in the workspace with separate matching options. Regular expressions are missing: `deco-core::search` is intentionally literal, and a regex mode needs its own escaping rules and error reporting for invalid patterns. Pressing `alt+r` reports that regular expressions are not supported rather than reporting an unknown command. There is also no persistent results view; matches are shown in a picker. Replacing across the workspace is built: `ctrl+shift+h` prompts for the search text and the replacement, and applies the change as one undoable edit.
+- **Tabs, splits, quick open and search in files.** Several documents can be open at once, one per tab (see [Tabs](docs/tabs.md)). `ctrl+p` opens any file in the workspace, `ctrl+shift+f` searches all of them within limits and reports when a limit is reached, `ctrl+o` opens a file outside the workspace by path, `ctrl+k s` saves every edited tab and `ctrl+shift+s` saves one to another path. Each remaining keybinding in this group **names the missing feature** instead of doing nothing, and a test over the whole default keymap enforces this. See [Running commands](docs/commands.md).
+- **The GPU frontend draws text, a gutter and a caret.** Selection and current-line rectangles are computed and tested but not yet drawn. There is no scrollbar, minimap or mouse input. It lays out one line per row without whitespace markers or rulers, so `editor.wordWrap`, `editor.renderWhitespace` and `editor.rulers` have no effect there. It also has no chrome, so `ctrl+f` is refused rather than opening a find bar that cannot be shown.
+- **Four settings with defaults in deco are not used yet:** `editor.tabCompletion`, `editor.largeFileOptimizations`, `files.encoding` and `workbench.editor.enablePreview`. `editor.largeFileOptimizations` currently has no effect to disable: VS Code uses it to stop tokenizing and wrapping above a file size, and in deco both are already bounded by the window (see the table above). They are listed here because a shipped default could suggest that the setting is supported. (`extensions.host.*` belongs to the host, which is not yet wired up; see below.)
+- **Bidirectional overrides are not marked.** `U+202E` and related characters can make a line display differently from its actual content, which is the Trojan Source class of attack. They are printable rather than control characters, so the control-character substitution does not change them. VS Code handles them with `editor.unicodeHighlight.*`, which deco does not read.
+- **Word wrap breaks at whitespace rather than by Unicode UAX #14.** Whitespace breaking does not prevent a closing bracket from starting a row. UAX #14 support needs a table that would add a dependency for presentation only. See [Word wrap](docs/editing.md#word-wrap).
 
 ## Building
 
 Rust 1.85 or newer.
 
-Everything CI runs is a `cargo xtask` subcommand, so any CI step can be
-reproduced locally with the command CI itself uses:
+Every CI step is a `cargo xtask` subcommand, so it can be reproduced locally with the same command:
 
 ```console
 $ cargo xtask ci              # fmt, clippy, rustdoc and the tests
@@ -421,88 +250,47 @@ $ cargo xtask dist            # build and package a release for this machine
 $ cargo xtask dist --target aarch64-apple-darwin
 ```
 
-`cargo xtask dist` is the same code the release workflow runs, so a release can
-be rehearsed without pushing a tag. It writes the archive and its `.sha256` to
-`dist/`.
+The release workflow runs the same `cargo xtask dist` code, so a release can be tested locally without pushing a tag. It writes the archive and its `.sha256` to `dist/`.
 
 ## Releasing
 
-A release is a tag. Two ways to make one, and they end in the same place:
+A release is created from a tag. There are two ways to create one, with the same result:
 
 - **From a checkout.** `git tag -a v0.1.0 -m "deco 0.1.0" && git push origin v0.1.0`.
-- **From the Actions tab.** Run **Release** against `main` and type the tag. It
-  is created there, at the commit the run was dispatched from, and the same run
-  builds it — so cutting a release needs no terminal and no push rights beyond
-  what running a workflow already implies. A tag that already exists is released
-  as it stands rather than moved.
+- **From the Actions tab.** Run **Release** against `main` and enter the tag. The workflow creates the tag at the commit the run was dispatched from and builds it in the same run, so creating a release needs no terminal and no push rights beyond permission to run the workflow. An existing tag is released as it is, not moved.
 
-Either way the workflow builds all seven targets with the same `cargo xtask
-dist`, merges the per-artifact hashes into one `SHA256SUMS`, and publishes with
-the body taken from this repository:
+In both cases the workflow builds all seven targets with the same `cargo xtask dist`, merges the per-artifact hashes into one `SHA256SUMS`, and publishes the release with a body taken from this repository:
 
 ```console
 $ cargo xtask release-notes --tag v0.1.0   # what the release will say
 ```
 
-The notes are the `## 0.1.0` section of [CHANGELOG.md](CHANGELOG.md), not a
-second description typed into the release form — two descriptions of one version
-drift, and the one in the repository is the one a person reads at the commit
-they are standing on. **A tag with no section fails the release**, because a
-workflow can be run again and a published release cannot be unpublished. A unit
-test checks the changelog has a section for the current version on every push,
-so that failure arrives before the tag rather than after it.
+The notes are the `## 0.1.0` section of [CHANGELOG.md](CHANGELOG.md), not a separate description entered in the release form. This keeps one description per version, stored in the repository. **A tag with no section fails the release**, because a failed workflow can be run again but a published release cannot be unpublished. A unit test checks on every push that the changelog has a section for the current version, so the error is found before tagging.
 
 ## What CI runs where
 
-Everything routine runs on Linux. macOS and Windows runner minutes bill at ten
-and two times a Linux one, so the real macOS and Windows runners are reserved
-for a release tag, for `workflow_dispatch`, and for a pull request labelled
-`ci:full` — nothing is ever *shipped* unbuilt or untested on the platform it
-ships to.
+Routine checks run on Linux. macOS and Windows runner minutes cost ten and two times as much as Linux minutes, so the macOS and Windows runners are used only for a release tag, for `workflow_dispatch`, and for a pull request labelled `ci:full`. Every shipped build is still built and tested on its target platform.
 
-Actions also bills each job's wall clock rounded up to the minute, which for
-checks that take twenty seconds is most of the bill. So each check runs on the
-rarest event that still answers the question it asks, and checks that share an
-event share a job:
+Actions also bills each job's wall-clock time rounded up to the minute, which is most of the cost for checks that take twenty seconds. Each check therefore runs on the least frequent event that still covers what it checks, and checks triggered by the same event share a job:
 
 | When | What runs |
 | --- | --- |
 | every push to a pull request | `check` — fmt, clippy, rustdoc, commit messages, `docs --check` — and `test` — the workspace suite and the extension host |
-| a merge to `main` | `test` alone. A pull request's jobs already ran against the merge of its head and its base, so the only new question is whether `main` moved underneath the branch, and only the tests can see a conflict that merged cleanly |
-| daily, on `main` | `cargo xtask cross`, the three Linux `dist` targets, the MSRV check and `cargo deny`. None of these turns red because a function was renamed; they turn red when a dependency, a target or the advisory database moves |
+| a merge to `main` | `test` alone. A pull request's jobs already ran against the merge of its head and base, so the remaining risk is that `main` changed after that run. Only the tests detect a semantic conflict in a clean merge |
+| daily, on `main` | `cargo xtask cross`, the three Linux `dist` targets, the MSRV check and `cargo deny`. These checks are not usually affected by code changes such as renaming a function; they fail when a dependency, a target or the advisory database changes |
 | a pull request labelled `ci:full`, or `workflow_dispatch` | all of the above, plus the real macOS and Windows runners |
 | a release tag | all of the above, except the packaging jobs — the release workflow builds all seven targets from the same `cargo xtask dist` on the same tag, and its copy is the one that ships |
 
-Label a pull request `ci:full` for anything platform-specific, and for a
-dependency bump — that is what moves the MSRV floor and the supply-chain
-policy.
+Label a pull request `ci:full` for platform-specific changes and for dependency updates, because dependency updates can change the MSRV and the supply-chain policy results.
 
-Between tags, `cargo xtask cross` stands in for the premium runners from a
-Linux runner:
+Between tags, `cargo xtask cross` replaces the macOS and Windows runners with checks on a Linux runner:
 
-- **A type check of all four shipped Apple and Windows triples.** `cargo check`
-  stops before the link step, so it needs no MSVC toolchain and no Apple SDK —
-  only the prebuilt `std` rustup hands out. It compiles what a Linux build never
-  sees: the `%APPDATA%` branch of the config paths, the `cmd`-rather-than-`ctrl`
-  branch of the keymap, and, since it runs `--all-features`, the GPU frontend's
-  per-platform windowing.
-- **The test suite as Windows binaries, under Wine.** Built for
-  `x86_64-pc-windows-gnu` with MinGW and run through cargo's target runner, so
-  the `#[cfg(windows)]` paths actually execute — process spawning included. Two
-  tests sit out: crossterm on Windows sends its commands to the console rather
-  than to the writer it was given, and a runner gives Wine no terminal to make a
-  console out of. A real Windows runner has one and covers them at the tag.
+- **A type check of all four shipped Apple and Windows triples.** `cargo check` stops before linking, so it needs no MSVC toolchain or Apple SDK, only the prebuilt `std` from rustup. It compiles code that a Linux build does not compile: the `%APPDATA%` branch of the config paths, the `cmd`-rather-than-`ctrl` branch of the keymap, and, because it uses `--all-features`, the GPU frontend's per-platform windowing.
+- **The test suite as Windows binaries, under Wine.** The tests are built for `x86_64-pc-windows-gnu` with MinGW and run through cargo's target runner, so the `#[cfg(windows)]` paths execute, including process spawning. Two tests are skipped: crossterm on Windows sends its commands to the console rather than to the given writer, and Wine on a CI runner has no terminal from which to create a console. A real Windows runner has a console and runs them for a release tag.
 
-That is a substitute, not an equal. macOS gets a compile check and no runtime
-check at all; Wine runs the GNU ABI rather than MSVC, and where Wine's Win32
-differs from Microsoft's a test can pass here and fail there. It also runs
-daily rather than on every push, so a regression it *would* catch can sit on
-`main` for a day, and one only a real runner catches can wait until the tag.
-Label a pull request `ci:full` to buy both early, which is worth doing for
-anything platform-specific: a path, a terminal or process API, a `#[cfg]`, or a
-dependency with per-platform code.
+These checks do not fully replace the native runners. macOS gets a compile check and no runtime check. Wine uses the GNU ABI rather than MSVC, and where Wine's Win32 implementation differs from Microsoft's, a test can pass under Wine and fail on Windows. The checks also run daily rather than on every push, so a regression they would detect can remain on `main` for a day, and a regression only a native runner detects can remain until the release tag. Label a pull request `ci:full` to run both earlier for platform-specific changes: paths, terminal or process APIs, `#[cfg]`, or dependencies with per-platform code.
 
-Running the substitute locally needs the targets and the Windows toolchain:
+Running these checks locally requires the targets and the Windows toolchain:
 
 ```console
 $ rustup target add x86_64-pc-windows-msvc aarch64-pc-windows-msvc \
@@ -511,8 +299,7 @@ $ sudo apt-get install -y mingw-w64 wine64
 $ cargo xtask cross
 ```
 
-`--check-only` skips the Wine half if you would rather not install it, and
-`--wine-only` skips the type checks.
+`--check-only` skips the Wine tests, so Wine is not required, and `--wine-only` skips the type checks.
 
 ## Commit messages
 
@@ -533,15 +320,9 @@ Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`
 `chore`, `revert`. A scope is optional and is usually a crate without its `deco-`
 prefix. `!` before the colon marks a breaking change.
 
-The checker is about eighty lines in `xtask/src/commitlint.rs` rather than a
-Node package, for the reason in [Dependencies](#dependencies). In CI it is a step
-in the existing lint job rather than a job of its own: a separate job would
-re-run checkout, the toolchain and the cache — three more third-party actions
-executing, for a check that reads strings.
+The checker is about eighty lines in `xtask/src/commitlint.rs` rather than a Node package, for the reason in [Dependencies](#dependencies). In CI it is a step in the existing lint job rather than a separate job, which would repeat checkout, toolchain setup and caching and run three more third-party actions for a string check.
 
-It only reads the commits a branch adds. The convention was adopted partway
-through, and rewriting merged commits to satisfy it would change history other
-people have already pulled.
+It checks only the commits a branch adds. The convention was adopted after the project started, and rewriting merged commits would change history that others have already pulled.
 
 The GPU frontend is behind a feature flag because wgpu and winit dominate build
 time:
@@ -572,48 +353,23 @@ A server is configured under `deco.lsp.servers`, keyed by an id you choose:
 }
 ```
 
-`rust-analyzer`, `typescript-language-server`, `gopls` and `pyright` are defined
-out of the box, and assume only that the program is on `PATH` — deco cannot
-install a language server, so a missing one is reported as plainly as possible
-rather than dressed up.
+`rust-analyzer`, `typescript-language-server`, `gopls` and `pyright` are defined by default and require only that the program is on `PATH`. deco cannot install a language server, so a missing server is reported directly.
 
-**A server defined by a workspace is not started.** `command` is a program run
-with your privileges, and `.vscode/settings.json` arrives with a cloned
-repository — so cloning must not be enough to execute something. A definition
-from workspace or folder scope is refused, by name, in the status bar; move it
-into your own `settings.json` if you want it. This holds even when the workspace
-shadows an id you already trust: overriding `rust-analyzer` does not inherit the
-built-in entry's trust, and it does not push your own definition aside either.
+**A server defined by a workspace is not started.** `command` is a program that runs with your privileges, and `.vscode/settings.json` can come with a cloned repository, so cloning alone must not execute a program. A definition from workspace or folder scope is refused and named in the status bar; move it into your own `settings.json` to use it. This also applies when the workspace redefines an id you already trust: a workspace definition of `rust-analyzer` does not inherit the built-in entry's trust and does not replace your own definition.
 
-`command` and `args` are an argument vector. No shell is involved at any point,
-so a `command` containing `;` or `$(…)` is a program name with punctuation in it
-and nothing more.
+`command` and `args` form an argument vector. No shell is used, so a `command` containing `;` or `$(…)` is treated as a program name containing those characters.
 
-Supported features: diagnostics (counted in the status bar, navigated with
-`F8` / `shift+F8`), hover (`ctrl+k ctrl+i`, dismissed with `escape`),
-go-to-definition (`F12`), references (`shift+f12`), go to symbol (`ctrl+shift+o`),
-completion — `ctrl+space` to ask, or automatically on a character the server
-nominates — semantic tokens drawn over the lexer's colouring, and formatting (`ctrl+shift+i` for the document,
-`ctrl+k ctrl+f` for a selection).
+Supported features: diagnostics (counted in the status bar, navigated with `F8` / `shift+F8`), hover (`ctrl+k ctrl+i`, dismissed with `escape`), go-to-definition (`F12`), references (`shift+f12`), go to symbol (`ctrl+shift+o`), completion (`ctrl+space`, or automatically on a trigger character specified by the server), semantic tokens drawn over the lexer's colouring, and formatting (`ctrl+shift+i` for the document, `ctrl+k ctrl+f` for a selection).
 
-In the completion list, `up`/`down` move, `tab` or `enter` accepts, `escape`
-closes, and typing narrows it locally rather than asking the server again.
+In the completion list, `up`/`down` move the selection, `tab` or `enter` accepts, `escape` closes, and typing filters the list locally without a new server request.
 
-Formatting sends your own `editor.tabSize`, `editor.insertSpaces`,
-`files.trimTrailingWhitespace` and `files.insertFinalNewline`, so a server
-formats to the project's conventions rather than to its own defaults. The whole
-batch of edits is one undo step. Overlapping edits are rejected without changing the document because their result is not well-defined.
+Formatting sends your `editor.tabSize`, `editor.insertSpaces`, `files.trimTrailingWhitespace` and `files.insertFinalNewline`, so the server formats according to the project's settings rather than its own defaults. The whole batch of edits is one undo step. Overlapping edits are rejected without changing the document because their result is not well-defined.
 
-The keys are gated on VS Code's own context keys — `editorHasDefinitionProvider`,
-`suggestWidgetVisible` and friends — set from what the server actually offers, so
-a binding is live exactly when the feature is, and `enter` keeps its ordinary
-meaning whenever no list is open.
+The keys are gated on VS Code's context keys, such as `editorHasDefinitionProvider` and `suggestWidgetVisible`, which are set from the server's reported capabilities. A binding is active only when its feature is available, and `enter` keeps its normal behaviour when no list is open.
 
 ## Dependencies
 
-An editor is a program you give your source code to, and every dependency is
-another party you are trusting to reach it. The graph is therefore kept small
-on purpose, and the size is checked rather than assumed:
+An editor has access to your source code, and every dependency is code that you trust with that access. The dependency graph is therefore kept small, and its size is checked:
 
 | Build | Third-party crates |
 | --- | --- |
@@ -622,44 +378,19 @@ on purpose, and the size is checked rather than assumed:
 | `xtask` (build tooling, never shipped) | 49 |
 | extension host (Node) | **0** |
 
-Everything in the terminal build is a crate with a long publishing history and
-more than one maintainer's worth of use behind it: `ropey` for the text rope,
-`crossterm` for the terminal, `serde`/`serde_json`, `thiserror`/`anyhow`,
-`regex` (rust-lang), the `unicode-*` crates from the unicode-rs project, and
-`sha2` from RustCrypto.
+Every crate in the terminal build has a long publishing history and wide use: `ropey` for the text rope, `crossterm` for the terminal, `serde`/`serde_json`, `thiserror`/`anyhow`, `regex` (rust-lang), the `unicode-*` crates from the unicode-rs project, and `sha2` from RustCrypto.
 
-`sha2` is there for one job: `--remote-install-download` checks a release
-archive against the `SHA256SUMS` that release publishes, and **that check is
-deco's own code**. The download itself and the unpacking are handed to `curl`
-and `tar`, which every platform this runs on already ships. That split is the
-whole reason the number above is 52 and not 93: an in-process HTTPS client costs
-about forty crates and a vendored TLS stack. deco computes and compares the checksum before passing the archive to `tar`. See
-[`crates/deco-remote/src/fetch.rs`](crates/deco-remote/src/fetch.rs).
-There are no git dependencies and no vendored forks — every entry in
-`Cargo.lock` resolves to crates.io, and `cargo deny` fails the build if that
-stops being true.
+`sha2` has one purpose: `--remote-install-download` checks a release archive against the `SHA256SUMS` published with that release, and **that check is implemented in deco**. Downloading and unpacking are delegated to `curl` and `tar`, which are available on every supported platform. This is why the count above is 52 rather than 93: an in-process HTTPS client adds about forty crates and a vendored TLS stack. deco computes and compares the checksum before passing the archive to `tar`. See [`crates/deco-remote/src/fetch.rs`](crates/deco-remote/src/fetch.rs). There are no git dependencies and no vendored forks. Every entry in `Cargo.lock` resolves to crates.io, and `cargo deny` fails the build otherwise.
 
-The rules that keep it that way:
+Dependency rules:
 
-- **`Cargo.lock` is committed and CI passes `--locked`.** Versions change in a
-  reviewable diff instead of being re-resolved on every run, so a freshly
-  published malicious version cannot enter through a build that nobody read.
-- **`cargo deny` runs in CI** (`cargo xtask deny`) over RustSec advisories,
-  crate sources, licences and a banned list. [`deny.toml`](deny.toml) says what
-  each check is defending against, and every advisory exemption carries a
-  reason and the condition for removing it.
-- **GitHub Actions are pinned to commit SHAs**, because a tag is mutable and
-  `@v4` otherwise means write access to this repository's CI.
-- **The editor parses its own command line** ([`cli.rs`](crates/deco/src/cli.rs))
-  rather than taking a derive-based argument parser, which removes fourteen
-  crates — including a procedural macro, i.e. code that runs on the build
-  machine — in exchange for about a hundred lines.
-- **The extension host has no npm dependencies at all**, and a test fails if
-  one appears. It is the one process that deliberately loads untrusted code, so
-  nothing unreviewed belongs on the trusted side of that boundary.
+- **`Cargo.lock` is committed and CI passes `--locked`.** Versions change only through a reviewable diff instead of being re-resolved on every run, so a newly published malicious version cannot enter an unreviewed build.
+- **`cargo deny` runs in CI** (`cargo xtask deny`) and checks RustSec advisories, crate sources, licences and a banned list. [`deny.toml`](deny.toml) documents the purpose of each check, and every advisory exemption has a reason and a removal condition.
+- **GitHub Actions are pinned to commit SHAs**, because tags are mutable and anyone who can move `@v4` would otherwise gain write access to this repository's CI.
+- **The editor parses its own command line** ([`cli.rs`](crates/deco/src/cli.rs)) instead of using a derive-based argument parser. This removes fourteen crates, including a procedural macro that runs on the build machine, at the cost of about a hundred lines.
+- **The extension host has no npm dependencies**, and a test fails if one is added. It is the only process that intentionally loads untrusted code, so its trusted side contains only reviewed code.
 
-The GPU frontend is the outlier: `wgpu`, `winit` and `glyphon` bring 111 crates between them, which is why it is behind a feature flag and not in
-the shipped binary.
+The GPU frontend is the exception: `wgpu`, `winit` and `glyphon` add 111 crates, so it is behind a feature flag and not in the shipped binary.
 
 ## Licence
 
