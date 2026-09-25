@@ -27,7 +27,7 @@
 //!   can still use another prompt mechanism.
 
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 use thiserror::Error;
@@ -224,10 +224,7 @@ impl Git {
             // expressed in it. Return no content rather than wrong content.
             return Ok(None);
         };
-        if path.is_empty()
-            || Path::new(path).is_absolute()
-            || path.split('/').any(|part| part == "..")
-        {
+        if !stays_in_working_tree(path) {
             return Err(ScmError::NotInWorkingTree(path.to_owned()));
         }
 
@@ -424,10 +421,7 @@ impl Git {
             let text = path
                 .to_str()
                 .ok_or_else(|| ScmError::NotInWorkingTree(path.display().to_string()))?;
-            if text.is_empty()
-                || Path::new(text).is_absolute()
-                || text.split('/').any(|part| part == "..")
-            {
+            if !stays_in_working_tree(text) {
                 return Err(ScmError::NotInWorkingTree(text.to_owned()));
             }
             Ok(text.to_owned())
@@ -571,11 +565,26 @@ fn plain_path(path: &Path) -> Result<String, ScmError> {
     let text = path
         .to_str()
         .ok_or_else(|| ScmError::NotInWorkingTree(path.display().to_string()))?;
-    if text.is_empty() || Path::new(text).is_absolute() || text.split('/').any(|part| part == "..")
-    {
+    if !stays_in_working_tree(text) {
         return Err(ScmError::NotInWorkingTree(text.to_owned()));
     }
     Ok(text.to_owned())
+}
+
+/// Whether `text` names a path inside the working tree when resolved against
+/// its root.
+///
+/// Only plain names and `.` are allowed. A root (`/etc/passwd`), a Windows
+/// prefix (`C:`, `\\server\share`) or `..` would make git resolve the path to
+/// another file. `Path::components` applies the platform's rules, so on Windows
+/// a path such as `/etc/passwd`, which has a root but no drive and therefore is
+/// not `is_absolute`, is still refused, and `\` is a separator.
+fn stays_in_working_tree(text: &str) -> bool {
+    !text.is_empty()
+        && !text.split('/').any(|part| part == "..")
+        && Path::new(text)
+            .components()
+            .all(|part| matches!(part, Component::Normal(_) | Component::CurDir))
 }
 
 #[cfg(test)]
@@ -1132,6 +1141,23 @@ mod tests {
                 ),
                 Err(ScmError::NotInWorkingTree(_))
             ));
+        }
+    }
+
+    #[test]
+    fn only_plain_relative_paths_stay_in_the_working_tree() {
+        for good in ["a.rs", "src/main.rs", "./src/main.rs", "a..b/c"] {
+            assert!(stays_in_working_tree(good), "{good:?}");
+        }
+        for bad in ["", "/etc/passwd", "../x", "a/../../b", "src/.."] {
+            assert!(!stays_in_working_tree(bad), "{bad:?}");
+        }
+        // Windows forms: a drive, a drive-relative path, a UNC share, and `..`
+        // written with the other separator. On Unix these are ordinary names.
+        if cfg!(windows) {
+            for bad in [r"C:\x", "C:x", r"\\server\share\x", r"a\..\..\b", r"\etc"] {
+                assert!(!stays_in_working_tree(bad), "{bad:?}");
+            }
         }
     }
 
