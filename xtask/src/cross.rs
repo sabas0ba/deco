@@ -135,8 +135,11 @@ pub const WINE_SKIPS: &[&str] = &["painting_"];
 /// Default features, unlike the check above. `--all-features` would enable
 /// `deco`'s `gui` feature and add wgpu and winit to the build, although their
 /// tests are excluded.
+///
+/// `--no-fail-fast` runs every test binary even after one fails, so one run
+/// reports every failure instead of only the first failing crate's.
 pub fn wine_test_args() -> Vec<String> {
-    let mut args: Vec<String> = ["test", "--locked", "--workspace"]
+    let mut args: Vec<String> = ["test", "--locked", "--workspace", "--no-fail-fast"]
         .iter()
         .map(|argument| (*argument).to_owned())
         .collect();

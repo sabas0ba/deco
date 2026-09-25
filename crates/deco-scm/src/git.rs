@@ -679,7 +679,10 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
+    // Not on macOS: APFS rejects a file name that is not valid UTF-8 with
+    // `EILSEQ`, so the file this test needs cannot be created and git there
+    // cannot report such a path.
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn a_non_utf8_status_path_is_refused_before_it_can_name_another_file() {
         use std::os::unix::ffi::OsStringExt;

@@ -263,7 +263,18 @@ fn ci(root: &Path, lint_only: bool, test_only: bool) -> Result<()> {
         )?;
     }
     if !lint_only {
-        run_cargo(root, &["test", "--locked", "--workspace", "--all-features"])?;
+        // `--no-fail-fast` so one run reports the failures of every crate, not
+        // only the first crate that failed.
+        run_cargo(
+            root,
+            &[
+                "test",
+                "--locked",
+                "--workspace",
+                "--all-features",
+                "--no-fail-fast",
+            ],
+        )?;
     }
     Ok(())
 }
