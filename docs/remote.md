@@ -242,7 +242,10 @@ $ ssh myhost deco --server --stdio --workspace /home/u/project
 
 This command is not written by hand: `deco_remote::server_command` builds it and `command_for` wraps it in the transport. It is the exact command that runs, and a test asserts that the command the client builds is the one the server parses.
 
-The server answers a handshake naming the protocol version and the workspace,
+The server answers a handshake naming the protocol version and the workspace.
+The client refuses a server whose version differs, so a server installed by an
+older deco must be replaced, for example with `--remote-install`. Version 2
+added regular-expression search to `fs.search`. The server implements
 the `fs.*` and `scm.*` families, and `settings.read`. That is what opening,
 listing, searching and saving a file needs, plus source control and the
 machine's own settings.

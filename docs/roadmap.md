@@ -19,7 +19,6 @@ Features that VS Code has and deco does not, with their prerequisites:
 | Self-update | nothing — `cargo xtask dist` already builds what it would install |
 | AI features — inline completions, chat, agent mode, MCP (`chat.disableAIFeatures`) | the extension host, ghost text, and the panel; agents additionally on `WorkspaceEdit` and the terminal; the off switch depends on nothing and comes first |
 | Debugging (DAP) | the panel; by far the largest item here |
-| Regular-expression search | nothing — `deco-core::search` is deliberately literal so far |
 | Full snippet syntax and user snippet files ([numeric completion fields work](language-servers.md#snippet-tab-stops)) | linked/nested field tracking and variable/transform expansion |
 
 These dependencies determine the order of the sections below. One foundation remains: **implementing the remaining extension-host APIs**. The other two are built. The **[side bar and panel](chrome.md)** provide regions for the file tree, source-control view and planned terminal. **`WorkspaceEdit`** ([below](#the-gaps-behind-the-features)) is already used by rename, code actions and workspace-wide replace, and is intended for the tree's mutations and an agent's turn.
@@ -212,7 +211,7 @@ Three smaller items block or limit the sections above and should be done first. 
   [code actions](language-servers.md#code-actions) (`ctrl+.`) and
   [replace across the workspace](find-and-replace.md#replacing-across-the-workspace)
   (`ctrl+shift+h`) followed it. The mechanism is complete; the file tree's mutations are the remaining *caller*. An agent's turn has the same structure; see [Agent integration](#agent-integration).
-- **Regular-expression search.** `deco-core::search` is deliberately literal. Regex needs its own escaping rules and error reporting for an invalid pattern (`alt+r` currently reports that regex is not supported). The open decision is between a regex crate dependency and a subset implemented in a custom engine. The find bar, multi-cursor find and search-in-files will all use the chosen implementation.
+- **~~Regular-expression search~~ — built.** `alt+r` switches the find bar and project search to the `regex` crate, which was already a dependency of `deco-keymap`, so no crate was added. Invalid patterns are reported, replacements expand capture groups, and remote search passes the option to the server. Look-around, backreferences and case-changing replacement references remain unsupported; see [Find and replace](find-and-replace.md#regular-expressions).
 - **Full snippet support.** [Numeric completion fields are built](language-servers.md#snippet-tab-stops):
   Tab/Shift+Tab navigate, Escape exits, and ranges follow edits. Repeated indices,
   nested fields, choices, additional variables and transforms remain, followed by user snippet
