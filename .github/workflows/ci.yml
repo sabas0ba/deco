@@ -241,11 +241,12 @@ jobs:
       # 32-bit stack, which requires the i386 architecture and a second Wine
       # for binaries this repository does not build. `wine64` installs to
       # /usr/lib/wine/wine64 without changing PATH; cross.rs checks that path
-      # last.
+      # last. `cmake` and `libz-mingw-w64-dev` build the `tar.exe` Wine lacks
+      # (xtask/src/wine_tar.rs).
       - name: Install the MinGW toolchain and Wine
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends mingw-w64 wine64
+          sudo apt-get install -y --no-install-recommends mingw-w64 wine64 cmake libz-mingw-w64-dev
       - run: cargo xtask cross
 
   # Daily. The MSRV changes when a dependency raises its own, which arrives as
