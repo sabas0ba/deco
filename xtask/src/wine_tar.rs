@@ -103,6 +103,13 @@ pub fn ensure(root: &Path) -> Result<PathBuf> {
     let args = configure_args(&source, &build);
     crate::run(&work, "cmake", &borrow(&args), &[])
         .context("configuring libarchive — are `cmake` and `libz-mingw-w64-dev` installed?")?;
+    // An explicit job count: with the Makefile generator a bare `--parallel`
+    // runs `make -j` with no limit, which started over a hundred compilers at
+    // once and exhausted a CI runner.
+    let jobs = std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1)
+        .to_string();
     crate::run(
         &work,
         "cmake",
@@ -112,6 +119,7 @@ pub fn ensure(root: &Path) -> Result<PathBuf> {
             "--target",
             "bsdtar",
             "--parallel",
+            &jobs,
         ],
         &[],
     )
