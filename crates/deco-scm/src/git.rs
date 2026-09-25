@@ -219,14 +219,12 @@ impl Git {
     /// the branch has no commits. This is not an error; the caller marks every
     /// line as added rather than showing no marks.
     pub fn committed(&self, directory: &Path, path: &Path) -> Result<Option<String>, ScmError> {
-        let Some(path) = path.to_str() else {
+        if path.to_str().is_none() {
             // `HEAD:<path>` is a string argument, and a non-UTF-8 path cannot be
             // expressed in it. Return no content rather than wrong content.
             return Ok(None);
-        };
-        if !stays_in_working_tree(path) {
-            return Err(ScmError::NotInWorkingTree(path.to_owned()));
         }
+        let path = plain_path(path)?;
 
         // `--textconv` is intentionally not passed. A repository can configure
         // a filter that runs an arbitrary program to render a file, and the
@@ -417,15 +415,7 @@ impl Git {
     /// Paths are first validated as in [`Git::committed`], for the same reason:
     /// git would resolve an absolute or `..`-containing path to another file.
     pub fn apply(&self, directory: &Path, operation: &Operation) -> Result<(), ScmError> {
-        let path = |path: &Path| -> Result<String, ScmError> {
-            let text = path
-                .to_str()
-                .ok_or_else(|| ScmError::NotInWorkingTree(path.display().to_string()))?;
-            if !stays_in_working_tree(text) {
-                return Err(ScmError::NotInWorkingTree(text.to_owned()));
-            }
-            Ok(text.to_owned())
-        };
+        let path = plain_path;
         match operation {
             Operation::Stage(one) => {
                 self.run(directory, &["add", "--", &path(one)?])?;
@@ -561,6 +551,11 @@ impl Git {
 }
 
 /// A repository-relative path safe to embed in Git's `revision:path` syntax.
+///
+/// The result is `/`-separated whatever the platform's separator, because
+/// git's `revision:path` syntax only accepts `/`. On Windows a path built with
+/// `Path::join` or `strip_prefix` contains `\`, and `HEAD:src\main.rs` names no
+/// file.
 fn plain_path(path: &Path) -> Result<String, ScmError> {
     let text = path
         .to_str()
@@ -568,7 +563,14 @@ fn plain_path(path: &Path) -> Result<String, ScmError> {
     if !stays_in_working_tree(text) {
         return Err(ScmError::NotInWorkingTree(text.to_owned()));
     }
-    Ok(text.to_owned())
+    let parts: Vec<&str> = Path::new(text)
+        .components()
+        .filter_map(|part| match part {
+            Component::Normal(name) => name.to_str(),
+            _ => None,
+        })
+        .collect();
+    Ok(parts.join("/"))
 }
 
 /// Whether `text` names a path inside the working tree when resolved against
@@ -1163,7 +1165,16 @@ mod tests {
         }
         // Windows forms: a drive, a drive-relative path, a UNC share, and `..`
         // written with the other separator. On Unix these are ordinary names.
+        assert_eq!(
+            plain_path(Path::new("./src/main.rs")).unwrap(),
+            "src/main.rs"
+        );
         if cfg!(windows) {
+            // `revision:path` needs `/`, whatever separator the path was built with.
+            assert_eq!(
+                plain_path(Path::new(r"src\main.rs")).unwrap(),
+                "src/main.rs"
+            );
             for bad in [r"C:\x", "C:x", r"\\server\share\x", r"a\..\..\b", r"\etc"] {
                 assert!(!stays_in_working_tree(bad), "{bad:?}");
             }
