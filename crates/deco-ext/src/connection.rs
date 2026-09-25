@@ -17,7 +17,7 @@
 //! [`dispatch`] is the only path from an inbound request to the editor. It is a
 //! pure function of the broker and the request, so every path through it can be
 //! tested without a process. It denies in two cases: a method that
-//! [`crate::protocol::required_capability`] does not recognise, and a capability
+//! [`crate::protocol::required_capabilities`] does not recognise, and a capability
 //! the manifest did not declare.
 
 use std::collections::BTreeMap;
@@ -31,7 +31,7 @@ use serde_json::Value;
 
 use crate::capability::{Broker, CheckResult};
 use crate::host::{HostSpec, PROTOCOL_VERSION};
-use crate::protocol::{required_capability, ErrorCode, Message, Notification, Request, Response};
+use crate::protocol::{required_capabilities, ErrorCode, Message, Notification, Request, Response};
 
 /// An event from the reader.
 #[derive(Debug, Clone, PartialEq)]
@@ -143,32 +143,47 @@ pub enum Dispatch {
 /// The only path from a request to the editor. It is a pure function, so every path
 /// through it is testable without a process. It denies in two cases:
 ///
-/// - a method that [`required_capability`] does not recognise is rejected as
+/// - a method that [`required_capabilities`] does not recognise is rejected as
 ///   unknown, so a host from a newer deco cannot reach an older deco's editor
 ///   surface through a method the older version does not know;
 /// - a capability the manifest did not declare is denied by the broker, regardless
 ///   of later user grants. The declaration is an upper bound.
+///
+/// A request that needs several capabilities, such as a rename, which touches two
+/// paths, is allowed only when every one is allowed. A denial of any of them refuses
+/// it, even when another still needs consent, so the user is not asked about a
+/// request that would be refused anyway. Otherwise the first capability that needs
+/// consent is returned. Only one question is asked at a time, so the caller asks
+/// again about the next one after the answer.
 pub fn dispatch(broker: &Broker, request: &Request) -> Dispatch {
-    let Ok(needed) = required_capability(&request.method, &request.params) else {
+    let Ok(needed) = required_capabilities(&request.method, &request.params) else {
         return Dispatch::Refused(Response::err(
             request.id,
             ErrorCode::MethodNotFound,
             format!("deco does not know the method `{}`", request.method),
         ));
     };
-    // No capability needed: the method only affects state that deco owns and shows
-    // to the user.
-    let Some(needed) = needed else {
-        return Dispatch::Allowed;
-    };
-    match broker.check(&needed) {
-        CheckResult::Allowed => Dispatch::Allowed,
-        CheckResult::NeedsConsent { capability } => Dispatch::Consent { capability },
-        CheckResult::Denied { reason } => Dispatch::Refused(Response::err(
-            request.id,
-            ErrorCode::PermissionDenied,
-            reason.to_string(),
-        )),
+    // An empty list is allowed: the method only affects state that deco owns and
+    // shows to the user.
+    let mut consent = None;
+    for capability in &needed {
+        match broker.check(capability) {
+            CheckResult::Allowed => {}
+            CheckResult::NeedsConsent { capability } => {
+                consent.get_or_insert(capability);
+            }
+            CheckResult::Denied { reason } => {
+                return Dispatch::Refused(Response::err(
+                    request.id,
+                    ErrorCode::PermissionDenied,
+                    reason.to_string(),
+                ));
+            }
+        }
+    }
+    match consent {
+        Some(capability) => Dispatch::Consent { capability },
+        None => Dispatch::Allowed,
     }
 }
 
@@ -719,6 +734,160 @@ mod tests {
                 &request("fs.readFile", serde_json::json!({ "path": "/w/a.rs" }))
             ),
             Dispatch::Consent { .. }
+        ));
+    }
+
+    // ---- Requests that touch two paths -------------------------------------
+
+    fn subtree(path: &str) -> PathScope {
+        PathScope::Subtree { path: path.into() }
+    }
+
+    /// Writes under `/w/allowed`, reads under `/w/readonly`, and nothing else.
+    fn two_scopes(policy: DefaultPolicy) -> Broker {
+        broker(
+            vec![
+                Capability::WriteFile {
+                    scope: subtree("/w/allowed"),
+                },
+                Capability::ReadFile {
+                    scope: subtree("/w/readonly"),
+                },
+            ],
+            policy,
+        )
+    }
+
+    fn transfer(method: &str, source: &str, target: &str) -> Request {
+        request(
+            method,
+            serde_json::json!({ "source": source, "target": target }),
+        )
+    }
+
+    fn refused_for_permission(dispatched: Dispatch) {
+        match dispatched {
+            Dispatch::Refused(response) => assert_eq!(
+                response.error.expect("a refusal carries one").code,
+                ErrorCode::PermissionDenied
+            ),
+            other => panic!("should have been refused: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_rename_out_of_an_undeclared_source_is_refused() {
+        // The target is covered. Checking only the target would let an extension
+        // move a key into its own directory and read it there.
+        let broker = two_scopes(DefaultPolicy::Allow);
+        refused_for_permission(dispatch(
+            &broker,
+            &transfer("fs.rename", "/home/u/.ssh/id_ed25519", "/w/allowed/x"),
+        ));
+    }
+
+    #[test]
+    fn a_rename_source_that_climbs_out_with_dots_is_refused() {
+        let broker = two_scopes(DefaultPolicy::Allow);
+        refused_for_permission(dispatch(
+            &broker,
+            &transfer(
+                "fs.rename",
+                "/w/allowed/../../home/u/.ssh/id",
+                "/w/allowed/x",
+            ),
+        ));
+    }
+
+    #[test]
+    fn a_rename_within_the_writable_scope_is_allowed() {
+        let broker = two_scopes(DefaultPolicy::Allow);
+        assert_eq!(
+            dispatch(
+                &broker,
+                &transfer("fs.rename", "/w/allowed/a", "/w/allowed/b")
+            ),
+            Dispatch::Allowed
+        );
+    }
+
+    #[test]
+    fn a_rename_out_of_a_read_only_scope_is_refused() {
+        // Moving a file out of a directory changes that directory.
+        let broker = two_scopes(DefaultPolicy::Allow);
+        refused_for_permission(dispatch(
+            &broker,
+            &transfer("fs.rename", "/w/readonly/a", "/w/allowed/a"),
+        ));
+    }
+
+    #[test]
+    fn a_copy_needs_only_to_read_its_source() {
+        let broker = two_scopes(DefaultPolicy::Allow);
+        assert_eq!(
+            dispatch(
+                &broker,
+                &transfer("fs.copy", "/w/readonly/a", "/w/allowed/a")
+            ),
+            Dispatch::Allowed
+        );
+    }
+
+    #[test]
+    fn a_copy_from_an_undeclared_source_is_refused() {
+        let broker = two_scopes(DefaultPolicy::Allow);
+        refused_for_permission(dispatch(
+            &broker,
+            &transfer("fs.copy", "/home/u/.ssh/id_ed25519", "/w/allowed/x"),
+        ));
+    }
+
+    #[test]
+    fn a_copy_into_a_read_only_scope_is_refused() {
+        let broker = two_scopes(DefaultPolicy::Allow);
+        refused_for_permission(dispatch(
+            &broker,
+            &transfer("fs.copy", "/w/allowed/a", "/w/readonly/a"),
+        ));
+    }
+
+    #[test]
+    fn consent_is_asked_for_one_path_at_a_time_target_first() {
+        // The consent prompt holds one question. After the first answer, the
+        // request asks about the path that is still undecided.
+        let mut broker = two_scopes(DefaultPolicy::Prompt);
+        let rename = transfer("fs.rename", "/w/allowed/a", "/w/allowed/b");
+        let target = Capability::WriteFile {
+            scope: subtree("/w/allowed/b"),
+        };
+        let source = Capability::WriteFile {
+            scope: subtree("/w/allowed/a"),
+        };
+        assert_eq!(
+            dispatch(&broker, &rename),
+            Dispatch::Consent {
+                capability: target.clone()
+            }
+        );
+        broker.remember(target, crate::capability::Decision::Allow);
+        assert_eq!(
+            dispatch(&broker, &rename),
+            Dispatch::Consent {
+                capability: source.clone()
+            }
+        );
+        broker.remember(source, crate::capability::Decision::Allow);
+        assert_eq!(dispatch(&broker, &rename), Dispatch::Allowed);
+    }
+
+    #[test]
+    fn a_denied_source_refuses_without_asking_about_the_target() {
+        // Asking about the target would be pointless: the request would be refused
+        // whatever the answer.
+        let broker = two_scopes(DefaultPolicy::Prompt);
+        refused_for_permission(dispatch(
+            &broker,
+            &transfer("fs.rename", "/home/u/.ssh/id_ed25519", "/w/allowed/x"),
         ));
     }
 

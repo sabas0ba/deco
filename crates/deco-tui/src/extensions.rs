@@ -1096,7 +1096,28 @@ impl Hosts {
         // Dispatched again rather than served directly. The answer is a grant,
         // and the broker checks again whether the grant covers this request.
         // Otherwise a "yes" for one path could serve a request for another.
-        let reply = match dispatch(&running.broker, &asking.request) {
+        let dispatched = dispatch(&running.broker, &asking.request);
+        // A request that touches two paths, such as a rename, can need a
+        // decision about each. The prompt holds one question, so after a "yes"
+        // the request stays held and the next path is asked about. Each answer
+        // is remembered, so this ends after one question per capability.
+        if let Dispatch::Consent { capability } = &dispatched {
+            if allow && *capability != asking.capability {
+                let what = format!(
+                    "{label} wants to {}",
+                    describe(capability, &asking.request.method)
+                );
+                let extension = asking.extension.clone();
+                self.asking = Some(Asking {
+                    capability: capability.clone(),
+                    ..asking
+                });
+                session.ask_extension_consent(&what);
+                self.finish(&extension, false, reported, session);
+                return;
+            }
+        }
+        let reply = match dispatched {
             Dispatch::Allowed => Self::mediated(
                 running,
                 &asking.request,
@@ -1348,27 +1369,8 @@ impl Hosts {
                         "a move needs a source and a target",
                     );
                 }
-                // The broker checked the *target*, because a request carries
-                // only one capability. The source is also written, because moving
-                // a file out of a directory changes that directory. It is checked
-                // here and must already be granted: a second question cannot be
-                // asked while this request is held for the first.
-                let wanted = deco_ext::capability::Capability::WriteFile {
-                    scope: deco_ext::capability::PathScope::Subtree {
-                        path: PathBuf::from(&source),
-                    },
-                };
-                if running.broker.check(&wanted) != deco_ext::capability::CheckResult::Allowed {
-                    notes.push(format!(
-                        "{label}: refused {} — {source} is not covered",
-                        request.method
-                    ));
-                    return Response::err(
-                        request.id,
-                        ErrorCode::PermissionDenied,
-                        format!("{source} is outside every granted scope"),
-                    );
-                }
+                // `dispatch` has checked both paths: the target as a write, and
+                // the source as a write for a rename or a read for a copy.
                 match files.transfer(&source, &target, request.method == "fs.copy") {
                     Ok(()) => Response::ok(request.id, serde_json::Value::Null),
                     Err(reason) => Response::err(

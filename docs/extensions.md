@@ -127,7 +127,7 @@ The framing is newline-delimited, not the Language Server Protocol's `Content-Le
 
 Every inbound request goes through one function. It is a pure function of the broker and the request, so every path through it can be tested without a process. It fails closed in two ways:
 
-- a method that [`required_capability`] does not recognise is refused as unknown, so a host built from a newer deco cannot use functionality of an older editor by naming a method the editor does not know;
+- a method that [`required_capabilities`] does not recognise is refused as unknown, so a host built from a newer deco cannot use functionality of an older editor by naming a method the editor does not know;
 - a capability the manifest does not declare is refused by the broker regardless of later user approvals; the declaration is a ceiling, not a starting point.
 
 Registering a command, showing a message and appending to the log need no declaration, because they only affect state that deco owns and shows to the user. The extension in the round-trip test therefore declares nothing and still works. Most extensions should follow this pattern.
@@ -212,7 +212,7 @@ Overlapping edits are rejected without changing the document because their resul
 
 - **`useTrash` is refused, not ignored.** deco has no trash. If the option were ignored, an extension that requested a recoverable deletion would get an unrecoverable one without being told.
 - **A non-empty directory requires `recursive`**, set by the caller. deco does not add it, because it distinguishes deleting one entry from deleting everything under it.
-- **A rename or copy is checked at both paths.** The broker checks the target, which is the only capability a request can carry. The source is also a write, because moving a file out of a directory changes that directory, so deco checks it too. The source must already be covered by an existing decision; it does not trigger a new prompt.
+- **A rename or copy is checked at both paths.** `dispatch` allows the request only when every capability it needs is allowed. The target is a write. The source is a write for a rename, because moving a file out of a directory changes that directory, and a read for a copy. A denial at either path refuses the request without a prompt. When both paths need a decision, the target is asked about first, and after an allow the request stays held while the source is asked about.
 - **A link is removed as a link.** Deletion resolves the path only to check its location, then removes the given name. Resolving the path and deleting the result would delete the link's target, leave the link, and report nothing. On the remote, a link that points outside the workspace cannot be used for deletion at all, because every path there is confined after canonicalisation, without exceptions.
 
 A symbolic link is reported as a link, not as its target (65 for a link to a file, in VS Code's numbering). Following links would let a listing describe files outside the granted scope.
