@@ -27,7 +27,7 @@
 //!   can still use another prompt mechanism.
 
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 use thiserror::Error;
@@ -219,17 +219,12 @@ impl Git {
     /// the branch has no commits. This is not an error; the caller marks every
     /// line as added rather than showing no marks.
     pub fn committed(&self, directory: &Path, path: &Path) -> Result<Option<String>, ScmError> {
-        let Some(path) = path.to_str() else {
+        if path.to_str().is_none() {
             // `HEAD:<path>` is a string argument, and a non-UTF-8 path cannot be
             // expressed in it. Return no content rather than wrong content.
             return Ok(None);
-        };
-        if path.is_empty()
-            || Path::new(path).is_absolute()
-            || path.split('/').any(|part| part == "..")
-        {
-            return Err(ScmError::NotInWorkingTree(path.to_owned()));
         }
+        let path = plain_path(path)?;
 
         // `--textconv` is intentionally not passed. A repository can configure
         // a filter that runs an arbitrary program to render a file, and the
@@ -420,18 +415,7 @@ impl Git {
     /// Paths are first validated as in [`Git::committed`], for the same reason:
     /// git would resolve an absolute or `..`-containing path to another file.
     pub fn apply(&self, directory: &Path, operation: &Operation) -> Result<(), ScmError> {
-        let path = |path: &Path| -> Result<String, ScmError> {
-            let text = path
-                .to_str()
-                .ok_or_else(|| ScmError::NotInWorkingTree(path.display().to_string()))?;
-            if text.is_empty()
-                || Path::new(text).is_absolute()
-                || text.split('/').any(|part| part == "..")
-            {
-                return Err(ScmError::NotInWorkingTree(text.to_owned()));
-            }
-            Ok(text.to_owned())
-        };
+        let path = plain_path;
         match operation {
             Operation::Stage(one) => {
                 self.run(directory, &["add", "--", &path(one)?])?;
@@ -567,15 +551,42 @@ impl Git {
 }
 
 /// A repository-relative path safe to embed in Git's `revision:path` syntax.
+///
+/// The result is `/`-separated whatever the platform's separator, because
+/// git's `revision:path` syntax only accepts `/`. On Windows a path built with
+/// `Path::join` or `strip_prefix` contains `\`, and `HEAD:src\main.rs` names no
+/// file.
 fn plain_path(path: &Path) -> Result<String, ScmError> {
     let text = path
         .to_str()
         .ok_or_else(|| ScmError::NotInWorkingTree(path.display().to_string()))?;
-    if text.is_empty() || Path::new(text).is_absolute() || text.split('/').any(|part| part == "..")
-    {
+    if !stays_in_working_tree(text) {
         return Err(ScmError::NotInWorkingTree(text.to_owned()));
     }
-    Ok(text.to_owned())
+    let parts: Vec<&str> = Path::new(text)
+        .components()
+        .filter_map(|part| match part {
+            Component::Normal(name) => name.to_str(),
+            _ => None,
+        })
+        .collect();
+    Ok(parts.join("/"))
+}
+
+/// Whether `text` names a path inside the working tree when resolved against
+/// its root.
+///
+/// Only plain names and `.` are allowed. A root (`/etc/passwd`), a Windows
+/// prefix (`C:`, `\\server\share`) or `..` would make git resolve the path to
+/// another file. `Path::components` applies the platform's rules, so on Windows
+/// a path such as `/etc/passwd`, which has a root but no drive and therefore is
+/// not `is_absolute`, is still refused, and `\` is a separator.
+fn stays_in_working_tree(text: &str) -> bool {
+    !text.is_empty()
+        && !text.split('/').any(|part| part == "..")
+        && Path::new(text)
+            .components()
+            .all(|part| matches!(part, Component::Normal(_) | Component::CurDir))
 }
 
 #[cfg(test)]
@@ -642,6 +653,15 @@ mod tests {
             .status()
             .expect("git init");
         assert!(status.success(), "git init failed in {}", dir.display());
+        // Git for Windows enables `core.autocrlf` system-wide, which rewrites
+        // checked-out files to CRLF. The fixtures compare exact bytes, so the
+        // repository keeps them as committed on every platform.
+        let status = std::process::Command::new(&git.program)
+            .args(["config", "core.autocrlf", "false"])
+            .current_dir(&dir)
+            .status()
+            .expect("git config");
+        assert!(status.success(), "git config failed in {}", dir.display());
         dir
     }
 
@@ -679,7 +699,10 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
+    // Not on macOS: APFS rejects a file name that is not valid UTF-8 with
+    // `EILSEQ`, so the file this test needs cannot be created and git there
+    // cannot report such a path.
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn a_non_utf8_status_path_is_refused_before_it_can_name_another_file() {
         use std::os::unix::ffi::OsStringExt;
@@ -1129,6 +1152,32 @@ mod tests {
                 ),
                 Err(ScmError::NotInWorkingTree(_))
             ));
+        }
+    }
+
+    #[test]
+    fn only_plain_relative_paths_stay_in_the_working_tree() {
+        for good in ["a.rs", "src/main.rs", "./src/main.rs", "a..b/c"] {
+            assert!(stays_in_working_tree(good), "{good:?}");
+        }
+        for bad in ["", "/etc/passwd", "../x", "a/../../b", "src/.."] {
+            assert!(!stays_in_working_tree(bad), "{bad:?}");
+        }
+        // Windows forms: a drive, a drive-relative path, a UNC share, and `..`
+        // written with the other separator. On Unix these are ordinary names.
+        assert_eq!(
+            plain_path(Path::new("./src/main.rs")).unwrap(),
+            "src/main.rs"
+        );
+        if cfg!(windows) {
+            // `revision:path` needs `/`, whatever separator the path was built with.
+            assert_eq!(
+                plain_path(Path::new(r"src\main.rs")).unwrap(),
+                "src/main.rs"
+            );
+            for bad in [r"C:\x", "C:x", r"\\server\share\x", r"a\..\..\b", r"\etc"] {
+                assert!(!stays_in_working_tree(bad), "{bad:?}");
+            }
         }
     }
 

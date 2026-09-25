@@ -18,7 +18,9 @@
 //!   MinGW and run through Wine as cargo's target runner. These are real
 //!   Windows binaries running Windows code paths, including the tests that
 //!   spawn a child process. The painting tests in [`WINE_SKIPS`] are excluded
-//!   because they need a console, which Wine does not have here.
+//!   because they need a console, which Wine does not have here. Wine also has
+//!   no `tar.exe`, which Windows ships, so one is built from libarchive first;
+//!   see [`crate::wine_tar`].
 //!
 //! Neither check covers the following, so the tagged run on real runners is
 //! still needed:
@@ -135,8 +137,11 @@ pub const WINE_SKIPS: &[&str] = &["painting_"];
 /// Default features, unlike the check above. `--all-features` would enable
 /// `deco`'s `gui` feature and add wgpu and winit to the build, although their
 /// tests are excluded.
+///
+/// `--no-fail-fast` runs every test binary even after one fails, so one run
+/// reports every failure instead of only the first failing crate's.
 pub fn wine_test_args() -> Vec<String> {
-    let mut args: Vec<String> = ["test", "--locked", "--workspace"]
+    let mut args: Vec<String> = ["test", "--locked", "--workspace", "--no-fail-fast"]
         .iter()
         .map(|argument| (*argument).to_owned())
         .collect();
@@ -242,6 +247,13 @@ fn wine(root: &Path) -> Result<()> {
     // `WINEDEBUG=+file cargo xtask cross` still works.
     let debug = std::env::var("WINEDEBUG").unwrap_or_else(|_| "-all".to_owned());
 
+    // Wine has no `tar.exe`, which Windows ships and `deco-remote` runs. Build
+    // one and prepend it to Wine's PATH; see `wine_tar.rs`.
+    let tar = crate::wine_tar::ensure(root).context(
+        "building tar.exe for the Wine pass failed — it needs `curl`, `cmake` and \
+         `libz-mingw-w64-dev`",
+    )?;
+
     let env = [
         (
             target_env_var(WINE_TARGET, "LINKER"),
@@ -249,6 +261,7 @@ fn wine(root: &Path) -> Result<()> {
         ),
         (target_env_var(WINE_TARGET, "RUNNER"), wine.to_owned()),
         ("WINEDEBUG".to_owned(), debug),
+        ("WINEPATH".to_owned(), crate::wine_tar::wine_path(&tar)),
     ];
     let env: Vec<(&str, &str)> = env
         .iter()

@@ -235,14 +235,10 @@ fn a_hundred_keystrokes_of_nonsense_leave_the_editor_standing() {
     editor.type_text("after.txt");
     editor.press("enter");
     // A relative path in the save prompt is resolved next to the file deco was
-    // started with. The ending is the platform's: this began as an untitled
-    // buffer, and `files.eol` does not apply to one. See
-    // `files_eol_is_ignored_for_a_new_untitled_buffer` in `files.rs`.
-    let ending = if cfg!(windows) { "\r\n" } else { "\n" };
-    assert_eq!(
-        editor.on_disk("src/after.txt"),
-        format!("still here{ending}")
-    );
+    // started with. The ending is LF on every platform: `project` sets
+    // `files.eol` to `\n`, and the setting applies to an untitled buffer. See
+    // `files_eol_gives_a_new_untitled_buffer_its_ending` in `tests/files.rs`.
+    assert_eq!(editor.on_disk("src/after.txt"), "still here\n");
 }
 
 #[test]

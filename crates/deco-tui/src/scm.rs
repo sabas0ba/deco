@@ -346,9 +346,12 @@ impl Scm {
                 // common CLI form is relative (`src/main.rs`). Giving its SCM row
                 // an absolute root would open the same file a second time under
                 // a different PathBuf. Keep absolute paths only when the active
-                // document already uses them.
+                // document already uses them. Remote paths are POSIX paths, so
+                // `has_root` rather than `is_absolute`: on a Windows client
+                // `/remote/project` has a root but no drive, and is not
+                // "absolute" by Windows rules.
                 let root = match (&self.remote_workspace, &session.document.path) {
-                    (Some(workspace), Some(path)) if !path.is_absolute() => root
+                    (Some(workspace), Some(path)) if !path.has_root() => root
                         .strip_prefix(workspace)
                         .map(PathBuf::from)
                         .unwrap_or(root),

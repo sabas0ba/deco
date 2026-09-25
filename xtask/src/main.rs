@@ -18,6 +18,7 @@ mod cross;
 mod dist;
 mod docs;
 mod release;
+mod wine_tar;
 
 use std::path::{Path, PathBuf};
 
@@ -47,8 +48,9 @@ enum Command {
     ///
     /// Type-checks every triple the release matrix ships, then builds the
     /// tests for the Windows target and runs them under Wine. The Wine run
-    /// needs `mingw-w64` and `wine64`. See `xtask/src/cross.rs` for what this
-    /// does and does not cover.
+    /// needs `mingw-w64`, `wine64`, `cmake` and `libz-mingw-w64-dev`, and
+    /// downloads a pinned libarchive release once to build `tar.exe`. See
+    /// `xtask/src/cross.rs` for what this does and does not cover.
     Cross {
         /// Only type-check, skipping the Wine run.
         #[arg(long)]
@@ -263,7 +265,18 @@ fn ci(root: &Path, lint_only: bool, test_only: bool) -> Result<()> {
         )?;
     }
     if !lint_only {
-        run_cargo(root, &["test", "--locked", "--workspace", "--all-features"])?;
+        // `--no-fail-fast` so one run reports the failures of every crate, not
+        // only the first crate that failed.
+        run_cargo(
+            root,
+            &[
+                "test",
+                "--locked",
+                "--workspace",
+                "--all-features",
+                "--no-fail-fast",
+            ],
+        )?;
     }
     Ok(())
 }

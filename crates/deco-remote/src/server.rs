@@ -290,6 +290,14 @@ impl Server {
             .map_err(|error| ServerError::SourceControl {
                 reason: error.to_string(),
             })?;
+        // Canonicalised like `self.root`, so the two compare in the same form.
+        // On Windows git reports `C:/Users/…` while the root is `\\?\C:\Users\…`,
+        // and the uncanonicalised paths never share a prefix.
+        let repository = repository
+            .canonicalize()
+            .map_err(|error| ServerError::SourceControl {
+                reason: format!("{} cannot be resolved: {error}", repository.display()),
+            })?;
         if !repository.starts_with(&self.root) {
             return Err(ServerError::RepositoryOutsideWorkspace {
                 repository: repository.display().to_string(),
