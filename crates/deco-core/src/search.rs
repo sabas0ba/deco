@@ -803,6 +803,17 @@ mod tests {
     }
 
     #[test]
+    fn anchors_match_whole_lines_in_a_crlf_file() {
+        // The buffer stores `\n` whatever the file used, so `$` is never
+        // separated from the line's end by a `\r`.
+        let b = Buffer::from_text("one\r\ntwo\r\n");
+        assert_eq!(
+            ranges(&pattern("^\\w+$", REGEX).find_all(&b)),
+            vec![(0, 0, 0, 3), (1, 0, 1, 3)]
+        );
+    }
+
+    #[test]
     fn a_regex_with_a_line_break_matches_across_lines() {
         let b = buffer("one\ntwo\n");
         assert_eq!(
