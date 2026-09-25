@@ -56,9 +56,12 @@ fn repository(name: &str) -> Option<PathBuf> {
         Ok(status) => assert!(status.success(), "git init failed"),
         Err(error) => panic!("git init could not run: {error}"),
     }
+    // `core.autocrlf` off because Git for Windows enables it system-wide, and
+    // the assertions compare exact bytes.
     for args in [
         ["config", "user.name", "deco test"],
         ["config", "user.email", "deco@example.invalid"],
+        ["config", "core.autocrlf", "false"],
     ] {
         assert!(ProcessCommand::new("git")
             .args(args)

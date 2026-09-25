@@ -651,6 +651,15 @@ mod tests {
             .status()
             .expect("git init");
         assert!(status.success(), "git init failed in {}", dir.display());
+        // Git for Windows enables `core.autocrlf` system-wide, which rewrites
+        // checked-out files to CRLF. The fixtures compare exact bytes, so the
+        // repository keeps them as committed on every platform.
+        let status = std::process::Command::new(&git.program)
+            .args(["config", "core.autocrlf", "false"])
+            .current_dir(&dir)
+            .status()
+            .expect("git config");
+        assert!(status.success(), "git config failed in {}", dir.display());
         dir
     }
 
