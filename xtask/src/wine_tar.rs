@@ -165,6 +165,10 @@ fn configure_args(source: &Path, build: &Path) -> Vec<String> {
         // A newer MinGW's warnings must not fail a pinned release's build.
         "-DENABLE_WERROR=OFF".to_owned(),
         "-DENABLE_INSTALL=OFF".to_owned(),
+        // Left on: CNG is Windows' own `bcrypt` library, not a dependency, and
+        // libarchive calls it for random numbers whether or not it is enabled.
+        // Disabling it only drops `bcrypt` from the link, which then fails.
+        "-DENABLE_CNG=ON".to_owned(),
     ];
     for feature in [
         "CPIO",
@@ -173,7 +177,6 @@ fn configure_args(source: &Path, build: &Path) -> Vec<String> {
         "OPENSSL",
         "MBEDTLS",
         "NETTLE",
-        "CNG",
         "LIBXML2",
         "EXPAT",
         "LZMA",
