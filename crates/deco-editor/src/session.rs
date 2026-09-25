@@ -3459,13 +3459,17 @@ impl Session {
         true
     }
 
-    /// Every document, in tab order, the active one in its place among them.
+    /// Every document in display order, the active one between `left` and
+    /// `right`.
+    ///
+    /// Both `left` and `right` are stored in display order, as in
+    /// [`Session::tab_labels`].
     fn documents(&self) -> impl Iterator<Item = &Document> {
         self.left
             .iter()
             .map(|tab| &tab.document)
             .chain(std::iter::once(&self.document))
-            .chain(self.right.iter().rev().map(|tab| &tab.document))
+            .chain(self.right.iter().map(|tab| &tab.document))
     }
 
     /// Marks the document at `path` as saved, wherever it is.
@@ -8559,6 +8563,32 @@ mod tests {
         assert_eq!(outcome, Outcome::Message("Saved 2 files".to_owned()));
         // And nothing is dirty afterwards, including the tabs off screen.
         assert!(s.unsaved().is_empty());
+    }
+
+    #[test]
+    fn unsaved_tabs_are_listed_in_display_order() {
+        // With two or more tabs right of the active one, their order must not
+        // be reversed.
+        let mut s = session();
+        s.resize(80, 10);
+        for name in ["a", "b", "c", "d"] {
+            s.open(PathBuf::from(format!("/w/{name}.txt")), "\n");
+            press(&mut s, "x");
+        }
+        s.switch_to(1);
+
+        let paths: Vec<PathBuf> = s.unsaved().into_iter().map(|(path, _)| path).collect();
+        assert_eq!(
+            paths,
+            ["a", "b", "c", "d"].map(|name| PathBuf::from(format!("/w/{name}.txt")))
+        );
+        assert_eq!(
+            press(&mut s, "ctrl+q"),
+            Outcome::Message(
+                "4 tabs have unsaved changes: a.txt, b.txt, c.txt, d.txt — ctrl+q again to quit anyway"
+                    .to_owned()
+            )
+        );
     }
 
     #[test]

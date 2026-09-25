@@ -136,20 +136,44 @@ impl ShownHover {
     }
 }
 
-/// Where the word under the cursor begins.
-///
 /// A cheap fingerprint of a document's text.
 ///
-/// Only compared with another fingerprint of the same document, so a collision
-/// can only occur between two states of one file. The cost of a collision is a
-/// redundant `didChange`, not a wrong result. `DefaultHasher` is used rather
-/// than a cryptographic digest because this is a change detector, not a
-/// checksum.
+/// Only compared with the fingerprint of the text last sent for the same
+/// document. A collision makes a changed text look unchanged, so its
+/// `didChange` is skipped and the server keeps the previous text until the next
+/// edit. With a 64-bit hash the chance of that is about 2^-64 per comparison.
+/// `DefaultHasher` is used rather than a cryptographic digest because this is a
+/// change detector, not a checksum.
 fn fingerprint(text: &str) -> u64 {
     use std::hash::{Hash as _, Hasher as _};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     text.hash(&mut hasher);
     hasher.finish()
+}
+
+/// Calls `send` unless `text` has the fingerprint in `sent`, and returns its
+/// result.
+///
+/// The event loop notifies after every keypress, and most keypresses move the
+/// cursor without changing the text. Skipping those means an arrow key does not
+/// send the whole document or discard a classification that is still correct.
+///
+/// `sent` is updated only when `send` succeeds. A text whose notification failed
+/// is sent again on the next call instead of being treated as delivered.
+fn send_if_changed<E>(
+    sent: &mut Option<u64>,
+    text: &str,
+    send: impl FnOnce() -> Result<(), E>,
+) -> Option<Result<(), E>> {
+    let fingerprint = fingerprint(text);
+    if *sent == Some(fingerprint) {
+        return None;
+    }
+    let result = send();
+    if result.is_ok() {
+        *sent = Some(fingerprint);
+    }
+    Some(result)
 }
 
 /// `path` relative to `root` when it is inside it, and whole otherwise.
@@ -165,6 +189,8 @@ fn shorten(path: &Path, root: Option<&Path>) -> String {
         .replace('\\', "/")
 }
 
+/// Where the word under the cursor begins.
+///
 /// The anchor a completion list filters from. The server is queried at the
 /// cursor and responds for the whole word, so the editor must use the same word
 /// start. Otherwise the list filters against the wrong text.
@@ -1230,27 +1256,19 @@ impl Lsp {
         }
         let text = session.document.buffer.text();
 
-        // The event loop calls this after every keypress, and most keypresses
-        // move the cursor without changing the text. The fingerprint detects
-        // this, so an arrow key does not send the whole document or discard a
-        // classification that is still correct.
-        let fingerprint = fingerprint(&text);
-        if self.sent == Some(fingerprint) {
-            return;
+        let outcome = send_if_changed(&mut self.sent, &text, || {
+            // The old classification describes the text before this edit. It
+            // is dropped rather than kept until the response arrives, because a
+            // token list applied to shifted text colours the wrong words. The
+            // lexer's colouring alone is better until the response arrives.
+            session.semantic_tokens.clear();
+            supervisor.did_change(&path, &[], &text)
+        });
+        match outcome {
+            None => {}
+            Some(Ok(())) => self.request_semantic_tokens(session),
+            Some(Err(error)) => self.report(session, error.to_string()),
         }
-        self.sent = Some(fingerprint);
-
-        // The old classification describes the text before this edit. It is
-        // dropped rather than kept until the response arrives, because a token
-        // list applied to shifted text colours the wrong words. The lexer's
-        // colouring alone is better until the response arrives.
-        session.semantic_tokens.clear();
-
-        if let Err(error) = supervisor.did_change(&path, &[], &text) {
-            self.report(session, error.to_string());
-            return;
-        }
-        self.request_semantic_tokens(session);
     }
 
     /// Notifies the server that the document was saved.
@@ -2103,6 +2121,40 @@ mod tests {
         lsp.changed(&mut s);
         lsp.saved(&mut s);
         lsp.detach();
+    }
+
+    #[test]
+    fn unchanged_text_is_not_sent_again() {
+        let mut sent = None;
+        assert_eq!(
+            send_if_changed(&mut sent, "a", || Ok::<(), ()>(())),
+            Some(Ok(()))
+        );
+        let mut calls = 0;
+        let outcome = send_if_changed(&mut sent, "a", || {
+            calls += 1;
+            Ok::<(), ()>(())
+        });
+        assert_eq!(outcome, None);
+        assert_eq!(calls, 0);
+    }
+
+    #[test]
+    fn text_whose_notification_failed_is_sent_again() {
+        // A failed didChange must not be recorded as delivered, or the server
+        // keeps the old text until the user types something else.
+        let mut sent = None;
+        assert_eq!(
+            send_if_changed(&mut sent, "a", || Err("broken pipe")),
+            Some(Err("broken pipe"))
+        );
+        let mut calls = 0;
+        let outcome = send_if_changed(&mut sent, "a", || {
+            calls += 1;
+            Ok::<(), &str>(())
+        });
+        assert_eq!(outcome, Some(Ok(())));
+        assert_eq!(calls, 1);
     }
 
     #[test]
