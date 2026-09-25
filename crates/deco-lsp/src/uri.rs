@@ -211,6 +211,16 @@ pub enum UriError {
     /// APIs would truncate the path at that point.
     #[error("path contains a NUL byte")]
     InteriorNul,
+    /// The authority named a host that a Unix path cannot represent. Only an
+    /// empty authority or `localhost` means this machine.
+    #[error("`{0}` names a host other than this machine")]
+    NonLocalHost(String),
+    /// On Windows, the URI would decode to something other than a drive path
+    /// or a `\\server\share` path, such as a device namespace (`\\.\`,
+    /// `\\?\`), a host with credentials or a port, or a UNC path assembled
+    /// from an escaped `\`.
+    #[error("`{0}` does not name a drive or UNC share path")]
+    NotAWindowsPath(String),
 }
 
 impl fmt::Display for Uri {
@@ -263,8 +273,7 @@ impl Uri {
 
         // UNC: `//server/share/...` puts the server in the authority. This is
         // what VS Code emits, and it is the only form that round-trips:
-        // `file:////server/share` would decode to a path with four leading
-        // slashes.
+        // `to_path` refuses `file:////server/share`.
         if let Some(rest) = path.strip_prefix("//") {
             let (host, tail) = match rest.split_once('/') {
                 Some((host, tail)) => (host, format!("/{tail}")),
@@ -326,15 +335,48 @@ impl Uri {
             return Err(UriError::InteriorNul);
         }
 
+        let local = authority.is_empty() || authority.eq_ignore_ascii_case("localhost");
         Ok(match style {
             PathStyle::Unix => {
                 // A Unix path cannot represent a host. `localhost` is the only
-                // host that means "this machine" and is safe to drop.
+                // host that means "this machine" and is safe to drop. Any other
+                // host is refused, because dropping it would open the local file
+                // with the same path.
+                if !local {
+                    return Err(UriError::NonLocalHost(self.0.clone()));
+                }
                 PathBuf::from(if path.is_empty() { "/" } else { &path })
             }
             PathStyle::Windows => {
-                if !authority.is_empty() && !authority.eq_ignore_ascii_case("localhost") {
+                // Every `/` becomes `\` below, so a decoded `\` would let the
+                // path supply its own separators, for example a leading `\\`
+                // that turns a local path into a UNC path.
+                if path.contains('\\') {
+                    return Err(UriError::NotAWindowsPath(self.0.clone()));
+                }
+                if !local {
+                    // The authority becomes the server of `\\server\share`.
+                    // `.` and `?` would select the `\\.\` and `\\?\` device
+                    // namespaces, and a separator, credentials or a port have
+                    // no place in a UNC server name.
+                    if authority == "."
+                        || authority == "?"
+                        || authority.contains(['/', '\\', '@', ':'])
+                    {
+                        return Err(UriError::NotAWindowsPath(self.0.clone()));
+                    }
+                    // `\\server\c:\x` is not a valid UNC path.
+                    let tail = path.strip_prefix('/').unwrap_or(&path);
+                    let share = tail.split('/').next().unwrap_or("");
+                    if drive_letter(share).is_some() {
+                        return Err(UriError::NotAWindowsPath(self.0.clone()));
+                    }
                     PathBuf::from(format!("\\\\{}{}", authority, path.replace('/', "\\")))
+                } else if path.starts_with("//") {
+                    // `file:////server/share` would reach a UNC path, including
+                    // `\\.\` and `\\?\`, without the checks above. The authority
+                    // is the only accepted way to name a server.
+                    return Err(UriError::NotAWindowsPath(self.0.clone()));
                 } else {
                     let trimmed = path.strip_prefix('/').unwrap_or(&path);
                     if let Some(drive) = drive_letter(trimmed) {
@@ -795,6 +837,73 @@ mod tests {
             Uri::from_string("file:///etc/passwd%00.txt").to_path(PathStyle::Unix),
             Err(UriError::InteriorNul)
         );
+    }
+
+    #[test]
+    fn a_foreign_host_is_refused_on_unix() {
+        // Dropping the host would open the local file with the same path.
+        for uri in ["file://otherhost/etc/passwd", "file://otherhost"] {
+            assert_eq!(
+                Uri::from_string(uri).to_path(PathStyle::Unix),
+                Err(UriError::NonLocalHost(uri.into())),
+                "{uri}"
+            );
+        }
+        // `localhost` is matched case-insensitively.
+        assert_eq!(
+            Uri::from_string("file://LOCALHOST/src/main.rs")
+                .to_path(PathStyle::Unix)
+                .unwrap(),
+            PathBuf::from("/src/main.rs")
+        );
+    }
+
+    #[test]
+    fn windows_uris_that_are_not_a_drive_or_share_path_are_refused() {
+        for uri in [
+            // Device namespaces `\\.\` and `\\?\`.
+            "file://./pipe/x",
+            "file://%3F/c:/x",
+            "file:////./pipe/x",
+            // Separators, credentials or a port in the server name.
+            "file://a%2Fb/x",
+            "file://a%5Cb/x",
+            "file://u@h:445/s/x",
+            "file://h:445/s/x",
+            // A drive letter where the share name belongs.
+            "file://host/c:/x",
+            "file://host/C:",
+            // An escaped `\` supplying its own separators.
+            "file:///%5C%5Ch%5Cs%5Cx",
+            "file:///c:/a%5Cb",
+            "file://server/share/a%5C..%5Cx",
+            // An empty authority followed by a server in the path.
+            "file:////server/share/x",
+        ] {
+            assert_eq!(
+                Uri::from_string(uri).to_path(PathStyle::Windows),
+                Err(UriError::NotAWindowsPath(uri.into())),
+                "{uri}"
+            );
+        }
+    }
+
+    #[test]
+    fn valid_windows_uris_still_decode() {
+        for (uri, expected) in [
+            ("file:///C:/x", r"C:\x"),
+            ("file://localhost/C:/x", r"C:\x"),
+            ("file://LOCALHOST/c:/x", r"C:\x"),
+            ("file://server/share/x", r"\\server\share\x"),
+            ("file://server/share/a%20b/c%23d", r"\\server\share\a b\c#d"),
+            ("file:///c:/a%20b", r"C:\a b"),
+        ] {
+            assert_eq!(
+                Uri::from_string(uri).to_path(PathStyle::Windows).unwrap(),
+                PathBuf::from(expected),
+                "{uri}"
+            );
+        }
     }
 
     #[test]

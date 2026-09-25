@@ -322,6 +322,19 @@ mod tests {
     }
 
     #[test]
+    fn a_uri_on_another_host_refuses_the_whole_edit() {
+        // Dropping the host would edit the local file with the same path.
+        let error = Plan::build(
+            &workspace(&[("file:///w/b.rs", None), ("file://otherhost/w/a.rs", None)]),
+            |uri: &Uri| uri.to_path(deco_lsp::uri::PathStyle::Unix).ok(),
+            |_| true,
+            |_| None,
+        )
+        .expect_err("a file on another host is not a local file");
+        assert!(matches!(error, WorkspaceError::NotAFile(uri) if uri == "file://otherhost/w/a.rs"));
+    }
+
+    #[test]
     fn a_stale_version_refuses_the_whole_edit() {
         let error = Plan::build(
             &workspace(&[("file:///w/a.rs", Some(3))]),
