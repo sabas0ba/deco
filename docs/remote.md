@@ -103,7 +103,7 @@ After connecting, this file becomes the **`remote` layer**: above your own `sett
 
 `machine-settings.json` is stored where anyone with an account on that machine can write it. Connecting to a machine does not mean trusting every file on it. This layer is therefore treated like a cloned repository's `.vscode/settings.json`:
 
-- **A language server defined there requires confirmation before it runs.** A server definition is a program to execute, and connecting alone must not execute it. The same rule applies to workspace settings; see [Language servers](language-servers.md).
+- **A language server defined there is refused, with a message naming it.** A server definition is a program to execute, and connecting alone must not execute it. The same rule applies to workspace settings; see [Language servers](language-servers.md).
 - **It cannot select the extension sandbox.** `deco.extensions.sandbox` and related settings are read only from deco's defaults and your own settings file. Attempts to set them in this layer are reported.
 - **`--clean` ignores it**, like all other settings files. `--clean` starts with no configuration, so it does not load the remote machine's settings either.
 
@@ -156,7 +156,7 @@ The limits are enforced by the server, not the client: five hundred matches and 
 
 Two details:
 
-- **`files.exclude` is applied locally, not on the server.** The server does not act on settings; consulting a remote file to answer `fs.read` would give it authority it was not given. Only the client can therefore apply your excludes. (The server does send the machine's settings on request, as described in [a separate section](#settings-that-belong-to-the-machine), but it does not act on them.) The server still skips `.git`, `node_modules` and `target` itself, which accounts for most of the cost of a walk.
+- **`files.exclude` is applied locally, not on the server.** The server does not act on settings; consulting a remote file to answer `fs.search` would give it authority it was not given. Only the client can therefore apply your excludes. (The server does send the machine's settings on request, as described in [a separate section](#settings-that-belong-to-the-machine), but it does not act on them.) The server still skips `.git`, `node_modules` and `target` itself, which accounts for most of the cost of a walk.
 - **The displayed count is taken after filtering**, so it can be lower than the number the server found.
 
 ## Reaching a port on the remote
@@ -229,7 +229,7 @@ Each authority maps to the command that reaches it: `ssh`, `wsl.exe`, or `docker
 
 ## The wire protocol
 
-Both ends would use length-prefixed framing over the transport's stdio, the same format as the Language Server Protocol. A stream that carries both a program's output and protocol messages needs unambiguous boundaries between frames.
+Both ends use length-prefixed framing over the transport's stdio, the same format as the Language Server Protocol. A stream that carries both a program's output and protocol messages needs unambiguous boundaries between frames.
 
 The framing, the authority parsing and the command construction are implemented
 and tested, and so is the remote environment that answers them.
@@ -289,11 +289,8 @@ The remaining work:
 1. ~~`deco --server`, a headless session that answers frames.~~ **Done.**
 2. ~~The client: opening a file through a transport, saving it back, and listing
    the remote workspace with `ctrl+p`.~~ **Done.**
-3. ~~Provisioning: getting the binary onto the remote, which means a decision
-   about how much deco is willing to install on a machine you pointed it at.~~
-   **Done** for same-platform remotes, under the rules above. Fetching a build for a *different* platform is still open; it requires a download source that deco trusts.
-4. Settings scope wiring: the `Remote` layer already exists between `User` and
-   `Workspace` in the settings stack, so a remote's settings have somewhere to go.
+3. ~~Provisioning: getting the binary onto the remote, which means a decision about how much deco is willing to install on a machine you pointed it at.~~ **Done** — `--remote-install` for same-platform remotes, and `--remote-install-download` for a *different* platform, verified against the release's `SHA256SUMS`; see [When the remote is another platform](#when-the-remote-is-another-platform).
+4. ~~Settings scope wiring: the `Remote` layer already exists between `User` and `Workspace` in the settings stack, so a remote's settings have somewhere to go.~~ **Done** — the remote's `machine-settings.json`, fetched with `settings.read`, fills the `Remote` layer; see [Settings that belong to the machine](#settings-that-belong-to-the-machine).
 5. ~~Port forwarding, which the transports do not model at all.~~ **Done**, with deco as the tunnel instead of `ssh -L`; see above.
 6. ~~Language servers on the remote.~~ **Done** — the same definitions, wrapped
    in the transport, with the remote environment's paths on the wire.

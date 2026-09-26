@@ -239,7 +239,7 @@ so nothing in them is interpreted by a shell.
 
 **A server defined by workspace settings is refused, with a message naming it.** Otherwise a cloned repository could run a program of its choosing as soon as you open a file in it. The editor reports which server it refused and why, and falls back to the next candidate for that language, so a repository cannot disable the feature by defining a server that you then refuse.
 
-**The same applies to a server defined by a remote.** A remote session's `machine-settings.json` is stored where anyone with an account on that machine can write it, and connecting to a machine does not mean trusting every file on it. A definition from that file therefore requires confirmation, like a workspace definition. This prevents a remote machine from choosing programs that run when you connect. See [Settings that belong to the machine](remote.md#settings-that-belong-to-the-machine).
+**The same applies to a server defined by a remote.** A remote session's `machine-settings.json` is stored where anyone with an account on that machine can write it, and connecting to a machine does not mean trusting every file on it. A definition from that file is therefore refused and reported in the same way as a workspace definition. This prevents a remote machine from choosing programs that run when you connect. See [Settings that belong to the machine](remote.md#settings-that-belong-to-the-machine).
 
 The refusal is recorded in the problem list, which `deco --print-config` prints and `F8` navigates, whether or not another server started for that language. It is also shown in the status bar when no server started, because the status bar has nothing else to report for language servers in that case.
 

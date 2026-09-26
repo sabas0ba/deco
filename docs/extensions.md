@@ -196,7 +196,7 @@ A damaged permissions file is reported and treated as empty. Refusing to start t
 
 ## What is still not connected
 
-The table above lists all mediated APIs. There is no activation on file open or on startup. There is no editor state, quick pick, tree view, webview or debug adapter support. `process`, `net`, `env`, `secrets` and `openExternal` are declared and brokered, but are refused by name at the last step because nothing implements them.
+The table above lists all mediated APIs. There is no activation on file open or on startup. There is no editor state, quick pick, tree view, webview or debug adapter support. The `process`, `network`, `env`, `clipboard`, `secrets` and `openExternal` capabilities are declared and brokered, but are refused by name at the last step because nothing implements them.
 
 ### An edit goes through the editor, not past it
 

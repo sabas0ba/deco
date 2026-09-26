@@ -102,7 +102,7 @@ Set `"editor.detectIndentation": false` to always use your settings. The setting
 
 ### What the view settings draw
 
-Three settings change how the text area looks rather than how it behaves.
+Four settings change how the text area looks rather than how it behaves.
 
 ![The defaults, then whitespace everywhere, then rulers and interval line numbers](img/view-settings.svg)
 
@@ -179,6 +179,6 @@ exclusions in a scope selector.
 
 The terminal frontend blends translucent colours, such as selections and find highlights, with the editor background, because a terminal cell has no alpha channel.
 
-## Nothing here fails closed
+## Configuration errors do not stop the editor
 
-Configuration errors do not prevent the editor from starting. An unknown theme falls back to the default, a broken keybinding is skipped, an unparseable workspace settings file is reported and ignored, and an unknown setting is kept. The editor collects these problems into a list that the frontend can show, so the configuration can be repaired from within the editor.
+Configuration errors do not prevent the editor from starting. An unknown theme falls back to the default, a broken keybinding is skipped, an unparseable workspace settings file is reported and ignored, and an unknown setting is kept. The editor collects these problems into a list that the frontend can show, so the configuration can be repaired from within the editor. The one exception is the extension sandbox: if `deco.extensions.sandbox` is `"container"` and no runtime can be found, the editor starts but the extension host does not (see [Settings a workspace cannot set](#settings-a-workspace-cannot-set)).
