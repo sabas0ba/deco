@@ -275,25 +275,13 @@ impl PaletteEntry {
     }
 }
 
-/// The commands the palette offers from this module.
-///
-/// This is intentionally not every arm of [`execute`]. A palette entry must
-/// work when chosen, and these entries need only a document, a view and a
-/// clipboard. Commands that need something only a frontend has, such as a
-/// language server or a window, are added by the frontend through
-/// `Session::frontend_commands`. The palette lists only commands the editor can
-/// run.
-///
-/// Cursor motions are intentionally excluded. `cursorDown` is used as a
-/// keypress, not looked up by name, and listing about forty motions would make
-/// other commands harder to find.
 /// Commands the default keymap binds that deco does not implement yet.
 ///
 /// # Why this list exists
 ///
 /// A key bound to a command with no handler does nothing, which looks the same
 /// as an editor that has stopped responding. Listing the commands here lets the
-/// editor show a message such as `Split Editor is not implemented yet`. A test
+/// editor show a message such as `Toggle Terminal is not implemented yet`. A test
 /// also checks that every command the default keymap binds either has a
 /// handler or is on this list, so a new binding cannot be added without a
 /// handler by accident.
@@ -329,6 +317,18 @@ pub const PENDING: &[(&str, &str)] = &[
     ("deco.remote.showMenu", "Remote Menu"),
 ];
 
+/// The commands the palette offers from this crate.
+///
+/// This is intentionally not every arm of [`execute`]. A palette entry must
+/// work when chosen, and these entries are handled by [`execute`] or by the
+/// session itself, such as the explorer and source-control commands. Commands
+/// that need something only a frontend has, such as a language server or a
+/// window, are added by the frontend through `Session::frontend_commands`. The
+/// palette lists only commands the editor can run.
+///
+/// Cursor motions are intentionally excluded. `cursorDown` is used as a
+/// keypress, not looked up by name, and listing about forty motions would make
+/// other commands harder to find.
 pub const PALETTE: &[(&str, &str)] = &[
     ("undo", "Undo"),
     ("explorer.newFile", "File: New File"),
@@ -886,7 +886,6 @@ fn edit_at_selections(
     ctx.document.dirty = true;
 }
 
-/// Replaces each selection with `text`.
 /// The auto-indents an edit may take back with it.
 ///
 /// `changes` describes the pending edit as `(start, end, starts with a newline)`
@@ -1167,6 +1166,7 @@ fn next_char(buffer: &Buffer, at: Position) -> Option<char> {
     None
 }
 
+/// Replaces each selection with `text`.
 fn insert_text(ctx: &mut Context<'_>, text: &str) {
     edit_at_selections(ctx, EditKind::Insert, |_, selection| {
         Some((selection.range(), text.to_owned()))

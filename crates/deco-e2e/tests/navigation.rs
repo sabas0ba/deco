@@ -273,10 +273,11 @@ fn search_in_files_finds_a_line_in_another_file_and_opens_it_there() {
     let scenario = workspace("search-files");
     let mut editor = scenario.launch(&["src/main.rs"]);
 
-    // The project-search prompt opens seeded with the word under the cursor, and
-    // typing appends to it rather than replacing it — so a query has to be
-    // cleared first. `ctrl+x` is the only key that does that; see the note on
-    // `a_seeded_prompt_can_only_be_cleared_by_cutting_it` below.
+    // The project-search prompt opens seeded with the word under the cursor,
+    // with the seed selected, so typing replaces it; see
+    // `typing_over_a_seeded_prompt_replaces_the_seed` below. The `ctrl+x` cuts
+    // the selected seed first. It is not required, and the query typed after it
+    // is the same either way.
     editor.press("ctrl+shift+f");
     editor.press("ctrl+x");
     editor.type_text("println");

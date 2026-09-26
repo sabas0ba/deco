@@ -1,8 +1,8 @@
 //! What `git` says about a workspace.
 //!
 //! Like VS Code, deco runs the `git` binary and reads its output. No library is
-//! linked, so this crate's only dependency is `thiserror`. On a machine without
-//! git, the feature is unavailable rather than broken.
+//! linked, so this crate's only dependencies are `thiserror` and `serde`. On a
+//! machine without git, the feature is unavailable rather than broken.
 //!
 //! [`status`] is a pure parser. It takes the text written by
 //! `git status --porcelain=v2` and returns a [`Status`], without processes,

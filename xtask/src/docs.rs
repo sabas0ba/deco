@@ -375,11 +375,8 @@ impl Take {
                     self.session.open(path.clone(), "");
                 }
             }
-            // The frontend's part again: the session decided the document should
-            // be written, and the demonstration acts as the filesystem. Without
-            // this the tab would stay dirty, and the session would never mark
-            // its git status as stale, so a status bar demonstration would show
-            // a count that never changes.
+            // The frontend's part of a git operation: the demonstration acts as
+            // the repository by applying it to the in-memory state.
             if let deco_editor::Outcome::GitOperation(ref operation) = outcome {
                 let operation = operation.clone();
                 // Notify first, then apply, in the same order as a frontend. In
@@ -399,6 +396,11 @@ impl Take {
                     .unwrap_or_else(|| panic!("no checkout preview for {target}"));
                 self.session.confirm_checkout(plan);
             }
+            // The frontend's part again: the session decided the document should
+            // be written, and the demonstration acts as the filesystem. Without
+            // this the tab would stay dirty, and the session would never mark
+            // its git status as stale, so a status bar demonstration would show
+            // a count that never changes.
             if matches!(outcome, deco_editor::Outcome::Save) {
                 self.write_open_document();
                 self.session.mark_saved();

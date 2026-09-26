@@ -347,11 +347,12 @@ fn an_extension_creates_moves_and_deletes_on_the_far_end() {
 
 #[test]
 #[ignore = "needs Node; run by `cargo xtask host-test`"]
-fn an_extension_stats_and_lists_the_far_end_rather_than_this_machine() {
+fn an_extension_stats_and_lists_the_far_end_through_the_connection() {
     // The read side of the filesystem API, over the connection. The remote
     // workspace holds `notes.txt`, and the directory this machine would list at
-    // the same path holds the same file, so the check that the two sides
-    // differ is the one below.
+    // the same path holds the same file, so this test cannot tell the two sides
+    // apart. `a_stat_in_a_remote_session_goes_through_the_server_and_not_around_it`
+    // checks that they differ.
     let world = world("inspect");
     std::fs::write(world.workspace.join("notes.txt"), "from the far end\n").expect("a file");
     let extensions = inspector(

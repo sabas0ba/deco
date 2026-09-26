@@ -59,10 +59,15 @@ pub enum ClientError {
     /// The server closed without answering.
     ///
     /// The usual cause is that the remote environment has no `deco`, so the
-    /// transport ran a command that printed to stderr and exited.
+    /// transport ran a command that printed to stderr and exited. [`Client`]
+    /// inherits the transport's stderr, so that output goes to this process's
+    /// stderr and is not captured here.
     #[error("the server stopped without answering{}", .stderr.as_ref().map(|e| format!("; it said: {e}")).unwrap_or_default())]
     Closed {
-        /// The remote side's stderr output, if any.
+        /// The remote side's stderr output, if the caller captured it.
+        ///
+        /// [`Client`] always sets this to `None`, because it does not capture
+        /// stderr (see [`Client::start`]).
         stderr: Option<String>,
     },
     /// The server refused the request.
@@ -497,14 +502,19 @@ impl Client {
         Ok(())
     }
 
-    /// Asks the server to stop, then waits for it briefly.
+    /// Asks the server to stop, then waits for the transport process to exit.
     ///
     /// Errors are ignored because this runs while the editor is quitting and
     /// cannot report them. The request ensures that the remote server does not
-    /// keep the workspace open after the editor exits.
+    /// keep the workspace open after the editor exits. The server ends its
+    /// session after answering `$/shutdown`.
+    ///
+    /// The wait has no timeout, and stdin is still open while it runs. If the
+    /// request fails while the process is still running, the wait lasts until
+    /// that process exits on its own.
     pub fn shutdown(&mut self) {
         let _ = self.request("$/shutdown", json!({}));
-        // A server that did not receive the request stops when stdin is closed.
+        // Stdin is flushed, not closed; it is closed only when `self` is dropped.
         let _ = self.stdin.flush();
         let _ = self.child.wait();
     }

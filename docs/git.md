@@ -17,7 +17,7 @@ Each marker is omitted when its count is zero, as with the problem counts. A per
 | `↑2 ↓1` | two commits to push, one to pull; only when the branch tracks another |
 | `!1` | one file a merge left conflicted, which has to be dealt with first |
 
-**One per file, not one per side.** A file that is staged *and* modified since counts once. Otherwise the status bar would disagree with the list that the source-control view will show.
+**One per file, not one per side.** A file that is staged *and* modified since counts once, because the count is the number of files that differ from `HEAD`. The [source-control view](#the-source-control-view) shows such a file as two rows, one per side; see below.
 
 ## Marks beside the changed lines
 

@@ -91,10 +91,9 @@ enum Direction {
 /// One open document that is not on screen.
 ///
 /// Holds the state that must be preserved across a tab switch: the text and its
-/// history, the cursor and scroll position, and the diagnostics a server has
-/// published for it. The find bar is not preserved. It closes on a switch, as it
-/// does when a file replaces the document, because its match list describes text
-/// that is no longer on screen.
+/// history, the cursor and scroll position, the diagnostics and semantic tokens a
+/// server has published for it, and its find bar. [`Session::switch_to`] restores
+/// the find bar with the tab, because its match list describes this tab's text.
 #[derive(Debug)]
 struct Tab {
     document: Document,
@@ -381,17 +380,6 @@ pub struct Session {
     pub document: Document,
     /// The view onto it.
     pub view: View,
-    /// The other editor group's view onto the same document, when the editor is
-    /// split.
-    ///
-    /// A second *view*, not a second document. `ctrl+\` in VS Code shows one file
-    /// in two groups, which is one buffer with two views. Two documents would be
-    /// two divergent copies of one file, which [`Session::open`] also prevents for
-    /// tabs.
-    ///
-    /// [`Session::view`] is always the view of the focused group, and this is the
-    /// other one. This is the same zipper layout the tabs use, so commands that
-    /// read `session.view` work without knowing that groups exist.
     /// Whether the revert now in flight should close the tab when it lands.
     ///
     /// The frontend answers a `Revert` with only the file's text, so the session
@@ -408,6 +396,17 @@ pub struct Session {
     /// Cleared by any other command, so "quit again" applies only to the next
     /// keystroke, not to a later quit.
     quit_refused: bool,
+    /// The other editor group's view onto the same document, when the editor is
+    /// split.
+    ///
+    /// A second *view*, not a second document. `ctrl+\` in VS Code shows one file
+    /// in two groups, which is one buffer with two views. Two documents would be
+    /// two divergent copies of one file, which [`Session::open`] also prevents for
+    /// tabs.
+    ///
+    /// [`Session::view`] is always the view of the focused group, and this is the
+    /// other one. This is the same zipper layout the tabs use, so commands that
+    /// read `session.view` work without knowing that groups exist.
     split_view: Option<View>,
     /// Whether the group with the keyboard is the second one.
     ///
@@ -628,8 +627,9 @@ fn apply_edits_to(
 ///
 /// `Ok(None)` means there was nothing to do. Separate from [`commit`] so that a
 /// caller changing several documents can check that *all* of them can be changed
-/// before changing any. Every rejection (a range that does not exist, two edits
-/// over the same text) happens here, before any buffer is modified.
+/// before changing any. The only rejection, two edits over the same text, happens
+/// here, before any buffer is modified. A position past the end of a line or of
+/// the document is clamped to the nearest one that exists, not rejected.
 fn build_transaction(
     document: &Document,
     edits: &[deco_lsp::TextEdit],
@@ -879,11 +879,11 @@ impl Session {
             .map(|index| self.left.len() + 1 + index)
     }
 
-    /// How many tabs are open. Never zero: the session always shows a document.
     /// Every editor group, in the order they sit on screen.
     ///
-    /// One today. Renderers are written against a list of groups rather than
-    /// against the single group the session exposes directly.
+    /// One normally, two while the editor is split or a comparison is open.
+    /// Renderers are written against a list of groups rather than against the
+    /// single group the session exposes directly.
     pub fn panes(&self) -> Vec<Pane<'_>> {
         if let Some(comparison) = &self.comparison {
             return vec![
@@ -956,6 +956,7 @@ impl Session {
         }
     }
 
+    /// How many tabs are open. Never zero: the session always shows a document.
     pub fn tab_count(&self) -> usize {
         self.left.len() + 1 + self.right.len()
     }
@@ -1050,11 +1051,6 @@ impl Session {
         Outcome::Handled
     }
 
-    /// `ctrl+w`: closes the active tab.
-    ///
-    /// A dirty document is not closed, because deco has no confirmation dialog
-    /// and a keystroke must not discard edits. Closing the last tab leaves an
-    /// untitled document, because the session always shows a document.
     /// Splits the editor, giving the same document a second view.
     ///
     /// The new group starts at the same position as the current one and takes
@@ -1216,6 +1212,13 @@ impl Session {
         self.close_active_tab()
     }
 
+    /// Closes the active tab. Reached from `ctrl+w` through
+    /// [`Session::close_editor`] when neither a split nor a comparison is open,
+    /// and from a revert that closes the tab.
+    ///
+    /// A dirty document is not closed, because deco has no confirmation dialog
+    /// and a keystroke must not discard edits. Closing the last tab leaves an
+    /// untitled document, because the session always shows a document.
     fn close_active_tab(&mut self) -> Outcome {
         if self.document.dirty {
             return Outcome::Message(format!(
@@ -1407,8 +1410,9 @@ impl Session {
         self.context.set("panelFocus", self.focus == Focus::Panel);
         // The tree's keys. `filesExplorerFocus` is VS Code's key for the explorer
         // having the keyboard, and `listFocus` is for any list having it. The
-        // explorer is the only list here, so both currently have the same value,
-        // and a `when` clause copied from VS Code that uses either one resolves.
+        // lists here are the explorer and the source-control view, so the two
+        // keys agree in the explorer, and a `when` clause copied from VS Code
+        // that uses either one resolves there.
         let in_side_bar = self.focus == Focus::SideBar;
         let explorer_focus =
             in_side_bar && self.explorer.is_some() && self.side_bar_view == SideBarView::Explorer;
@@ -1926,11 +1930,6 @@ impl Session {
         });
     }
 
-    /// Opens the search-results prompt over `results`.
-    ///
-    /// Differs from [`Session::offer_files`] only in the message for an empty
-    /// list. An empty file list means the workspace is empty, and an empty result
-    /// list means the term was not found. The messages must not be confused.
     /// Offers the decisions already made, so one can be revoked.
     ///
     /// When there are none, shows a message instead of opening an empty list.
@@ -1965,6 +1964,13 @@ impl Session {
         ));
     }
 
+    /// Opens the search-results prompt over `results`.
+    ///
+    /// Like [`Session::offer_files`], except that the results keep the order
+    /// given, without recently viewed files first, and the message for an empty
+    /// list differs. An empty file list means the workspace is empty, and an
+    /// empty result list means the term was not found. The messages must not be
+    /// confused.
     pub fn offer_search_results(
         &mut self,
         needle: &str,
@@ -4096,7 +4102,7 @@ impl Session {
         if let (Some(explorer), Some(path)) = (self.explorer.as_mut(), operation.arriving()) {
             explorer.forget_under(path);
         }
-        self.status = Some(format!("could not {}: {reason}", operation.describe()));
+        self.status = Some(format!("could not {}: {reason}", operation.attempted()));
     }
 
     /// Retargets an open tab after its file moved, and re-reads the tree.
@@ -9289,6 +9295,10 @@ mod tests {
         assert!(
             s.can_undo_file_operation(),
             "an undo that did not happen is still there to try again"
+        );
+        assert_eq!(
+            s.status.as_deref(),
+            Some("could not delete new.rs: it has been written to since")
         );
     }
 

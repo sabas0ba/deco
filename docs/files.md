@@ -60,7 +60,7 @@ The same design lets the tree work on a **remote** workspace: the request is ans
 **Undoing a create removes only the created entry**, and only if it is unchanged. An empty file or folder cannot be identified by being empty, because another program can replace it with a *different* empty entry at the same path. The same size and time check used for rename undo is recorded when the create succeeds, and a mismatch is refused. If you created a file and have since typed in it and saved, `ctrl+z` in the tree refuses rather than deleting the file and its contents:
 
 ```text
-could not deleted parse.rs: parse.rs has been written to since it was
+could not delete parse.rs: parse.rs has been written to since it was
 created — delete it yourself if that is what you meant
 ```
 

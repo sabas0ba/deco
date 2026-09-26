@@ -16,8 +16,10 @@
 //! without `socat`, `nc` or any other tool on the remote.
 //!
 //! Each connection starts a new process. Over SSH that would mean an
-//! authentication round-trip per connection, so
-//! [`TransportOptions::multiplex`](crate::TransportOptions) is on by default.
+//! authentication round-trip per connection. The `TransportOptions` default has
+//! no control path and does not multiplex, so the `deco` binary builds its
+//! options with
+//! [`TransportOptions::multiplexed`](crate::TransportOptions::multiplexed).
 //! With a control socket, later connections reuse the existing SSH session.
 //!
 //! # Reachable addresses

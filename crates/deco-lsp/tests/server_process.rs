@@ -6,11 +6,11 @@
 //! server exit is detected, and whether a stopped server leaves anything
 //! behind.
 //!
-//! The server used here is this test binary re-executed with an environment
-//! variable set, so the tests need no installed language server and behave the
-//! same on every CI platform. `cargo test` builds one binary per integration
-//! test file and `current_exe` points at it, so re-executing it is cheap and
-//! hermetic.
+//! The server used here is the `fake_language_server` example, started with an
+//! environment variable that selects its behaviour. The tests therefore need no
+//! installed language server and behave the same on every CI platform. The
+//! test binary itself is not re-executed, because libtest writes its progress
+//! to stdout and that output would corrupt the frame stream.
 
 use std::time::Duration;
 

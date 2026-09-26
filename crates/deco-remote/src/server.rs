@@ -537,6 +537,10 @@ impl Server {
             }
             "fs.stat" => {
                 let asked = path("path")?;
+                // `resolve` has already canonicalised the path, so a symbolic
+                // link is followed and the stat describes its target.
+                // `symlink_metadata` on the result therefore never sees a link,
+                // and the reported type never has the link bit set.
                 let resolved = self.resolve(&asked)?;
                 let metadata = std::fs::symlink_metadata(&resolved).map_err(|error| {
                     ServerError::Unreadable {
@@ -559,9 +563,10 @@ impl Server {
                     if listed.len() >= MAX_LISTED {
                         break;
                     }
-                    // `symlink_metadata`, so a link is reported as a link rather
-                    // than as its target. The target may be outside the
-                    // workspace, and the client should know that before
+                    // `DirEntry::metadata` does not follow symbolic links (it is
+                    // equivalent to `symlink_metadata`), so a link is reported as
+                    // a link rather than as its target. The target may be outside
+                    // the workspace, and the client should know that before
                     // following it.
                     let Ok(metadata) = entry.metadata() else {
                         continue;

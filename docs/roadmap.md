@@ -21,7 +21,7 @@ Features that VS Code has and deco does not, with their prerequisites:
 | Debugging (DAP) | the panel; by far the largest item here |
 | Full snippet syntax and user snippet files ([numeric completion fields work](language-servers.md#snippet-tab-stops)) | linked/nested field tracking and variable/transform expansion |
 
-These dependencies determine the order of the sections below. One foundation remains: **implementing the remaining extension-host APIs**. The other two are built. The **[side bar and panel](chrome.md)** provide regions for the file tree, source-control view and planned terminal. **`WorkspaceEdit`** ([below](#the-gaps-behind-the-features)) is already used by rename, code actions and workspace-wide replace, and is intended for the tree's mutations and an agent's turn.
+These dependencies determine the order of the sections below. One foundation remains: **implementing the remaining extension-host APIs**. The other two are built. The **[side bar and panel](chrome.md)** provide regions for the file tree, source-control view and planned terminal. **`WorkspaceEdit`** ([below](#the-gaps-behind-the-features)) is already used by rename, code actions and workspace-wide replace, and is intended for an agent's turn. The file tree's create, rename and delete use a separate file operation type, because a `WorkspaceEdit` describes edits within files; see [The file tree](files.md).
 
 Two rules from the existing implementation apply to every section below:
 
@@ -203,14 +203,7 @@ The root must first move into the session. It is currently held by a frontend, b
 
 Three smaller items block or limit the sections above and should be done first. They are listed in the README's "what is not built yet" and repeated here because the plans above depend on them.
 
-- **~~`WorkspaceEdit`~~ — built.** A plan of per-document edits, validated
-  against document versions before any write, applied all-or-nothing, and undone
-  as one step; files no tab holds are opened rather than written. LSP rename
-  (`F2`) is its first user and is documented in
-  [Language servers](language-servers.md#rename), and
-  [code actions](language-servers.md#code-actions) (`ctrl+.`) and
-  [replace across the workspace](find-and-replace.md#replacing-across-the-workspace)
-  (`ctrl+shift+h`) followed it. The mechanism is complete; the file tree's mutations are the remaining *caller*. An agent's turn has the same structure; see [Agent integration](#agent-integration).
+- **~~`WorkspaceEdit`~~ — built.** A plan of per-document edits, validated against document versions before any write, applied all-or-nothing, and undone as one step; files no tab holds are opened rather than written. LSP rename (`F2`) is its first user and is documented in [Language servers](language-servers.md#rename), and [code actions](language-servers.md#code-actions) (`ctrl+.`) and [replace across the workspace](find-and-replace.md#replacing-across-the-workspace) (`ctrl+shift+h`) followed it. The mechanism is complete. The file tree's create, rename and delete do not use it, because they change files rather than text within files; see [The file tree](files.md). An agent's turn has the same structure as a `WorkspaceEdit`; see [Agent integration](#agent-integration).
 - **~~Regular-expression search~~ — built.** `alt+r` switches the find bar and project search to the `regex` crate, which was already a dependency of `deco-keymap`, so no crate was added. Invalid patterns are reported, replacements expand capture groups, and remote search passes the option to the server. Look-around, backreferences and case-changing replacement references remain unsupported; see [Find and replace](find-and-replace.md#regular-expressions).
 - **Full snippet support.** [Numeric completion fields are built](language-servers.md#snippet-tab-stops):
   Tab/Shift+Tab navigate, Escape exits, and ranges follow edits. Repeated indices,

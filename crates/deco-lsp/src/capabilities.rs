@@ -51,9 +51,11 @@ pub enum NegotiationError {
     /// The server chose an encoding the client never offered.
     ///
     /// This error is fatal. Otherwise every position sent to or received from
-    /// this server would be wrong on any line containing a character outside
-    /// the Basic Multilingual Plane, which corrupts documents. The problem
-    /// does not appear with ASCII-only text.
+    /// this server would be wrong on any line containing a character the two
+    /// encodings count differently: any non-ASCII character for UTF-8, or a
+    /// character outside the Basic Multilingual Plane for UTF-32. Edits at
+    /// those positions corrupt documents. The problem does not appear with
+    /// ASCII-only text.
     #[error("server chose position encoding {chosen:?}, which was not offered ({offered})")]
     UnofferedEncoding {
         /// What the server asked for.
@@ -527,7 +529,7 @@ mod tests {
     #[test]
     fn an_encoding_that_was_never_offered_is_fatal() {
         // No fallback. Accepting utf-8 while indexing in utf-16 misplaces
-        // every position after the first non-BMP character on a line.
+        // every position after the first non-ASCII character on a line.
         let Err(NegotiationError::UnofferedEncoding { chosen, offered }) =
             negotiate_encoding(Some("utf-8"))
         else {

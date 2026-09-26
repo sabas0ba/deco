@@ -561,8 +561,8 @@ mod tests {
 
     #[test]
     fn rust_block_comments_nest() {
-        // The first `*/` closes the inner comment, not the outer one, so `b` is
-        // still inside it and `let` on the last line is not a keyword.
+        // The first `*/` closes the inner comment, not the outer one, so the
+        // comment runs to the second `*/` and the `let` after it is a keyword.
         let found = spans("rust", "/* a /* b */ still a */ let x");
         assert_eq!(found.last(), Some(&(scopes::KEYWORD, "let".to_owned())));
         let comment = &found[0];
@@ -622,8 +622,8 @@ mod tests {
 
     #[test]
     fn a_single_line_string_does_not_leak_past_its_line() {
-        // Rust's `"` strings can span lines, but an unterminated one on the last
-        // line must not swallow a following line that does not exist.
+        // JSON's `"` strings cannot span lines, so an unterminated one ends at
+        // its line and the next line is lexed normally.
         let found = spans("json", "{\"a\": \"unterminated\n\"b\": 1}");
         assert!(
             found.iter().any(|(scope, _)| *scope == scopes::NUMBER),

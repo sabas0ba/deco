@@ -96,9 +96,9 @@ fn a_chord_that_is_abandoned_does_not_leave_the_keyboard_stuck() {
 
 #[test]
 fn a_when_clause_decides_whether_the_binding_applies() {
-    // The same key, two commands, chosen by context: `escape` cancels a
-    // selection when there is one, and this binding only applies when there is
-    // not.
+    // The binding is gated on `editorHasSelection`. Without a selection,
+    // `ctrl+e` does not run `commentLine` and the text is unchanged. After
+    // `ctrl+a` selects the text, the same key comments the line.
     let scenario = Scenario::new("when")
         .user_keybindings(
             r#"[

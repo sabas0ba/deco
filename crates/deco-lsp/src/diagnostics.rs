@@ -38,9 +38,10 @@ pub enum Severity {
 impl Severity {
     /// Reads the protocol's numeric encoding.
     ///
-    /// An unknown or absent value becomes [`Severity::Error`], following the
-    /// specification. An unclassified diagnostic still reports a problem, and
-    /// a lower severity could hide it.
+    /// An unknown or absent value becomes [`Severity::Error`]. The
+    /// specification leaves the severity of such a diagnostic to the client;
+    /// deco chooses Error because an unclassified diagnostic still reports a
+    /// problem, and a lower severity could hide it.
     pub fn from_number(value: Option<i64>) -> Self {
         match value {
             Some(2) => Self::Warning,

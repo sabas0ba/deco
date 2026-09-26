@@ -283,9 +283,10 @@ fn serve(role: &str) -> i32 {
                     },
                 }),
             ),
-            // One edit covering the first line, replacing it with a canonical
-            // form. The edit is small on purpose: a whole-document rewrite would
-            // pass even if the editor applied the edit at the wrong offset.
+            // One edit: an empty range at the start of the document, which
+            // inserts a `// formatted` line above the existing text. The edit is
+            // small on purpose: a whole-document rewrite would pass even if the
+            // editor applied the edit at the wrong offset.
             "textDocument/formatting" => send(
                 &mut output,
                 &serde_json::json!({

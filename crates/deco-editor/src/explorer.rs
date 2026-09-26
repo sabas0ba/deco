@@ -562,7 +562,7 @@ mod tests {
         // No pending request: the root is loaded and nothing else is shown.
         assert_eq!(explorer.wanted(), None);
 
-        explorer.select_next(); // Cargo.toml, README.md, src — dirs first.
+        explorer.select_next(); // src, Cargo.toml, README.md — dirs first.
         explorer.select_first();
         assert_eq!(explorer.selection().unwrap().name, "src");
         explorer.expand();

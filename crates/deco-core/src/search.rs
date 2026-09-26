@@ -385,7 +385,10 @@ fn is_whole_word(haystack: &[char], start: usize, end: usize, needle: &[char]) -
     before_ok && after_ok
 }
 
-/// The editor's word rule, shared with word motion and completion.
+/// The word rule for whole-word matching and for finding the word at the caret.
+///
+/// Word motion does not use it; it classifies characters with
+/// [`crate::movement::categorize`] and the configured separators.
 fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }

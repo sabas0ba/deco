@@ -14,7 +14,7 @@
 //! # It does not block the editor
 //!
 //! [`Supervisor::poll`] processes the messages that have arrived and returns.
-//! There are two intentional, bounded exceptions:
+//! There are three intentional, bounded exceptions:
 //!
 //! - **Starting a server.** The protocol forbids sending anything before the
 //!   `initialize` reply, so this must wait. The wait is bounded by
@@ -22,6 +22,10 @@
 //!   block the editor at launch.
 //! - **The poll in which a server exits**, for up to 100ms, while waiting for
 //!   its stderr. See [`ServerProcess::stderr_after_exit`].
+//! - **Stopping a server.** [`Supervisor::stop`] waits for the process to exit
+//!   and kills it when the grace period ends; see [`ServerProcess::stop`].
+//!   Dropping a [`ServerProcess`] that is still running does the same with a
+//!   shorter grace period.
 //!
 //! # A misbehaving server affects only itself
 //!
@@ -307,8 +311,9 @@ impl Supervisor {
     /// Starts a server and completes the handshake.
     ///
     /// Blocks until the server answers `initialize` or the timeout expires.
-    /// This is the only place this crate blocks, and it is unavoidable because
-    /// the protocol forbids sending anything else first.
+    /// The wait is unavoidable because the protocol forbids sending anything
+    /// else first. It is one of the bounded waits listed in the module
+    /// documentation.
     pub fn start(
         config: &ServerConfig,
         consent: Consent,
@@ -1828,11 +1833,13 @@ mod tests {
 
     #[test]
     fn references_ask_for_the_declaration_too() {
-        // Users expect "find all references" to list the definition, and VS
-        // Code includes it.
+        // Checks only that the request is raised when the server offers
+        // references. This harness has no process and does not record what is
+        // sent, so it cannot see the params. That `includeDeclaration` is true
+        // is checked on `reference_params` in the `requests` tests.
         let (mut s, path) = with_open_document(json!({"referencesProvider": true}));
-        // No process, so the write fails. The params are built first, and the
-        // client records the request in either case.
+        // No process, so the write fails. The client records the request as
+        // pending before the write is attempted.
         let _ = s.references(&path, Position::new(0, 3));
         assert_eq!(s.client.pending_count(), 1);
     }

@@ -191,7 +191,7 @@ impl SourceControl {
     /// act on a file that is not shown.
     ///
     /// Headings are counted because they also take rows: a list drawn as four
-    /// groups of three is nineteen rows, not twelve. Scrolling by the file count
+    /// groups of three is sixteen rows, not twelve. Scrolling by the file count
     /// alone would leave the last row just off screen.
     pub fn scroll_into_view(&mut self, height: usize) {
         if height == 0 {
@@ -320,7 +320,7 @@ fn rows_of(status: &Status) -> Vec<Row> {
         }
     }
     // Sorted by group, then by path, so the order is stable across refreshes
-    // and matches the headings. `sort_by_key` is stable, so rows with equal
+    // and matches the headings. `sort_by` is stable, so rows with equal
     // paths in a group would keep git's order. Paths cannot tie, but the code
     // does not rely on that.
     rows.sort_by(|one, two| {

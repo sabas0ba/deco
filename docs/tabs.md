@@ -64,11 +64,11 @@ The loop and its reporting are in the core, and only the write itself is in the 
 
 ## Saving somewhere else
 
-`ctrl+shift+s` opens a Save As prompt containing the current path. Edit that path or use `ctrl+x` to clear the field before entering another destination.
+`ctrl+shift+s` opens a Save As prompt containing the current path, fully selected. Typing replaces the path; a caret movement key such as `home` or `left` keeps it for editing.
 
 ![Saving notes.txt as Cargo.toml, which makes it TOML](img/save-as.svg)
 
-Saving under a new name reruns language detection. For example, saving `notes.txt` as `notes.toml` enables the TOML lexer and `[toml]` settings. A language selected manually with `ctrl+k m` remains selected.
+Saving under a new name reruns language detection. For example, saving `notes.txt` as `Cargo.toml` enables the TOML lexer and `[toml]` settings. A language selected manually with `ctrl+k m` remains selected.
 
 A relative path is resolved against the workspace root and `~` is expanded, so `~/notes.md` and `docs/notes.md` both work. Relative paths do not depend on the directory deco was launched from.
 

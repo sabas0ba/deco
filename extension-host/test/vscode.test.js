@@ -117,8 +117,9 @@ test('a command that throws reports the reason and the host stays up', async () 
 });
 
 test('disposing a command unregisters it', async () => {
-  // `context.subscriptions` is disposed on deactivate. A command that remained
-  // registered after disposal would be callable after the extension stopped.
+  // An extension unregisters a command by disposing the registration. The host
+  // does not dispose `context.subscriptions` itself. A command that remained
+  // registered after disposal could still be run.
   const { api, execute } = connect();
   const registration = api.commands.registerCommand('mine.temporary', () => 'here');
   assert.strictEqual((await execute('mine.temporary', [])).result, 'here');

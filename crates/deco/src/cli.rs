@@ -1,23 +1,14 @@
 //! Command-line parsing.
 //!
-//! Hand-written rather than derived. deco's command line is one path and three
-//! flags. An argument parser that supports subcommands, shell completion and
-//! coloured help adds about a dozen crates, including a procedural macro that
-//! runs on the build machine. That is not justified for a command line this
-//! small, and a smaller dependency graph means less code to trust. See deny.toml
-//! for the wider policy.
+//! Hand-written rather than derived. deco's command line is a list of files
+//! and a set of flags, with no subcommands. An argument parser that supports
+//! subcommands, shell completion and coloured help adds about a dozen crates,
+//! including a procedural macro that runs on the build machine. That is not
+//! justified for a flat command line like this one, and a smaller dependency
+//! graph means less code to trust. See deny.toml for the wider policy.
 //!
-//! The accepted grammar matches what the derived version accepted, so existing
-//! usage does not change:
-//!
-//! ```text
-//! deco [OPTIONS] [FILE]
-//!   --frontend <tui|gui>   also accepted as --frontend=<value>
-//!   --print-config
-//!   --clean
-//!   -h, --help
-//!   -V, --version
-//! ```
+//! Flags the derived version accepted keep the same syntax, so existing usage
+//! does not change. [`HELP`] lists the full grammar.
 
 use std::fmt;
 use std::path::PathBuf;

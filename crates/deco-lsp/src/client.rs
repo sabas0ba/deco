@@ -896,8 +896,8 @@ mod tests {
 
     #[test]
     fn an_encoding_the_client_never_offered_ends_the_handshake() {
-        // Accepting it would misplace every position on any line containing a
-        // character outside the Basic Multilingual Plane.
+        // Accepting it would misplace every position after the first non-ASCII
+        // character on a line. UTF-8 and UTF-16 offsets agree only for ASCII.
         let mut client = Client::new();
         let Outgoing(Message::Request(init)) = client.initialize(None, None).unwrap() else {
             panic!("initialize is a request");

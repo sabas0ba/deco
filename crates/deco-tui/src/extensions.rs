@@ -199,7 +199,6 @@ struct Running {
     asked: BTreeMap<u64, String>,
 }
 
-/// The extensions that are installed, and the hosts running some of them.
 /// Where an extension's file requests are served from.
 ///
 /// A remote session's files are on the remote machine, so an extension must
@@ -432,6 +431,7 @@ struct Asking {
     capability: deco_ext::capability::Capability,
 }
 
+/// The extensions that are installed, and the hosts running some of them.
 pub struct Hosts {
     catalogue: Catalogue,
     running: BTreeMap<String, Running>,
@@ -778,14 +778,11 @@ impl Hosts {
                             ));
                             response
                         }
-                        // deco cannot ask the user yet, and a missing prompt must
-                        // not be treated as consent. The request is refused and
-                        // the reason is logged, so the extension's behaviour can
-                        // be explained.
-                        // Held rather than answered: the extension is waiting on
-                        // a promise, so nothing is sent until there is a
-                        // decision. Its host keeps running and its other requests
-                        // are still served.
+                        // The broker needs the user's decision. The request is
+                        // held, and the user is asked after this loop. Nothing is
+                        // sent until there is a decision: the extension is waiting
+                        // on a promise. Its host keeps running and its other
+                        // requests are still served.
                         Dispatch::Consent { capability } if pending.is_none() => {
                             pending = Some(Asking {
                                 extension: id.to_owned(),
@@ -794,10 +791,11 @@ impl Hosts {
                             });
                             continue;
                         }
-                        // A second question while one is open. Refused rather than
+                        // A second question in the same drain. Refused rather than
                         // queued, with a reason that describes the situation. A
                         // queue could ask about a request the extension abandoned
-                        // long before the prompt was shown.
+                        // long before the prompt was shown. A question already
+                        // open from an earlier poll is not checked here.
                         Dispatch::Consent { capability } => {
                             reported.notes.push(format!(
                                 "{label}: {} needs a decision about {capability:?}, and another \
@@ -1175,8 +1173,9 @@ impl Hosts {
     /// Handles a request the broker allowed.
     ///
     /// Only the mediated surface is implemented: registering a command, showing a
-    /// message, and logging. Every other method is refused *by name* rather than
-    /// answered with an empty value. An extension can handle a refusal, but not
+    /// message, the `fs.*` file operations, `workspace.applyEdit`, and logging.
+    /// Every other method is refused *by name* rather than answered with an empty
+    /// value. An extension can handle a refusal, but not
     /// an incorrect empty result such as an empty list of open editors.
     fn mediated(
         running: &mut Running,

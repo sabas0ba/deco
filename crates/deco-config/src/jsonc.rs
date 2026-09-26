@@ -166,9 +166,13 @@ pub fn strip(input: &str) -> Result<String, JsoncError> {
         return Err(JsoncError::UnterminatedComment { line, column });
     }
 
-    // Every byte we rewrote was ASCII and replaced by ASCII, so the result is
-    // still valid UTF-8 with the original byte offsets intact.
-    Ok(String::from_utf8(out).expect("only ASCII bytes are rewritten"))
+    // Every rewritten byte is replaced by an ASCII space. The rewritten bytes are
+    // commas and whole comments. A comment starts and ends at ASCII bytes, and
+    // UTF-8 continuation bytes are never ASCII, so a multibyte character inside a
+    // comment has all of its bytes replaced. Each character is therefore either
+    // kept or replaced in full, so the result is valid UTF-8 with the original
+    // byte offsets intact.
+    Ok(String::from_utf8(out).expect("only whole characters are replaced, by ASCII spaces"))
 }
 
 /// One-based line and column of `byte_idx` within `text`.

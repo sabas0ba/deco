@@ -806,10 +806,10 @@ mod tests {
     }
 
     #[test]
-    fn the_languages_deco_detects_are_either_covered_or_deliberately_not() {
-        // Everything `language_for_path` can return, and why it is or is not here.
-        // Adding a language to the detector should include an explicit decision
-        // about highlighting.
+    fn the_structural_languages_deco_detects_have_no_rules() {
+        // Markdown, HTML and XML are ids `language_for_path` returns that
+        // deliberately have no rules. The detector's other ids are not checked
+        // here, because this crate does not depend on deco-editor.
         let structural = ["markdown", "html", "xml"];
         for language in structural {
             assert!(
