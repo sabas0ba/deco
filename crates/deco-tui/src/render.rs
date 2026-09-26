@@ -443,7 +443,7 @@ impl Region {
     /// contain.
     fn waiting_on(self) -> &'static str {
         match self {
-            Self::SideBar => "search and source control",
+            Self::SideBar => "search",
             Self::Panel => "the terminal, problems and output",
         }
     }
@@ -1039,7 +1039,8 @@ fn prompt_row(prompt: &deco_editor::Prompt, width: usize, palette: &Palette) -> 
     )
 }
 
-/// One offered choice: its title, and the key bound to it on the right.
+/// One offered choice: its title, and its `detail` on the right when it has one
+/// and there is room.
 fn choice_row(
     entry: &deco_editor::commands::PaletteEntry,
     selected: bool,

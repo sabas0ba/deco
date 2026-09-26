@@ -238,6 +238,20 @@ impl Operation {
             }
         }
     }
+
+    /// What to say when it could not be done, after "could not".
+    pub fn attempted(&self) -> String {
+        match self {
+            Self::CreateFile(path) => format!("create {}", name_of(path)),
+            Self::CreateFolder(path) => format!("create {}/", name_of(path)),
+            Self::Rename { from, to, .. } => {
+                format!("rename {} to {}", name_of(from), name_of(to))
+            }
+            Self::Delete { path, .. } | Self::DeleteIfEmpty { path, .. } => {
+                format!("delete {}", name_of(path))
+            }
+        }
+    }
 }
 
 /// Checks that `name` is a name and not a path.
