@@ -25,9 +25,9 @@ pub const MAX_FILES: usize = 10_000;
 
 /// How deep the walk goes.
 ///
-/// Guards against symlink loops as well as deep trees. `read_dir` follows
-/// symlinks, and a link to an ancestor would otherwise recurse until the stack
-/// overflowed.
+/// Bounds the recursion of the walk in very deep trees. Symlink loops cannot occur: the walk classifies entries with
+/// `DirEntry::file_type`, which does not follow symlinks, so a symlink to a
+/// directory is neither walked nor listed, and a symlink to a file is not listed.
 pub const MAX_DEPTH: usize = 24;
 
 /// Directories skipped regardless of settings.
@@ -228,10 +228,6 @@ fn relative_to(root: &Path, path: &Path) -> Option<String> {
     Some(out)
 }
 
-/// The enabled patterns from `files.exclude`.
-///
-/// The setting is a map of pattern to boolean. VS Code uses `false` to disable an
-/// inherited pattern, so the value is checked, not only the key.
 /// Whether `relative` is one of the paths `files.exclude` hides.
 ///
 /// Public because remote search results are filtered on the local side, not in
@@ -285,6 +281,10 @@ pub fn list_dir(root: &Path, dir: &Path, settings: &Settings) -> Vec<deco_editor
     out
 }
 
+/// The enabled patterns from `files.exclude`.
+///
+/// The setting is a map of pattern to boolean. VS Code uses `false` to disable an
+/// inherited pattern, so the value is checked, not only the key.
 fn exclude_patterns(settings: &Settings) -> Vec<String> {
     settings
         .get("files.exclude")

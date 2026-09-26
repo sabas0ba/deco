@@ -29,9 +29,10 @@ pub struct Metrics {
 impl Metrics {
     /// Derives metrics from the document's settings.
     ///
-    /// The 0.6 ratio is a reasonable approximation for the advance width of a
-    /// monospace face; [`crate::app`] replaces it with the real advance once the
-    /// font is loaded.
+    /// The 0.6 ratio approximates the advance width of a monospace face. It is
+    /// not replaced by the loaded font's real advance: [`crate::app`] uses this
+    /// value for layout and for the grid size, so glyphs whose advance differs
+    /// from it drift away from the caret and selection rectangles.
     pub fn from_session(session: &Session, scale: f32) -> Self {
         let settings = &session.document.settings;
         let font_size = settings.font_size * scale;
@@ -316,7 +317,9 @@ pub fn layout(session: &Session, width: f32, height: f32, metrics: Metrics) -> L
         Rect {
             x: text_left + column * metrics.cell_width,
             y: origin_y + cursor_row.unwrap_or(0) as f32 * metrics.line_height,
-            // A thin caret regardless of DPI. A block cursor would be a setting.
+            // Always a thin caret, at least one pixel wide at any DPI. The GUI
+            // does not read `editor.cursorStyle`, so a block cursor is not
+            // available.
             width: (metrics.cell_width * 0.12).max(1.0),
             height: metrics.line_height,
         }

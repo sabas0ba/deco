@@ -1,4 +1,4 @@
-//! One line of editable text, with a caret and no selection.
+//! One line of editable text, with a caret and an optional whole-line selection.
 //!
 //! The find bar's query and replacement, the go-to-line box and the command
 //! palette's filter all use this type instead of each keeping a `String` and an

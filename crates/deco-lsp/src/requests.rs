@@ -773,8 +773,10 @@ impl WorkspaceEdit {
             if edits.is_empty() {
                 continue;
             }
-            // `version` can be null here too. Null means the server did not
-            // track a version, which differs from the field being absent.
+            // `version` is `integer | null` in the protocol. Null, a missing
+            // field and a non-integer value are all read as `None`, meaning
+            // the server did not state a version. The distinction does not
+            // matter: the stale check runs only when a version is present.
             let version = document.get("version").and_then(|v| v.as_i64());
 
             // A document may appear more than once, and the entries are ordered.

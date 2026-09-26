@@ -131,8 +131,8 @@ pub fn line_comment_token(language: Option<&str>) -> Option<&'static str> {
 /// expression statement, so it is valid only where a statement is allowed. deco
 /// follows VS Code here.
 ///
-/// HTML, XML and Markdown are included even though [`crate::document`] has no
-/// lexer for them, because wrapping a selection needs only the delimiters, not
+/// HTML, XML and Markdown are included even though [`deco_syntax`] has no lexer
+/// for them, because wrapping a selection needs only the delimiters, not
 /// a grammar.
 pub fn block_comment_tokens(language: Option<&str>) -> Option<(&'static str, &'static str)> {
     Some(match language? {
@@ -361,8 +361,10 @@ impl Document {
     /// Applies `transaction` to the text, returning its inverse.
     ///
     /// This is the only place an edit mutates the buffer, so all state derived
-    /// from the text is invalidated here instead of by each caller. Highlighting
-    /// is the first such state; more is expected.
+    /// from the text is invalidated here instead of by each caller: the active
+    /// snippet's tab stops are updated for an edit confined to the current one,
+    /// and snippet navigation ends for any other edit. Highlighting is
+    /// invalidated from the first line the edit touches.
     pub fn apply(&mut self, transaction: &Transaction) -> Transaction {
         if self
             .snippet

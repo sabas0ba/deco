@@ -389,12 +389,13 @@ impl Scenario {
 
     /// Writes the `settings.json` a launch will read.
     ///
-    /// The harness has two keys of its own. They go into the file the scenario
-    /// tests: deco's if the scenario wrote one, VS Code's if it wrote only that.
-    /// Always writing them to deco's file would create the file that a scenario
-    /// about reading VS Code's settings expects to be absent.
+    /// The harness has one key of its own, `deco.lsp.enabled: false`, added
+    /// when the machine has no language servers. It goes into the file the
+    /// scenario tests: deco's if the scenario wrote one, VS Code's if it wrote
+    /// only that. Always writing it to deco's file would create the file that a
+    /// scenario about reading VS Code's settings expects to be absent.
     ///
-    /// They are written first, so the scenario's own keys come later and take
+    /// It is written first, so the scenario's own keys come later and take
     /// precedence. The JSONC layer uses the last value of a repeated key.
     fn write_user_settings(&self) {
         let mut defaults: Vec<&str> = Vec::new();
@@ -403,12 +404,13 @@ impl Scenario {
                 "    // deco-e2e: this machine has no language servers installed.\n    \"deco.lsp.enabled\": false",
             );
         }
-        // `files.eol` is intentionally not set here. A new file's line ending
-        // depends on the platform, so a scenario that checks the bytes of a file
-        // it created must specify the expected ending. A harness default would
-        // not work: in deco an explicit `files.eol` also converts the line
-        // endings of every existing file that is opened, which would change what
-        // other scenarios test. Each scenario that creates a file sets it itself.
+        // `files.eol` is intentionally not set here. It decides the ending of a
+        // new file, an untitled buffer and an existing file with no line
+        // terminator; an existing file with an ending keeps its own. Without
+        // the key the default `auto` applies, which is the platform's ending,
+        // and some scenarios test that default (for example `untitled_line` in
+        // `tests/files.rs`). A harness default would replace it. A scenario
+        // that checks the bytes of a file it created sets the key itself.
 
         match (&self.user_settings, &self.vscode_settings) {
             (Some(own), vscode) => {

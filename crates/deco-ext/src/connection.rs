@@ -284,8 +284,9 @@ impl std::fmt::Display for ReadyError {
 
 /// How long to wait for a host to exit on its own before killing it.
 ///
-/// Long enough for a short `deactivate` to finish, and short enough that an
-/// extension that does not stop does not delay quitting the editor.
+/// The host exits as soon as it handles `$/shutdown`, so this mainly covers the
+/// time to deliver the notification and for the process to exit. It is short
+/// enough that a host that does not stop does not delay quitting the editor.
 pub const SHUTDOWN_GRACE: Duration = Duration::from_millis(500);
 
 /// The request that loads an extension and runs its `activate`.
@@ -487,9 +488,11 @@ impl Host {
 
     /// Asks the host to stop, then kills it if it has not exited.
     ///
-    /// Sends `$/shutdown` first, so the sandbox is restored and `deactivate` runs.
-    /// Then kills the process, because an extension that ignores the notification
-    /// must not keep the editor open.
+    /// Sends `$/shutdown` first. The host restores its sandbox and exits
+    /// immediately; it does not call the extension's `deactivate`, which runs
+    /// only on a `$/deactivate` request, and deco does not send one. If the
+    /// process has not exited after [`SHUTDOWN_GRACE`], it is killed, because a
+    /// host that does not stop must not keep the editor open.
     pub fn shutdown(&mut self) {
         let _ = self.notify("$/shutdown", Value::Null);
         let deadline = Instant::now() + SHUTDOWN_GRACE;

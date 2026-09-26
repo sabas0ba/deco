@@ -48,7 +48,7 @@ impl FontStyle {
         style
     }
 
-    /// Whether any decoration is set.
+    /// Whether no decoration is set.
     pub fn is_none(self) -> bool {
         self == FontStyle::NONE
     }

@@ -4,10 +4,15 @@ version: 2
 # unpatched dependencies. Dependabot updates both the SHA and the trailing
 # version comment.
 #
-# The trailing comment must name a release: `# v2.9.2`, not `# v2`. With a
-# specific version, dependabot updates to the next release and rewrites both.
-# With a floating major version, it has no version to start from and pins the
-# head of the default branch, which can put an unreleased commit in a workflow.
+# For an action that publishes releases, the trailing comment must name a
+# release: `# v2.9.2`, not `# v2`. With a specific version, dependabot updates
+# to the next release and rewrites both. With a floating major version, it has
+# no version to start from and pins the head of the default branch, which can
+# put an unreleased commit in a workflow.
+#
+# Exception: `dtolnay/rust-toolchain` publishes no releases and is used from
+# its `master` branch, with the toolchain selected by the `toolchain` input.
+# Its pin carries `# master`, and an update moves it to the head of `master`.
 #
 # The prefixes are types that xtask/src/commitlint.rs accepts, because the same
 # check runs on dependabot's pull requests. `build` is the Conventional Commits

@@ -382,11 +382,6 @@ impl Installed {
     }
 }
 
-/// Ensures that a deco of this version is on the remote, and returns its path.
-///
-/// `path` is the install path; `None` means [`default_path`]. `binary` is the
-/// local file to send. The caller obtains it from `std::env::current_exe`
-/// instead of this module, so that a test can supply its own file.
 /// What to do when the remote platform differs from the one this deco was built
 /// for.
 ///
@@ -409,6 +404,11 @@ pub enum ForOther<'a> {
     },
 }
 
+/// Ensures that a deco of this version is on the remote, and returns its path.
+///
+/// `path` is the install path; `None` means [`default_path`]. `binary` is the
+/// local file to send. The caller obtains it from `std::env::current_exe`
+/// instead of this module, so that a test can supply its own file.
 pub fn ensure(
     runner: &mut dyn Runner,
     path: Option<&str>,

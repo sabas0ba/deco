@@ -409,9 +409,12 @@ impl Lsp {
         match supervisor.completion(&path, position, trigger) {
             Ok(Some(id)) => self.completion_request = Some(id),
             Ok(None) => {
-                // Only useful when the user invoked completion. A trigger
-                // character with no provider should insert the character
-                // without a message.
+                // Set for both trigger kinds. A trigger character only reaches
+                // here from a server that lists trigger characters, which it
+                // does only when it offers completion, so this path is mostly
+                // reached by an invoked request. `Ok(None)` is also returned
+                // when the document is not open on the server, and the message
+                // is then shown for a typed trigger character too.
                 session.status = Some("this server does not offer completion".to_owned());
             }
             Err(error) => self.report(session, error.to_string()),
@@ -1042,10 +1045,6 @@ impl Lsp {
         self.supervisor.as_ref().is_some_and(Supervisor::is_ready)
     }
 
-    /// Starts or switches the server to suit the open document.
-    ///
-    /// Idempotent: calling it for a document whose server is already running
-    /// does nothing, so the event loop can call it at any time.
     /// Notifies the server about deleted files.
     ///
     /// The server still considers a deleted file's document open, under a URI
@@ -1104,6 +1103,10 @@ impl Lsp {
         self.code_actions.clear();
     }
 
+    /// Starts or switches the server to suit the open document.
+    ///
+    /// Idempotent: calling it for a document whose server is already running
+    /// does nothing, so the event loop can call it at any time.
     pub fn attach(&mut self, session: &mut Session) {
         if !self.enabled {
             return;

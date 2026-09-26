@@ -17,12 +17,13 @@
 //! into the document, and `ctrl+z` cannot change the file behind an open find
 //! bar.
 //!
-//! # No selection model
+//! # Selection
 //!
-//! The query has a caret but no selection. `ctrl+a`, `ctrl+c` and `ctrl+x`
-//! therefore act on the whole query. They are consumed rather than passed
-//! through, so that `ctrl+x` does not cut a line from the document while the
-//! user is editing a search term.
+//! The query has a caret and no ranged selection. Its only selection is the
+//! whole line: a seeded query opens with it, and `ctrl+a` sets it (see
+//! [`Input`]). `ctrl+c` and `ctrl+x` act on the whole query. They are consumed
+//! rather than passed through, so that `ctrl+x` does not cut a line from the
+//! document while the user is editing a search term.
 //!
 //! # Regular expressions
 //!

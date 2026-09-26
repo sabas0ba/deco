@@ -16,9 +16,9 @@
 //! two, so counting multiples would classify it as a two-space file. The
 //! differences are all four, which is the correct width.
 //!
-//! Ties go to the smaller width, in VS Code's order: 2, 4, 6, 8, then the odd
-//! sizes. Matching VS Code avoids reindenting a file differently from how VS Code
-//! would treat it.
+//! Ties go to the width that comes first in VS Code's order: 2, 4, 6, 8, then 3,
+//! 5, 7. Even widths come before odd ones, so 4 wins a tie against 3. Matching
+//! VS Code avoids reindenting a file differently from how VS Code would treat it.
 
 /// How many lines are examined before the guess settles.
 ///

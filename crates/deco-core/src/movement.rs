@@ -342,7 +342,7 @@ pub fn line_start(pos: Position) -> Position {
     pos.with_character(0)
 }
 
-/// The first non-whitespace column of `pos`'s line.
+/// The first non-whitespace column of `line`.
 pub fn first_non_whitespace(buffer: &Buffer, line: u32) -> Position {
     let text = line_string(buffer, line);
     let byte = text
@@ -367,7 +367,7 @@ pub fn line_end(buffer: &Buffer, pos: Position) -> Position {
     Position::new(pos.line, buffer.line_len_utf16(pos.line as usize))
 }
 
-/// Moves `selection` horizontally, returning the new active position.
+/// The position one step from `pos` in `direction`, at `granularity`.
 pub fn horizontal(
     buffer: &Buffer,
     pos: Position,

@@ -196,10 +196,11 @@ impl PromptKind {
     /// Whether the order the choices arrived in carries meaning.
     ///
     /// True for symbols, which arrive in document order, as in VS Code's
-    /// picker. False for a command, whose order is the arbitrary order of the
-    /// registry, and for a file or a search result, whose title is a path and
-    /// sorts to the same place either way. Where it is false, equal matches are
-    /// ordered by title so the order is deterministic.
+    /// picker, and for the other kinds listed in the body. False for a command,
+    /// whose order is the arbitrary order of the registry, and for a search
+    /// result, whose title is a path and sorts to the same place either way.
+    /// Where it is false, equal matches are ordered by title so the order is
+    /// deterministic.
     pub fn keeps_source_order(self) -> bool {
         // Themes: the built-in themes are listed first because they are always
         // available, and a title sort would mix them with installed themes.
@@ -412,11 +413,11 @@ impl Prompt {
         consumed
     }
 
-    /// Recomputes which choices match, keeping the selection on the same choice
-    /// where it survives the narrowing.
+    /// Recomputes which choices match and moves the selection to the best match,
+    /// the first row.
     ///
-    /// Following the choice rather than the row index prevents a keystroke from
-    /// moving the selection to a different entry, which the next key would run.
+    /// The selection does not follow a previously selected choice. The reason is
+    /// in the comment where the selection is reset.
     fn refilter(&mut self) {
         let query = self.input.text();
 
@@ -613,9 +614,12 @@ mod tests {
     }
 
     #[test]
-    fn the_selection_follows_the_same_choice_as_the_list_narrows() {
-        // If the selection stayed on row 0, a keystroke could move it to a
-        // different command, which the next key would run.
+    fn narrowing_moves_the_selection_to_the_best_match() {
+        // `line` matches `Go to Line` and `Toggle Line Comment`, and `next`
+        // selects the second. `linen` matches only `Toggle Line Comment`, and
+        // narrowing resets the selection to row 0, which is that command. The
+        // selected command is unchanged only because it is the one match left.
+        // `Prompt::refilter` does not follow the previously selected choice.
         let mut prompt = palette();
         typed(&mut prompt, "line");
         prompt.next();
@@ -624,7 +628,7 @@ mod tests {
         assert_eq!(
             prompt.selected().map(|entry| entry.id.clone()),
             Some(chosen),
-            "the selection should have followed the command, not the row"
+            "row 0, the only match left, should be selected"
         );
     }
 

@@ -98,7 +98,8 @@ class EventEmitter {
       try {
         listener(value);
       } catch {
-        // A listener that throws must not stop the others. deco logs the error.
+        // A listener that throws must not stop the others. The error is
+        // discarded: it is neither logged nor reported to deco.
       }
     }
   }

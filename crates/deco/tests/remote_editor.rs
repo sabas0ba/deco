@@ -389,10 +389,11 @@ fn the_far_ends_own_settings_reach_the_session() {
 }
 
 #[test]
-fn this_machines_settings_beat_the_far_ends_where_a_project_disagrees() {
+fn the_far_ends_settings_beat_the_users_where_both_set_a_value() {
     // The layer's position: VS Code puts `remote` above the user's layer and
-    // below the workspace's. A layer applied in the wrong position is worse than
-    // one not applied, because it overrides settings the user chose.
+    // below the workspace's. This checks the user side only: the remote's
+    // `editor.tabSize` overrides the user's, and a setting the remote leaves
+    // unset keeps the user's value.
     let scenario = scenario("remote-machine-settings-order")
         .user_settings(r#"{ "editor.tabSize": 2, "editor.insertSpaces": false }"#)
         .remote_machine_settings(r#"{ "editor.tabSize": 7 }"#);

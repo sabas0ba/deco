@@ -1,10 +1,16 @@
 //! The framing deco uses between a local frontend and a remote server.
 //!
 //! Length-prefixed JSON: `Content-Length: N\r\n\r\n` followed by exactly `N`
-//! bytes. This is the Language Server Protocol's base framing. It was chosen
-//! because it tolerates a stream that also carries stray output from a remote
-//! shell, and because any existing language-server client can already handle
-//! it.
+//! bytes. This is the Language Server Protocol's base framing, which any
+//! existing language-server client can already handle.
+//!
+//! The reader tolerates little stray output, such as a remote shell's login
+//! text. A line containing `:` in a header block is read as an unknown header
+//! and ignored, provided the block also has a `Content-Length`. A line without
+//! `:` is a [`FrameError::MalformedHeader`], and a blank line before any
+//! `Content-Length` is a [`FrameError::MissingContentLength`]. The server's
+//! `serve` loop stops on either error, which ends the session, and the client's
+//! pending request fails.
 
 use std::io::{BufRead, Write};
 

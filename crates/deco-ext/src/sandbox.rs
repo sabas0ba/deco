@@ -1,6 +1,7 @@
 //! Where the extension host runs: inside a container, or as a bare process.
 //!
-//! The three layers in [`crate::host`] all run *inside* the Node process. They
+//! Layers 1 and 2 in [`crate::host`] run *inside* the Node process, and layer 3,
+//! deco's capability broker, only sees the requests those two let through. They
 //! depend on the runtime itself, which is not pinned. deco uses the `node`
 //! installed on the machine, so its version, build and linked libraries are
 //! outside deco's control. The flag that implements layer 1 is also a property
@@ -954,8 +955,9 @@ mod tests {
                 &format!("DECO_HOST_PROTOCOL={}", crate::host::PROTOCOL_VERSION),
             ]
         );
-        // `--env NAME` without a value copies the parent's value. The environment
-        // design exists to prevent that leak.
+        // The exact match above also rules out `--env NAME` without a value, which
+        // copies the parent's value; every passed entry has the form `NAME=VALUE`.
+        // `--env-file` would load further variables from a file, so it must be absent.
         assert!(!made.spec.args.iter().any(|arg| arg == "--env-file"));
     }
 

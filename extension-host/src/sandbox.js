@@ -4,10 +4,12 @@
  * Removes the access to built-in modules and network globals that a Node process
  * normally gives to any code it loads.
  *
- * This is layer 2 of three (see crates/deco-ext/src/host.rs). Layer 1 is Node's
- * permission model, which an extension cannot bypass from JavaScript. It does
- * not cover the network, and this file mainly fills that gap. Layer 3 is deco's
- * capability broker, which decides whether a brokered request is allowed.
+ * This is layer 2 of the four layers numbered 0 to 3 in
+ * crates/deco-ext/src/host.rs. Layer 0 is the optional container around the
+ * Node process. Layer 1 is Node's permission model, which an extension cannot
+ * bypass from JavaScript. It does not cover the network, and this file mainly
+ * fills that gap. Layer 3 is deco's capability broker, which decides whether a
+ * brokered request is allowed.
  *
  * This layer is not the last line of defence. Its purpose is that an extension
  * trying to open a socket gets a clear error telling it to use the deco API,
@@ -89,8 +91,9 @@ function normalizeSpecifier(specifier) {
  * @param {NodeRequire} options.moduleRequire - The `Module` class's require,
  *   which extension `require` calls go through.
  * @param {object} options.globals - The global object to strip.
- * @returns {{restore: () => void}} A handle used only by the test suite; the
- *   real host never restores.
+ * @returns {{restore: () => void}} A handle that undoes the changes. The test
+ *   suite uses it between tests; the host calls it just before exiting, on
+ *   `$/shutdown` and when the connection to deco closes.
  */
 function install({ moduleRequire, globals }) {
   const Module = moduleRequire('module');

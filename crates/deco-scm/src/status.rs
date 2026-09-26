@@ -312,7 +312,8 @@ pub fn parse(output: &str) -> Result<Status, Malformed> {
                 entries.push(entry);
             }
             "u" => {
-                // Ten fields before the path. The two-letter code describes the
+                // Nine fields between the tag and the path, counted the same way
+                // as `tracked`'s `before`. The two-letter code describes the
                 // type of conflict, which the list does not use: every
                 // conflicted file needs manual resolution.
                 let path = field_after(rest, 9).ok_or_else(|| Malformed(record.into()))?;

@@ -110,8 +110,10 @@ wildcards = "deny"
 # specific unintended dependencies.
 deny = [
     # deco routes every network call through the capability model
-    # (crates/deco-ext). An HTTP client linked into the editor would bypass
-    # it, so one appearing transitively fails the build.
+    # (crates/deco-ext). The list bans the OpenSSL bindings, which a crate
+    # making its own TLS connections usually pulls in, so such a crate
+    # appearing transitively fails the build. Other TLS or HTTP crates are
+    # not listed.
     { name = "openssl-sys", reason = "deco makes no direct TLS connections; see deco-ext's capability model" },
     { name = "openssl", reason = "deco makes no direct TLS connections; see deco-ext's capability model" },
 ]

@@ -355,8 +355,9 @@ mod tests {
 
     #[test]
     fn filter_text_is_matched_rather_than_the_label() {
-        // rust-analyzer labels an item `foo(…)` and filters on `foo`; matching
-        // the label fails as soon as the user types `f`.
+        // rust-analyzer labels an item `foo(…)` and filters on `foo`. Typing `f`
+        // keeps the item, because `rank` is given `filter`. The label also starts
+        // with `f`, so this input does not show that the label is ignored.
         let mut items = vec![item("foo(…)")];
         items[0].filter = "foo".into();
         let mut s = Suggest::new(items, Position::ZERO, false);

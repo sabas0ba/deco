@@ -387,8 +387,9 @@ mod tests {
 
     #[test]
     fn the_common_ends_are_not_searched() {
-        // A thousand identical lines around a one-line edit. If the prefix and
-        // suffix were searched, the cost would be much higher, and past
+        // Four thousand identical lines before a one-line edit at the end, so
+        // the common prefix is long and there is no common suffix. If the prefix
+        // were searched, the cost would be much higher, and past
         // `MAX_EDITS` the result would be truncated.
         let mut head = String::new();
         let mut working = String::new();

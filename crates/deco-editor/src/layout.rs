@@ -101,8 +101,8 @@ pub struct Regions {
 ///
 /// The panel is taken from the bottom before the side bar is taken from the
 /// side, so the side bar spans the full height beside both the editor and the
-/// panel. This matches VS Code's layout, and is why a terminal in the panel is
-/// as wide as the window.
+/// panel. This matches VS Code's layout. With a side bar, the panel is as wide
+/// as the editor, not as the window.
 pub fn regions(
     width: usize,
     height: usize,
