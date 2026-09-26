@@ -5,8 +5,8 @@
 //! operation an extension performs arrives here as a request that deco either
 //! brokers or rejects.
 //!
-//! The most important function in this module is [`required_capability`]. It
-//! maps a method name to the capability it needs. An unrecognised method is
+//! The most important function in this module is [`required_capabilities`]. It
+//! maps a method name to the capabilities it needs. An unrecognised method is
 //! rejected, so a privileged method added to the host but not here is unusable
 //! instead of unguarded.
 
@@ -135,13 +135,13 @@ impl Message {
     }
 }
 
-/// The capability a method requires, or `None` when the method is mediated by
-/// deco and needs no additional privilege.
+/// The capabilities a method requires, all of which must be allowed. Empty when
+/// the method is mediated by deco and needs no additional privilege.
 ///
 /// Returns `Err(())` for methods deco does not know, which callers must treat
 /// as [`ErrorCode::MethodNotFound`] rather than as "no capability needed".
 #[allow(clippy::result_unit_err)]
-pub fn required_capability(method: &str, params: &Value) -> Result<Option<Capability>, ()> {
+pub fn required_capabilities(method: &str, params: &Value) -> Result<Vec<Capability>, ()> {
     let path = |key: &str| -> Option<PathBuf> { params.get(key)?.as_str().map(PathBuf::from) };
     let read_path = |key: &str| -> Option<Capability> {
         Some(Capability::ReadFile {
@@ -153,20 +153,30 @@ pub fn required_capability(method: &str, params: &Value) -> Result<Option<Capabi
             scope: PathScope::Subtree { path: path(key)? },
         })
     };
+    let one = |capability: Option<Capability>| capability.map(|c| vec![c]);
 
-    let capability = match method {
+    // `None` is a known privileged method without the parameters the check
+    // needs. It is a malformed request and is rejected, not allowed.
+    let capabilities = match method {
         // --- Filesystem, brokered -----------------------------------------
-        "fs.readFile" | "fs.stat" | "fs.readDirectory" => read_path("path"),
-        "fs.writeFile" | "fs.delete" | "fs.createDirectory" => write_path("path"),
-        // A rename affects two paths. The destination is the stricter check
-        // here, and the caller checks the source as a second request.
-        "fs.rename" | "fs.copy" => write_path("target"),
+        "fs.readFile" | "fs.stat" | "fs.readDirectory" => one(read_path("path")),
+        "fs.writeFile" | "fs.delete" | "fs.createDirectory" => one(write_path("path")),
+        // Both paths are checked. A rename writes the source, because moving a
+        // file out of a directory changes that directory. A copy only reads it.
+        // The target comes first, so it is the one a consent prompt asks about
+        // first.
+        "fs.rename" => write_path("target")
+            .zip(write_path("source"))
+            .map(|(target, source)| vec![target, source]),
+        "fs.copy" => write_path("target")
+            .zip(read_path("source"))
+            .map(|(target, source)| vec![target, source]),
 
         // --- Editor edits --------------------------------------------------
         // Applying an edit writes the file, even though it goes through the
         // editor. Treating it as an editor operation would let an extension
         // write files without the write capability.
-        "workspace.applyEdit" => write_path("path"),
+        "workspace.applyEdit" => one(write_path("path")),
 
         // --- Network -------------------------------------------------------
         "net.fetch" | "net.connect" => {
@@ -174,29 +184,29 @@ pub fn required_capability(method: &str, params: &Value) -> Result<Option<Capabi
                 .get("url")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
-            host_of(url).map(|host| Capability::Network { host })
+            one(host_of(url).map(|host| Capability::Network { host }))
         }
 
         // --- Process -------------------------------------------------------
         "process.spawn" | "process.exec" => {
-            params
+            one(params
                 .get("program")
                 .and_then(Value::as_str)
                 .map(|program| Capability::Process {
                     program: program.to_owned(),
-                })
+                }))
         }
 
         // --- Environment and system ----------------------------------------
-        "env.get" => params
+        "env.get" => one(params
             .get("name")
             .and_then(Value::as_str)
             .map(|name| Capability::Env {
                 name: name.to_owned(),
-            }),
-        "env.clipboard.readText" | "env.clipboard.writeText" => Some(Capability::Clipboard),
-        "env.openExternal" => Some(Capability::OpenExternal),
-        "secrets.get" | "secrets.store" | "secrets.delete" => Some(Capability::Secrets),
+            })),
+        "env.clipboard.readText" | "env.clipboard.writeText" => Some(vec![Capability::Clipboard]),
+        "env.openExternal" => Some(vec![Capability::OpenExternal]),
+        "secrets.get" | "secrets.store" | "secrets.delete" => Some(vec![Capability::Secrets]),
 
         // --- Mediated editor surface, no extra privilege --------------------
         // These only affect state that deco owns and shows to the user.
@@ -219,40 +229,12 @@ pub fn required_capability(method: &str, params: &Value) -> Result<Option<Capabi
         | "log.append"
         | "$/ready"
         | "$/activated"
-        | "$/heartbeat" => None,
+        | "$/heartbeat" => Some(Vec::new()),
 
         // Reject unknown methods.
         _ => return Err(()),
     };
-
-    // A known privileged method without the parameters the check needs is a
-    // malformed request and is rejected, not allowed.
-    match method {
-        "window.showInformationMessage"
-        | "window.showWarningMessage"
-        | "window.showErrorMessage"
-        | "window.showQuickPick"
-        | "window.showInputBox"
-        | "window.setStatusBarMessage"
-        | "window.activeTextEditor"
-        | "workspace.getConfiguration"
-        | "workspace.workspaceFolders"
-        | "workspace.textDocuments"
-        | "commands.registerCommand"
-        | "commands.executeCommand"
-        | "commands.getCommands"
-        | "languages.registerProvider"
-        | "languages.setDiagnostics"
-        | "extension.setContext"
-        | "log.append"
-        | "$/ready"
-        | "$/activated"
-        | "$/heartbeat" => Ok(None),
-        _ => match capability {
-            Some(capability) => Ok(Some(capability)),
-            None => Err(()),
-        },
-    }
+    capabilities.ok_or(())
 }
 
 /// Extracts the host from a URL without pulling in a URL parser.
@@ -339,70 +321,70 @@ mod tests {
     fn file_reads_and_writes_map_to_the_right_capability() {
         let params = json!({"path": "/w/a.txt"});
         assert_eq!(
-            required_capability("fs.readFile", &params).unwrap(),
-            Some(Capability::ReadFile {
+            required_capabilities("fs.readFile", &params).unwrap(),
+            vec![Capability::ReadFile {
                 scope: PathScope::Subtree {
                     path: "/w/a.txt".into()
                 }
-            })
+            }]
         );
         assert_eq!(
-            required_capability("fs.writeFile", &params).unwrap(),
-            Some(Capability::WriteFile {
+            required_capabilities("fs.writeFile", &params).unwrap(),
+            vec![Capability::WriteFile {
                 scope: PathScope::Subtree {
                     path: "/w/a.txt".into()
                 }
-            })
+            }]
         );
         assert_eq!(
-            required_capability("fs.delete", &params).unwrap(),
-            Some(Capability::WriteFile {
+            required_capabilities("fs.delete", &params).unwrap(),
+            vec![Capability::WriteFile {
                 scope: PathScope::Subtree {
                     path: "/w/a.txt".into()
                 }
-            })
+            }]
         );
     }
 
     #[test]
     fn applying_a_workspace_edit_counts_as_writing() {
         assert_eq!(
-            required_capability("workspace.applyEdit", &json!({"path": "/w/a.txt"})).unwrap(),
-            Some(Capability::WriteFile {
+            required_capabilities("workspace.applyEdit", &json!({"path": "/w/a.txt"})).unwrap(),
+            vec![Capability::WriteFile {
                 scope: PathScope::Subtree {
                     path: "/w/a.txt".into()
                 }
-            })
+            }]
         );
     }
 
     #[test]
     fn network_requests_map_to_their_host() {
         assert_eq!(
-            required_capability(
+            required_capabilities(
                 "net.fetch",
                 &json!({"url": "https://api.example.com/v1?x=1"})
             )
             .unwrap(),
-            Some(Capability::Network {
+            vec![Capability::Network {
                 host: "api.example.com".into()
-            })
+            }]
         );
     }
 
     #[test]
     fn process_and_env_requests_carry_their_target() {
         assert_eq!(
-            required_capability("process.spawn", &json!({"program": "rustfmt"})).unwrap(),
-            Some(Capability::Process {
+            required_capabilities("process.spawn", &json!({"program": "rustfmt"})).unwrap(),
+            vec![Capability::Process {
                 program: "rustfmt".into()
-            })
+            }]
         );
         assert_eq!(
-            required_capability("env.get", &json!({"name": "PATH"})).unwrap(),
-            Some(Capability::Env {
+            required_capabilities("env.get", &json!({"name": "PATH"})).unwrap(),
+            vec![Capability::Env {
                 name: "PATH".into()
-            })
+            }]
         );
     }
 
@@ -416,8 +398,8 @@ mod tests {
             "$/ready",
         ] {
             assert_eq!(
-                required_capability(method, &json!({})).unwrap(),
-                None,
+                required_capabilities(method, &json!({})).unwrap(),
+                Vec::<Capability>::new(),
                 "{method}"
             );
         }
@@ -425,18 +407,49 @@ mod tests {
 
     #[test]
     fn an_unknown_method_is_refused_rather_than_allowed() {
-        assert!(required_capability("fs.mountRoot", &json!({})).is_err());
-        assert!(required_capability("", &json!({})).is_err());
-        assert!(required_capability("eval", &json!({"code": "1"})).is_err());
+        assert!(required_capabilities("fs.mountRoot", &json!({})).is_err());
+        assert!(required_capabilities("", &json!({})).is_err());
+        assert!(required_capabilities("eval", &json!({"code": "1"})).is_err());
     }
 
     #[test]
     fn a_privileged_method_with_missing_params_is_refused() {
         // Without a path there is nothing to scope the check to. Returning "no
         // capability required" here would allow an unguarded write.
-        assert!(required_capability("fs.writeFile", &json!({})).is_err());
-        assert!(required_capability("net.fetch", &json!({})).is_err());
-        assert!(required_capability("process.spawn", &json!({})).is_err());
+        assert!(required_capabilities("fs.writeFile", &json!({})).is_err());
+        assert!(required_capabilities("net.fetch", &json!({})).is_err());
+        assert!(required_capabilities("process.spawn", &json!({})).is_err());
+        // A move with only one of its two paths cannot be checked at both.
+        assert!(required_capabilities("fs.rename", &json!({"target": "/w/b"})).is_err());
+        assert!(required_capabilities("fs.copy", &json!({"source": "/w/a"})).is_err());
+    }
+
+    #[test]
+    fn a_rename_writes_both_paths_and_a_copy_reads_its_source() {
+        let params = json!({"source": "/w/a", "target": "/w/b"});
+        let subtree = |path: &str| PathScope::Subtree { path: path.into() };
+        assert_eq!(
+            required_capabilities("fs.rename", &params).unwrap(),
+            vec![
+                Capability::WriteFile {
+                    scope: subtree("/w/b")
+                },
+                Capability::WriteFile {
+                    scope: subtree("/w/a")
+                },
+            ]
+        );
+        assert_eq!(
+            required_capabilities("fs.copy", &params).unwrap(),
+            vec![
+                Capability::WriteFile {
+                    scope: subtree("/w/b")
+                },
+                Capability::ReadFile {
+                    scope: subtree("/w/a")
+                },
+            ]
+        );
     }
 
     #[test]

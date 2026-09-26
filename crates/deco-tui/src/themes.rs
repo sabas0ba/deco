@@ -76,13 +76,16 @@ pub fn list(roots: &[PathBuf]) -> Vec<Available> {
     }
 
     // Built-ins stay at the top because they always work. Contributed themes are
-    // sorted by label.
-    all[builtins..].sort_by(|a, b| a.label.cmp(&b.label));
+    // sorted by label, then by path, because `read_dir` returns entries in no
+    // particular order.
+    all[builtins..].sort_by(|a, b| (&a.label, &a.path).cmp(&(&b.label, &b.path)));
 
     // One label can be contributed twice, usually by the same extension installed
     // in two versions. The first entry is kept, which is a built-in when a
-    // marketplace theme has the same name as one.
-    all.dedup_by(|a, b| a.label == b.label);
+    // marketplace theme has the same name as one. Duplicates need not be
+    // adjacent, because the built-ins are not sorted with the rest.
+    let mut seen = std::collections::HashSet::new();
+    all.retain(|theme| seen.insert(theme.label.clone()));
     all
 }
 
@@ -254,6 +257,47 @@ mod tests {
             1,
             "{found:?}"
         );
+    }
+
+    #[test]
+    fn a_builtin_label_is_offered_once_as_the_builtin() {
+        let root = temp("builtin-dark");
+        extension(
+            &root,
+            "someone.modern",
+            r#"{ "name": "modern", "contributes": { "themes": [
+                 { "label": "Default Dark Modern", "path": "./d.json" }
+               ] } }"#,
+        );
+        let found = list(&[root]);
+        let matching: Vec<&Available> = found
+            .iter()
+            .filter(|t| t.label == "Default Dark Modern")
+            .collect();
+        assert_eq!(matching.len(), 1, "{found:?}");
+        assert_eq!(matching[0].path, None, "the built-in should be kept");
+    }
+
+    #[test]
+    fn a_builtin_label_is_offered_once_among_other_contributions() {
+        // "Aardvark" sorts between the built-ins and the duplicate, so the two
+        // entries with the same label are not adjacent.
+        let root = temp("builtin-light");
+        extension(
+            &root,
+            "someone.modern",
+            r#"{ "name": "modern", "contributes": { "themes": [
+                 { "label": "Default Light Modern", "uiTheme": "vs", "path": "./l.json" },
+                 { "label": "Aardvark", "path": "./a.json" }
+               ] } }"#,
+        );
+        let found = list(&[root]);
+        let labels: Vec<&str> = found.iter().map(|t| t.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            ["Default Dark Modern", "Default Light Modern", "Aardvark"]
+        );
+        assert_eq!(found[1].path, None, "the built-in should be kept");
     }
 
     #[test]

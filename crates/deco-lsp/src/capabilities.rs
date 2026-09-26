@@ -384,9 +384,16 @@ fn read_sync(
 
 /// The `capabilities` object deco sends in `initialize`.
 ///
-/// Only implemented features are advertised. Advertising more causes servers
-/// to send messages the editor drops. For example, a server told that the
-/// client handles `workspace/applyEdit` applies refactorings by sending that
+/// Every request deco sends declares its capability here, and nothing deco
+/// does not implement is advertised.
+///
+/// A missing declaration changes what servers send. Without
+/// `codeActionLiteralSupport` a server may answer `textDocument/codeAction`
+/// with `Command[]` only, which deco cannot run, and without
+/// `workspaceEdit.documentChanges` edits carry no document version, so stale
+/// edits cannot be detected. An extra declaration causes servers to send
+/// messages the editor drops. For example, a server told that the client
+/// handles `workspace/applyEdit` applies refactorings by sending that
 /// request, and nothing happens.
 pub fn client_capabilities() -> serde_json::Value {
     serde_json::json!({
@@ -419,11 +426,77 @@ pub fn client_capabilities() -> serde_json::Value {
             },
             "definition": { "dynamicRegistration": false },
             "references": { "dynamicRegistration": false },
+            "formatting": { "dynamicRegistration": false },
+            "rangeFormatting": { "dynamicRegistration": false },
+            "documentSymbol": {
+                "dynamicRegistration": false,
+                // Both result shapes are read; the tree keeps the nesting.
+                "hierarchicalDocumentSymbolSupport": true,
+            },
+            // deco does not send `textDocument/prepareRename`.
+            "rename": { "dynamicRegistration": false, "prepareSupport": false },
+            "codeAction": {
+                "dynamicRegistration": false,
+                // Without this a server may send only `Command[]`, which
+                // needs `workspace/executeCommand` (LSP 3.17,
+                // textDocument/codeAction).
+                "codeActionLiteralSupport": {
+                    "codeActionKind": {
+                        "valueSet": [
+                            "",
+                            "quickfix",
+                            "refactor",
+                            "refactor.extract",
+                            "refactor.inline",
+                            "refactor.rewrite",
+                            "source",
+                            "source.organizeImports",
+                        ],
+                    },
+                },
+                // `isPreferredSupport` is not declared: `isPreferred` is
+                // parsed but does not affect the list.
+                "disabledSupport": true,
+                // `data` is kept in the raw action sent to `codeAction/resolve`.
+                "dataSupport": true,
+                "resolveSupport": { "properties": ["edit"] },
+            },
+            "semanticTokens": {
+                "dynamicRegistration": false,
+                // Only `textDocument/semanticTokens/full` is sent.
+                "requests": { "full": true },
+                // The standard 3.17 lists. Types and modifiers are matched by
+                // name against the theme's `semanticTokenColors`, so any of
+                // them can be coloured.
+                "tokenTypes": [
+                    "namespace", "type", "class", "enum", "interface", "struct",
+                    "typeParameter", "parameter", "variable", "property",
+                    "enumMember", "event", "function", "method", "macro",
+                    "keyword", "modifier", "comment", "string", "number",
+                    "regexp", "operator", "decorator",
+                ],
+                "tokenModifiers": [
+                    "declaration", "definition", "readonly", "static",
+                    "deprecated", "abstract", "async", "modification",
+                    "documentation", "defaultLibrary",
+                ],
+                "formats": ["relative"],
+            },
             "publishDiagnostics": {
                 "relatedInformation": true,
                 // Requested because it is needed to detect stale
                 // diagnostics; see the diagnostics module.
                 "versionSupport": true,
+            },
+        },
+        "workspace": {
+            // `applyEdit` is not declared: deco declines server-initiated
+            // edits. `resourceOperations` is not declared: file operations
+            // are refused.
+            "workspaceEdit": {
+                // Each `TextDocumentEdit` carries the version the edit was
+                // computed for, which the stale-edit check needs.
+                "documentChanges": true,
             },
         },
         "window": {
@@ -675,12 +748,74 @@ mod tests {
         assert_eq!(
             caps["textDocument"]["completion"]["completionItem"]["snippetSupport"],
             json!(false),
-            "a snippet inserted literally is worse than no snippet"
+            "snippets stay undeclared until the full syntax is implemented"
         );
         assert_eq!(caps["window"]["workDoneProgress"], json!(false));
         assert!(
-            caps.get("workspace").is_none(),
-            "no workspace edits until they can be applied"
+            matches!(
+                caps["workspace"].get("applyEdit"),
+                None | Some(serde_json::Value::Bool(false))
+            ),
+            "deco declines server-initiated workspace/applyEdit"
+        );
+        assert!(
+            caps["workspace"]["workspaceEdit"]
+                .get("resourceOperations")
+                .is_none(),
+            "file operations in a workspace edit are refused"
+        );
+        assert_eq!(
+            caps["textDocument"]["rename"]["prepareSupport"],
+            json!(false),
+            "deco does not send textDocument/prepareRename"
+        );
+        assert!(
+            caps["textDocument"]["semanticTokens"]["requests"]
+                .get("range")
+                .is_none(),
+            "only full-document semantic tokens are requested"
+        );
+    }
+
+    #[test]
+    fn every_request_deco_sends_is_declared() {
+        let caps = client_capabilities();
+        let text_document = &caps["textDocument"];
+        for key in [
+            "hover",
+            "completion",
+            "definition",
+            "references",
+            "formatting",
+            "rangeFormatting",
+            "documentSymbol",
+            "rename",
+            "codeAction",
+            "semanticTokens",
+        ] {
+            assert!(
+                text_document.get(key).is_some(),
+                "textDocument.{key} is not declared"
+            );
+        }
+        let kinds =
+            &text_document["codeAction"]["codeActionLiteralSupport"]["codeActionKind"]["valueSet"];
+        assert!(
+            kinds.as_array().is_some_and(|kinds| !kinds.is_empty()),
+            "without code action literals a server may send only commands"
+        );
+        assert_eq!(
+            text_document["codeAction"]["resolveSupport"]["properties"],
+            json!(["edit"])
+        );
+        assert_eq!(
+            text_document["semanticTokens"]["requests"]["full"],
+            json!(true)
+        );
+        assert_eq!(
+            caps["workspace"]["workspaceEdit"]["documentChanges"],
+            json!(true),
+            "versioned edits are needed for the stale-edit check"
         );
     }
 
