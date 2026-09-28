@@ -192,7 +192,7 @@ pub fn pump_lines(reader: impl BufRead, log: &Mutex<ErrorLog>) {
 #[derive(Debug, thiserror::Error)]
 pub enum SpawnError {
     /// The definition needs the user's agreement and did not have it.
-    #[error("`{id}` is defined by this workspace and has not been approved to run")]
+    #[error("`{id}` is defined by workspace or remote settings and has not been approved to run")]
     NeedsConsent {
         /// The server id.
         id: String,

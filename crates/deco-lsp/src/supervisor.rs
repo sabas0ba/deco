@@ -1836,7 +1836,8 @@ mod tests {
         // Checks only that the request is raised when the server offers
         // references. This harness has no process and does not record what is
         // sent, so it cannot see the params. That `includeDeclaration` is true
-        // is checked on `reference_params` in the `requests` tests.
+        // is checked end to end in deco-e2e's `language_servers` tests, where
+        // the test server lists the declaration only when asked to.
         let (mut s, path) = with_open_document(json!({"referencesProvider": true}));
         // No process, so the write fails. The client records the request as
         // pending before the write is attempted.
