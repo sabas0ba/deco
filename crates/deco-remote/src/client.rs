@@ -523,18 +523,27 @@ impl Client {
     /// keep the workspace open after the editor exits. The server ends its
     /// session after answering `$/shutdown`.
     ///
-    /// Stdin is then closed, which is how a transport such as `ssh` learns that
-    /// the session has ended. If the process has not exited after
-    /// [`SHUTDOWN_GRACE`], it is killed. The request itself waits for a reply
-    /// like any other; it returns early only if the transport closes its
-    /// stdout.
+    /// The reply is not read: a stalled transport would never send it, and
+    /// waiting for it would make quitting wait too. Stdin is closed right after
+    /// the request, which is how a transport such as `ssh` learns that the
+    /// session has ended; the server has read the request by then. If the
+    /// process has not exited after [`SHUTDOWN_GRACE`], it is killed.
     pub fn shutdown(&mut self) {
         self.shutdown_within(SHUTDOWN_GRACE);
     }
 
     fn shutdown_within(&mut self, grace: Duration) {
-        let _ = self.request("$/shutdown", json!({}));
         if let Some(mut stdin) = self.stdin.take() {
+            let id = self.next_id;
+            self.next_id += 1;
+            let _ = frame::write(
+                &mut stdin,
+                &Message::Request {
+                    id,
+                    method: "$/shutdown".to_owned(),
+                    params: json!({}),
+                },
+            );
             let _ = stdin.flush();
         }
         let deadline = Instant::now() + grace;
@@ -580,13 +589,13 @@ mod tests {
         }
     }
 
-    /// A transport that closes its stdout at once, so the `$/shutdown` request
-    /// ends without a reply, and then runs `then`.
+    /// A transport that never answers and runs `then`. Its stdout stays open,
+    /// as a stalled `ssh` connection's does.
     #[cfg(unix)]
     fn silent_transport(then: &str) -> Client {
         match Client::start(&Command {
             program: "sh".to_owned(),
-            args: vec!["-c".to_owned(), format!("exec >&-; {then}")],
+            args: vec!["-c".to_owned(), then.to_owned()],
         }) {
             Ok(client) => client,
             Err(error) => panic!("sh should start: {error}"),
@@ -615,6 +624,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_transport_that_does_not_exit_is_killed() {
+        // It never answers `$/shutdown` and keeps its stdout open, like a
+        // stalled connection. Waiting for the reply would never end.
         let mut client = silent_transport("exec sleep 60");
         let started = Instant::now();
         client.shutdown_within(Duration::from_millis(100));
