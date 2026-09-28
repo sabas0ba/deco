@@ -537,18 +537,19 @@ impl Server {
             }
             "fs.stat" => {
                 let asked = path("path")?;
-                // `resolve` has already canonicalised the path, so a symbolic
-                // link is followed and the stat describes its target.
-                // `symlink_metadata` on the result therefore never sees a link,
-                // and the reported type never has the link bit set.
+                // `resolve` canonicalises the path, so a symbolic link is
+                // followed, and the stat describes a target that is inside the
+                // workspace. Whether the path itself is a link is read from the
+                // path as written, as VS Code's `stat` reports it.
                 let resolved = self.resolve(&asked)?;
-                let metadata = std::fs::symlink_metadata(&resolved).map_err(|error| {
-                    ServerError::Unreadable {
+                let metadata =
+                    std::fs::metadata(&resolved).map_err(|error| ServerError::Unreadable {
                         path: asked.clone(),
                         reason: error.to_string(),
-                    }
-                })?;
-                Ok(json!({ "stat": stat_of(&metadata) }))
+                    })?;
+                let is_link = std::fs::symlink_metadata(self.root.join(&asked))
+                    .is_ok_and(|written| written.is_symlink());
+                Ok(json!({ "stat": stat_of(&metadata, is_link) }))
             }
             "fs.dir" => {
                 let asked = path("path")?;
@@ -565,15 +566,25 @@ impl Server {
                     }
                     // `DirEntry::metadata` does not follow symbolic links (it is
                     // equivalent to `symlink_metadata`), so a link is reported as
-                    // a link rather than as its target. The target may be outside
-                    // the workspace, and the client should know that before
-                    // following it.
+                    // a link rather than as its target. The target's type is
+                    // added only when the target is inside the workspace, so the
+                    // listing reveals nothing about paths outside it.
                     let Ok(metadata) = entry.metadata() else {
                         continue;
                     };
+                    let kind = if metadata.is_symlink() {
+                        let target = entry
+                            .path()
+                            .to_str()
+                            .and_then(|path| self.resolve(path).ok())
+                            .and_then(|inside| std::fs::metadata(inside).ok());
+                        kind_of(target.as_ref(), true)
+                    } else {
+                        kind_of(Some(&metadata), false)
+                    };
                     listed.push(json!({
                         "name": entry.file_name().to_string_lossy(),
-                        "kind": kind_of(&metadata),
+                        "kind": kind,
                     }));
                 }
                 // Sorted because `read_dir` guarantees no order, and the result
@@ -1004,15 +1015,24 @@ fn machine_settings_path() -> Option<PathBuf> {
 /// The type of a directory entry, using VS Code's `FileType` values.
 ///
 /// `Unknown = 0`, `File = 1`, `Directory = 2`, `SymbolicLink = 64`. A link is
-/// the sum, for example 65 for a link to a file. The protocol uses VS Code's
-/// values directly because they are passed to VS Code's extension API, which
-/// avoids a second translation.
-fn kind_of(metadata: &std::fs::Metadata) -> u32 {
-    let mut kind = if metadata.is_dir() { 2 } else { 1 };
-    if metadata.is_symlink() {
-        kind += 64;
+/// the sum of its target's type and 64: 65 for a link to a file, 66 for a link
+/// to a directory, and 64 when the target is unknown. The protocol uses VS
+/// Code's values directly because they are passed to VS Code's extension API,
+/// which avoids a second translation.
+///
+/// `target` is the metadata of what the path refers to, after following a
+/// link, or `None` when that is not known.
+fn kind_of(target: Option<&std::fs::Metadata>, is_link: bool) -> u32 {
+    let kind = match target {
+        Some(metadata) if metadata.is_dir() => 2,
+        Some(_) => 1,
+        None => 0,
+    };
+    if is_link {
+        kind + 64
+    } else {
+        kind
     }
-    kind
 }
 
 /// A file's stat, in the shape VS Code's `FileStat` has.
@@ -1021,7 +1041,7 @@ fn kind_of(metadata: &std::fs::Metadata) -> u32 {
 /// platform does not provide is reported as 0 rather than estimated, so an
 /// extension comparing timestamps sees a clearly missing value instead of a
 /// plausible wrong one.
-fn stat_of(metadata: &std::fs::Metadata) -> serde_json::Value {
+fn stat_of(metadata: &std::fs::Metadata, is_link: bool) -> serde_json::Value {
     let millis = |time: std::io::Result<std::time::SystemTime>| -> u64 {
         time.ok()
             .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
@@ -1029,7 +1049,7 @@ fn stat_of(metadata: &std::fs::Metadata) -> serde_json::Value {
             .unwrap_or(0)
     };
     json!({
-        "type": kind_of(metadata),
+        "type": kind_of(Some(metadata), is_link),
         "ctime": millis(metadata.created()),
         "mtime": millis(metadata.modified()),
         "size": metadata.len(),
@@ -1310,6 +1330,38 @@ mod tests {
         let error = ask(&mut server, "fs.read", json!({ "path": "escape/passwd" }))
             .expect_err("a symlink out should be refused");
         assert!(error.contains("outside the workspace"), "{error}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_link_is_reported_as_a_link_to_what_it_points_at() {
+        let root = workspace("link-kinds");
+        std::os::unix::fs::symlink("main.rs", root.join("src/file-link")).expect("a symlink");
+        std::os::unix::fs::symlink("../src", root.join("src/dir-link")).expect("a symlink");
+        std::os::unix::fs::symlink("/etc", root.join("src/outside")).expect("a symlink");
+        let mut server = Server::new(&root).expect("a server");
+
+        let stat = |server: &mut Server, path: &str| {
+            ask(server, "fs.stat", json!({ "path": path })).expect("a stat")["stat"]["type"].clone()
+        };
+        assert_eq!(stat(&mut server, "src/file-link"), 65);
+        assert_eq!(stat(&mut server, "src/dir-link"), 66);
+        assert_eq!(stat(&mut server, "src/main.rs"), 1);
+
+        let listed = ask(&mut server, "fs.dir", json!({ "path": "src" })).expect("a listing");
+        let kind = |name: &str| {
+            listed["entries"]
+                .as_array()
+                .expect("entries")
+                .iter()
+                .find(|entry| entry["name"] == name)
+                .map(|entry| entry["kind"].clone())
+        };
+        assert_eq!(kind("file-link"), Some(json!(65)));
+        assert_eq!(kind("dir-link"), Some(json!(66)));
+        // A link out of the workspace says nothing about its target.
+        assert_eq!(kind("outside"), Some(json!(64)));
         let _ = std::fs::remove_dir_all(&root);
     }
 
