@@ -284,9 +284,12 @@ impl std::fmt::Display for ReadyError {
 
 /// How long to wait for a host to exit on its own before killing it.
 ///
-/// The host exits as soon as it handles `$/shutdown`, so this mainly covers the
-/// time to deliver the notification and for the process to exit. It is short
-/// enough that a host that does not stop does not delay quitting the editor.
+/// On `$/shutdown` the host runs the extension's `deactivate`, disposes its
+/// subscriptions and exits. The host abandons a `deactivate` that has not
+/// finished after 400 ms (`DEACTIVATE_LIMIT_MS` in
+/// `extension-host/src/lifecycle.js`), which leaves the rest of this period for
+/// disposing and exiting. It is short enough that a host that does not stop
+/// does not delay quitting the editor.
 pub const SHUTDOWN_GRACE: Duration = Duration::from_millis(500);
 
 /// The request that loads an extension and runs its `activate`.
@@ -488,11 +491,12 @@ impl Host {
 
     /// Asks the host to stop, then kills it if it has not exited.
     ///
-    /// Sends `$/shutdown` first. The host restores its sandbox and exits
-    /// immediately; it does not call the extension's `deactivate`, which runs
-    /// only on a `$/deactivate` request, and deco does not send one. If the
-    /// process has not exited after [`SHUTDOWN_GRACE`], it is killed, because a
-    /// host that does not stop must not keep the editor open.
+    /// Sends `$/shutdown` first. The host runs the extension's `deactivate`,
+    /// disposes the extension's subscriptions, restores its sandbox and exits.
+    /// If the process has not exited after [`SHUTDOWN_GRACE`], it is killed,
+    /// because a host that does not stop must not keep the editor open.
+    ///
+    /// Messages the host sent while stopping stay readable with [`Host::poll`].
     pub fn shutdown(&mut self) {
         let _ = self.notify("$/shutdown", Value::Null);
         let deadline = Instant::now() + SHUTDOWN_GRACE;

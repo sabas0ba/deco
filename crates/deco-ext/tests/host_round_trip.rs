@@ -337,6 +337,91 @@ module.exports = { activate };
     let _ = std::fs::remove_dir_all(&extension);
 }
 
+#[test]
+#[ignore = "needs node; run with --ignored in the extension-host CI job"]
+fn shutting_down_deactivates_the_extension_and_disposes_its_subscriptions() {
+    // Both steps report through `commands.registerCommand`, a call that needs no
+    // capability and no reply, so the order in which they reach deco is the
+    // order in which they ran.
+    let root = repo_root();
+    let extension = fixture("shutdown");
+    std::fs::write(
+        extension.join("extension.js"),
+        r#"'use strict';
+const vscode = require('vscode');
+function activate(context) {
+  context.subscriptions.push({
+    dispose() {
+      vscode.commands.registerCommand('stop.disposed', () => 0);
+    },
+  });
+}
+function deactivate() {
+  vscode.commands.registerCommand('stop.deactivated', () => 0);
+}
+module.exports = { activate, deactivate };
+"#,
+    )
+    .expect("an extension");
+
+    let config = HostConfig {
+        node: node(),
+        bootstrap: root.join("extension-host/src/bootstrap.js"),
+        readable_roots: vec![root.join("extension-host"), extension.clone()],
+        cwd: extension.clone(),
+        limits: HostLimits {
+            startup_timeout_ms: 20_000,
+            ..HostLimits::default()
+        },
+        node_permission_model: true,
+        allow_code_generation: false,
+    };
+    let mut host = Host::spawn(&build_spec(&config, "test.shutdown")).expect("node should start");
+    let (ready, _) = host.wait_for_ready(Duration::from_millis(20_000));
+    assert!(ready.is_ok(), "not ready: {ready:?}\n{}", host.errors());
+
+    host.activate(&extension.to_string_lossy(), "./extension.js")
+        .expect("a request");
+    let mut activated = false;
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while std::time::Instant::now() < deadline && !activated {
+        match host.poll() {
+            Some(HostEvent::Message(Message::Notification(note))) => {
+                activated = note.method == "$/activated";
+            }
+            Some(HostEvent::Closed) => panic!("the host exited; stderr:\n{}", host.errors()),
+            Some(_) => {}
+            None => std::thread::sleep(Duration::from_millis(5)),
+        }
+    }
+    assert!(activated, "no `$/activated`; stderr:\n{}", host.errors());
+
+    host.shutdown();
+
+    // What the host wrote before exiting is still in the channel.
+    let mut registered = Vec::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        match host.poll() {
+            Some(HostEvent::Message(Message::Request(request)))
+                if request.method == "commands.registerCommand" =>
+            {
+                registered.push(request.params["command"].as_str().unwrap_or("").to_owned());
+            }
+            Some(HostEvent::Closed) => break,
+            Some(_) => {}
+            None => std::thread::sleep(Duration::from_millis(5)),
+        }
+    }
+    assert_eq!(
+        registered,
+        ["stop.deactivated", "stop.disposed"],
+        "`deactivate` should run, then the subscriptions should be disposed; stderr:\n{}",
+        host.errors()
+    );
+    let _ = std::fs::remove_dir_all(&extension);
+}
+
 /// The extension used by the container test. It reports the environment it sees
 /// through a call that needs no capability.
 ///
