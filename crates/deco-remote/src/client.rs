@@ -35,6 +35,7 @@
 use std::io::{BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command as OsCommand, Stdio};
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
@@ -153,10 +154,19 @@ pub struct Search {
     pub files_searched: usize,
 }
 
+/// How long [`Client::shutdown`] waits for the transport to exit before
+/// killing it.
+///
+/// Long enough for `ssh` to close the session after the server stops, and
+/// short enough that a transport which does not exit does not keep the editor
+/// from quitting.
+pub const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
+
 /// A connection to a server started over a transport.
 pub struct Client {
     child: Child,
-    stdin: ChildStdin,
+    /// `None` once [`Client::shutdown`] has closed it.
+    stdin: Option<ChildStdin>,
     stdout: BufReader<ChildStdout>,
     next_id: u64,
     /// The methods listed in the handshake, once it has been performed.
@@ -194,7 +204,7 @@ impl Client {
             .ok_or(ClientError::Closed { stderr: None })?;
         Ok(Self {
             child,
-            stdin,
+            stdin: Some(stdin),
             stdout: BufReader::new(stdout),
             next_id: 1,
             served: Vec::new(),
@@ -203,10 +213,14 @@ impl Client {
 
     /// Sends a request and waits for its reply.
     pub fn request(&mut self, method: &str, params: Value) -> Result<Value, ClientError> {
+        let stdin = self
+            .stdin
+            .as_mut()
+            .ok_or(ClientError::Closed { stderr: None })?;
         let id = self.next_id;
         self.next_id += 1;
         frame::write(
-            &mut self.stdin,
+            stdin,
             &Message::Request {
                 id,
                 method: method.to_owned(),
@@ -509,13 +523,41 @@ impl Client {
     /// keep the workspace open after the editor exits. The server ends its
     /// session after answering `$/shutdown`.
     ///
-    /// The wait has no timeout, and stdin is still open while it runs. If the
-    /// request fails while the process is still running, the wait lasts until
-    /// that process exits on its own.
+    /// The reply is not read: a stalled transport would never send it, and
+    /// waiting for it would make quitting wait too. Stdin is closed right after
+    /// the request, which is how a transport such as `ssh` learns that the
+    /// session has ended; the server has read the request by then. If the
+    /// process has not exited after [`SHUTDOWN_GRACE`], it is killed.
     pub fn shutdown(&mut self) {
-        let _ = self.request("$/shutdown", json!({}));
-        // Stdin is flushed, not closed; it is closed only when `self` is dropped.
-        let _ = self.stdin.flush();
+        self.shutdown_within(SHUTDOWN_GRACE);
+    }
+
+    fn shutdown_within(&mut self, grace: Duration) {
+        if let Some(mut stdin) = self.stdin.take() {
+            let id = self.next_id;
+            self.next_id += 1;
+            let _ = frame::write(
+                &mut stdin,
+                &Message::Request {
+                    id,
+                    method: "$/shutdown".to_owned(),
+                    params: json!({}),
+                },
+            );
+            let _ = stdin.flush();
+        }
+        let deadline = Instant::now() + grace;
+        loop {
+            match self.child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                // The grace period expired, or waiting failed.
+                _ => break,
+            }
+        }
+        let _ = self.child.kill();
         let _ = self.child.wait();
     }
 }
@@ -545,6 +587,53 @@ mod tests {
             ),
             Ok(_) => panic!("nothing should have started"),
         }
+    }
+
+    /// A transport that never answers and runs `then`. Its stdout stays open,
+    /// as a stalled `ssh` connection's does.
+    #[cfg(unix)]
+    fn silent_transport(then: &str) -> Client {
+        match Client::start(&Command {
+            program: "sh".to_owned(),
+            args: vec!["-c".to_owned(), then.to_owned()],
+        }) {
+            Ok(client) => client,
+            Err(error) => panic!("sh should start: {error}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shutting_down_closes_stdin_so_the_transport_can_exit() {
+        // `cat` exits at the end of its input, as `ssh` does. Before stdin was
+        // closed, this wait never ended.
+        let mut client = silent_transport("cat >/dev/null");
+        let started = Instant::now();
+        client.shutdown_within(Duration::from_secs(20));
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "took {:?}",
+            started.elapsed()
+        );
+        assert!(
+            client.request("any", json!({})).is_err(),
+            "a closed client should refuse further requests"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_transport_that_does_not_exit_is_killed() {
+        // It never answers `$/shutdown` and keeps its stdout open, like a
+        // stalled connection. Waiting for the reply would never end.
+        let mut client = silent_transport("exec sleep 60");
+        let started = Instant::now();
+        client.shutdown_within(Duration::from_millis(100));
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "took {:?}",
+            started.elapsed()
+        );
     }
 
     #[test]

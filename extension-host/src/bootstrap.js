@@ -21,6 +21,7 @@ const path = require('node:path');
 const { install } = require('./sandbox');
 const { RpcConnection, PROTOCOL_VERSION } = require('./rpc');
 const { createApi } = require('./vscode');
+const { createLifecycle } = require('./lifecycle');
 
 function fail(message) {
   process.stderr.write(`deco extension host: ${message}\n`);
@@ -57,6 +58,31 @@ function main() {
   };
 
   let activated = false;
+  const lifecycle = createLifecycle();
+
+  /** Reports errors caught while deactivating. */
+  function report(errors) {
+    for (const error of errors) {
+      rpc.notify('log.append', {
+        level: 'error',
+        message: `deactivating ${extensionId} failed: ${(error && error.stack) || error}`,
+      });
+    }
+  }
+
+  /**
+   * Deactivates the extension, restores the sandbox and exits.
+   *
+   * @param {boolean} connected Whether deco still reads the output. When it
+   *   has closed the connection, errors are not reported, because writing to
+   *   a closed pipe raises another error.
+   */
+  async function exit(connected) {
+    const errors = await lifecycle.deactivate();
+    if (connected) report(errors);
+    sandbox.restore();
+    process.exit(0);
+  }
 
   rpc.onRequest('$/activate', async ({ extensionPath, main }) => {
     if (activated) return { alreadyActive: true };
@@ -80,6 +106,9 @@ function main() {
       globalState: new Map(),
     };
 
+    // Recorded before `activate` runs, so that the subscriptions it pushed
+    // before failing are still disposed on shutdown.
+    lifecycle.activated(extension, context);
     if (typeof extension.activate === 'function') {
       await extension.activate(context);
     }
@@ -88,25 +117,17 @@ function main() {
   });
 
   rpc.onRequest('$/deactivate', async () => {
-    const entry = require.cache && Object.values(require.cache).find((m) => m?.exports?.deactivate);
-    if (entry && typeof entry.exports.deactivate === 'function') {
-      await entry.exports.deactivate();
-    }
+    report(await lifecycle.deactivate());
     return { deactivated: true };
   });
 
-  rpc.onNotification('$/shutdown', () => {
-    sandbox.restore();
-    process.exit(0);
-  });
+  rpc.onNotification('$/shutdown', () => exit(true));
 
   // `$/shutdown` is the normal way to stop. This handles deco exiting without
   // it. Otherwise an extension holding a timer would keep this process, and in
-  // a container the container, running after the editor has exited.
-  rpc.onClosed(() => {
-    sandbox.restore();
-    process.exit(0);
-  });
+  // a container the container, running after the editor has exited. The
+  // extension is still deactivated; what it sends to deco is lost.
+  rpc.onClosed(() => exit(false));
 
   // Report uncaught errors from extension code to deco instead of letting them
   // terminate the host without a message.

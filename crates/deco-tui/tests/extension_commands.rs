@@ -355,6 +355,62 @@ fn a_declared_capability_is_asked_about_rather_than_refused() {
 
 #[test]
 #[ignore = "needs node; run through `cargo xtask host-test`"]
+fn a_question_that_is_open_is_not_replaced_by_a_later_one() {
+    // The second request arrives in a later poll than the first. Replacing the
+    // open question would leave the first request without a reply, and the
+    // extension waiting on it for the rest of the session.
+    let workspace = std::env::temp_dir().join(format!("deco-consent-open-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&workspace);
+    std::fs::create_dir_all(&workspace).expect("a workspace");
+    let file = workspace.join("notes.txt");
+    std::fs::write(&file, "the contents\n").expect("a file");
+
+    let root = reader("consent-open", &file);
+    point_at_the_host();
+    let mut session = session();
+    let catalogue = discover(std::slice::from_ref(&root));
+    session.frontend_commands.extend(rows(&catalogue));
+    let mut hosts = Hosts::rooted(catalogue, vec![workspace.clone()]);
+
+    assert!(hosts.run_command(&mut session, "acme.read"));
+    until(&mut hosts, &mut session, "the question", |_, session| {
+        session.prompt.is_some()
+    });
+
+    assert!(hosts.run_command(&mut session, "acme.read"));
+    until(
+        &mut hosts,
+        &mut session,
+        "the second refusal",
+        |_, session| {
+            session
+                .status
+                .as_deref()
+                .is_some_and(|said| said.contains("another permission question is open"))
+        },
+    );
+
+    // The answer applies to the first request, which is then served.
+    session.status = None;
+    hosts.answer_consent(
+        &mut session,
+        true,
+        &mut deco_tui::extensions::Files::Here,
+        0,
+    );
+    until(&mut hosts, &mut session, "the first read", |_, session| {
+        session
+            .status
+            .as_deref()
+            .is_some_and(|said| said.contains("the contents"))
+    });
+
+    hosts.shutdown();
+    let _ = std::fs::remove_dir_all(&workspace);
+}
+
+#[test]
+#[ignore = "needs node; run through `cargo xtask host-test`"]
 fn a_decision_can_be_taken_back_from_the_palette() {
     // Without this feature, an accidental `deny` makes the extension fail for
     // the rest of the session, with no way to undo it and no indication that a

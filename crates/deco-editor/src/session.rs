@@ -4499,7 +4499,7 @@ impl Session {
 
     /// Reports that one could not be carried out.
     pub fn git_operation_failed(&mut self, operation: &deco_scm::Operation, reason: &str) {
-        self.status = Some(format!("could not {}: {reason}", operation.describe()));
+        self.status = Some(format!("could not {}: {reason}", operation.attempted()));
         // Request the status again anyway. A failure usually means the view's
         // state of the index was out of date.
         self.scm_changed();
@@ -10320,7 +10320,23 @@ mod tests {
         // A failure usually means the view's state of the index was out of date.
         s.git_operation_failed(&deco_scm::Operation::StageAll, "index.lock exists");
         assert!(s.scm_wanted());
-        assert!(s.status.as_deref().unwrap().contains("index.lock"));
+        assert_eq!(
+            s.status.as_deref(),
+            Some("could not stage everything: index.lock exists")
+        );
+    }
+
+    #[test]
+    fn a_switch_reads_as_done_or_not_done() {
+        let mut s = with_tree();
+        let checkout = deco_scm::Operation::Checkout("main".to_owned());
+        s.git_operation_done(&checkout);
+        assert_eq!(s.status.as_deref(), Some("switched to main"));
+        s.git_operation_failed(&checkout, "local changes");
+        assert_eq!(
+            s.status.as_deref(),
+            Some("could not switch to main: local changes")
+        );
     }
 
     #[test]

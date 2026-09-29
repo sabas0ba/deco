@@ -266,6 +266,18 @@ pub enum Location {
 }
 
 impl Location {
+    /// Where a definition that needs approval came from, for messages.
+    ///
+    /// A remote session also reads the remote machine's settings, which are
+    /// untrusted in the same way as the workspace's. The server definition
+    /// does not record which of the two it came from.
+    fn untrusted_source(&self) -> &'static str {
+        match self {
+            Self::Here => "this workspace",
+            Self::Remote { .. } => "this workspace or the remote machine's settings",
+        }
+    }
+
     /// How long to wait for a server to answer `initialize`.
     ///
     /// Much longer over a transport: the wait includes an SSH handshake and a
@@ -406,16 +418,17 @@ impl Lsp {
             return;
         };
         let position = session.view.selections.primary().active;
+        let invoked = trigger == CompletionTrigger::Invoked;
         match supervisor.completion(&path, position, trigger) {
             Ok(Some(id)) => self.completion_request = Some(id),
+            // `Ok(None)` also means that the document is not open on the
+            // server. The message is shown only when it is true, and only when
+            // the user asked: a typed trigger character is part of ordinary
+            // typing and should not replace the status.
             Ok(None) => {
-                // Set for both trigger kinds. A trigger character only reaches
-                // here from a server that lists trigger characters, which it
-                // does only when it offers completion, so this path is mostly
-                // reached by an invoked request. `Ok(None)` is also returned
-                // when the document is not open on the server, and the message
-                // is then shown for a typed trigger character too.
-                session.status = Some("this server does not offer completion".to_owned());
+                if invoked && supervisor.capabilities().completion.is_none() {
+                    session.status = Some("this server does not offer completion".to_owned());
+                }
             }
             Err(error) => self.report(session, error.to_string()),
         }
@@ -1160,8 +1173,9 @@ impl Lsp {
             // printed once before the frontend starts and shown by
             // `--print-config`, where a user checks why a server is not running.
             let problem = format!(
-                "{} defined by this workspace and not started; move the definition into your own settings to run it",
-                refused.join(", ")
+                "{} defined by {} and not started; move the definition into your own settings to run it",
+                refused.join(", "),
+                self.location.untrusted_source()
             );
             if !session.problems.contains(&problem) {
                 session.problems.push(problem);
@@ -1212,8 +1226,9 @@ impl Lsp {
         // server for this language, no other message competes for the row.
         if !refused.is_empty() {
             session.status = Some(format!(
-                "{} defined by this workspace and not started",
-                refused.join(", ")
+                "{} defined by {} and not started",
+                refused.join(", "),
+                self.location.untrusted_source()
             ));
         }
     }
@@ -2053,6 +2068,22 @@ mod tests {
             "{:?}",
             s.problems
         );
+    }
+
+    #[test]
+    fn a_refusal_in_a_remote_session_names_the_remote_settings_too() {
+        // The definition may come from the remote machine rather than the
+        // project, and the message should not send the user looking in the
+        // wrong file.
+        let mut s = session(settings_with(
+            Scope::Remote,
+            r#"{"deco.lsp.servers": {"theirs": {"languages": ["toml"], "command": "./taplo"}}}"#,
+        ));
+        let mut lsp = Lsp::with_location(&mut s, None, remote());
+        lsp.attach(&mut s);
+
+        let status = s.status.expect("the refusal must be visible");
+        assert!(status.contains("remote machine's settings"), "{status}");
     }
 
     #[test]

@@ -48,6 +48,11 @@ fn serve(role: &str) -> i32 {
                 // capabilities would prevent testing an unbound key.
                 let offers_hover = role != "no-hover";
                 let offers_rename = role != "no-rename";
+                let completion = if role == "no-completion" {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::json!({"triggerCharacters": ["."]})
+                };
                 send(
                     &mut output,
                     &serde_json::json!({
@@ -67,9 +72,7 @@ fn serve(role: &str) -> i32 {
                             // arrive without an edit and must be resolved.
                             "codeActionProvider": {"resolveProvider": true},
                             "documentFormattingProvider": true,
-                            "completionProvider": {
-                                "triggerCharacters": ["."],
-                            },
+                            "completionProvider": completion,
                         }},
                     }),
                 );
@@ -117,29 +120,28 @@ fn serve(role: &str) -> i32 {
                     },
                 }),
             ),
-            "textDocument/references" => send(
-                &mut output,
-                &serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "result": [
-                        {
-                            "uri": uri_of(&params),
-                            "range": {
-                                "start": {"line": 0, "character": 3},
-                                "end": {"line": 0, "character": 8},
-                            },
+            "textDocument/references" => {
+                // The declaration on line 0 is listed only when the editor
+                // asks for it, so a scenario can check that it does.
+                let location = |line: u64, character: u64| {
+                    serde_json::json!({
+                        "uri": uri_of(&params),
+                        "range": {
+                            "start": {"line": line, "character": character},
+                            "end": {"line": line, "character": character + 5},
                         },
-                        {
-                            "uri": uri_of(&params),
-                            "range": {
-                                "start": {"line": 3, "character": 1},
-                                "end": {"line": 3, "character": 6},
-                            },
-                        },
-                    ],
-                }),
-            ),
+                    })
+                };
+                let mut result = Vec::new();
+                if params["context"]["includeDeclaration"] == serde_json::json!(true) {
+                    result.push(location(0, 3));
+                }
+                result.push(location(3, 1));
+                send(
+                    &mut output,
+                    &serde_json::json!({"jsonrpc": "2.0", "id": id, "result": result}),
+                )
+            }
             // Four actions, one for each case the editor must handle: one ready
             // to apply, one whose edit is only available from
             // `codeAction/resolve`, one marked unavailable, and a bare `Command`.

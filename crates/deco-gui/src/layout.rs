@@ -6,9 +6,10 @@
 //! the code that needs a graphics device.
 //!
 //! Positions assume a monospace font, so a column is a fixed number of pixels.
-//! Proportional fonts need the shaper's advances. glyphon can supply them, and
-//! that support would be added in this module.
+//! [`crate::app`] measures that width from the loaded font. Proportional fonts
+//! would need the shaper's advance for every glyph.
 
+use deco_config::CursorStyle;
 use deco_core::movement::display_column;
 use deco_editor::Session;
 use deco_theme::Rgba;
@@ -29,10 +30,11 @@ pub struct Metrics {
 impl Metrics {
     /// Derives metrics from the document's settings.
     ///
-    /// The 0.6 ratio approximates the advance width of a monospace face. It is
-    /// not replaced by the loaded font's real advance: [`crate::app`] uses this
-    /// value for layout and for the grid size, so glyphs whose advance differs
-    /// from it drift away from the caret and selection rectangles.
+    /// The cell width is estimated as 0.6 times the font size, which
+    /// approximates a monospace face. [`crate::app`] replaces it with the
+    /// loaded font's advance through [`Metrics::with_cell_width`], because a
+    /// glyph whose advance differs from the cell drifts away from the caret
+    /// and selection rectangles.
     pub fn from_session(session: &Session, scale: f32) -> Self {
         let settings = &session.document.settings;
         let font_size = settings.font_size * scale;
@@ -41,6 +43,21 @@ impl Metrics {
             line_height: settings.effective_line_height() * scale,
             cell_width: (font_size * 0.6).max(1.0),
             padding: 8.0 * scale,
+        }
+    }
+
+    /// The same metrics with a measured cell width.
+    ///
+    /// A width that is not a positive finite number is ignored, so a font that
+    /// could not be measured keeps the estimate.
+    pub fn with_cell_width(self, width: f32) -> Self {
+        if width.is_finite() && width > 0.0 {
+            Self {
+                cell_width: width,
+                ..self
+            }
+        } else {
+            self
         }
     }
 }
@@ -70,7 +87,7 @@ pub struct LaidOutLine {
     /// The git status of this line, if any.
     ///
     /// Computed but not yet drawn, like the selection rectangles. This frontend
-    /// currently draws only text and a caret. The marks are computed here so
+    /// currently draws only text. The marks are computed here so
     /// that, once this frontend draws them, they match the terminal without a
     /// second implementation.
     pub mark: Option<deco_scm::Mark>,
@@ -87,8 +104,14 @@ pub struct Layout {
     pub lines: Vec<LaidOutLine>,
     /// Selection highlight rectangles.
     pub selections: Vec<Rect>,
-    /// The caret, if it is on screen.
+    /// The caret, if it is on screen, shaped by `editor.cursorStyle`.
+    ///
+    /// Computed but not yet drawn: drawing it needs a quad pipeline, which
+    /// this frontend does not have.
     pub cursor: Option<Rect>,
+    /// `editor.cursorStyle`. The outline styles use the same rectangle as the
+    /// filled ones, and a renderer draws only its border.
+    pub cursor_style: CursorStyle,
     /// The line-highlight rectangle behind the cursor's line.
     pub current_line: Option<Rect>,
     /// Where the text column starts, in pixels.
@@ -181,6 +204,48 @@ impl Colors {
 }
 
 /// Expands tabs in `text` to `tab_size` stops.
+/// The caret for `style`, in the cell whose top-left corner is `x`, `y`.
+///
+/// Every part is at least one pixel, so the caret is visible at any DPI.
+fn caret_rect(style: CursorStyle, x: f32, y: f32, metrics: Metrics) -> Rect {
+    let cell = metrics.cell_width;
+    let height = metrics.line_height;
+    match style {
+        CursorStyle::Line => Rect {
+            x,
+            y,
+            width: (cell * 0.12).max(1.0),
+            height,
+        },
+        CursorStyle::LineThin => Rect {
+            x,
+            y,
+            width: (cell * 0.06).max(1.0),
+            height,
+        },
+        CursorStyle::Block | CursorStyle::BlockOutline => Rect {
+            x,
+            y,
+            width: cell,
+            height,
+        },
+        CursorStyle::Underline | CursorStyle::UnderlineThin => {
+            let ratio = if style == CursorStyle::Underline {
+                0.1
+            } else {
+                0.05
+            };
+            let thickness = (height * ratio).max(1.0);
+            Rect {
+                x,
+                y: y + height - thickness,
+                width: cell,
+                height: thickness,
+            }
+        }
+    }
+}
+
 fn expand_tabs(text: &str, tab_size: usize) -> String {
     if !text.contains('\t') {
         return text.to_owned();
@@ -308,21 +373,19 @@ pub fn layout(session: &Session, width: f32, height: f32, metrics: Metrics) -> L
     // No caret is drawn when another region has keyboard focus.
     let in_editor = session.focus() == deco_editor::Focus::Editor;
     let on_screen = in_editor && cursor_row.is_some_and(|row| row < rows);
+    let cursor_style = session.document.settings.cursor_style;
     let caret = on_screen.then(|| {
         let raw = buffer
             .line_content(cursor_line)
             .map(|s| s.to_string())
             .unwrap_or_default();
         let column = display_column(&raw, cursor.character, tab_size) as f32;
-        Rect {
-            x: text_left + column * metrics.cell_width,
-            y: origin_y + cursor_row.unwrap_or(0) as f32 * metrics.line_height,
-            // Always a thin caret, at least one pixel wide at any DPI. The GUI
-            // does not read `editor.cursorStyle`, so a block cursor is not
-            // available.
-            width: (metrics.cell_width * 0.12).max(1.0),
-            height: metrics.line_height,
-        }
+        caret_rect(
+            cursor_style,
+            text_left + column * metrics.cell_width,
+            origin_y + cursor_row.unwrap_or(0) as f32 * metrics.line_height,
+            metrics,
+        )
     });
 
     let current_line = on_screen.then(|| Rect {
@@ -336,6 +399,7 @@ pub fn layout(session: &Session, width: f32, height: f32, metrics: Metrics) -> L
         lines,
         selections,
         cursor: caret,
+        cursor_style,
         current_line,
         text_left,
         chrome: chrome_lines(session, &regions, metrics),
@@ -664,6 +728,38 @@ mod tests {
         let caret = laid.cursor.unwrap();
         assert_eq!(caret.x, laid.text_left + 3.0 * 8.0);
         assert_eq!(caret.y, 0.0);
+    }
+
+    #[test]
+    fn the_caret_takes_the_configured_shape() {
+        let mut session = session("hello");
+        session.view.selections = SelectionSet::caret(Position::new(0, 1));
+
+        session.document.settings.cursor_style = CursorStyle::Block;
+        let laid = layout(&session, 400.0, 100.0, metrics());
+        let block = laid.cursor.unwrap();
+        assert_eq!(laid.cursor_style, CursorStyle::Block);
+        assert_eq!((block.width, block.height), (8.0, 20.0));
+
+        session.document.settings.cursor_style = CursorStyle::Underline;
+        let underline = layout(&session, 400.0, 100.0, metrics()).cursor.unwrap();
+        assert_eq!(underline.x, block.x);
+        assert_eq!(underline.width, 8.0);
+        // Along the bottom of the cell.
+        assert_eq!(underline.y + underline.height, block.y + block.height);
+        assert!(underline.height < block.height);
+
+        session.document.settings.cursor_style = CursorStyle::LineThin;
+        let thin = layout(&session, 400.0, 100.0, metrics()).cursor.unwrap();
+        assert!(thin.width >= 1.0 && thin.width < block.width);
+    }
+
+    #[test]
+    fn a_measured_width_replaces_the_estimate_unless_it_is_unusable() {
+        assert_eq!(metrics().with_cell_width(9.5).cell_width, 9.5);
+        for unusable in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            assert_eq!(metrics().with_cell_width(unusable).cell_width, 8.0);
+        }
     }
 
     #[test]

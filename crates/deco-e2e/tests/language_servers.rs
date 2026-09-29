@@ -161,6 +161,14 @@ fn references_are_listed_and_choosing_one_goes_there() {
         editor.session().prompt.is_some()
     });
 
+    // The server lists the declaration only when asked to include it.
+    let listed = editor
+        .session()
+        .prompt
+        .as_ref()
+        .map(|prompt| prompt.visible().len());
+    assert_eq!(listed, Some(2), "the declaration should be included");
+
     let screen = editor.screen();
     screen.assert_fits();
     screen.assert_shows("main.rs");
@@ -434,6 +442,20 @@ fn ctrl_space_reaches_trigger_suggest_in_a_terminal() {
     });
 
     editor.screen().assert_shows("greet_loudly");
+}
+
+#[test]
+fn asking_a_server_without_completion_says_so() {
+    let scenario = project("lsp-no-completion", "no-completion");
+    let mut editor = started(&scenario);
+
+    editor.press("ctrl+end");
+    editor.press("ctrl+space");
+    let status = editor.session().status.clone().unwrap_or_default();
+    assert!(
+        status.contains("does not offer completion"),
+        "an invoked request should explain why nothing appears: {status:?}"
+    );
 }
 
 #[test]

@@ -287,10 +287,10 @@ impl CompletionKind {
             // The numbers are the protocol's `CompletionItemKind`; the names
             // beside them are what each one is called there.
             Some(2..=4) => Self::Function, // Method, Function, Constructor
-            Some(5 | 6 | 10 | 20..=22) => Self::Value, // Field, Variable, Property, EnumMember, Constant, Struct
-            Some(7 | 8 | 13 | 25) => Self::Type,       // Class, Interface, Enum, TypeParameter
-            Some(9 | 11) => Self::Module,              // Module, Unit
-            Some(14 | 24) => Self::Keyword,            // Keyword, Operator
+            Some(5 | 6 | 10 | 20 | 21) => Self::Value, // Field, Variable, Property, EnumMember, Constant
+            Some(7 | 8 | 13 | 22 | 25) => Self::Type, // Class, Interface, Enum, Struct, TypeParameter
+            Some(9 | 11) => Self::Module,             // Module, Unit
+            Some(14 | 24) => Self::Keyword,           // Keyword, Operator
             Some(15) => Self::Snippet,
             _ => Self::Other,
         }
@@ -700,6 +700,13 @@ pub enum WorkspaceEditError {
     /// refer to it. Applying only the text edits would leave a project that no
     /// longer builds and an undo history that cannot restore it.
     FileOperation(String),
+    /// A document appears more than once in `documentChanges`, with
+    /// different versions.
+    ///
+    /// Contains the document's URI. Each entry's edits were computed against
+    /// the text at its own version, so the entries cannot be combined into one
+    /// set of edits against the current text.
+    MixedVersions(String),
 }
 
 impl std::fmt::Display for WorkspaceEditError {
@@ -711,6 +718,11 @@ impl std::fmt::Display for WorkspaceEditError {
                     "the server wants to {kind} a file, which deco cannot do yet"
                 )
             }
+            Self::MixedVersions(uri) => write!(
+                f,
+                "the server sent edits for {uri} computed against different versions, \
+                 which deco cannot apply together"
+            ),
         }
     }
 }
@@ -782,9 +794,21 @@ impl WorkspaceEdit {
             // A document may appear more than once, and the entries are ordered.
             // Concatenating them in arrival order keeps that order. The code that
             // applies the result decides whether it can be applied, and it
-            // already rejects overlapping edits.
+            // already rejects overlapping edits. Entries with different versions
+            // were computed against different text and are refused. An entry
+            // without a version takes the version of another entry, so that the
+            // stale check still runs.
             match documents.iter_mut().find(|seen| seen.uri.as_str() == uri) {
-                Some(seen) => seen.edits.extend(edits),
+                Some(seen) => {
+                    match (seen.version, version) {
+                        (Some(known), Some(stated)) if known != stated => {
+                            return Err(WorkspaceEditError::MixedVersions(uri.to_owned()));
+                        }
+                        (None, stated) => seen.version = stated,
+                        _ => {}
+                    }
+                    seen.edits.extend(edits);
+                }
                 None => documents.push(DocumentEdits {
                     uri: Uri::from_string(uri),
                     version,
@@ -1446,6 +1470,48 @@ mod tests {
     }
 
     #[test]
+    fn a_document_listed_twice_with_different_versions_is_refused() {
+        let error = WorkspaceEdit::from_json(&json!({
+            "documentChanges": [
+                {
+                    "textDocument": {"uri": "file:///w/a.rs", "version": 1},
+                    "edits": [{"range": range(0, 0, 0, 1), "newText": "first"}],
+                },
+                {
+                    "textDocument": {"uri": "file:///w/a.rs", "version": 2},
+                    "edits": [{"range": range(5, 0, 5, 1), "newText": "second"}],
+                },
+            ],
+        }))
+        .expect_err("the second entry was computed against other text");
+        assert_eq!(
+            error,
+            WorkspaceEditError::MixedVersions("file:///w/a.rs".to_owned())
+        );
+        assert!(error.to_string().contains("file:///w/a.rs"), "{error}");
+    }
+
+    #[test]
+    fn a_version_stated_by_a_later_entry_is_kept() {
+        // Otherwise the stale check would not run for the document.
+        let edit = WorkspaceEdit::from_json(&json!({
+            "documentChanges": [
+                {
+                    "textDocument": {"uri": "file:///w/a.rs", "version": null},
+                    "edits": [{"range": range(0, 0, 0, 1), "newText": "first"}],
+                },
+                {
+                    "textDocument": {"uri": "file:///w/a.rs", "version": 3},
+                    "edits": [{"range": range(5, 0, 5, 1), "newText": "second"}],
+                },
+            ],
+        }))
+        .expect("one version is stated");
+        assert_eq!(edit.changes[0].version, Some(3));
+        assert_eq!(edit.edits(), 2);
+    }
+
+    #[test]
     fn a_file_operation_refuses_the_whole_edit() {
         // rust-analyzer sends this when renaming a module: the file rename and
         // the text edits that refer to it. Applying only part of it is worse
@@ -1921,6 +1987,9 @@ mod tests {
             (3, CompletionKind::Function),
             (6, CompletionKind::Value),
             (7, CompletionKind::Type),
+            (21, CompletionKind::Value),
+            // Struct is a type, not a value, like Class.
+            (22, CompletionKind::Type),
             (9, CompletionKind::Module),
             (14, CompletionKind::Keyword),
             (15, CompletionKind::Snippet),

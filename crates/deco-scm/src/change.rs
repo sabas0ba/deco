@@ -154,6 +154,17 @@ impl Operation {
             Self::StageAll => "staged everything".to_owned(),
             Self::Unstage { path, .. } => format!("unstaged {}", name_of(path)),
             Self::Commit(_) => "committed".to_owned(),
+            Self::Checkout(branch) => format!("switched to {branch}"),
+        }
+    }
+
+    /// What to say when it could not be done, after "could not".
+    pub fn attempted(&self) -> String {
+        match self {
+            Self::Stage(path) => format!("stage {}", name_of(path)),
+            Self::StageAll => "stage everything".to_owned(),
+            Self::Unstage { path, .. } => format!("unstage {}", name_of(path)),
+            Self::Commit(_) => "commit".to_owned(),
             Self::Checkout(branch) => format!("switch to {branch}"),
         }
     }

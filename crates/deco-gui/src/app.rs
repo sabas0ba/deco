@@ -27,6 +27,26 @@ fn to_glyphon(color: Rgba) -> Color {
     Color::rgba(color.r, color.g, color.b, color.a)
 }
 
+/// The advance width of one character in `family` at the size in `metrics`.
+///
+/// Measured on `M`, whose advance equals every other glyph's in a monospace
+/// face. Returns zero when nothing was shaped, which
+/// [`Metrics::with_cell_width`] ignores.
+fn measure_advance(font_system: &mut FontSystem, family: &str, metrics: Metrics) -> f32 {
+    let mut buffer = TextBuffer::new(
+        font_system,
+        TextMetrics::new(metrics.font_size, metrics.line_height),
+    );
+    let mut buffer = buffer.borrow_with(font_system);
+    let attrs = Attrs::new().family(Family::Name(family));
+    buffer.set_text("M", &attrs, Shaping::Advanced, None);
+    buffer
+        .layout_runs()
+        .next()
+        .and_then(|run| run.glyphs.first())
+        .map_or(0.0, |glyph| glyph.w)
+}
+
 /// Everything that only exists once a window and device are available.
 struct Gpu {
     window: Arc<Window>,
@@ -39,6 +59,10 @@ struct Gpu {
     viewport: Viewport,
     atlas: TextAtlas,
     renderer: TextRenderer,
+    /// The last measured cell width, with the family and size it was
+    /// measured for. Measuring shapes text, so it is repeated only when
+    /// either changes.
+    advance: Option<(String, f32, f32)>,
 }
 
 impl Gpu {
@@ -101,7 +125,23 @@ impl Gpu {
             viewport,
             atlas,
             renderer,
+            advance: None,
         })
+    }
+
+    /// The metrics for `session`, with the cell width measured from the font.
+    fn metrics(&mut self, session: &Session) -> Metrics {
+        let estimate = Metrics::from_session(session, self.window.scale_factor() as f32);
+        let family = &session.document.settings.font_family;
+        let measured = match &self.advance {
+            Some((known, size, width)) if known == family && *size == estimate.font_size => *width,
+            _ => {
+                let width = measure_advance(&mut self.font_system, family, estimate);
+                self.advance = Some((family.clone(), estimate.font_size, width));
+                width
+            }
+        };
+        estimate.with_cell_width(measured)
     }
 
     fn resize(&mut self, width: u32, height: u32) {
@@ -112,8 +152,7 @@ impl Gpu {
 
     /// Draws one frame.
     fn draw(&mut self, session: &Session) -> Result<()> {
-        let scale = self.window.scale_factor() as f32;
-        let metrics = Metrics::from_session(session, scale);
+        let metrics = self.metrics(session);
         let width = self.config.width as f32;
         let height = self.config.height as f32;
         let laid_out = layout::layout(session, width, height, metrics);
@@ -316,7 +355,7 @@ impl ApplicationHandler for App<'_> {
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
             WindowEvent::Resized(size) => {
                 gpu.resize(size.width, size.height);
-                let metrics = Metrics::from_session(self.session, gpu.window.scale_factor() as f32);
+                let metrics = gpu.metrics(self.session);
                 self.session.resize(
                     (size.width as f32 / metrics.cell_width) as usize,
                     (size.height as f32 / metrics.line_height) as usize,

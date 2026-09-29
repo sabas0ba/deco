@@ -750,6 +750,10 @@ impl Hosts {
         // Collected rather than stored directly, because the host being drained
         // is borrowed from `self` for the duration of this loop.
         let mut pending: Option<Asking> = None;
+        // Only one question is shown at a time. Answering it resumes the held
+        // request, so replacing an open question would leave that request, and
+        // the extension waiting on it, without a reply.
+        let already_asking = self.asking.is_some();
 
         let Some(running) = self.running.get_mut(id) else {
             return;
@@ -783,7 +787,9 @@ impl Hosts {
                         // sent until there is a decision: the extension is waiting
                         // on a promise. Its host keeps running and its other
                         // requests are still served.
-                        Dispatch::Consent { capability } if pending.is_none() => {
+                        Dispatch::Consent { capability }
+                            if pending.is_none() && !already_asking =>
+                        {
                             pending = Some(Asking {
                                 extension: id.to_owned(),
                                 request: request.clone(),
@@ -791,11 +797,11 @@ impl Hosts {
                             });
                             continue;
                         }
-                        // A second question in the same drain. Refused rather than
-                        // queued, with a reason that describes the situation. A
-                        // queue could ask about a request the extension abandoned
-                        // long before the prompt was shown. A question already
-                        // open from an earlier poll is not checked here.
+                        // A second question, in the same drain or while one from
+                        // an earlier poll is open. Refused rather than queued,
+                        // with a reason that describes the situation. A queue
+                        // could ask about a request the extension abandoned long
+                        // before the prompt was shown.
                         Dispatch::Consent { capability } => {
                             reported.notes.push(format!(
                                 "{label}: {} needs a decision about {capability:?}, and another \
