@@ -2422,6 +2422,13 @@ impl Session {
                 },
                 None => Outcome::Message(format!("no theme matches `{}`", prompt.text())),
             },
+            PromptKind::SnippetChoice => match prompt.selected() {
+                Some(entry) => {
+                    let option = entry.title.clone();
+                    self.fill_snippet_stop(&option, now_ms)
+                }
+                None => Outcome::Message(format!("no option matches `{}`", prompt.text())),
+            },
             PromptKind::Languages => match prompt.selected() {
                 Some(entry) if entry.id == AUTO_LANGUAGE => self.set_language(None),
                 Some(entry) => {
@@ -2838,15 +2845,16 @@ impl Session {
         })
     }
 
-    /// Inserts a parsed completion and selects the first numeric placeholder.
-    /// Uses the ordinary replacement transaction, including its undo boundary.
+    /// Inserts a parsed completion and selects every occurrence of its first
+    /// tab stop. Uses the ordinary replacement transaction, including its undo
+    /// boundary.
     pub fn insert_snippet(
         &mut self,
         range: deco_core::Range,
         snippet: &deco_lsp::snippet::Snippet,
         now_ms: u64,
     ) {
-        use deco_core::{Position, Range};
+        use deco_core::Position;
         if self.comparison.is_some() || self.focus != Focus::Editor {
             return;
         }
@@ -2863,17 +2871,7 @@ impl Session {
                     },
             )
         };
-        if snippet.stops.is_empty() {
-            return;
-        }
-        self.document.snippet = Some(crate::snippet::ActiveSnippet {
-            stops: snippet
-                .stops
-                .iter()
-                .map(|r| Range::new(offset(r.start), offset(r.end)))
-                .collect(),
-            current: 0,
-        });
+        self.document.snippet = Some(crate::snippet::ActiveSnippet::new(snippet, offset));
         self.select_snippet_stop();
     }
 
@@ -2882,23 +2880,55 @@ impl Session {
             return Outcome::Handled;
         }
         if let Some(snippet) = self.document.snippet.as_mut() {
-            if previous {
-                snippet.current = snippet.current.saturating_sub(1);
-            } else {
-                snippet.current = (snippet.current + 1).min(snippet.stops.len() - 1);
-            }
+            snippet.step(previous);
             self.select_snippet_stop();
         }
         Outcome::Handled
     }
 
-    fn select_snippet_stop(&mut self) {
-        use deco_core::{Selection, SelectionSet};
+    /// Puts `text` in every occurrence of the current snippet stop, as one
+    /// undo step, and selects the occurrences again.
+    fn fill_snippet_stop(&mut self, text: &str, now_ms: u64) -> Outcome {
+        use deco_core::EditKind;
+        let Some(transaction) = self
+            .document
+            .snippet
+            .as_ref()
+            .and_then(|snippet| snippet.fill(text))
+        else {
+            return Outcome::Handled;
+        };
+        let before = self.view.selections.clone();
+        let inverse = self.document.apply(&transaction);
         if let Some(snippet) = &self.document.snippet {
-            let range = snippet.stops[snippet.current];
-            self.view.selections = SelectionSet::single(Selection::new(range.start, range.end));
-            if snippet.current + 1 == snippet.stops.len() {
+            self.view.selections = snippet.selections();
+        }
+        self.document.history.record(
+            inverse,
+            EditKind::Discrete,
+            before,
+            self.view.selections.clone(),
+            now_ms,
+        );
+        self.document.dirty = true;
+        self.view
+            .reveal_cursor(&self.document.buffer, &self.document.settings);
+        self.refresh_context();
+        Outcome::Handled
+    }
+
+    fn select_snippet_stop(&mut self) {
+        if let Some(snippet) = &self.document.snippet {
+            self.view.selections = snippet.selections();
+            if snippet.at_final_stop() {
                 self.document.snippet = None;
+            } else if let Some(choices) = snippet.choices() {
+                let entries = choices
+                    .iter()
+                    .enumerate()
+                    .map(|(at, option)| crate::commands::PaletteEntry::new(&at.to_string(), option))
+                    .collect();
+                self.prompt = Some(Prompt::list(PromptKind::SnippetChoice, entries));
             }
             self.view
                 .reveal_cursor(&self.document.buffer, &self.document.settings);
@@ -5100,6 +5130,66 @@ mod tests {
         press(&mut s, "tab");
         assert!(s.document.snippet.is_none());
         assert_eq!(s.view.selections.primary().active, Position::new(1, 9));
+    }
+
+    #[test]
+    fn snippet_occurrences_of_one_stop_are_typed_into_together() {
+        use deco_core::{Position, Range};
+        let mut s = session();
+        let snippet = deco_lsp::snippet::Snippet::parse("let ${1:x} = ${2:v}; use($1);$0").unwrap();
+        s.insert_snippet(Range::empty(Position::ZERO), &snippet, 0);
+        assert_eq!(s.view.selections.len(), 2, "both occurrences are selected");
+        s.run("type", Some(&serde_json::json!({"text": "name"})), 1000);
+        assert_eq!(s.document.buffer.text(), "let name = v; use(name);");
+        assert!(s.document.snippet.is_some(), "still tracking");
+        press(&mut s, "tab");
+        assert_eq!(s.view.selections.len(), 1);
+        assert_eq!(
+            s.view.selections.primary().range(),
+            Range::new(Position::new(0, 11), Position::new(0, 12))
+        );
+        press(&mut s, "tab");
+        assert!(s.document.snippet.is_none());
+        assert_eq!(s.view.selections.primary().active, Position::new(0, 24));
+    }
+
+    #[test]
+    fn a_nested_snippet_stop_is_skipped_once_its_parent_is_replaced() {
+        use deco_core::{Position, Range};
+        let mut s = session();
+        let snippet = deco_lsp::snippet::Snippet::parse("${1:f(${2:a})} ${3:b}$0").unwrap();
+        s.insert_snippet(Range::empty(Position::ZERO), &snippet, 0);
+        s.run("type", Some(&serde_json::json!({"text": "g"})), 1000);
+        press(&mut s, "tab");
+        // Stop 2 was inside the replaced text, so `tab` goes to 3.
+        assert_eq!(
+            s.view.selections.primary().range(),
+            Range::new(Position::new(0, 2), Position::new(0, 3))
+        );
+    }
+
+    #[test]
+    fn a_snippet_choice_is_offered_and_fills_every_occurrence() {
+        use deco_core::{Position, Range};
+        let mut s = session();
+        let snippet =
+            deco_lsp::snippet::Snippet::parse("${1|pub,pub(crate)|} fn f() {} // $1$0").unwrap();
+        s.insert_snippet(Range::empty(Position::ZERO), &snippet, 0);
+        let prompt = s.prompt.as_ref().expect("the options are offered");
+        assert_eq!(prompt.kind(), PromptKind::SnippetChoice);
+        let offered: Vec<&str> = prompt.visible().iter().map(|e| e.title.as_str()).collect();
+        assert_eq!(offered, ["pub", "pub(crate)"]);
+
+        s.run("workbench.action.quickOpenSelectNext", None, 0);
+        s.run("workbench.action.acceptSelectedQuickOpenItem", None, 1000);
+        assert_eq!(
+            s.document.buffer.text(),
+            "pub(crate) fn f() {} // pub(crate)"
+        );
+        assert!(s.document.snippet.is_some(), "still on the choice");
+        // One undo step restores the first option.
+        s.run("undo", None, 2000);
+        assert_eq!(s.document.buffer.text(), "pub fn f() {} // pub");
     }
 
     #[test]

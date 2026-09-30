@@ -88,6 +88,11 @@ pub enum PromptKind {
     /// A confirmation is required because there is no trash to restore from and
     /// no undo entry.
     ConfirmDelete,
+    /// A snippet field with choices (`${1|a,b|}`): which option to put in it.
+    ///
+    /// Opens when navigation reaches the field. Closing it without choosing
+    /// keeps the option already in the field, which is the first.
+    SnippetChoice,
 }
 
 impl PromptKind {
@@ -116,6 +121,7 @@ impl PromptKind {
             Self::Branches => "Checkout to:",
             Self::ConfirmCheckout => "Switch branch?",
             Self::ConfirmDelete => "Delete permanently? (y/n)",
+            Self::SnippetChoice => "Choose:",
         }
     }
 
@@ -151,6 +157,8 @@ impl PromptKind {
             (Self::ExtensionConsent, _) => "",
             (Self::ExtensionPermissions, 1) => "decision",
             (Self::ExtensionPermissions, _) => "decisions",
+            (Self::SnippetChoice, 1) => "option",
+            (Self::SnippetChoice, _) => "options",
             // Typed or answered with a key: no list.
             (Self::NewFile, _)
             | (Self::NewFolder, _)
@@ -190,6 +198,7 @@ impl PromptKind {
             Self::NewFolder => "new folder",
             Self::RenameFile => "rename file",
             Self::ConfirmDelete => "the delete confirmation",
+            Self::SnippetChoice => "the snippet choice list",
         }
     }
 
@@ -211,6 +220,9 @@ impl PromptKind {
         // Code actions: the server orders them by relevance, with the fix for
         // the diagnostic at the cursor before generally available refactorings.
         // Sorting by title would interleave them.
+        //
+        // Snippet choices: the snippet's author chose the order, and the first
+        // option is the one already inserted.
         matches!(
             self,
             Self::Symbols
@@ -219,6 +231,7 @@ impl PromptKind {
                 | Self::CodeActions
                 | Self::Branches
                 | Self::ConfirmCheckout
+                | Self::SnippetChoice
         )
     }
 }
