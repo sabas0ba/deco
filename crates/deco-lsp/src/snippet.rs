@@ -8,15 +8,25 @@
 //! placeholder ::= '${' int ':' any '}'
 //! choice      ::= '${' int '|' text (',' text)* '|}'
 //! variable    ::= '$' var | '${' var '}' | '${' var ':' any '}'
+//!               | '${' var transform '}'
+//! tabstop     ::= '${' int transform '}'
 //! ```
 //!
-//! Transforms (`${1/regex/format/}` and `${VAR/regex/format/}`) are not
-//! supported, and a snippet containing one is refused as a whole. So is a
-//! variable the caller cannot resolve. A refused snippet is reported by
-//! returning `None`, before anything is inserted, so the caller can fall back
-//! to plain text.
+//! [`transform`] describes transforms. A variable's transform is applied to
+//! its value when the snippet is expanded. A tab stop with a transform is an
+//! occurrence that is not edited directly: it shows the transformed text of
+//! the stop's other occurrences, and the editor updates it when navigation
+//! leaves the stop.
+//!
+//! A variable the caller cannot resolve, and a transform the `regex` crate
+//! cannot compile, refuse the snippet as a whole. A refused snippet is
+//! reported by returning `None`, before anything is inserted, so the caller
+//! can fall back to plain text.
+
+pub mod transform;
 
 use deco_core::{Position, Range};
+pub use transform::Transform;
 
 /// Expanded text and its fields.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,6 +54,9 @@ pub struct Field {
     pub parent: Option<usize>,
     /// The options of a choice, first one inserted. Empty for other fields.
     pub choices: Vec<String>,
+    /// For an occurrence written `${1/regex/format/}`: the transform that
+    /// derives its text from the stop's other occurrences.
+    pub transform: Option<Transform>,
 }
 
 impl Snippet {
@@ -105,6 +118,7 @@ enum Node {
         /// Whether the source gave content, even an empty one (`${1:}`).
         defines: bool,
         choices: Vec<String>,
+        transform: Option<Transform>,
     },
 }
 
@@ -203,7 +217,16 @@ impl<F: FnMut(&str) -> Option<String>> Parser<F> {
                         let first = Node::Text(choices[0].clone());
                         Some(Some(vec![field(index, vec![first], true, choices)]))
                     }
-                    // A transform, or malformed.
+                    '/' => {
+                        let transform = transform::parse(&self.chars, &mut self.at)?;
+                        Some(Some(vec![Node::Field {
+                            index,
+                            content: Vec::new(),
+                            defines: false,
+                            choices: Vec::new(),
+                            transform: Some(transform),
+                        }]))
+                    }
                     _ => None,
                 }
             }
@@ -229,7 +252,14 @@ impl<F: FnMut(&str) -> Option<String>> Parser<F> {
                             default = Some(self.any(true)?);
                             self.expect('}')?;
                         }
-                        // A transform, or malformed.
+                        '/' => {
+                            let transform = transform::parse(&self.chars, &mut self.at)?;
+                            let value = transform.apply(&value);
+                            if has_other_line_break(&value) {
+                                return None;
+                            }
+                            return Some(Some(vec![Node::Text(value)]));
+                        }
                         _ => return None,
                     }
                 }
@@ -291,6 +321,7 @@ fn field(index: u32, content: Vec<Node>, defines: bool, choices: Vec<String>) ->
         content,
         defines,
         choices,
+        transform: None,
     }
 }
 
@@ -311,6 +342,7 @@ fn definitions(nodes: &[Node]) -> Option<std::collections::BTreeMap<u32, Node>> 
                 index,
                 content,
                 defines,
+                transform,
                 ..
             } = node
             else {
@@ -321,7 +353,10 @@ fn definitions(nodes: &[Node]) -> Option<std::collections::BTreeMap<u32, Node>> 
             }
             if *index == 0 {
                 *finals += 1;
-                if *finals > 1 || content.iter().any(|n| matches!(n, Node::Field { .. })) {
+                if *finals > 1
+                    || transform.is_some()
+                    || content.iter().any(|n| matches!(n, Node::Field { .. }))
+                {
                     return None;
                 }
             }
@@ -357,6 +392,30 @@ impl Builder {
         for node in nodes {
             match node {
                 Node::Text(text) => self.append(text),
+                Node::Field {
+                    index,
+                    transform: Some(transform),
+                    ..
+                } => {
+                    if open.contains(index) {
+                        return None;
+                    }
+                    // Plain text, without fields: this occurrence is replaced
+                    // as a whole whenever it is updated.
+                    let shown = transform.apply(&self.plain_text(*index, open)?);
+                    if has_other_line_break(&shown) {
+                        return None;
+                    }
+                    let start = self.position;
+                    self.append(&shown);
+                    self.fields.push(Field {
+                        index: *index,
+                        range: Range::new(start, self.position),
+                        parent,
+                        choices: Vec::new(),
+                        transform: Some(transform.clone()),
+                    });
+                }
                 Node::Field { index, .. } => {
                     if open.contains(index) {
                         return None;
@@ -373,6 +432,7 @@ impl Builder {
                         range: Range::empty(self.position),
                         parent,
                         choices,
+                        transform: None,
                     });
                     open.push(*index);
                     self.render(&content, Some(id), open)?;
@@ -382,6 +442,23 @@ impl Builder {
             }
         }
         Some(())
+    }
+
+    /// The text tab stop `index` shows, without recording any field.
+    fn plain_text(&self, index: u32, open: &mut Vec<u32>) -> Option<String> {
+        let Some(Node::Field { content, .. }) = self.definitions.get(&index) else {
+            return None;
+        };
+        let mut scratch = Builder {
+            definitions: self.definitions.clone(),
+            text: String::new(),
+            position: Position::ZERO,
+            fields: Vec::new(),
+        };
+        open.push(index);
+        scratch.render(content, None, open)?;
+        open.pop();
+        Some(scratch.text)
     }
 
     fn append(&mut self, text: &str) {
@@ -403,6 +480,7 @@ impl Builder {
                 range: Range::empty(self.position),
                 parent: None,
                 choices: Vec::new(),
+                transform: None,
             });
         }
         let mut groups: std::collections::BTreeMap<u32, Vec<usize>> = Default::default();
@@ -558,7 +636,8 @@ mod tests {
             "${1:a $1}",
             "${1:x} ${0} $0",
             "${0:${1:x}}",
-            "${1/x/y/}",
+            "${1/(?=x)/y/}",
+            "${0/x/y/}",
             "${1:open",
             "${1|a,b}",
             "${}",
@@ -568,6 +647,29 @@ mod tests {
         ] {
             assert!(Snippet::parse(text).is_none(), "{text}");
         }
+    }
+
+    #[test]
+    fn a_variable_transform_is_applied_to_the_value() {
+        let snippet = Snippet::parse_with_variables(
+            "struct ${TM_FILENAME_BASE/(.*)/${1:/pascalcase}/};$0",
+            |_| Some("my_file".to_owned()),
+        )
+        .unwrap();
+        assert_eq!(snippet.text, "struct MyFile;");
+    }
+
+    #[test]
+    fn a_tab_stop_transform_shows_the_stops_text_transformed() {
+        let snippet = Snippet::parse("${1:name} ${1/(.*)/${1:/upcase}/}$0").unwrap();
+        assert_eq!(snippet.text, "name NAME");
+        assert_eq!(
+            stop_ranges(&snippet)[0],
+            vec![range(0, 0, 0, 4), range(0, 5, 0, 9)]
+        );
+        assert!(snippet.fields[0].transform.is_none());
+        let transform = snippet.fields[1].transform.as_ref().expect("a transform");
+        assert_eq!(transform.apply("other"), "OTHER");
     }
 
     #[test]
@@ -633,7 +735,8 @@ mod tests {
         for source in [
             "${1:ok} $UNKNOWN",
             "${UNKNOWN:default}",
-            "${TM_FILENAME/(.*)/x/}",
+            "${TM_FILENAME/(?<=a)/x/}",
+            "${TM_FILENAME/(.*)/x/q}",
             "${TM_FILENAME:unclosed",
         ] {
             assert!(
