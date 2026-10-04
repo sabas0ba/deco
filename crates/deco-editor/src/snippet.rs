@@ -4,8 +4,13 @@
 //! selected together as multiple cursors, so typing edits all of them. A field
 //! can be nested in another (`${1:call(${2:arg})}`); editing the outer field
 //! over the inner one removes the inner one, as in VS Code.
+//!
+//! An occurrence with a transform (`${1/(.*)/${1:/upcase}/}`) is not selected
+//! and not typed into. When navigation leaves its stop, it is replaced with the
+//! transformed text of the stop's first other occurrence.
 
 use deco_core::{Change, Position, Range, Selection, SelectionSet, Transaction};
+use deco_lsp::snippet::Transform;
 
 #[derive(Debug)]
 pub(crate) struct ActiveSnippet {
@@ -20,6 +25,7 @@ struct ActiveField {
     range: Range,
     parent: Option<usize>,
     choices: Vec<String>,
+    transform: Option<Transform>,
     /// False once an edit of an enclosing field has replaced it.
     alive: bool,
 }
@@ -35,6 +41,7 @@ impl ActiveSnippet {
                     range: Range::new(place(field.range.start), place(field.range.end)),
                     parent: field.parent,
                     choices: field.choices.clone(),
+                    transform: field.transform.clone(),
                     alive: true,
                 })
                 .collect(),
@@ -43,12 +50,42 @@ impl ActiveSnippet {
         }
     }
 
-    /// The occurrences of the current tab stop that still exist.
-    fn current_fields(&self) -> impl Iterator<Item = usize> + '_ {
+    /// The occurrences of the current tab stop that still exist, including
+    /// those with a transform.
+    fn current_occurrences(&self) -> impl Iterator<Item = usize> + '_ {
         self.stops[self.current]
             .iter()
             .copied()
             .filter(|&id| self.fields[id].alive)
+    }
+
+    /// The occurrences of the current tab stop that the user edits: those that
+    /// still exist and have no transform.
+    fn current_fields(&self) -> impl Iterator<Item = usize> + '_ {
+        self.current_occurrences()
+            .filter(|&id| self.fields[id].transform.is_none())
+    }
+
+    /// Changes that bring the current stop's transformed occurrences up to
+    /// date, or `None` when there is nothing to change.
+    ///
+    /// `read` returns the document's text in a range. The source is the
+    /// stop's first editable occurrence; every editable occurrence holds the
+    /// same text, because they are edited together.
+    pub fn mirror_updates(&self, read: impl Fn(Range) -> String) -> Option<Transaction> {
+        let source = read(self.fields[self.current_fields().next()?].range);
+        let changes: Vec<Change> = self
+            .current_occurrences()
+            .filter_map(|id| {
+                let field = &self.fields[id];
+                let shown = field.transform.as_ref()?.apply(&source);
+                (read(field.range) != shown).then(|| Change::replace(field.range, shown))
+            })
+            .collect();
+        if changes.is_empty() {
+            return None;
+        }
+        Transaction::new(changes).ok()
     }
 
     /// Selections covering every occurrence of the current tab stop.
@@ -99,7 +136,11 @@ impl ActiveSnippet {
             } else {
                 return;
             };
-            if self.stops[next].iter().any(|&id| self.fields[id].alive) {
+            let editable = |id: &usize| {
+                let field = &self.fields[*id];
+                field.alive && field.transform.is_none()
+            };
+            if self.stops[next].iter().any(editable) {
                 self.current = next;
                 return;
             }
@@ -124,7 +165,8 @@ impl ActiveSnippet {
     /// Updates the fields for `transaction`, or returns false when it cannot
     /// be tracked, which ends navigation.
     ///
-    /// Every change must lie inside an occurrence of the current tab stop.
+    /// Every change must lie inside an occurrence of the current tab stop,
+    /// which may be one with a transform being brought up to date.
     /// Changes are applied last first, so each one's coordinates are still
     /// valid when it is applied, as when editing a file from the bottom up.
     pub fn apply(&mut self, transaction: &Transaction) -> bool {
@@ -139,7 +181,7 @@ impl ActiveSnippet {
             // The last occurrence containing the change, so that two carets
             // in adjacent empty occurrences are matched one to each.
             let Some(edited) = self
-                .current_fields()
+                .current_occurrences()
                 .filter(|id| !used.contains(id))
                 .filter(|&id| {
                     let range = self.fields[id].range;
@@ -310,6 +352,36 @@ mod tests {
         assert_eq!(ranges(&snippet), vec![Range::empty(at(0))]);
         snippet.step(false);
         assert_eq!(ranges(&snippet), vec![Range::empty(at(2))]);
+    }
+
+    #[test]
+    fn a_transformed_occurrence_is_not_selected_and_follows_on_request() {
+        let mut snippet = active("${1:ab} ${1/(.*)/${1:/upcase}/}$0");
+        assert_eq!(
+            snippet.selections().len(),
+            1,
+            "only the editable occurrence"
+        );
+        // The user typed `xyz` over `ab`.
+        let typed =
+            Transaction::single(Change::replace(Range::new(at(0), at(2)), "xyz".to_owned()));
+        assert!(snippet.apply(&typed));
+        let text = "xyz AB";
+        let read = |range: Range| {
+            text.chars()
+                .skip(range.start.character as usize)
+                .take((range.end.character - range.start.character) as usize)
+                .collect::<String>()
+        };
+        let update = snippet
+            .mirror_updates(read)
+            .expect("the copy is out of date");
+        assert_eq!(update.changes().len(), 1);
+        assert_eq!(update.changes()[0].range, Range::new(at(4), at(6)));
+        assert_eq!(update.changes()[0].text, "XYZ");
+        assert!(snippet.apply(&update));
+        snippet.step(false);
+        assert_eq!(ranges(&snippet), vec![Range::empty(at(7))]);
     }
 
     #[test]

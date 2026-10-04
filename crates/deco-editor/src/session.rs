@@ -1555,10 +1555,14 @@ impl Session {
         // because it needs the diagnostic list, which belongs to the session. A
         // command sees only the document, the view and the clipboard.
         let outcome = match command {
-            "jumpToNextSnippetPlaceholder" => self.move_snippet(false),
-            "jumpToPrevSnippetPlaceholder" => self.move_snippet(true),
+            "jumpToNextSnippetPlaceholder" => self.move_snippet(false, now_ms),
+            "jumpToPrevSnippetPlaceholder" => self.move_snippet(true, now_ms),
             "leaveSnippet" => {
+                if self.focus == Focus::Editor {
+                    self.update_snippet_mirrors(now_ms);
+                }
                 self.document.snippet = None;
+                self.refresh_context();
                 Outcome::Handled
             }
             "editor.action.marker.next" | "editor.action.marker.nextInFiles" => {
@@ -2875,15 +2879,33 @@ impl Session {
         self.select_snippet_stop();
     }
 
-    fn move_snippet(&mut self, previous: bool) -> Outcome {
+    fn move_snippet(&mut self, previous: bool, now_ms: u64) -> Outcome {
         if self.focus != Focus::Editor {
             return Outcome::Handled;
         }
+        self.update_snippet_mirrors(now_ms);
         if let Some(snippet) = self.document.snippet.as_mut() {
             snippet.step(previous);
             self.select_snippet_stop();
         }
         Outcome::Handled
+    }
+
+    /// Replaces the current snippet stop's transformed occurrences with the
+    /// transform of its text, as one undo step. The selection is kept.
+    fn update_snippet_mirrors(&mut self, now_ms: u64) {
+        use deco_core::EditKind;
+        let Some(transaction) = self.document.snippet.as_ref().and_then(|snippet| {
+            snippet.mirror_updates(|range| self.document.buffer.text_in_range(range))
+        }) else {
+            return;
+        };
+        let before = self.view.selections.clone();
+        let inverse = self.document.apply(&transaction);
+        self.document
+            .history
+            .record(inverse, EditKind::Discrete, before.clone(), before, now_ms);
+        self.document.dirty = true;
     }
 
     /// Puts `text` in every occurrence of the current snippet stop, as one
@@ -5190,6 +5212,35 @@ mod tests {
         // One undo step restores the first option.
         s.run("undo", None, 2000);
         assert_eq!(s.document.buffer.text(), "pub fn f() {} // pub");
+    }
+
+    #[test]
+    fn a_transformed_snippet_occurrence_follows_when_the_stop_is_left() {
+        use deco_core::{Position, Range};
+        let mut s = session();
+        let snippet =
+            deco_lsp::snippet::Snippet::parse("${1:name}: ${1/(.*)/${1:/upcase}/} $2$0").unwrap();
+        s.insert_snippet(Range::empty(Position::ZERO), &snippet, 0);
+        assert_eq!(s.document.buffer.text(), "name: NAME ");
+        assert_eq!(
+            s.view.selections.len(),
+            1,
+            "the transformed copy is not edited"
+        );
+        s.run("type", Some(&serde_json::json!({"text": "id"})), 1000);
+        assert_eq!(s.document.buffer.text(), "id: NAME ");
+        press(&mut s, "tab");
+        assert_eq!(s.document.buffer.text(), "id: ID ");
+        assert_eq!(
+            s.view.selections.primary().range(),
+            Range::empty(Position::new(0, 7))
+        );
+        // `escape` brings it up to date too.
+        press(&mut s, "shift+tab");
+        s.run("type", Some(&serde_json::json!({"text": "key"})), 2000);
+        press(&mut s, "escape");
+        assert_eq!(s.document.buffer.text(), "key: KEY ");
+        assert!(s.document.snippet.is_none());
     }
 
     #[test]
