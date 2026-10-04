@@ -49,8 +49,8 @@ enum How {
     Downcase,
     /// The first character in upper case, the rest unchanged.
     Capitalize,
-    /// Words of ASCII letters and digits, joined, every word after the first
-    /// starting in upper case and the first in lower case.
+    /// Words of letters and digits, in any script, joined, every word after
+    /// the first starting in upper case and the first in lower case.
     CamelCase,
     /// As `CamelCase`, with the first word in upper case too.
     PascalCase,
@@ -69,7 +69,24 @@ impl Transform {
     /// Applies the transform to `value`.
     ///
     /// Text the regular expression does not match is kept, as in VS Code.
+    /// When it matches nothing and the format has an `else` text, the format
+    /// is expanded with every group empty instead, so that the `else` text is
+    /// used: `${1:-fallback}` gives `fallback` for a value that does not
+    /// match.
     pub fn apply(&self, value: &str) -> String {
+        if !self.regex.is_match(value) {
+            if !self.format.iter().any(Part::has_else) {
+                return value.to_owned();
+            }
+            return self
+                .format
+                .iter()
+                .map(|part| match part {
+                    Part::Text(text) => text.clone(),
+                    Part::Group { how, .. } => how.apply(""),
+                })
+                .collect();
+        }
         let expand = |captures: &regex::Captures<'_>| {
             let mut out = String::new();
             for part in &self.format {
@@ -91,6 +108,19 @@ impl Transform {
     }
 }
 
+impl Part {
+    /// Whether this part has a non-empty text for a group that is empty.
+    fn has_else(&self) -> bool {
+        match self {
+            Self::Group {
+                how: How::Choose { otherwise, .. } | How::OrElse { otherwise },
+                ..
+            } => !otherwise.is_empty(),
+            _ => false,
+        }
+    }
+}
+
 impl How {
     fn apply(&self, group: &str) -> String {
         match self {
@@ -106,7 +136,7 @@ impl How {
             }
             Self::CamelCase | Self::PascalCase => {
                 let words: Vec<&str> = group
-                    .split(|c: char| !c.is_ascii_alphanumeric())
+                    .split(|c: char| !c.is_alphanumeric())
                     .filter(|word| !word.is_empty())
                     .collect();
                 if words.is_empty() {
@@ -119,9 +149,9 @@ impl How {
                         continue;
                     };
                     if at == 0 && matches!(self, Self::CamelCase) {
-                        out.push(first.to_ascii_lowercase());
+                        out.extend(first.to_lowercase());
                     } else {
-                        out.push(first.to_ascii_uppercase());
+                        out.extend(first.to_uppercase());
                     }
                     out.extend(chars);
                 }
@@ -388,6 +418,20 @@ mod tests {
             apply("(.*)/${1:/pascalcase}/}", "my-file_name"),
             "MyFileName"
         );
+        // Letters outside ASCII belong to words rather than separating them.
+        assert_eq!(
+            apply("(.*)/${1:/pascalcase}/}", "résumé_file"),
+            "RésuméFile"
+        );
+        assert_eq!(apply("(.*)/${1:/camelcase}/}", "Été-2024"), "été2024");
+    }
+
+    #[test]
+    fn an_else_text_is_used_when_nothing_matches() {
+        assert_eq!(apply("^foo$/${1:-fallback}/}", "bar"), "fallback");
+        assert_eq!(apply("^foo$/<${1:?yes:no}>/}", "bar"), "<no>");
+        // Without an else text, a value that does not match is kept.
+        assert_eq!(apply("^foo$/${1:/upcase}/}", "bar"), "bar");
     }
 
     #[test]

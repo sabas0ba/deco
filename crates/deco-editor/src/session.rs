@@ -2892,7 +2892,8 @@ impl Session {
     }
 
     /// Replaces the current snippet stop's transformed occurrences with the
-    /// transform of its text, as one undo step. The selection is kept.
+    /// transform of its text, as one undo step. The selection moves with the
+    /// text, which matters when a transformed occurrence precedes it.
     fn update_snippet_mirrors(&mut self, now_ms: u64) {
         use deco_core::EditKind;
         let Some(transaction) = self.document.snippet.as_ref().and_then(|snippet| {
@@ -2902,9 +2903,17 @@ impl Session {
         };
         let before = self.view.selections.clone();
         let inverse = self.document.apply(&transaction);
+        let mut after = before.clone();
+        after.map(|selection| {
+            deco_core::Selection::new(
+                crate::snippet::map_position(&transaction, selection.anchor),
+                crate::snippet::map_position(&transaction, selection.active),
+            )
+        });
+        self.view.selections = after.clone();
         self.document
             .history
-            .record(inverse, EditKind::Discrete, before.clone(), before, now_ms);
+            .record(inverse, EditKind::Discrete, before, after, now_ms);
         self.document.dirty = true;
     }
 
@@ -5241,6 +5250,18 @@ mod tests {
         press(&mut s, "escape");
         assert_eq!(s.document.buffer.text(), "key: KEY ");
         assert!(s.document.snippet.is_none());
+    }
+
+    #[test]
+    fn the_caret_moves_with_a_transformed_occurrence_before_it() {
+        use deco_core::{Position, Range};
+        let mut s = session();
+        let snippet = deco_lsp::snippet::Snippet::parse("${1/(.*)/[$1]/} ${1:x}").unwrap();
+        s.insert_snippet(Range::empty(Position::ZERO), &snippet, 0);
+        s.run("type", Some(&serde_json::json!({"text": "long"})), 1000);
+        press(&mut s, "escape");
+        assert_eq!(s.document.buffer.text(), "[long] long");
+        assert_eq!(s.view.selections.primary().active, Position::new(0, 11));
     }
 
     #[test]

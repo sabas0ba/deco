@@ -32,8 +32,11 @@ struct ActiveField {
 
 impl ActiveSnippet {
     /// Tracks `snippet`, whose ranges `place` converts to document positions.
+    ///
+    /// Starts at the first stop that has an occurrence to edit: a stop whose
+    /// only occurrences have transforms has nothing to select.
     pub fn new(snippet: &deco_lsp::snippet::Snippet, place: impl Fn(Position) -> Position) -> Self {
-        Self {
+        let mut active = Self {
             fields: snippet
                 .fields
                 .iter()
@@ -47,7 +50,11 @@ impl ActiveSnippet {
                 .collect(),
             stops: snippet.stops.clone(),
             current: 0,
+        };
+        if active.current_fields().next().is_none() {
+            active.step(false);
         }
+        active
     }
 
     /// The occurrences of the current tab stop that still exist, including
@@ -250,6 +257,36 @@ impl ActiveSnippet {
     }
 }
 
+/// Where `position` is after `transaction`.
+///
+/// A position at the start of a change stays before the inserted text, and
+/// one at its end follows it, so a caret next to a replaced transformed
+/// occurrence stays on its own side. A position inside a change cannot be
+/// mapped meaningfully and is moved to the end of the inserted text.
+pub(crate) fn map_position(transaction: &Transaction, position: Position) -> Position {
+    let mut mapped = position;
+    for change in transaction.changes().iter().rev() {
+        if mapped <= change.range.start {
+            continue;
+        }
+        let end = end_of_insertion(change);
+        mapped = if mapped < change.range.end {
+            end
+        } else if mapped.line == change.range.end.line {
+            Position::new(
+                end.line,
+                end.character + mapped.character - change.range.end.character,
+            )
+        } else {
+            Position::new(
+                end.line + mapped.line - change.range.end.line,
+                mapped.character,
+            )
+        };
+    }
+    mapped
+}
+
 /// Where the text a change inserts ends.
 fn end_of_insertion(change: &Change) -> Position {
     let mut end = change.range.start;
@@ -382,6 +419,24 @@ mod tests {
         assert!(snippet.apply(&update));
         snippet.step(false);
         assert_eq!(ranges(&snippet), vec![Range::empty(at(7))]);
+    }
+
+    #[test]
+    fn a_first_stop_with_only_a_transformed_occurrence_is_skipped() {
+        let snippet = active("${1/(.*)/x/}${2:foo}$0");
+        // The transformed occurrence shows `x`, the transform of an empty text.
+        assert_eq!(ranges(&snippet), vec![Range::new(at(1), at(4))]);
+    }
+
+    #[test]
+    fn positions_after_a_change_move_with_it() {
+        let transaction = Transaction::new(vec![
+            Change::replace(Range::new(at(0), at(2)), "[long]".to_owned()),
+            Change::insert(at(5), "\n".to_owned()),
+        ])
+        .unwrap();
+        assert_eq!(map_position(&transaction, at(3)), at(7));
+        assert_eq!(map_position(&transaction, at(0)), at(0));
     }
 
     #[test]
