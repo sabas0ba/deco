@@ -336,14 +336,15 @@ pub struct CompletionItem {
     pub preselect: bool,
     /// Whether the server supplied snippet syntax, declared or detected.
     ///
-    /// deco advertises `snippetSupport: false`, so a conforming server sends
-    /// plain text, but several servers send snippets anyway. Inserting
-    /// `foo(${1:arg})` literally is worse than inserting nothing, so the
-    /// placeholders are stripped for the fallback. `snippet` separately holds
-    /// the text and tab stops when no insertion context is needed. Variables
-    /// in `snippet_source` are resolved when the completion is accepted.
+    /// Some servers send snippet syntax without declaring it. When a snippet
+    /// cannot be expanded, for example because it uses a variable deco does not
+    /// provide, inserting `foo(${1:arg})` literally is worse than inserting
+    /// nothing, so the placeholders are stripped for the fallback. `snippet`
+    /// separately holds the text and tab stops when no insertion context is
+    /// needed. Variables in `snippet_source` are resolved when the completion
+    /// is accepted.
     pub was_snippet: bool,
-    /// Parsed numeric tab stops, when the completion uses the supported subset.
+    /// The parsed snippet, when it needs no variable.
     pub snippet: Option<crate::snippet::Snippet>,
     /// Original snippet text, resolved against the document when accepted.
     pub snippet_source: Option<String>,
@@ -1867,9 +1868,8 @@ mod tests {
 
     #[test]
     fn snippet_placeholders_are_stripped_rather_than_inserted_literally() {
-        // deco advertises snippetSupport: false, but several servers send
-        // snippets anyway. Inserting `foo(${1:arg})` literally is worse than
-        // inserting nothing.
+        // The fallback for a snippet that cannot be expanded. Inserting
+        // `foo(${1:arg})` literally is worse than inserting nothing.
         let item = CompletionItem::from_json(&json!({
             "label": "foo",
             "insertText": "foo(${1:arg}, ${2:other})$0",

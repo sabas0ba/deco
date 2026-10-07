@@ -421,7 +421,7 @@ pub fn client_capabilities() -> serde_json::Value {
             "completion": {
                 "dynamicRegistration": false,
                 "completionItem": {
-                    "snippetSupport": false,
+                    "snippetSupport": true,
                     "documentationFormat": ["plaintext"],
                 },
                 "contextSupport": true,
@@ -739,6 +739,17 @@ mod tests {
     }
 
     #[test]
+    fn snippets_are_declared_now_that_the_syntax_is_complete() {
+        // A server that honours the declaration sends tab stops only to a
+        // client that says it can expand them.
+        let caps = client_capabilities();
+        assert_eq!(
+            caps["textDocument"]["completion"]["completionItem"]["snippetSupport"],
+            json!(true)
+        );
+    }
+
+    #[test]
     fn nothing_unimplemented_is_advertised() {
         // Advertising a feature deco does not implement causes servers to send
         // messages that deco drops. To the user, the server appears broken.
@@ -746,11 +757,6 @@ mod tests {
         assert_eq!(
             caps["textDocument"]["synchronization"]["willSave"],
             json!(false)
-        );
-        assert_eq!(
-            caps["textDocument"]["completion"]["completionItem"]["snippetSupport"],
-            json!(false),
-            "snippets stay undeclared until the full syntax is implemented"
         );
         assert_eq!(caps["window"]["workDoneProgress"], json!(false));
         assert!(

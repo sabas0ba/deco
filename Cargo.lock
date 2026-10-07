@@ -671,6 +671,7 @@ version = "0.1.0"
 dependencies = [
  "deco-config",
  "deco-core",
+ "regex",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
