@@ -377,17 +377,22 @@ fn describe(capability: &deco_ext::capability::Capability, method: &str) -> Stri
     }
 }
 
-/// The file type in VS Code's numbering.
+/// The file type in VS Code's numbering, from metadata that was not read
+/// through a link.
 ///
-/// `File = 1`, `Directory = 2`, and `SymbolicLink = 64` added to the type of
-/// the link target. The remote server uses the same numbering, for the same
-/// reason: these values are passed to VS Code's API.
+/// `File = 1` and `Directory = 2`. A link is `SymbolicLink = 64` with an
+/// unknown target type: finding the target's type means following the link,
+/// which could describe a location the extension was never granted. The
+/// remote server reports a link the same way when its target is outside the
+/// workspace. These values are passed to VS Code's API unchanged.
 fn kind_of(metadata: &std::fs::Metadata) -> u32 {
-    let mut kind = if metadata.is_dir() { 2 } else { 1 };
     if metadata.is_symlink() {
-        kind += 64;
+        64
+    } else if metadata.is_dir() {
+        2
+    } else {
+        1
     }
-    kind
 }
 
 /// A local file's stat in the shape VS Code's `FileStat` has.
@@ -1533,6 +1538,36 @@ pub fn sandbox_summary(settings: &deco_config::Settings) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    #[cfg(unix)]
+    fn a_link_is_reported_without_the_type_of_its_target() {
+        let dir = std::env::temp_dir().join(format!("deco-ext-links-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).expect("a directory");
+        std::fs::write(dir.join("file"), "x").expect("a file");
+        std::os::unix::fs::symlink(dir.join("sub"), dir.join("dir-link")).expect("a link");
+        std::os::unix::fs::symlink(dir.join("file"), dir.join("file-link")).expect("a link");
+
+        let listed = Files::Here
+            .read_directory(&dir.to_string_lossy())
+            .expect("a listing");
+        assert_eq!(
+            listed,
+            [
+                ("dir-link".to_owned(), 64),
+                ("file".to_owned(), 1),
+                ("file-link".to_owned(), 64),
+                ("sub".to_owned(), 2),
+            ]
+        );
+        let stat = Files::Here
+            .stat(&dir.join("dir-link").to_string_lossy())
+            .expect("a stat");
+        assert_eq!(stat["type"], 64);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
 
     /// A directory holding one extension.
