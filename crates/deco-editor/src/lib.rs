@@ -8,6 +8,7 @@
 //! This crate does not depend on a terminal or a window, so the entire
 //! editable surface can be tested headlessly.
 
+pub mod clock;
 pub mod commands;
 pub mod document;
 pub mod explorer;

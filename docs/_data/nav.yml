@@ -54,6 +54,11 @@
   url: /language-servers.html
   blurb: Diagnostics, hover, definition, completion, formatting
 
+- title: Snippets
+  path: snippets.md
+  url: /snippets.html
+  blurb: Fields, variables, transforms, and your own snippet files
+
 - title: Configuration
   path: configuration.md
   url: /configuration.html

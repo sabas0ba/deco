@@ -471,6 +471,25 @@ impl CompletionItem {
     pub fn sort_key(&self) -> &str {
         self.sort.as_deref().unwrap_or(&self.label)
     }
+
+    /// An item that inserts snippet `body` when `label` is chosen, for a
+    /// snippet that comes from the user rather than from a server.
+    pub fn snippet(label: &str, detail: Option<String>, body: &str) -> Self {
+        let (insert, _) = strip_snippet(body);
+        Self {
+            label: label.to_owned(),
+            kind: CompletionKind::Snippet,
+            detail,
+            insert,
+            replace: None,
+            filter: label.to_owned(),
+            sort: None,
+            preselect: false,
+            was_snippet: true,
+            snippet: None,
+            snippet_source: Some(body.to_owned()),
+        }
+    }
 }
 
 /// Removes snippet placeholders, returning the text and whether any were found.

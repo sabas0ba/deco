@@ -88,6 +88,8 @@ pub enum PromptKind {
     /// A confirmation is required because there is no trash to restore from and
     /// no undo entry.
     ConfirmDelete,
+    /// `editor.action.insertSnippet`: which user snippet to insert.
+    Snippets,
     /// A snippet field with choices (`${1|a,b|}`): which option to put in it.
     ///
     /// Opens when navigation reaches the field. Closing it without choosing
@@ -121,6 +123,7 @@ impl PromptKind {
             Self::Branches => "Checkout to:",
             Self::ConfirmCheckout => "Switch branch?",
             Self::ConfirmDelete => "Delete permanently? (y/n)",
+            Self::Snippets => "Insert snippet:",
             Self::SnippetChoice => "Choose:",
         }
     }
@@ -157,6 +160,8 @@ impl PromptKind {
             (Self::ExtensionConsent, _) => "",
             (Self::ExtensionPermissions, 1) => "decision",
             (Self::ExtensionPermissions, _) => "decisions",
+            (Self::Snippets, 1) => "snippet",
+            (Self::Snippets, _) => "snippets",
             (Self::SnippetChoice, 1) => "option",
             (Self::SnippetChoice, _) => "options",
             // Typed or answered with a key: no list.
@@ -198,6 +203,7 @@ impl PromptKind {
             Self::NewFolder => "new folder",
             Self::RenameFile => "rename file",
             Self::ConfirmDelete => "the delete confirmation",
+            Self::Snippets => "the snippet list",
             Self::SnippetChoice => "the snippet choice list",
         }
     }

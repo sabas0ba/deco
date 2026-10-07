@@ -48,32 +48,7 @@ type, `m` module, `k` keyword, `s` snippet, `·` anything else.
 
 ### Snippet tab stops
 
-A completion containing snippet fields (`$1`, `${1}`, `${1:arg}`) selects the first field after insertion. Type to replace its default, press `tab` to advance in numeric order, or `shift+tab` to return. `$0` is the final cursor; without it, the snippet ends at the end of the inserted text. `escape` ends navigation and keeps the text. User keybindings may override the standard `jumpToNextSnippetPlaceholder`, `jumpToPrevSnippetPlaceholder` and `leaveSnippet` commands, using the `inSnippetMode` context key.
-
-![Editing and navigating completion fields](img/snippet-tabstops.svg)
-
-- **A repeated index is one field in several places.** `${1:name} = $1` selects both occurrences as multiple cursors, so typing changes both. The default comes from the first occurrence that has one.
-- **A field can contain fields.** In `${1:call(${2:arg})}`, `tab` goes from the whole call to `arg`. Typing over the outer field replaces the inner one, and `tab` then skips it, as in VS Code.
-- **A choice offers its options.** `${1|pub,pub(crate)|}` inserts `pub` and opens a list of the options when navigation reaches the field. Choosing one puts it in every occurrence as one undo step; closing the list keeps `pub`.
-
-Ranges use UTF-16 positions and follow edits within the selected field, including multiline text and paste. Leaving that field, undo/redo, or an edit that cannot be tracked safely ends navigation. Insertion is one ordinary undo step; edits to fields use the editor's existing undo grouping. State belongs to its document and does not apply to another tab. Suggestion lists, find inputs and prompts retain their own key handling.
-
-Completion snippets also expand the following [VS Code snippet variables](https://code.visualstudio.com/docs/editing/userdefinedsnippets#_variables) using the active document when accepted:
-
-| Variable | Value |
-| --- | --- |
-| `TM_FILENAME` | File name, including its extension; empty for an untitled document |
-| `TM_FILENAME_BASE` | File name with its final extension removed |
-| `TM_LINE_INDEX`, `TM_LINE_NUMBER` | Cursor line, counting from zero or one respectively |
-| `TM_CURRENT_LINE` | Line contents, excluding its line ending |
-| `TM_CURRENT_WORD` | Word at the cursor, using deco's word-selection rules |
-| `TM_SELECTED_TEXT` | Primary selection's text, or empty if nothing is selected |
-
-Use `$TM_FILENAME`, `${TM_FILENAME}` or a default such as `${TM_FILENAME:untitled}`. Empty values use the default when supplied, and the default may contain fields, as in `${TM_SELECTED_TEXT:${1:body}}`. For example, `$TM_FILENAME(${1:arg})$0` in `main.rs` inserts `main.rs(arg)` and selects `arg`. Variables may repeat and do not create editable fields. Resolved text is not parsed again, so a selection containing `$1` is inserted literally. No filesystem, environment or clipboard access is performed.
-
-**Transforms** rewrite text with a regular expression, as `/regex/format/options`. On a variable, `${TM_FILENAME_BASE/(.*)/${1:/pascalcase}/}` turns `my_file` into `MyFile` when the snippet is inserted. On a tab stop, `${1:name}: ${1/(.*)/${1:/upcase}/}` adds an occurrence that is not typed into: it shows the stop's text transformed, and is brought up to date when `tab`, `shift+tab` or `escape` leaves the stop. The format may use `$1`, `${1}`, `${1:/upcase}`, `/downcase`, `/capitalize`, `/camelcase`, `/pascalcase`, `${1:+if}`, `${1:?if:else}`, `${1:-else}` and `${1:else}`; the options are `g`, `i`, `m`, `s` and `u`. Regular expressions use the [`regex` crate's syntax](https://docs.rs/regex/latest/regex/#syntax), which has no look-around and no backreferences.
-
-This is the full [LSP snippet syntax](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#snippet_syntax), and deco declares `snippetSupport: true` to servers. Variables other than those above, a regular expression the `regex` crate rejects, and non-LF line separators are not supported. A snippet using them is inserted as text by the existing fallback, with a status message, and no partially parsed navigation state is installed. User snippet files and `insertSnippet` are not implemented. Pasting a non-LF line separator also ends navigation while preserving the edit.
+A completion containing snippet syntax (`$1`, `${1:arg}`, `$0`, variables, choices and transforms) is expanded when accepted, and its fields are filled in with `tab` and `shift+tab`. deco declares `snippetSupport: true` to servers. [Snippets](snippets.md) describes the syntax, the variables and the keys. Your own snippets are offered in the same list, beside the server's items.
 
 ## References
 

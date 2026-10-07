@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use deco_config::paths::{ConfigPaths, Env, Layout};
+use deco_config::snippets::{FileKind, UserSnippet};
 use deco_config::{Scope, Settings};
 
 /// Everything read off disk at startup.
@@ -11,6 +12,8 @@ pub struct LoadedConfig {
     pub settings: Settings,
     /// The raw `keybindings.json`, if there was one.
     pub keybindings: Option<String>,
+    /// The user's snippets, then the workspace's.
+    pub snippets: Vec<UserSnippet>,
     /// Anything that went wrong, to be shown rather than to stop startup.
     pub problems: Vec<String>,
 }
@@ -98,10 +101,71 @@ pub fn load(
         }
     }
 
+    // deco's own snippets directory is preferred, and VS Code's is read when
+    // deco has none, as for `settings.json`.
+    let mut snippets = Vec::new();
+    let user_snippets = deco_paths
+        .as_ref()
+        .map(|p| p.snippets.clone())
+        .filter(|dir| dir.is_dir())
+        .or_else(|| vscode_paths.as_ref().map(|p| p.snippets.clone()));
+    if let Some(dir) = user_snippets {
+        load_snippets(&dir, false, &mut snippets, &mut problems);
+    }
+    if let Some(root) = workspace {
+        for dir in [root.join(".deco"), root.join(".vscode")] {
+            load_snippets(&dir, true, &mut snippets, &mut problems);
+        }
+    }
+
     LoadedConfig {
         settings,
         keybindings,
+        snippets,
         problems,
+    }
+}
+
+/// Reads every snippet file in `dir`, in file-name order.
+///
+/// A workspace may only hold `*.code-snippets` files, as in VS Code, because
+/// its `.vscode` directory also holds `settings.json` and other JSON files
+/// that are not snippets. A directory that does not exist holds no snippets;
+/// one that cannot be listed is reported.
+fn load_snippets(
+    dir: &Path,
+    workspace: bool,
+    snippets: &mut Vec<UserSnippet>,
+    problems: &mut Vec<String>,
+) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+        Err(error) => {
+            problems.push(format!("{}: {error}", dir.display()));
+            return;
+        }
+    };
+    let mut files: Vec<(PathBuf, FileKind)> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let kind = FileKind::of(&entry.file_name().to_string_lossy())?;
+            let usable = !workspace || kind == FileKind::Global;
+            (usable && entry.path().is_file()).then(|| (entry.path(), kind))
+        })
+        .collect();
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    for (path, kind) in files {
+        let Some(text) = read_optional(&path, problems) else {
+            continue;
+        };
+        let (found, file_problems) = deco_config::snippets::parse(&kind, &text);
+        snippets.extend(found);
+        problems.extend(
+            file_problems
+                .into_iter()
+                .map(|problem| format!("{}: {problem}", path.display())),
+        );
     }
 }
 
@@ -138,6 +202,41 @@ mod tests {
         // The built-in defaults are still there.
         assert_eq!(loaded.settings.get_u64("editor.tabSize", None), Some(4));
         assert!(loaded.keybindings.is_none());
+        assert!(loaded.snippets.is_empty());
+    }
+
+    #[test]
+    fn snippets_come_from_the_user_and_the_workspace() {
+        let temp = std::env::temp_dir().join(format!("deco-snippets-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        let env = Env {
+            home: Some(temp.join("home")),
+            xdg_config_home: Some(temp.join("config")),
+            ..Default::default()
+        };
+        let user = temp.join("config").join("deco").join("snippets");
+        std::fs::create_dir_all(&user).unwrap();
+        std::fs::write(
+            user.join("rust.json"),
+            r#"{ "fn": { "prefix": "fn", "body": "fn $1() {}" } }"#,
+        )
+        .unwrap();
+        std::fs::write(user.join("notes.txt"), "not a snippet file").unwrap();
+        let workspace = temp.join("project");
+        std::fs::create_dir_all(workspace.join(".vscode")).unwrap();
+        std::fs::write(
+            workspace.join(".vscode").join("team.code-snippets"),
+            r#"{ "todo": { "prefix": "todo", "body": "TODO($1)" } }"#,
+        )
+        .unwrap();
+        // A language file in a workspace is not read: `.vscode` holds other JSON.
+        std::fs::write(workspace.join(".vscode").join("settings.json"), "{}").unwrap();
+
+        let loaded = load(&env, Layout::Xdg, Some(&workspace), None);
+        assert!(loaded.problems.is_empty(), "{:?}", loaded.problems);
+        let names: Vec<&str> = loaded.snippets.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["fn", "todo"]);
+        std::fs::remove_dir_all(&temp).ok();
     }
 
     #[test]

@@ -28,7 +28,7 @@ use std::time::Duration;
 use deco_core::position::Position;
 use deco_editor::Session;
 use deco_lsp::process::Consent;
-use deco_lsp::requests::CompletionTrigger;
+use deco_lsp::requests::{CompletionItem, CompletionTrigger};
 use deco_lsp::server::ServerConfig;
 use deco_lsp::supervisor::{Supervisor, Update};
 use deco_lsp::uri::PathMap;
@@ -198,6 +198,25 @@ fn shorten(path: &Path, root: Option<&Path>) -> String {
 /// "Word" here uses the identifier rule shared by every language deco supports:
 /// alphanumeric plus `_`. The server's definition of a word is not used because
 /// the protocol provides no way to query it.
+/// The user's snippets for the active document, one item per prefix.
+///
+/// A snippet without a prefix can only be inserted by name, through
+/// `editor.action.insertSnippet`.
+fn snippet_items(session: &Session) -> Vec<CompletionItem> {
+    session
+        .snippets_here()
+        .flat_map(|snippet| {
+            let detail = snippet
+                .description
+                .clone()
+                .unwrap_or_else(|| snippet.name.clone());
+            snippet.prefixes.iter().map(move |prefix| {
+                CompletionItem::snippet(prefix, Some(detail.clone()), &snippet.body)
+            })
+        })
+        .collect()
+}
+
 fn word_start(session: &Session) -> Position {
     let cursor = session.view.selections.primary().active;
     let Some(line) = session
@@ -233,6 +252,28 @@ fn word_start(session: &Session) -> Position {
 ///
 /// Used to apply the characters typed while waiting for the server's response
 /// to the completion filter.
+/// Where the longest beginning of `prefix` that ends the typed text starts,
+/// as a UTF-16 column, ignoring case. `None` when no beginning of `prefix`
+/// ends `typed`.
+fn prefix_start(typed: &[char], prefix: &str) -> Option<u32> {
+    let prefix: Vec<char> = prefix.chars().collect();
+    let same = |a: &char, b: &char| a.to_lowercase().eq(b.to_lowercase());
+    (1..=prefix.len().min(typed.len()))
+        .rev()
+        .find_map(|length| {
+            let tail = &typed[typed.len() - length..];
+            tail.iter()
+                .zip(&prefix[..length])
+                .all(|(a, b)| same(a, b))
+                .then(|| {
+                    typed[..typed.len() - length]
+                        .iter()
+                        .map(|c| c.len_utf16() as u32)
+                        .sum()
+                })
+        })
+}
+
 fn typed_between(line: &str, from: u32, to: u32) -> Vec<char> {
     let units: Vec<u16> = line.encode_utf16().collect();
     let from = from as usize;
@@ -412,27 +453,80 @@ impl Lsp {
     /// character. The server adjusts its results accordingly.
     pub fn request_completion(&mut self, session: &mut Session, trigger: CompletionTrigger) {
         self.dismiss_suggest();
+        let invoked = trigger == CompletionTrigger::Invoked;
         let (Some(path), Some(supervisor)) =
             (session.document.path.clone(), self.supervisor.as_mut())
         else {
+            // No server: the user's snippets are still offered.
+            if invoked {
+                self.offer_snippets_alone(session);
+            }
             return;
         };
         let position = session.view.selections.primary().active;
-        let invoked = trigger == CompletionTrigger::Invoked;
         match supervisor.completion(&path, position, trigger) {
             Ok(Some(id)) => self.completion_request = Some(id),
             // `Ok(None)` also means that the document is not open on the
-            // server. The message is shown only when it is true, and only when
-            // the user asked: a typed trigger character is part of ordinary
-            // typing and should not replace the status.
+            // server. Only an invoked request shows anything: a typed trigger
+            // character is part of ordinary typing.
             Ok(None) => {
-                if invoked && supervisor.capabilities().completion.is_none() {
-                    session.status = Some("this server does not offer completion".to_owned());
+                if invoked {
+                    let offers = supervisor.capabilities().completion.is_some();
+                    if !self.offer_snippets_alone(session) && !offers {
+                        session.status = Some("this server does not offer completion".to_owned());
+                    }
                 }
             }
             Err(error) => self.report(session, error.to_string()),
         }
         self.sync_context(session);
+    }
+
+    /// Opens a list of only the user's snippets at the cursor. Returns whether
+    /// there were any to offer.
+    fn offer_snippets_alone(&mut self, session: &mut Session) -> bool {
+        let items = snippet_items(session);
+        if items.is_empty() {
+            return false;
+        }
+        self.open_suggest(session, items, false)
+    }
+
+    /// Opens the list at the start of the word under the cursor, applying the
+    /// part of the word already typed as the filter. Returns whether anything
+    /// matched.
+    fn open_suggest(
+        &mut self,
+        session: &mut Session,
+        items: Vec<CompletionItem>,
+        incomplete: bool,
+    ) -> bool {
+        let anchor = word_start(session);
+        let mut suggest = Suggest::new(items, anchor, incomplete);
+        // The characters between the word's start and the cursor were typed
+        // before the list opened, so they are applied to the filter. Without
+        // this the list shows every item for the word's start and ignores the
+        // characters typed since.
+        let cursor = session.view.selections.primary().active;
+        if anchor.line == cursor.line && cursor.character > anchor.character {
+            let line = session
+                .document
+                .buffer
+                .line_content(cursor.line as usize)
+                .map(|s| s.to_string())
+                .unwrap_or_default();
+            for c in typed_between(&line, anchor.character, cursor.character) {
+                if !suggest.push(c) {
+                    break;
+                }
+            }
+        }
+        if suggest.is_empty() {
+            return false;
+        }
+        self.suggest = Some(suggest);
+        self.sync_context(session);
+        true
     }
 
     /// The characters that open a list automatically.
@@ -522,10 +616,25 @@ impl Lsp {
         // `Hash` + `HashMap` into `HashHashMap`. Otherwise use the span from
         // where the list opened to the cursor, which is the text that was matched.
         let cursor = session.view.selections.primary().active;
-        let range = item.replace.unwrap_or(deco_core::position::Range::ordered(
-            suggest.anchor(),
-            cursor,
-        ));
+        let mut anchor = suggest.anchor();
+        // A snippet prefix may contain characters that end a word, as `foo-bar`
+        // or `->` do. The text typed may then begin before the word the list
+        // opened at, so the start is taken from the prefix instead.
+        if item.replace.is_none() && item.kind == deco_lsp::requests::CompletionKind::Snippet {
+            let line = session
+                .document
+                .buffer
+                .line_content(cursor.line as usize)
+                .map(|s| s.to_string())
+                .unwrap_or_default();
+            let typed = typed_between(&line, 0, cursor.character);
+            if let Some(start) = prefix_start(&typed, &item.filter) {
+                anchor = anchor.min(Position::new(cursor.line, start));
+            }
+        }
+        let range = item
+            .replace
+            .unwrap_or(deco_core::position::Range::ordered(anchor, cursor));
 
         self.dismiss_suggest();
         let expanded = item
@@ -1454,35 +1563,11 @@ impl Lsp {
                         continue;
                     }
                     self.completion_request = None;
-                    if items.is_empty() {
+                    // The user's snippets are offered beside the server's items.
+                    let mut items = items;
+                    items.extend(snippet_items(session));
+                    if !self.open_suggest(session, items, incomplete) {
                         session.status = Some("no completions here".to_owned());
-                    } else {
-                        let anchor = word_start(session);
-                        let mut suggest = Suggest::new(items, anchor, incomplete);
-                        // The characters between the word's start and the cursor
-                        // were typed before the response arrived, so they are
-                        // applied to the filter. Without this the list shows every
-                        // item for the word's start and ignores the characters
-                        // typed since.
-                        let cursor = session.view.selections.primary().active;
-                        if anchor.line == cursor.line && cursor.character > anchor.character {
-                            let line = session
-                                .document
-                                .buffer
-                                .line_content(cursor.line as usize)
-                                .map(|s| s.to_string())
-                                .unwrap_or_default();
-                            for c in typed_between(&line, anchor.character, cursor.character) {
-                                if !suggest.push(c) {
-                                    break;
-                                }
-                            }
-                        }
-                        if suggest.is_empty() {
-                            session.status = Some("no completions here".to_owned());
-                        } else {
-                            self.suggest = Some(suggest);
-                        }
                     }
                     self.sync_context(session);
                     changed = true;
@@ -1809,6 +1894,67 @@ mod tests {
     use deco_config::{Scope, Settings};
     use deco_lsp::requests::CompletionItem;
     use serde_json::json;
+
+    #[test]
+    fn a_snippet_prefix_with_punctuation_is_replaced_whole() {
+        let mut s = session(Settings::with_defaults());
+        s.open(PathBuf::from("/w/main.rs"), "x foo-b");
+        s.view.selections = deco_core::SelectionSet::caret(Position::new(0, 7));
+        s.snippets = vec![deco_config::snippets::UserSnippet {
+            name: "Arrow".to_owned(),
+            prefixes: vec!["foo-bar".to_owned()],
+            body: "FOO_BAR".to_owned(),
+            description: None,
+            languages: None,
+        }];
+        let mut lsp = Lsp::new(&mut s, None);
+        lsp.request_completion(&mut s, CompletionTrigger::Invoked);
+        assert!(lsp.suggest().is_some(), "offered while typing `foo-b`");
+        assert!(lsp.accept(&mut s, 0));
+        assert_eq!(s.document.buffer.text(), "x FOO_BAR");
+
+        assert_eq!(prefix_start(&['a', '-', '>'], "->"), Some(1));
+        assert_eq!(prefix_start(&['x', ' '], "->"), None);
+    }
+
+    #[test]
+    fn user_snippets_are_offered_without_a_server() {
+        let mut s = session(Settings::with_defaults());
+        s.open(PathBuf::from("/w/main.rs"), "ma");
+        s.view.selections = deco_core::SelectionSet::caret(Position::new(0, 2));
+        s.snippets = vec![
+            deco_config::snippets::UserSnippet {
+                name: "Main function".to_owned(),
+                prefixes: vec!["main".to_owned()],
+                body: "fn main() {\n    $0\n}".to_owned(),
+                description: None,
+                languages: Some(vec!["rust".to_owned()]),
+            },
+            deco_config::snippets::UserSnippet {
+                name: "Python main".to_owned(),
+                prefixes: vec!["main".to_owned()],
+                body: "if __name__ == '__main__':".to_owned(),
+                description: None,
+                languages: Some(vec!["python".to_owned()]),
+            },
+        ];
+        let mut lsp = Lsp::new(&mut s, None);
+        lsp.request_completion(&mut s, CompletionTrigger::Invoked);
+        let suggest = lsp.suggest().expect("the rust snippet is offered");
+        let shown: Vec<_> = suggest
+            .visible()
+            .iter()
+            .map(|shown| (shown.item.label.clone(), shown.item.detail.clone()))
+            .collect();
+        assert_eq!(
+            shown,
+            [("main".to_owned(), Some("Main function".to_owned()))]
+        );
+
+        assert!(lsp.accept(&mut s, 0));
+        assert_eq!(s.document.buffer.text(), "fn main() {\n    \n}");
+        assert_eq!(s.view.selections.primary().active, Position::new(1, 4));
+    }
 
     #[test]
     fn completion_variables_expand_on_accept_and_keep_navigation_and_undo() {

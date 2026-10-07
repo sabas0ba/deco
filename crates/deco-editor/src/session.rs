@@ -438,6 +438,9 @@ pub struct Session {
     pub context: ContextKeys,
     /// Where cut and copy put their text.
     pub clipboard: Box<dyn Clipboard>,
+    /// User and workspace snippets, offered by `editor.action.insertSnippet`
+    /// and in the completion list. The frontend reads the files.
+    pub snippets: Vec<deco_config::snippets::UserSnippet>,
     /// A transient message for the status bar.
     pub status: Option<String>,
     /// The open prompt — go to line, or the command palette — if there is one.
@@ -744,6 +747,7 @@ impl Session {
             // `!isMac` binding cannot be chosen and then gated out.
             context: ContextKeys::for_platform(platform),
             clipboard: Box::new(MemoryClipboard::default()),
+            snippets: Vec::new(),
             status: None,
             find: Find::new(),
             prompt: None,
@@ -1691,6 +1695,7 @@ impl Session {
             // The quick-open prompt. Like the find bar, it needs the whole
             // session, not only the document and view that a command in
             // `commands` sees.
+            "editor.action.insertSnippet" => self.insert_snippet_command(args, now_ms),
             "workbench.action.gotoLine" => {
                 self.prompt = Some(Prompt::plain(PromptKind::GoToLine));
                 Outcome::Handled
@@ -2426,6 +2431,14 @@ impl Session {
                 },
                 None => Outcome::Message(format!("no theme matches `{}`", prompt.text())),
             },
+            PromptKind::Snippets => match prompt
+                .selected()
+                .and_then(|entry| entry.id.parse::<usize>().ok())
+                .and_then(|at| self.snippets.get(at).cloned())
+            {
+                Some(snippet) => self.insert_user_snippet(&snippet.body, &snippet.name, now_ms),
+                None => Outcome::Message(format!("no snippet matches `{}`", prompt.text())),
+            },
             PromptKind::SnippetChoice => match prompt.selected() {
                 Some(entry) => {
                     let option = entry.title.clone();
@@ -2816,36 +2829,175 @@ impl Session {
         end
     }
 
-    /// Expands supported variables using the active document before insertion.
-    /// No filesystem, environment or clipboard access is performed.
+    /// The user snippets that apply to the active document's language.
+    pub fn snippets_here(&self) -> impl Iterator<Item = &deco_config::snippets::UserSnippet> {
+        let language = self.document.language_id.as_deref();
+        self.snippets
+            .iter()
+            .filter(move |snippet| snippet.applies_to(language))
+    }
+
+    /// `editor.action.insertSnippet`.
+    ///
+    /// `{"snippet": "..."}` inserts the given text, as a keybinding can.
+    /// `{"name": "..."}` inserts the user snippet of that name. Without
+    /// arguments, the snippets for this language are listed to choose from.
+    fn insert_snippet_command(&mut self, args: Option<&serde_json::Value>, now_ms: u64) -> Outcome {
+        if self.focus != Focus::Editor || self.comparison.is_some() {
+            return Outcome::Handled;
+        }
+        if let Some(source) = args.and_then(|args| args["snippet"].as_str()) {
+            return self.insert_user_snippet(source, "this snippet", now_ms);
+        }
+        if let Some(name) = args.and_then(|args| args["name"].as_str()) {
+            let found = self
+                .snippets_here()
+                .find(|snippet| snippet.name == name)
+                .cloned();
+            return match found {
+                Some(snippet) => self.insert_user_snippet(&snippet.body, &snippet.name, now_ms),
+                None => Outcome::Message(format!("no snippet named `{name}` for this file")),
+            };
+        }
+        let entries: Vec<_> = self
+            .snippets
+            .iter()
+            .enumerate()
+            .filter(|(_, snippet)| snippet.applies_to(self.document.language_id.as_deref()))
+            .map(|(at, snippet)| {
+                let detail = snippet
+                    .description
+                    .clone()
+                    .unwrap_or_else(|| snippet.prefixes.join(", "));
+                crate::commands::PaletteEntry::new(&at.to_string(), &snippet.name)
+                    .with_detail(&detail)
+            })
+            .collect();
+        if entries.is_empty() {
+            return Outcome::Message("there are no snippets for this file".to_owned());
+        }
+        self.prompt = Some(Prompt::list(PromptKind::Snippets, entries));
+        self.refresh_context();
+        Outcome::Handled
+    }
+
+    /// Inserts snippet text in place of the primary selection.
+    ///
+    /// Text without snippet syntax is inserted as it is. A snippet deco cannot
+    /// expand is reported, with `name` naming it, and nothing is inserted.
+    fn insert_user_snippet(&mut self, source: &str, name: &str, now_ms: u64) -> Outcome {
+        let range = self.view.selections.primary().range();
+        match self.expand_snippet(source) {
+            Some(snippet) => {
+                self.insert_snippet(range, &snippet, now_ms);
+                Outcome::Handled
+            }
+            None if !source.contains('$') => {
+                self.replace_range(range, source, now_ms);
+                Outcome::Handled
+            }
+            None => Outcome::Message(format!(
+                "{name} uses snippet syntax or a variable deco does not support"
+            )),
+        }
+    }
+
+    /// Expands a snippet, resolving its variables from the active document,
+    /// the workspace, the clipboard and the local clock.
+    ///
+    /// No file is read: every value comes from state the session already holds,
+    /// except the clipboard, which the frontend provides, and the clock.
     pub fn expand_snippet(&self, source: &str) -> Option<deco_lsp::snippet::Snippet> {
-        let selection = self.view.selections.primary();
-        let cursor = self.document.buffer.clamp_position(selection.active);
+        self.expand_snippet_with(source, crate::clock::now, crate::clock::random_u64)
+    }
+
+    /// [`Session::expand_snippet`] with the clock and the random numbers given,
+    /// so that tests can fix them. The clock is read at most once.
+    fn expand_snippet_with(
+        &self,
+        source: &str,
+        now: impl FnOnce() -> crate::clock::LocalTime,
+        mut random: impl FnMut() -> u64,
+    ) -> Option<deco_lsp::snippet::Snippet> {
+        let mut now = Some(now);
+        let mut time = None;
         deco_lsp::snippet::Snippet::parse_with_variables(source, |name| {
-            let path = self.document.path.as_deref();
+            if let Some(value) = self.document_variable(name) {
+                return Some(value);
+            }
+            if name.starts_with("CURRENT_") {
+                let time = *time.get_or_insert_with(|| (now.take().expect("read once"))());
+                return date_variable(name, &time);
+            }
             Some(match name {
-                "TM_FILENAME" => path
-                    .and_then(std::path::Path::file_name)
-                    .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or_default(),
-                "TM_FILENAME_BASE" => path
-                    .and_then(std::path::Path::file_stem)
-                    .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or_default(),
-                "TM_LINE_INDEX" => cursor.line.to_string(),
-                "TM_LINE_NUMBER" => (u64::from(cursor.line) + 1).to_string(),
-                "TM_CURRENT_LINE" => self
-                    .document
-                    .buffer
-                    .line_content(cursor.line as usize)
-                    .map(|line| line.to_string())
-                    .unwrap_or_default(),
-                "TM_CURRENT_WORD" => deco_core::search::word_at(&self.document.buffer, cursor)
-                    .map(|range| self.document.buffer.text_in_range(range))
-                    .unwrap_or_default(),
-                "TM_SELECTED_TEXT" => self.document.buffer.text_in_range(selection.range()),
+                "RANDOM" => format!("{:06}", random() % 1_000_000),
+                "RANDOM_HEX" => format!("{:06x}", random() & 0xff_ffff),
+                "UUID" => uuid(random(), random()),
                 _ => return None,
             })
+        })
+    }
+
+    /// The value of a variable that describes the document, the workspace or
+    /// the clipboard, or `None` when `name` is not one of them.
+    fn document_variable(&self, name: &str) -> Option<String> {
+        let selection = self.view.selections.primary();
+        let cursor = self.document.buffer.clamp_position(selection.active);
+        let path = self.document.path.as_deref();
+        let root = self.explorer.as_ref().map(|explorer| explorer.root());
+        let language = self.document.language_id.as_deref();
+        let name_of = |path: Option<&std::path::Path>| {
+            path.map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        };
+        Some(match name {
+            "TM_FILENAME" => path
+                .and_then(std::path::Path::file_name)
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            "TM_FILENAME_BASE" => path
+                .and_then(std::path::Path::file_stem)
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            "TM_DIRECTORY" => name_of(path.and_then(std::path::Path::parent)),
+            "TM_FILEPATH" => name_of(path),
+            "RELATIVE_FILEPATH" => match (path, root) {
+                (Some(path), Some(root)) => name_of(Some(path.strip_prefix(root).unwrap_or(path))),
+                (path, _) => name_of(path),
+            },
+            "TM_LINE_INDEX" => cursor.line.to_string(),
+            "TM_LINE_NUMBER" => (u64::from(cursor.line) + 1).to_string(),
+            "TM_CURRENT_LINE" => self
+                .document
+                .buffer
+                .line_content(cursor.line as usize)
+                .map(|line| line.to_string())
+                .unwrap_or_default(),
+            "TM_CURRENT_WORD" => deco_core::search::word_at(&self.document.buffer, cursor)
+                .map(|range| self.document.buffer.text_in_range(range))
+                .unwrap_or_default(),
+            "TM_SELECTED_TEXT" => self.document.buffer.text_in_range(selection.range()),
+            // A snippet is inserted once, at the primary cursor.
+            "CURSOR_INDEX" => "0".to_owned(),
+            "CURSOR_NUMBER" => "1".to_owned(),
+            "CLIPBOARD" => self.clipboard.read(),
+            "WORKSPACE_NAME" => name_of(
+                root.and_then(std::path::Path::file_name)
+                    .map(std::path::Path::new),
+            ),
+            "WORKSPACE_FOLDER" => name_of(root),
+            "LINE_COMMENT" => crate::document::line_comment_token(language)
+                .unwrap_or_default()
+                .to_owned(),
+            "BLOCK_COMMENT_START" => crate::document::block_comment_tokens(language)
+                .map(|(start, _)| start)
+                .unwrap_or_default()
+                .to_owned(),
+            "BLOCK_COMMENT_END" => crate::document::block_comment_tokens(language)
+                .map(|(_, end)| end)
+                .unwrap_or_default()
+                .to_owned(),
+            _ => return None,
         })
     }
 
@@ -5098,6 +5250,71 @@ impl Session {
     }
 }
 
+/// The value of a `CURRENT_*` date variable, or `None` for another name.
+fn date_variable(name: &str, time: &crate::clock::LocalTime) -> Option<String> {
+    const MONTHS: [&str; 12] = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
+    const DAYS: [&str; 7] = [
+        "Sunday",
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+    ];
+    let month = MONTHS[time.month as usize - 1];
+    let day = DAYS[time.weekday as usize];
+    Some(match name {
+        "CURRENT_YEAR" => time.year.to_string(),
+        "CURRENT_YEAR_SHORT" => format!("{:02}", time.year.rem_euclid(100)),
+        "CURRENT_MONTH" => format!("{:02}", time.month),
+        "CURRENT_MONTH_NAME" => month.to_owned(),
+        "CURRENT_MONTH_NAME_SHORT" => month[..3].to_owned(),
+        "CURRENT_DATE" => format!("{:02}", time.day),
+        "CURRENT_DAY_NAME" => day.to_owned(),
+        "CURRENT_DAY_NAME_SHORT" => day[..3].to_owned(),
+        "CURRENT_HOUR" => format!("{:02}", time.hour),
+        "CURRENT_MINUTE" => format!("{:02}", time.minute),
+        "CURRENT_SECOND" => format!("{:02}", time.second),
+        "CURRENT_SECONDS_UNIX" => time.unix.to_string(),
+        "CURRENT_TIMEZONE_OFFSET" => {
+            let sign = if time.offset_minutes < 0 { '-' } else { '+' };
+            let minutes = time.offset_minutes.unsigned_abs();
+            format!("{sign}{:02}:{:02}", minutes / 60, minutes % 60)
+        }
+        _ => return None,
+    })
+}
+
+/// A version 4 UUID built from two random numbers, in lower case.
+fn uuid(high: u64, low: u64) -> String {
+    // Version 4 in the top nibble of the third group; variant 10 in the top
+    // bits of the fourth.
+    let high = (high & !0xf000) | 0x4000;
+    let low = (low & !(0b11 << 62)) | (0b10 << 62);
+    format!(
+        "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
+        high >> 32,
+        (high >> 16) & 0xffff,
+        high & 0xffff,
+        low >> 48,
+        low & 0xffff_ffff_ffff
+    )
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -5128,8 +5345,49 @@ mod tests {
             .expand_snippet("${TM_FILENAME:untitled}|${TM_SELECTED_TEXT:empty}|$TM_LINE_NUMBER")
             .unwrap();
         assert_eq!(snippet.text, "untitled|empty|1");
-        assert!(s.expand_snippet("$CLIPBOARD").is_none());
         assert!(s.expand_snippet("${UNKNOWN:default}").is_none());
+    }
+
+    #[test]
+    fn snippet_variables_cover_the_workspace_clipboard_and_comments() {
+        let mut s = session();
+        s.set_workspace_root(PathBuf::from("/w"));
+        s.open(PathBuf::from("/w/src/main.rs"), "fn main() {}\n");
+        s.clipboard.write("copied");
+        let snippet = s
+            .expand_snippet(
+                "$TM_DIRECTORY|$TM_FILEPATH|$RELATIVE_FILEPATH|$WORKSPACE_NAME|$WORKSPACE_FOLDER|\
+                 $CLIPBOARD|$CURSOR_INDEX|$CURSOR_NUMBER|$LINE_COMMENT|$BLOCK_COMMENT_START|$BLOCK_COMMENT_END",
+            )
+            .unwrap();
+        // The paths keep the separators they were given, on every platform.
+        assert_eq!(
+            snippet.text,
+            "/w/src|/w/src/main.rs|src/main.rs|w|/w|copied|0|1|//|/*|*/"
+        );
+    }
+
+    #[test]
+    fn snippet_date_and_random_variables_use_the_given_clock_and_numbers() {
+        let s = session();
+        // 2026-10-04T23:30:15Z, a Sunday, seen from UTC-05:30.
+        let time = crate::clock::LocalTime::at_offset(1_791_156_615, -330);
+        let mut numbers = [1_234_567_u64, 0xabcdef, u64::MAX, 0].into_iter();
+        let snippet = s
+            .expand_snippet_with(
+                "$CURRENT_YEAR $CURRENT_YEAR_SHORT-$CURRENT_MONTH-$CURRENT_DATE \
+                 $CURRENT_MONTH_NAME $CURRENT_MONTH_NAME_SHORT $CURRENT_DAY_NAME $CURRENT_DAY_NAME_SHORT \
+                 $CURRENT_HOUR:$CURRENT_MINUTE:$CURRENT_SECOND $CURRENT_TIMEZONE_OFFSET $CURRENT_SECONDS_UNIX \
+                 $RANDOM $RANDOM_HEX $UUID",
+                || time,
+                || numbers.next().unwrap_or(0),
+            )
+            .unwrap();
+        assert_eq!(
+            snippet.text,
+            "2026 26-10-04 October Oct Sunday Sun 18:00:15 -05:30 1791156615 \
+             234567 abcdef ffffffff-ffff-4fff-8000-000000000000"
+        );
     }
 
     #[test]
@@ -5262,6 +5520,80 @@ mod tests {
         press(&mut s, "escape");
         assert_eq!(s.document.buffer.text(), "[long] long");
         assert_eq!(s.view.selections.primary().active, Position::new(0, 11));
+    }
+
+    fn user_snippet(
+        name: &str,
+        body: &str,
+        languages: Option<&[&str]>,
+    ) -> deco_config::snippets::UserSnippet {
+        deco_config::snippets::UserSnippet {
+            name: name.to_owned(),
+            prefixes: vec![name.to_lowercase()],
+            body: body.to_owned(),
+            description: None,
+            languages: languages.map(|l| l.iter().map(|s| s.to_string()).collect()),
+        }
+    }
+
+    #[test]
+    fn insert_snippet_lists_the_snippets_for_the_language_and_inserts_the_choice() {
+        let mut s = session();
+        s.open(PathBuf::from("/w/main.rs"), "");
+        s.snippets = vec![
+            user_snippet("Main", "fn main() {\n    $0\n}", Some(&["rust"])),
+            user_snippet("Log", "console.log($1);", Some(&["javascript"])),
+            user_snippet("Todo", "TODO: $1", None),
+        ];
+        s.run("editor.action.insertSnippet", None, 0);
+        let prompt = s.prompt.as_ref().expect("a list");
+        assert_eq!(prompt.kind(), PromptKind::Snippets);
+        let offered: Vec<&str> = prompt.visible().iter().map(|e| e.title.as_str()).collect();
+        assert_eq!(offered, ["Main", "Todo"], "not the JavaScript one");
+
+        s.run("workbench.action.acceptSelectedQuickOpenItem", None, 1000);
+        assert_eq!(s.document.buffer.text(), "fn main() {\n    \n}");
+        assert_eq!(
+            s.view.selections.primary().active,
+            deco_core::Position::new(1, 4)
+        );
+    }
+
+    #[test]
+    fn insert_snippet_takes_a_name_or_the_text_itself() {
+        let mut s = session();
+        s.open(PathBuf::from("/w/main.rs"), "word");
+        s.snippets = vec![user_snippet("Todo", "TODO($TM_SELECTED_TEXT)", None)];
+        s.run("editor.action.selectAll", None, 0);
+        s.run(
+            "editor.action.insertSnippet",
+            Some(&serde_json::json!({"name": "Todo"})),
+            1000,
+        );
+        assert_eq!(s.document.buffer.text(), "TODO(word)");
+
+        s.run(
+            "editor.action.insertSnippet",
+            Some(&serde_json::json!({"snippet": " plain"})),
+            2000,
+        );
+        assert_eq!(s.document.buffer.text(), "TODO(word) plain");
+
+        let outcome = s.run(
+            "editor.action.insertSnippet",
+            Some(&serde_json::json!({"snippet": "$UNKNOWN"})),
+            3000,
+        );
+        assert!(matches!(outcome, Outcome::Message(_)), "{outcome:?}");
+        assert_eq!(s.document.buffer.text(), "TODO(word) plain");
+        assert!(matches!(
+            s.run(
+                "editor.action.insertSnippet",
+                Some(&serde_json::json!({"name": "Nope"})),
+                0
+            ),
+            Outcome::Message(_)
+        ));
     }
 
     #[test]
