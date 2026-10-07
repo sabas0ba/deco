@@ -2816,36 +2816,102 @@ impl Session {
         end
     }
 
-    /// Expands supported variables using the active document before insertion.
-    /// No filesystem, environment or clipboard access is performed.
+    /// Expands a snippet, resolving its variables from the active document,
+    /// the workspace, the clipboard and the local clock.
+    ///
+    /// No file is read: every value comes from state the session already holds,
+    /// except the clipboard, which the frontend provides, and the clock.
     pub fn expand_snippet(&self, source: &str) -> Option<deco_lsp::snippet::Snippet> {
-        let selection = self.view.selections.primary();
-        let cursor = self.document.buffer.clamp_position(selection.active);
+        self.expand_snippet_with(source, crate::clock::now, crate::clock::random_u64)
+    }
+
+    /// [`Session::expand_snippet`] with the clock and the random numbers given,
+    /// so that tests can fix them. The clock is read at most once.
+    fn expand_snippet_with(
+        &self,
+        source: &str,
+        now: impl FnOnce() -> crate::clock::LocalTime,
+        mut random: impl FnMut() -> u64,
+    ) -> Option<deco_lsp::snippet::Snippet> {
+        let mut now = Some(now);
+        let mut time = None;
         deco_lsp::snippet::Snippet::parse_with_variables(source, |name| {
-            let path = self.document.path.as_deref();
+            if let Some(value) = self.document_variable(name) {
+                return Some(value);
+            }
+            if name.starts_with("CURRENT_") {
+                let time = *time.get_or_insert_with(|| (now.take().expect("read once"))());
+                return date_variable(name, &time);
+            }
             Some(match name {
-                "TM_FILENAME" => path
-                    .and_then(std::path::Path::file_name)
-                    .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or_default(),
-                "TM_FILENAME_BASE" => path
-                    .and_then(std::path::Path::file_stem)
-                    .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or_default(),
-                "TM_LINE_INDEX" => cursor.line.to_string(),
-                "TM_LINE_NUMBER" => (u64::from(cursor.line) + 1).to_string(),
-                "TM_CURRENT_LINE" => self
-                    .document
-                    .buffer
-                    .line_content(cursor.line as usize)
-                    .map(|line| line.to_string())
-                    .unwrap_or_default(),
-                "TM_CURRENT_WORD" => deco_core::search::word_at(&self.document.buffer, cursor)
-                    .map(|range| self.document.buffer.text_in_range(range))
-                    .unwrap_or_default(),
-                "TM_SELECTED_TEXT" => self.document.buffer.text_in_range(selection.range()),
+                "RANDOM" => format!("{:06}", random() % 1_000_000),
+                "RANDOM_HEX" => format!("{:06x}", random() & 0xff_ffff),
+                "UUID" => uuid(random(), random()),
                 _ => return None,
             })
+        })
+    }
+
+    /// The value of a variable that describes the document, the workspace or
+    /// the clipboard, or `None` when `name` is not one of them.
+    fn document_variable(&self, name: &str) -> Option<String> {
+        let selection = self.view.selections.primary();
+        let cursor = self.document.buffer.clamp_position(selection.active);
+        let path = self.document.path.as_deref();
+        let root = self.explorer.as_ref().map(|explorer| explorer.root());
+        let language = self.document.language_id.as_deref();
+        let name_of = |path: Option<&std::path::Path>| {
+            path.map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        };
+        Some(match name {
+            "TM_FILENAME" => path
+                .and_then(std::path::Path::file_name)
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            "TM_FILENAME_BASE" => path
+                .and_then(std::path::Path::file_stem)
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            "TM_DIRECTORY" => name_of(path.and_then(std::path::Path::parent)),
+            "TM_FILEPATH" => name_of(path),
+            "RELATIVE_FILEPATH" => match (path, root) {
+                (Some(path), Some(root)) => name_of(Some(path.strip_prefix(root).unwrap_or(path))),
+                (path, _) => name_of(path),
+            },
+            "TM_LINE_INDEX" => cursor.line.to_string(),
+            "TM_LINE_NUMBER" => (u64::from(cursor.line) + 1).to_string(),
+            "TM_CURRENT_LINE" => self
+                .document
+                .buffer
+                .line_content(cursor.line as usize)
+                .map(|line| line.to_string())
+                .unwrap_or_default(),
+            "TM_CURRENT_WORD" => deco_core::search::word_at(&self.document.buffer, cursor)
+                .map(|range| self.document.buffer.text_in_range(range))
+                .unwrap_or_default(),
+            "TM_SELECTED_TEXT" => self.document.buffer.text_in_range(selection.range()),
+            // A snippet is inserted once, at the primary cursor.
+            "CURSOR_INDEX" => "0".to_owned(),
+            "CURSOR_NUMBER" => "1".to_owned(),
+            "CLIPBOARD" => self.clipboard.read(),
+            "WORKSPACE_NAME" => name_of(
+                root.and_then(std::path::Path::file_name)
+                    .map(std::path::Path::new),
+            ),
+            "WORKSPACE_FOLDER" => name_of(root),
+            "LINE_COMMENT" => crate::document::line_comment_token(language)
+                .unwrap_or_default()
+                .to_owned(),
+            "BLOCK_COMMENT_START" => crate::document::block_comment_tokens(language)
+                .map(|(start, _)| start)
+                .unwrap_or_default()
+                .to_owned(),
+            "BLOCK_COMMENT_END" => crate::document::block_comment_tokens(language)
+                .map(|(_, end)| end)
+                .unwrap_or_default()
+                .to_owned(),
+            _ => return None,
         })
     }
 
@@ -5098,6 +5164,71 @@ impl Session {
     }
 }
 
+/// The value of a `CURRENT_*` date variable, or `None` for another name.
+fn date_variable(name: &str, time: &crate::clock::LocalTime) -> Option<String> {
+    const MONTHS: [&str; 12] = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
+    const DAYS: [&str; 7] = [
+        "Sunday",
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+    ];
+    let month = MONTHS[time.month as usize - 1];
+    let day = DAYS[time.weekday as usize];
+    Some(match name {
+        "CURRENT_YEAR" => time.year.to_string(),
+        "CURRENT_YEAR_SHORT" => format!("{:02}", time.year.rem_euclid(100)),
+        "CURRENT_MONTH" => format!("{:02}", time.month),
+        "CURRENT_MONTH_NAME" => month.to_owned(),
+        "CURRENT_MONTH_NAME_SHORT" => month[..3].to_owned(),
+        "CURRENT_DATE" => format!("{:02}", time.day),
+        "CURRENT_DAY_NAME" => day.to_owned(),
+        "CURRENT_DAY_NAME_SHORT" => day[..3].to_owned(),
+        "CURRENT_HOUR" => format!("{:02}", time.hour),
+        "CURRENT_MINUTE" => format!("{:02}", time.minute),
+        "CURRENT_SECOND" => format!("{:02}", time.second),
+        "CURRENT_SECONDS_UNIX" => time.unix.to_string(),
+        "CURRENT_TIMEZONE_OFFSET" => {
+            let sign = if time.offset_minutes < 0 { '-' } else { '+' };
+            let minutes = time.offset_minutes.unsigned_abs();
+            format!("{sign}{:02}:{:02}", minutes / 60, minutes % 60)
+        }
+        _ => return None,
+    })
+}
+
+/// A version 4 UUID built from two random numbers, in lower case.
+fn uuid(high: u64, low: u64) -> String {
+    // Version 4 in the top nibble of the third group; variant 10 in the top
+    // bits of the fourth.
+    let high = (high & !0xf000) | 0x4000;
+    let low = (low & !(0b11 << 62)) | (0b10 << 62);
+    format!(
+        "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
+        high >> 32,
+        (high >> 16) & 0xffff,
+        high & 0xffff,
+        low >> 48,
+        low & 0xffff_ffff_ffff
+    )
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -5128,8 +5259,49 @@ mod tests {
             .expand_snippet("${TM_FILENAME:untitled}|${TM_SELECTED_TEXT:empty}|$TM_LINE_NUMBER")
             .unwrap();
         assert_eq!(snippet.text, "untitled|empty|1");
-        assert!(s.expand_snippet("$CLIPBOARD").is_none());
         assert!(s.expand_snippet("${UNKNOWN:default}").is_none());
+    }
+
+    #[test]
+    fn snippet_variables_cover_the_workspace_clipboard_and_comments() {
+        let mut s = session();
+        s.set_workspace_root(PathBuf::from("/w"));
+        s.open(PathBuf::from("/w/src/main.rs"), "fn main() {}\n");
+        s.clipboard.write("copied");
+        let snippet = s
+            .expand_snippet(
+                "$TM_DIRECTORY|$TM_FILEPATH|$RELATIVE_FILEPATH|$WORKSPACE_NAME|$WORKSPACE_FOLDER|\
+                 $CLIPBOARD|$CURSOR_INDEX|$CURSOR_NUMBER|$LINE_COMMENT|$BLOCK_COMMENT_START|$BLOCK_COMMENT_END",
+            )
+            .unwrap();
+        // The paths keep the separators they were given, on every platform.
+        assert_eq!(
+            snippet.text,
+            "/w/src|/w/src/main.rs|src/main.rs|w|/w|copied|0|1|//|/*|*/"
+        );
+    }
+
+    #[test]
+    fn snippet_date_and_random_variables_use_the_given_clock_and_numbers() {
+        let s = session();
+        // 2026-10-04T23:30:15Z, a Sunday, seen from UTC-05:30.
+        let time = crate::clock::LocalTime::at_offset(1_791_156_615, -330);
+        let mut numbers = [1_234_567_u64, 0xabcdef, u64::MAX, 0].into_iter();
+        let snippet = s
+            .expand_snippet_with(
+                "$CURRENT_YEAR $CURRENT_YEAR_SHORT-$CURRENT_MONTH-$CURRENT_DATE \
+                 $CURRENT_MONTH_NAME $CURRENT_MONTH_NAME_SHORT $CURRENT_DAY_NAME $CURRENT_DAY_NAME_SHORT \
+                 $CURRENT_HOUR:$CURRENT_MINUTE:$CURRENT_SECOND $CURRENT_TIMEZONE_OFFSET $CURRENT_SECONDS_UNIX \
+                 $RANDOM $RANDOM_HEX $UUID",
+                || time,
+                || numbers.next().unwrap_or(0),
+            )
+            .unwrap();
+        assert_eq!(
+            snippet.text,
+            "2026 26-10-04 October Oct Sunday Sun 18:00:15 -05:30 1791156615 \
+             234567 abcdef ffffffff-ffff-4fff-8000-000000000000"
+        );
     }
 
     #[test]

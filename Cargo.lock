@@ -623,8 +623,10 @@ dependencies = [
  "deco-scm",
  "deco-syntax",
  "deco-theme",
+ "libc",
  "serde_json",
  "thiserror 2.0.20",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
