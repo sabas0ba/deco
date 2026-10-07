@@ -130,15 +130,21 @@ pub fn load(
 ///
 /// A workspace may only hold `*.code-snippets` files, as in VS Code, because
 /// its `.vscode` directory also holds `settings.json` and other JSON files
-/// that are not snippets. A directory that does not exist holds no snippets.
+/// that are not snippets. A directory that does not exist holds no snippets;
+/// one that cannot be listed is reported.
 fn load_snippets(
     dir: &Path,
     workspace: bool,
     snippets: &mut Vec<UserSnippet>,
     problems: &mut Vec<String>,
 ) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+        Err(error) => {
+            problems.push(format!("{}: {error}", dir.display()));
+            return;
+        }
     };
     let mut files: Vec<(PathBuf, FileKind)> = entries
         .flatten()
