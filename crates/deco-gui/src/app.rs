@@ -27,6 +27,35 @@ fn to_glyphon(color: Rgba) -> Color {
     Color::rgba(color.r, color.g, color.b, color.a)
 }
 
+/// `text` split into pieces with their colour, `None` for the default.
+///
+/// Where ranges overlap, the later one wins, so the character under a block
+/// caret keeps the caret's text colour inside a selection.
+fn recolored_spans(
+    text: &str,
+    recolored: &[(std::ops::Range<usize>, Rgba)],
+) -> Vec<(String, Option<Rgba>)> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut colors: Vec<Option<Rgba>> = vec![None; chars.len()];
+    for (range, color) in recolored {
+        for slot in colors
+            .iter_mut()
+            .take(range.end.min(chars.len()))
+            .skip(range.start)
+        {
+            *slot = Some(*color);
+        }
+    }
+    let mut spans: Vec<(String, Option<Rgba>)> = Vec::new();
+    for (c, color) in chars.into_iter().zip(colors) {
+        match spans.last_mut() {
+            Some((piece, last)) if *last == color => piece.push(c),
+            _ => spans.push((c.to_string(), color)),
+        }
+    }
+    spans
+}
+
 /// The advance width of one character in `family` at the size in `metrics`.
 ///
 /// Measured on `M`, whose advance equals every other glyph's in a monospace
@@ -185,8 +214,16 @@ impl Gpu {
                 buffers.push((buffer, metrics.padding, line.y, to_glyphon(color)));
             }
             let mut buffer = TextBuffer::new(&mut self.font_system, text_metrics);
-            buffer.borrow_with(&mut self.font_system).set_text(
-                &line.text,
+            let spans = recolored_spans(&line.text, &line.recolored);
+            buffer.borrow_with(&mut self.font_system).set_rich_text(
+                spans.iter().map(|(text, color)| {
+                    let attrs = attrs.clone();
+                    let attrs = match color {
+                        Some(color) => attrs.color(to_glyphon(*color)),
+                        None => attrs,
+                    };
+                    (text.as_str(), attrs)
+                }),
                 &attrs,
                 Shaping::Advanced,
                 None,
@@ -515,6 +552,28 @@ pub fn run(session: &mut Session) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recoloured_ranges_split_a_line_and_the_later_range_wins() {
+        let white = Rgba::new(255, 255, 255, 255);
+        let black = Rgba::new(0, 0, 0, 255);
+        let spans = recolored_spans("hello", &[(1..4, black), (2..3, white)]);
+        assert_eq!(
+            spans,
+            [
+                ("h".to_owned(), None),
+                ("e".to_owned(), Some(black)),
+                ("l".to_owned(), Some(white)),
+                ("l".to_owned(), Some(black)),
+                ("o".to_owned(), None),
+            ]
+        );
+        // A range past the end, as for a caret at the end of a line, is cut.
+        assert_eq!(
+            recolored_spans("ab", &[(2..3, black)]),
+            [("ab".to_owned(), None)]
+        );
+    }
 
     #[test]
     fn colours_are_converted_for_glyphon() {

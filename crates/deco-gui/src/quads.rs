@@ -19,8 +19,36 @@ pub struct Quad {
 /// The rectangles to draw for `layout`, back to front.
 ///
 /// The current-line highlight comes first, then the selections over it, then
-/// the caret. An outline caret style is drawn as its four edges.
+/// the caret. An outline caret style is drawn as its four edges. Every
+/// rectangle is clipped to the editor region.
 pub fn rectangles(layout: &Layout) -> Vec<Quad> {
+    let mut quads = unclipped(layout);
+    let area = layout.editor_area;
+    quads.retain_mut(|quad| match clip(quad.rect, area) {
+        Some(rect) => {
+            quad.rect = rect;
+            true
+        }
+        None => false,
+    });
+    quads
+}
+
+/// The part of `rect` inside `area`, if any.
+fn clip(rect: Rect, area: Rect) -> Option<Rect> {
+    let left = rect.x.max(area.x);
+    let top = rect.y.max(area.y);
+    let right = (rect.x + rect.width).min(area.x + area.width);
+    let bottom = (rect.y + rect.height).min(area.y + area.height);
+    (right > left && bottom > top).then_some(Rect {
+        x: left,
+        y: top,
+        width: right - left,
+        height: bottom - top,
+    })
+}
+
+fn unclipped(layout: &Layout) -> Vec<Quad> {
     let colors = &layout.colors;
     let mut quads = Vec::new();
     if let Some(rect) = layout.current_line {
@@ -322,6 +350,64 @@ mod tests {
             .filter(|quad| quad.color == laid.colors.cursor)
             .collect();
         assert_eq!(caret.len(), 4);
+    }
+
+    fn selected_session(theme: Option<&str>) -> (deco_editor::Session, crate::layout::Metrics) {
+        let mut session = deco_editor::Session::with_defaults();
+        if let Some(source) = theme {
+            session.set_theme(deco_theme::ColorTheme::from_json(source).expect("a theme"));
+        }
+        session.open(std::path::PathBuf::from("/w/file.rs"), "hello world");
+        session.view.selections = deco_core::SelectionSet::single(deco_core::Selection::new(
+            deco_core::Position::new(0, 0),
+            deco_core::Position::new(0, 11),
+        ));
+        let metrics = crate::layout::Metrics {
+            font_size: 14.0,
+            line_height: 20.0,
+            cell_width: 8.0,
+            padding: 8.0,
+        };
+        (session, metrics)
+    }
+
+    #[test]
+    fn rectangles_stay_inside_the_editor_region() {
+        let (session, metrics) = selected_session(None);
+        let mut laid = crate::layout::layout(&session, 400.0, 100.0, metrics);
+        // As if a side bar on the right left the editor only 60 pixels.
+        laid.editor_area.width = 60.0;
+        for quad in rectangles(&laid) {
+            assert!(quad.rect.x + quad.rect.width <= 60.0, "{quad:?}");
+        }
+        assert_eq!(
+            clip(rect(50.0, 0.0, 10.0, 10.0), rect(0.0, 0.0, 40.0, 40.0)),
+            None
+        );
+    }
+
+    #[test]
+    fn text_stays_readable_on_an_opaque_selection() {
+        // High contrast: white text, and an opaque white selection.
+        let (session, metrics) = selected_session(Some(r#"{ "type": "hc-black", "colors": {} }"#));
+        let laid = crate::layout::layout(&session, 400.0, 100.0, metrics);
+        assert_eq!(laid.colors.selection_text, Some(laid.colors.background));
+        assert_eq!(laid.lines[0].recolored, [(0..11, laid.colors.background)]);
+
+        // A translucent selection keeps the theme's foreground.
+        let (session, metrics) = selected_session(None);
+        let laid = crate::layout::layout(&session, 400.0, 100.0, metrics);
+        assert_eq!(laid.colors.selection_text, None);
+        assert!(laid.lines[0].recolored.is_empty());
+    }
+
+    #[test]
+    fn the_character_under_a_block_caret_takes_the_caret_text_colour() {
+        let (mut session, metrics) = selected_session(None);
+        session.view.selections = deco_core::SelectionSet::caret(deco_core::Position::new(0, 2));
+        session.document.settings.cursor_style = CursorStyle::Block;
+        let laid = crate::layout::layout(&session, 400.0, 100.0, metrics);
+        assert_eq!(laid.lines[0].recolored, [(2..3, laid.colors.cursor_text)]);
     }
 
     #[test]
