@@ -12,7 +12,7 @@ deco keeps its configuration under one root and falls back to VS Code's location
 | macOS | `~/Library/Application Support/deco` | `~/Library/Application Support/Code/User` |
 | Windows | `%APPDATA%\deco` | `%APPDATA%\Code\User` |
 
-The root contains `settings.json`, `keybindings.json`, `extensions/` and `snippets/`. VS Code stores user JSON under `Code/User` but extensions under `~/.vscode/extensions` on every platform. deco uses those separate locations when reading VS Code's files, and keeps its own files under one root.
+The root contains `settings.json`, `keybindings.json`, `extensions/` and [`snippets/`](snippets.md#your-own-snippets). VS Code stores user JSON under `Code/User` but extensions under `~/.vscode/extensions` on every platform. deco uses those separate locations when reading VS Code's files, and keeps its own files under one root.
 
 **Nothing is ever written back to VS Code's directory.** The fallback is one-way.
 

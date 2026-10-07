@@ -14,6 +14,7 @@ reference; the [top-level README](https://github.com/sabas0ba/deco#readme) provi
 | [Find and replace](find-and-replace.md) | `ctrl+f`, `ctrl+h`, `F3`, the multi-cursor find keys, and replacing across the workspace |
 | [Running commands](commands.md) | The command palette, quick open, go to symbol, search in files, go to line |
 | [Language servers](language-servers.md) | Diagnostics, hover, definition, references, completion, symbols, semantic tokens, formatting, rename, code actions |
+| [Snippets](snippets.md) | Fields, variables, transforms, and your own snippet files |
 | [Configuration](configuration.md) | `settings.json`, `keybindings.json`, colour themes, and where they are read from |
 | [Extensions](extensions.md) | The capability model, and why an extension gets less power here than in VS Code |
 | [Remote](remote.md) | SSH, container and WSL authorities, and which parts are implemented |
