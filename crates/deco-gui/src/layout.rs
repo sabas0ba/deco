@@ -86,10 +86,9 @@ pub struct LaidOutLine {
     pub gutter: String,
     /// The git status of this line, if any.
     ///
-    /// Computed but not yet drawn, like the selection rectangles. This frontend
-    /// currently draws only text. The marks are computed here so
-    /// that, once this frontend draws them, they match the terminal without a
-    /// second implementation.
+    /// Computed but not yet drawn. The marks are computed here so that, once
+    /// this frontend draws them, they match the terminal without a second
+    /// implementation.
     pub mark: Option<deco_scm::Mark>,
     /// The line's text, tabs expanded.
     pub text: String,
@@ -105,9 +104,7 @@ pub struct Layout {
     /// Selection highlight rectangles.
     pub selections: Vec<Rect>,
     /// The caret, if it is on screen, shaped by `editor.cursorStyle`.
-    ///
-    /// Computed but not yet drawn: drawing it needs a quad pipeline, which
-    /// this frontend does not have.
+    /// [`crate::quads`] draws it, with the selections and the current line.
     pub cursor: Option<Rect>,
     /// `editor.cursorStyle`. The outline styles use the same rectangle as the
     /// filled ones, and a renderer draws only its border.
@@ -118,10 +115,8 @@ pub struct Layout {
     pub text_left: f32,
     /// The side bar and panel, as text.
     ///
-    /// This frontend can only draw text because it has no quad pipeline yet.
-    /// The rules therefore use the same box-drawing characters as the terminal
-    /// instead of filled rectangles, and the chrome matches the terminal's until
-    /// this frontend can fill rectangles.
+    /// The rules use the same box-drawing characters as the terminal rather
+    /// than filled rectangles, so the chrome matches the terminal's.
     pub chrome: Vec<ChromeLine>,
     /// Colours resolved from the theme.
     pub colors: Colors,

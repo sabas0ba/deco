@@ -59,6 +59,8 @@ struct Gpu {
     viewport: Viewport,
     atlas: TextAtlas,
     renderer: TextRenderer,
+    /// Draws the filled rectangles under the text.
+    quads: crate::quads::QuadRenderer,
     /// The last measured cell width, with the family and size it was
     /// measured for. Measuring shapes text, so it is repeated only when
     /// either changes.
@@ -113,6 +115,7 @@ impl Gpu {
         let mut atlas = TextAtlas::new(&device, &queue, &cache, format);
         let renderer =
             TextRenderer::new(&mut atlas, &device, wgpu::MultisampleState::default(), None);
+        let quads = crate::quads::QuadRenderer::new(&device, format);
 
         Ok(Self {
             window,
@@ -125,6 +128,7 @@ impl Gpu {
             viewport,
             atlas,
             renderer,
+            quads,
             advance: None,
         })
     }
@@ -245,6 +249,13 @@ impl Gpu {
                 &mut self.swash,
             )
             .context("could not prepare text for drawing")?;
+        let rectangles = crate::quads::vertices(
+            &crate::quads::rectangles(&laid_out),
+            width,
+            height,
+            self.config.format.is_srgb(),
+        );
+        self.quads.prepare(&self.device, &self.queue, &rectangles);
 
         use wgpu::CurrentSurfaceTexture;
         let frame = match self.surface.get_current_texture() {
@@ -293,6 +304,8 @@ impl Gpu {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
+            // Under the text, so the text stays readable on a selection.
+            self.quads.render(&mut pass);
             self.renderer
                 .render(&self.atlas, &self.viewport, &mut pass)?;
         }
