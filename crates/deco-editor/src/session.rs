@@ -438,6 +438,9 @@ pub struct Session {
     pub context: ContextKeys,
     /// Where cut and copy put their text.
     pub clipboard: Box<dyn Clipboard>,
+    /// User and workspace snippets, offered by `editor.action.insertSnippet`
+    /// and in the completion list. The frontend reads the files.
+    pub snippets: Vec<deco_config::snippets::UserSnippet>,
     /// A transient message for the status bar.
     pub status: Option<String>,
     /// The open prompt — go to line, or the command palette — if there is one.
@@ -744,6 +747,7 @@ impl Session {
             // `!isMac` binding cannot be chosen and then gated out.
             context: ContextKeys::for_platform(platform),
             clipboard: Box::new(MemoryClipboard::default()),
+            snippets: Vec::new(),
             status: None,
             find: Find::new(),
             prompt: None,
@@ -1691,6 +1695,7 @@ impl Session {
             // The quick-open prompt. Like the find bar, it needs the whole
             // session, not only the document and view that a command in
             // `commands` sees.
+            "editor.action.insertSnippet" => self.insert_snippet_command(args, now_ms),
             "workbench.action.gotoLine" => {
                 self.prompt = Some(Prompt::plain(PromptKind::GoToLine));
                 Outcome::Handled
@@ -2426,6 +2431,14 @@ impl Session {
                 },
                 None => Outcome::Message(format!("no theme matches `{}`", prompt.text())),
             },
+            PromptKind::Snippets => match prompt
+                .selected()
+                .and_then(|entry| entry.id.parse::<usize>().ok())
+                .and_then(|at| self.snippets.get(at).cloned())
+            {
+                Some(snippet) => self.insert_user_snippet(&snippet.body, &snippet.name, now_ms),
+                None => Outcome::Message(format!("no snippet matches `{}`", prompt.text())),
+            },
             PromptKind::SnippetChoice => match prompt.selected() {
                 Some(entry) => {
                     let option = entry.title.clone();
@@ -2814,6 +2827,79 @@ impl Session {
             .reveal_cursor(&self.document.buffer, &self.document.settings);
         self.refresh_context();
         end
+    }
+
+    /// The user snippets that apply to the active document's language.
+    pub fn snippets_here(&self) -> impl Iterator<Item = &deco_config::snippets::UserSnippet> {
+        let language = self.document.language_id.as_deref();
+        self.snippets
+            .iter()
+            .filter(move |snippet| snippet.applies_to(language))
+    }
+
+    /// `editor.action.insertSnippet`.
+    ///
+    /// `{"snippet": "..."}` inserts the given text, as a keybinding can.
+    /// `{"name": "..."}` inserts the user snippet of that name. Without
+    /// arguments, the snippets for this language are listed to choose from.
+    fn insert_snippet_command(&mut self, args: Option<&serde_json::Value>, now_ms: u64) -> Outcome {
+        if self.focus != Focus::Editor || self.comparison.is_some() {
+            return Outcome::Handled;
+        }
+        if let Some(source) = args.and_then(|args| args["snippet"].as_str()) {
+            return self.insert_user_snippet(source, "this snippet", now_ms);
+        }
+        if let Some(name) = args.and_then(|args| args["name"].as_str()) {
+            let found = self
+                .snippets_here()
+                .find(|snippet| snippet.name == name)
+                .cloned();
+            return match found {
+                Some(snippet) => self.insert_user_snippet(&snippet.body, &snippet.name, now_ms),
+                None => Outcome::Message(format!("no snippet named `{name}` for this file")),
+            };
+        }
+        let entries: Vec<_> = self
+            .snippets
+            .iter()
+            .enumerate()
+            .filter(|(_, snippet)| snippet.applies_to(self.document.language_id.as_deref()))
+            .map(|(at, snippet)| {
+                let detail = snippet
+                    .description
+                    .clone()
+                    .unwrap_or_else(|| snippet.prefixes.join(", "));
+                crate::commands::PaletteEntry::new(&at.to_string(), &snippet.name)
+                    .with_detail(&detail)
+            })
+            .collect();
+        if entries.is_empty() {
+            return Outcome::Message("there are no snippets for this file".to_owned());
+        }
+        self.prompt = Some(Prompt::list(PromptKind::Snippets, entries));
+        self.refresh_context();
+        Outcome::Handled
+    }
+
+    /// Inserts snippet text in place of the primary selection.
+    ///
+    /// Text without snippet syntax is inserted as it is. A snippet deco cannot
+    /// expand is reported, with `name` naming it, and nothing is inserted.
+    fn insert_user_snippet(&mut self, source: &str, name: &str, now_ms: u64) -> Outcome {
+        let range = self.view.selections.primary().range();
+        match self.expand_snippet(source) {
+            Some(snippet) => {
+                self.insert_snippet(range, &snippet, now_ms);
+                Outcome::Handled
+            }
+            None if !source.contains('$') => {
+                self.replace_range(range, source, now_ms);
+                Outcome::Handled
+            }
+            None => Outcome::Message(format!(
+                "{name} uses snippet syntax or a variable deco does not support"
+            )),
+        }
     }
 
     /// Expands a snippet, resolving its variables from the active document,
@@ -5434,6 +5520,80 @@ mod tests {
         press(&mut s, "escape");
         assert_eq!(s.document.buffer.text(), "[long] long");
         assert_eq!(s.view.selections.primary().active, Position::new(0, 11));
+    }
+
+    fn user_snippet(
+        name: &str,
+        body: &str,
+        languages: Option<&[&str]>,
+    ) -> deco_config::snippets::UserSnippet {
+        deco_config::snippets::UserSnippet {
+            name: name.to_owned(),
+            prefixes: vec![name.to_lowercase()],
+            body: body.to_owned(),
+            description: None,
+            languages: languages.map(|l| l.iter().map(|s| s.to_string()).collect()),
+        }
+    }
+
+    #[test]
+    fn insert_snippet_lists_the_snippets_for_the_language_and_inserts_the_choice() {
+        let mut s = session();
+        s.open(PathBuf::from("/w/main.rs"), "");
+        s.snippets = vec![
+            user_snippet("Main", "fn main() {\n    $0\n}", Some(&["rust"])),
+            user_snippet("Log", "console.log($1);", Some(&["javascript"])),
+            user_snippet("Todo", "TODO: $1", None),
+        ];
+        s.run("editor.action.insertSnippet", None, 0);
+        let prompt = s.prompt.as_ref().expect("a list");
+        assert_eq!(prompt.kind(), PromptKind::Snippets);
+        let offered: Vec<&str> = prompt.visible().iter().map(|e| e.title.as_str()).collect();
+        assert_eq!(offered, ["Main", "Todo"], "not the JavaScript one");
+
+        s.run("workbench.action.acceptSelectedQuickOpenItem", None, 1000);
+        assert_eq!(s.document.buffer.text(), "fn main() {\n    \n}");
+        assert_eq!(
+            s.view.selections.primary().active,
+            deco_core::Position::new(1, 4)
+        );
+    }
+
+    #[test]
+    fn insert_snippet_takes_a_name_or_the_text_itself() {
+        let mut s = session();
+        s.open(PathBuf::from("/w/main.rs"), "word");
+        s.snippets = vec![user_snippet("Todo", "TODO($TM_SELECTED_TEXT)", None)];
+        s.run("editor.action.selectAll", None, 0);
+        s.run(
+            "editor.action.insertSnippet",
+            Some(&serde_json::json!({"name": "Todo"})),
+            1000,
+        );
+        assert_eq!(s.document.buffer.text(), "TODO(word)");
+
+        s.run(
+            "editor.action.insertSnippet",
+            Some(&serde_json::json!({"snippet": " plain"})),
+            2000,
+        );
+        assert_eq!(s.document.buffer.text(), "TODO(word) plain");
+
+        let outcome = s.run(
+            "editor.action.insertSnippet",
+            Some(&serde_json::json!({"snippet": "$UNKNOWN"})),
+            3000,
+        );
+        assert!(matches!(outcome, Outcome::Message(_)), "{outcome:?}");
+        assert_eq!(s.document.buffer.text(), "TODO(word) plain");
+        assert!(matches!(
+            s.run(
+                "editor.action.insertSnippet",
+                Some(&serde_json::json!({"name": "Nope"})),
+                0
+            ),
+            Outcome::Message(_)
+        ));
     }
 
     #[test]

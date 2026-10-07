@@ -86,6 +86,7 @@ pub fn session(cli: &Cli, boot: &Boot, remote_settings: Option<&str>) -> Session
         crate::config::LoadedConfig {
             settings: deco_config::Settings::with_defaults(),
             keybindings: None,
+            snippets: Vec::new(),
             problems: Vec::new(),
         }
     } else {
@@ -103,6 +104,7 @@ pub fn session(cli: &Cli, boot: &Boot, remote_settings: Option<&str>) -> Session
         boot.platform,
     );
     session.problems.extend(loaded.problems);
+    session.snippets = loaded.snippets;
     session
 }
 

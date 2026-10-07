@@ -401,6 +401,7 @@ pub const PALETTE: &[(&str, &str)] = &[
     ("editor.action.nextMatchFindAction", "Find Next"),
     ("editor.action.previousMatchFindAction", "Find Previous"),
     ("workbench.action.gotoLine", "Go to Line"),
+    ("editor.action.insertSnippet", "Insert Snippet"),
     ("editor.action.marker.next", "Go to Next Problem"),
     ("editor.action.marker.prev", "Go to Previous Problem"),
     ("workbench.action.files.save", "Save"),

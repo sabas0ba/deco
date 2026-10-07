@@ -22,6 +22,7 @@ pub mod indent;
 pub mod jsonc;
 pub mod paths;
 pub mod settings;
+pub mod snippets;
 
 pub use editor::{
     AutoClosingBrackets, AutoIndent, AutoSave, CursorStyle, EditorSettings, EolSetting,
