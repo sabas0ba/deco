@@ -215,7 +215,7 @@ Overlapping edits are rejected without changing the document because their resul
 - **A rename or copy is checked at both paths.** `dispatch` allows the request only when every capability it needs is allowed. The target is a write. The source is a write for a rename, because moving a file out of a directory changes that directory, and a read for a copy. A denial at either path refuses the request without a prompt. When both paths need a decision, the target is asked about first, and after an allow the request stays held while the source is asked about.
 - **A link is removed as a link.** Deletion resolves the path only to check its location, then removes the given name. Resolving the path and deleting the result would delete the link's target, leave the link, and report nothing. On the remote, a link that points outside the workspace cannot be used for deletion at all, because every path there is confined after canonicalisation, without exceptions.
 
-A symbolic link is reported as a link, not as its target (65 for a link to a file, in VS Code's numbering). Following links would let a listing describe files outside the granted scope.
+A symbolic link is reported as a link, not as its target. Locally its type is `SymbolicLink` (64 in VS Code's numbering) without the target's type, because finding that type means following the link, which would let a listing describe files outside the granted scope. On a remote, the target's type is added (65 for a file, 66 for a directory) only when the target is inside the workspace.
 
 ## Zero npm dependencies
 

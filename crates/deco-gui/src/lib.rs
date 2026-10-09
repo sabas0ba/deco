@@ -12,6 +12,7 @@
 pub mod app;
 pub mod keys;
 pub mod layout;
+pub mod quads;
 
 pub use app::run;
 pub use layout::{layout, Colors, Layout, Metrics, Rect};

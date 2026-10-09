@@ -55,7 +55,7 @@ There is no setting for the width. VS Code has no such setting either; it stores
 
 ## Both frontends
 
-Both frontends use the same layout; only the units differ. The terminal renderer draws the regions in cells, and the GPU frontend multiplies the same rectangles by its font metrics. The GPU frontend draws the dividing rules with box-drawing characters rather than filled rectangles because it has no quad pipeline yet. For the same reason, it calculates selection positions but does not draw selections yet.
+Both frontends use the same layout; only the units differ. The terminal renderer draws the regions in cells, and the GPU frontend multiplies the same rectangles by its font metrics. The GPU frontend draws the dividing rules with box-drawing characters, as the terminal does, and fills the current line, the selections and the caret with rectangles under the text.
 
 ## Not built yet
 

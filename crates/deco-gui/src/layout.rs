@@ -86,13 +86,16 @@ pub struct LaidOutLine {
     pub gutter: String,
     /// The git status of this line, if any.
     ///
-    /// Computed but not yet drawn, like the selection rectangles. This frontend
-    /// currently draws only text. The marks are computed here so
-    /// that, once this frontend draws them, they match the terminal without a
-    /// second implementation.
+    /// Computed but not yet drawn. The marks are computed here so that, once
+    /// this frontend draws them, they match the terminal without a second
+    /// implementation.
     pub mark: Option<deco_scm::Mark>,
     /// The line's text, tabs expanded.
     pub text: String,
+    /// Characters of `text` drawn in another colour than the foreground, as
+    /// character ranges: selected text and the character under a block caret,
+    /// which sit on a filled rectangle that could hide them.
+    pub recolored: Vec<(std::ops::Range<usize>, Rgba)>,
     /// Whether this is the line the primary cursor is on.
     pub is_cursor_line: bool,
 }
@@ -105,23 +108,22 @@ pub struct Layout {
     /// Selection highlight rectangles.
     pub selections: Vec<Rect>,
     /// The caret, if it is on screen, shaped by `editor.cursorStyle`.
-    ///
-    /// Computed but not yet drawn: drawing it needs a quad pipeline, which
-    /// this frontend does not have.
+    /// [`crate::quads`] draws it, with the selections and the current line.
     pub cursor: Option<Rect>,
     /// `editor.cursorStyle`. The outline styles use the same rectangle as the
     /// filled ones, and a renderer draws only its border.
     pub cursor_style: CursorStyle,
     /// The line-highlight rectangle behind the cursor's line.
     pub current_line: Option<Rect>,
+    /// The editor region, in pixels. Rectangles are clipped to it, so a long
+    /// selection does not run under a side bar on the right.
+    pub editor_area: Rect,
     /// Where the text column starts, in pixels.
     pub text_left: f32,
     /// The side bar and panel, as text.
     ///
-    /// This frontend can only draw text because it has no quad pipeline yet.
-    /// The rules therefore use the same box-drawing characters as the terminal
-    /// instead of filled rectangles, and the chrome matches the terminal's until
-    /// this frontend can fill rectangles.
+    /// The rules use the same box-drawing characters as the terminal rather
+    /// than filled rectangles, so the chrome matches the terminal's.
     pub chrome: Vec<ChromeLine>,
     /// Colours resolved from the theme.
     pub colors: Colors,
@@ -155,6 +157,10 @@ pub struct Colors {
     pub current_line: Rgba,
     /// The caret.
     pub cursor: Rgba,
+    /// Selected text, when the foreground would not read on the selection.
+    pub selection_text: Option<Rgba>,
+    /// The character under a block caret.
+    pub cursor_text: Rgba,
     /// A line that is not in the committed file.
     pub added: Rgba,
     /// A line that differs from the committed file.
@@ -199,8 +205,46 @@ impl Colors {
                 .color("editor.lineHighlightBackground")
                 .unwrap_or(Rgba::TRANSPARENT),
             cursor: theme.color("editorCursor.foreground").unwrap_or(foreground),
+            // The theme's own colour when it has one. Otherwise the foreground
+            // is kept unless it would not read on the selection, as with an
+            // opaque white selection under white text in a high-contrast
+            // theme; the background is used then.
+            selection_text: theme.color("editor.selectionForeground").or_else(|| {
+                let behind = theme
+                    .color("editor.selectionBackground")
+                    .unwrap_or(foreground)
+                    .over(background);
+                (contrast(foreground, behind) < 3.0).then_some(background)
+            }),
+            cursor_text: theme.color("editorCursor.background").unwrap_or(background),
         }
     }
+}
+
+/// The WCAG contrast ratio between two colours, from 1 to 21.
+fn contrast(a: Rgba, b: Rgba) -> f32 {
+    let (a, b) = (a.luminance() + 0.05, b.luminance() + 0.05);
+    a.max(b) / a.min(b)
+}
+
+/// The index in the tab-expanded text of the character at UTF-16 column
+/// `utf16_col` of `raw`, counting columns as [`expand_tabs`] does.
+fn expanded_index(raw: &str, utf16_col: u32, tab_size: usize) -> usize {
+    let tab_size = tab_size.max(1);
+    let mut column = 0usize;
+    let mut utf16 = 0u32;
+    for c in raw.chars() {
+        if utf16 >= utf16_col {
+            break;
+        }
+        column += if c == '\t' {
+            tab_size - (column % tab_size)
+        } else {
+            1
+        };
+        utf16 += c.len_utf16() as u32;
+    }
+    column
 }
 
 /// Expands tabs in `text` to `tab_size` stops.
@@ -329,6 +373,7 @@ pub fn layout(session: &Session, width: f32, height: f32, metrics: Metrics) -> L
             format!("{label:>digits$}", digits = gutter_columns - 1)
         };
 
+        let mut recolored = Vec::new();
         // One rectangle per selection per line; a selection ending past the end
         // of the line is drawn one cell wider so the newline is visible.
         for selection in session.view.selections.iter().filter(|s| !s.is_empty()) {
@@ -349,6 +394,12 @@ pub fn layout(session: &Session, width: f32, height: f32, metrics: Metrics) -> L
             };
             let extra = if (line as u32) < end.line { 1.0 } else { 0.0 };
 
+            if let Some(color) = colors.selection_text {
+                recolored.push((
+                    expanded_index(&raw, from, tab_size)..expanded_index(&raw, to, tab_size),
+                    color,
+                ));
+            }
             let x0 = display_column(&raw, from, tab_size) as f32;
             let x1 = display_column(&raw, to, tab_size) as f32 + extra;
             selections.push(Rect {
@@ -365,6 +416,7 @@ pub fn layout(session: &Session, width: f32, height: f32, metrics: Metrics) -> L
             gutter,
             mark: marks.as_ref().and_then(|diff| diff.mark_at(line)),
             text,
+            recolored,
             is_cursor_line: line == cursor_line,
         });
     }
@@ -388,6 +440,19 @@ pub fn layout(session: &Session, width: f32, height: f32, metrics: Metrics) -> L
         )
     });
 
+    // The character under a filled block caret is drawn in the caret's text
+    // colour; otherwise the caret would hide it.
+    if on_screen && cursor_style == CursorStyle::Block {
+        let raw = buffer
+            .line_content(cursor_line)
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        if let Some(line) = lines.iter_mut().find(|line| line.line == cursor_line) {
+            let at = expanded_index(&raw, cursor.character, tab_size);
+            line.recolored.push((at..at + 1, colors.cursor_text));
+        }
+    }
+
     let current_line = on_screen.then(|| Rect {
         x: origin_x,
         y: origin_y + cursor_row.unwrap_or(0) as f32 * metrics.line_height,
@@ -401,6 +466,12 @@ pub fn layout(session: &Session, width: f32, height: f32, metrics: Metrics) -> L
         cursor: caret,
         cursor_style,
         current_line,
+        editor_area: Rect {
+            x: origin_x,
+            y: origin_y,
+            width: editor.width as f32 * metrics.cell_width,
+            height: editor.height as f32 * metrics.line_height,
+        },
         text_left,
         chrome: chrome_lines(session, &regions, metrics),
         colors,
