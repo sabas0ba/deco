@@ -35,7 +35,7 @@ use thiserror::Error;
 use crate::change::{
     Branch, CheckoutPlan, Comparison, ComparisonKind, ComparisonRequest, Operation,
 };
-use crate::status::{self, Malformed, Status};
+use crate::status::{self, Malformed, State, Status};
 
 /// Why a git operation failed.
 ///
@@ -467,6 +467,56 @@ impl Git {
                 // to pass as an argument, and no shell is involved.
                 self.require_local_branch(directory, target)?;
                 self.run(directory, &["checkout", "--quiet", target])?;
+            }
+            Operation::Discard {
+                path: one,
+                untracked,
+            } => {
+                let name = path(one)?;
+                // The view's status may be older than the file: another
+                // program may have staged it, committed it, or made an
+                // untracked file tracked. Asked again so the command matches
+                // what was confirmed, or nothing happens.
+                let state = self
+                    .status(directory)?
+                    .entries
+                    .into_iter()
+                    .find(|entry| plain_path(&entry.path).ok().as_deref() == Some(name.as_str()))
+                    .map(|entry| entry.state);
+                // `--literal-pathspecs` because these commands delete or
+                // overwrite: a file named `*` would otherwise be a pattern
+                // matching every file.
+                match (untracked, state) {
+                    (true, Some(State::Untracked)) => {
+                        self.run(
+                            directory,
+                            &[
+                                "--literal-pathspecs",
+                                "clean",
+                                "--force",
+                                "--quiet",
+                                "--",
+                                &name,
+                            ],
+                        )?;
+                    }
+                    // From the index, not `HEAD`: a staged version is the
+                    // user's work too, and only the unstaged part was shown.
+                    (false, Some(State::Tracked { worktree, .. })) if !worktree.is_none() => {
+                        self.run(
+                            directory,
+                            &["--literal-pathspecs", "checkout", "--quiet", "--", &name],
+                        )?;
+                    }
+                    _ => {
+                        let message =
+                            format!("{name} no longer has the change that was shown, so nothing was discarded");
+                        return Err(ScmError::Refused {
+                            code: None,
+                            message,
+                        });
+                    }
+                }
             }
         }
         Ok(())
@@ -1019,6 +1069,66 @@ mod tests {
             matches!(result, Err(ScmError::Refused { ref message, .. }) if message.contains("not a local branch")),
             "an option-shaped target was refused before checkout: {result:?}"
         );
+    }
+
+    fn discard(path: &str, untracked: bool) -> Operation {
+        Operation::Discard {
+            path: PathBuf::from(path),
+            untracked,
+        }
+    }
+
+    #[test]
+    fn discarding_restores_the_staged_version_and_deletes_only_the_named_untracked_file() {
+        let Some(git) = git_or_skip() else { return };
+        let dir = scratch_repo(&git, "discard");
+        std::fs::write(dir.join("a.rs"), "committed\n").expect("a file");
+        commit(&git, &dir);
+        std::fs::write(dir.join("a.rs"), "staged\n").expect("a file");
+        git.apply(&dir, &Operation::Stage(PathBuf::from("a.rs")))
+            .expect("a stage");
+        std::fs::write(dir.join("a.rs"), "unstaged\n").expect("a file");
+        // A file named like a pattern, beside the file it would match. Not
+        // `*`, which Windows does not allow in a file name.
+        std::fs::write(dir.join("[k]eep.txt"), "new\n").expect("a file");
+        std::fs::write(dir.join("keep.txt"), "new\n").expect("a file");
+
+        git.apply(&dir, &discard("a.rs", false)).expect("a discard");
+        git.apply(&dir, &discard("[k]eep.txt", true))
+            .expect("a delete");
+
+        let restored = std::fs::read_to_string(dir.join("a.rs")).expect("the file");
+        let pattern_exists = dir.join("[k]eep.txt").exists();
+        let kept = dir.join("keep.txt").exists();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(restored, "staged\n", "restored from the index, not HEAD");
+        assert!(!pattern_exists);
+        assert!(kept, "`[k]eep.txt` was taken as a pattern");
+    }
+
+    #[test]
+    fn a_discard_whose_file_changed_state_since_the_view_was_drawn_does_nothing() {
+        let Some(git) = git_or_skip() else { return };
+        let dir = scratch_repo(&git, "discard-stale");
+        std::fs::write(dir.join("a.rs"), "committed\n").expect("a file");
+        commit(&git, &dir);
+        std::fs::write(dir.join("new.rs"), "new\n").expect("a file");
+
+        // Shown as untracked, then added by another program: not deleted.
+        git.apply(&dir, &Operation::Stage(PathBuf::from("new.rs")))
+            .expect("a stage");
+        let untracked = git.apply(&dir, &discard("new.rs", true));
+        // Shown as changed, but there is no unstaged change any more.
+        let clean = git.apply(&dir, &discard("a.rs", false));
+
+        let still_there = dir.join("new.rs").exists();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            matches!(untracked, Err(ScmError::Refused { .. })),
+            "{untracked:?}"
+        );
+        assert!(matches!(clean, Err(ScmError::Refused { .. })), "{clean:?}");
+        assert!(still_there);
     }
 
     #[test]

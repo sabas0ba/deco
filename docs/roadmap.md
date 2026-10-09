@@ -12,7 +12,7 @@ Features that VS Code has and deco does not, with their prerequisites:
 
 | Missing | Depends on |
 | --- | --- |
-| Git — discard, push/pull ([the rest is built](git.md)) | nothing; each is its own decision about what it may lose or ask for |
+| Git — push/pull ([the rest is built](git.md)) | a decision on how credentials are asked for |
 | Integrated terminal | a PTY dependency; its home is the [panel](chrome.md) |
 | Task runner (`tasks.json`, `ctrl+shift+b`) | the terminal, for somewhere to run |
 | Test runner | the task runner, and later the extension host |
@@ -29,15 +29,15 @@ Two rules from the existing implementation apply to every section below:
 
 ## Git
 
-**Built.** The status bar shows the branch and the changes relative to it, the gutter marks changed lines, a source-control view stages, unstages and commits, and a local-branch picker switches branches after a checkout preflight. Git has [a page of its own](git.md); this section covers what remains.
+**Built.** The status bar shows the branch and the changes relative to it, the gutter marks changed lines, a source-control view stages, unstages, discards and commits, and a local-branch picker switches branches after a checkout preflight. Git has [a page of its own](git.md); this section covers what remains.
 
 **What VS Code has that deco still does not.**
 
-- **Discard.** `git clean` and `git checkout --` discard work with no undo and no trash. For the same reason, deco's file tree does not delete without confirmation, and discard needs a comparable safeguard.
+- **Discard all.** One file at a time is built, with a typed confirmation; discarding every change at once needs a confirmation that lists what would be lost.
 - **Push, pull, fetch.** These need credentials, and deco would have to be trusted to handle credential prompts. They should be designed deliberately, not added as an afterthought to a view that already works.
 **Steps.**
 
-1. Discard changes, with confirmation that identifies affected files and explains whether recovery is possible.
+1. Discard changes, with confirmation that identifies affected files and explains whether recovery is possible. Built for one file; discard all remains.
 2. Push, pull and fetch, after credential prompting is implemented.
 
 ## The integrated terminal

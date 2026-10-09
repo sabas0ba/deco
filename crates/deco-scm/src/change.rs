@@ -105,11 +105,6 @@ pub struct Comparison {
 ///
 /// # Not supported
 ///
-/// **Discarding changes.** `git.clean` and `git checkout --` discard work with
-/// no undo and no trash, which the file tree's delete also does not do without
-/// confirmation. The feature is omitted rather than implemented without a way
-/// to recover.
-///
 /// **Network operations.** No push, pull or fetch. These require credentials,
 /// and handling credential prompts requires the editor to be trusted with them.
 /// Reading and staging require neither.
@@ -144,6 +139,19 @@ pub enum Operation {
     /// before it reaches Git. No force flag is used: when a switch would
     /// overwrite a tracked or untracked change, Git refuses it.
     Checkout(String),
+    /// Throw away one file's unstaged changes.
+    ///
+    /// A tracked file is restored from the index, so a staged version is kept.
+    /// An untracked file is deleted. Neither can be undone, so the frontend
+    /// asks first, and git is asked again for the file's state immediately
+    /// before, so a change made since the view was drawn is not lost.
+    Discard {
+        /// The file's path, relative to the repository root.
+        path: PathBuf,
+        /// Whether the view showed the file as untracked, and so whether the
+        /// file is to be deleted rather than restored.
+        untracked: bool,
+    },
 }
 
 impl Operation {
@@ -155,6 +163,14 @@ impl Operation {
             Self::Unstage { path, .. } => format!("unstaged {}", name_of(path)),
             Self::Commit(_) => "committed".to_owned(),
             Self::Checkout(branch) => format!("switched to {branch}"),
+            Self::Discard {
+                path,
+                untracked: false,
+            } => format!("discarded the changes to {}", name_of(path)),
+            Self::Discard {
+                path,
+                untracked: true,
+            } => format!("deleted the untracked {}", name_of(path)),
         }
     }
 
@@ -166,6 +182,7 @@ impl Operation {
             Self::Unstage { path, .. } => format!("unstage {}", name_of(path)),
             Self::Commit(_) => "commit".to_owned(),
             Self::Checkout(branch) => format!("switch to {branch}"),
+            Self::Discard { path, .. } => format!("discard the changes to {}", name_of(path)),
         }
     }
 }

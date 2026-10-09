@@ -1188,7 +1188,8 @@ impl Driver {
     }
 }
 
-/// Re-reads every open file after Git replaced the working tree.
+/// Re-reads every open file after Git replaced the working tree, by a
+/// checkout or a discard.
 ///
 /// A file absent on the target branch is detached rather than closed. Its old
 /// text remains visible and marked dirty, so it is not lost. All buffers had to
@@ -1223,7 +1224,11 @@ fn reload_after_checkout(
     lsp.changed(session);
     if detached > 0 {
         session.status = Some(format!(
-            "switched branches; kept {detached} missing tab{} as unsaved text",
+            "{}; kept {detached} missing tab{} as unsaved text",
+            session
+                .status
+                .as_deref()
+                .unwrap_or("the working tree changed"),
             if detached == 1 { "" } else { "s" }
         ));
     }
