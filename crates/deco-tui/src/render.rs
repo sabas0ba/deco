@@ -59,6 +59,8 @@ struct Palette {
     gutter_fg: Rgba,
     gutter_active_fg: Rgba,
     selection_bg: Rgba,
+    /// The colour of selected text, when it is not the text's own.
+    selection_fg: Option<Rgba>,
     find_match_bg: Rgba,
     find_highlight_bg: Rgba,
     whitespace_fg: Rgba,
@@ -106,6 +108,19 @@ impl Palette {
                 .color("editor.selectionBackground")
                 .map(|c| c.over(bg))
                 .unwrap_or(fg),
+            // The theme's colour when it has one. Otherwise selected text
+            // keeps its colours, unless the theme's foreground would not read
+            // on the selection, as with the high-contrast theme's white
+            // selection under white text; the background is used then. The
+            // test is made once for the theme, not per token, so that a dim
+            // comment colour does not turn black inside an ordinary selection.
+            selection_fg: theme.color("editor.selectionForeground").or_else(|| {
+                let selection = theme
+                    .color("editor.selectionBackground")
+                    .map(|c| c.over(bg))
+                    .unwrap_or(fg);
+                (fg.contrast(selection) < 3.0).then_some(bg)
+            }),
             // Composited for the same reason as the selection: both are
             // translucent in every theme that ships with VS Code.
             find_match_bg: theme
@@ -1490,6 +1505,12 @@ fn line_spans(
     let rulers = &pane.document.settings.rulers;
     let mut spans: Vec<Span> = Vec::new();
     for (at, (c, cell, fg)) in cells.into_iter().enumerate() {
+        // Selected text keeps its colour unless the theme says otherwise; see
+        // `selection_fg`.
+        let fg = match (cell, palette.selection_fg) {
+            (Cell::Selected, Some(selected)) => selected,
+            _ => fg,
+        };
         let bg = match cell {
             // A ruler is only drawn on a plain cell. A selection or find match
             // takes precedence.
@@ -2448,6 +2469,28 @@ mod tests {
         // The five selected characters differ from the sixth.
         assert_eq!(backgrounds[gutter], backgrounds[gutter + 4]);
         assert_ne!(backgrounds[gutter], backgrounds[gutter + 5]);
+    }
+
+    #[test]
+    fn selected_text_stays_readable_on_an_opaque_selection() {
+        let mut session = session("hello world");
+        session.set_theme(
+            deco_theme::ColorTheme::from_json(r#"{ "type": "hc-black", "colors": {} }"#)
+                .expect("a theme"),
+        );
+        session.view.selections =
+            SelectionSet::single(Selection::new(Position::new(0, 0), Position::new(0, 5)));
+        let frame = render(&session, 40, 3);
+        let palette = Palette::from(&session);
+        let gutter = gutter_width(&session);
+        let foregrounds: Vec<Rgba> = frame.rows[0]
+            .spans
+            .iter()
+            .flat_map(|s| std::iter::repeat_n(s.fg, s.text.chars().count()))
+            .collect();
+        // White on the white selection would vanish, so the background is used.
+        assert_eq!(foregrounds[gutter], palette.bg);
+        assert_eq!(foregrounds[gutter + 6], palette.fg);
     }
 
     #[test]

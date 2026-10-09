@@ -214,17 +214,11 @@ impl Colors {
                     .color("editor.selectionBackground")
                     .unwrap_or(foreground)
                     .over(background);
-                (contrast(foreground, behind) < 3.0).then_some(background)
+                (foreground.contrast(behind) < 3.0).then_some(background)
             }),
             cursor_text: theme.color("editorCursor.background").unwrap_or(background),
         }
     }
-}
-
-/// The WCAG contrast ratio between two colours, from 1 to 21.
-fn contrast(a: Rgba, b: Rgba) -> f32 {
-    let (a, b) = (a.luminance() + 0.05, b.luminance() + 0.05);
-    a.max(b) / a.min(b)
 }
 
 /// The index in the tab-expanded text of the character at UTF-16 column
