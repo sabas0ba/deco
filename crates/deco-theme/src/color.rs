@@ -97,6 +97,13 @@ impl Rgba {
         0.2126 * channel(self.r) + 0.7152 * channel(self.g) + 0.0722 * channel(self.b)
     }
 
+    /// The WCAG contrast ratio against `other`, from 1 for the same luminance
+    /// to 21 for black on white. Alpha is ignored; composite first.
+    pub fn contrast(self, other: Rgba) -> f32 {
+        let (a, b) = (self.luminance() + 0.05, other.luminance() + 0.05);
+        a.max(b) / a.min(b)
+    }
+
     /// The `(r, g, b, a)` channels as floats in `0.0..=1.0`, which is what the
     /// GPU frontend wants.
     pub fn to_f32(self) -> [f32; 4] {
@@ -255,6 +262,15 @@ mod tests {
         let out = Rgba::new(255, 0, 0, 128).over(Rgba::new(0, 0, 255, 128));
         assert!(out.a > 128, "alpha should accumulate, got {}", out.a);
         assert!(out.a < 255);
+    }
+
+    #[test]
+    fn contrast_runs_from_one_to_twenty_one() {
+        let white = Rgba::new(255, 255, 255, 255);
+        let black = Rgba::new(0, 0, 0, 255);
+        assert!((black.contrast(white) - 21.0).abs() < 0.01);
+        assert_eq!(white.contrast(black), black.contrast(white));
+        assert!((white.contrast(white) - 1.0).abs() < f32::EPSILON);
     }
 
     #[test]
