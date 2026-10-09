@@ -56,16 +56,22 @@ pub struct DiskWatch {
     /// The state a conflict or a disappearance was reported for, so it is
     /// reported once rather than every second.
     reported: HashMap<PathBuf, Option<Stamp>>,
-    /// The file a save was refused for, so that saving it again overwrites it.
-    armed: Option<PathBuf>,
+    /// The file a save was refused for, and its state then, so that saving it
+    /// again overwrites that version and no later one.
+    armed: Option<(PathBuf, Option<Stamp>)>,
     last_check_ms: Option<u64>,
 }
 
 impl DiskWatch {
     /// Records `path` as deco has just read or written it.
     pub fn remember(&mut self, path: &Path) {
+        self.remember_as(path, Stamp::of(path));
+    }
+
+    /// Records `path` with the state it had when deco read it.
+    fn remember_as(&mut self, path: &Path, stamp: Option<Stamp>) {
         self.reported.remove(path);
-        match Stamp::of(path) {
+        match stamp {
             Some(stamp) => {
                 self.known.insert(path.to_path_buf(), stamp);
             }
@@ -95,13 +101,19 @@ impl DiskWatch {
     ///
     /// A file that changed on disk since deco last read or wrote it is not
     /// overwritten on the first request. A second request for the same file,
-    /// with no other save in between, is taken as the confirmation.
+    /// with no other save in between and no further change to the file, is
+    /// taken as the confirmation. A file changed again in between asks again,
+    /// because the user has not seen that version.
     pub fn may_overwrite(&mut self, path: &Path) -> bool {
-        if !self.changed_since_known(path) || self.armed.as_deref() == Some(path) {
-            self.armed = None;
+        let armed = self.armed.take();
+        if !self.changed_since_known(path) {
             return true;
         }
-        self.armed = Some(path.to_path_buf());
+        let current = Stamp::of(path);
+        if armed.as_ref() == Some(&(path.to_path_buf(), current)) {
+            return true;
+        }
+        self.armed = Some((path.to_path_buf(), current));
         false
     }
 
@@ -133,14 +145,20 @@ impl DiskWatch {
                 changes.push(Change::Gone(path));
                 continue;
             };
+            // A writer still at work: what was read may be older than the
+            // state now on disk, and recording that state would treat the
+            // newer text as already shown. The next check reads it again.
+            if Stamp::of(&path) != current {
+                continue;
+            }
             match session.is_dirty_at(&path) {
                 Some(false) => {
                     if session.reload_changed(&path, &text) {
                         changes.push(Change::Reloaded(path.clone()));
                     }
                     // Reloaded, or the same text: either way the document
-                    // now matches the file.
-                    self.remember(&path);
+                    // now matches the file as it was read.
+                    self.remember_as(&path, current);
                 }
                 Some(true) => {
                     self.reported.insert(path.clone(), current);
@@ -228,6 +246,11 @@ mod tests {
         assert!(watch.check(&mut session, 2000).is_empty(), "reported once");
         assert!(watch.changed_since_known(&path), "saving should still ask");
         assert!(!watch.may_overwrite(&path), "the first save is refused");
+        rewrite(&path, "theirs, again\n");
+        assert!(
+            !watch.may_overwrite(&path),
+            "a version written after the question is asked about again"
+        );
         assert!(watch.may_overwrite(&path), "the second save overwrites");
         assert!(
             !watch.may_overwrite(&path),

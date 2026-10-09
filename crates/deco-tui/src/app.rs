@@ -538,6 +538,18 @@ impl Driver {
         *dirty |= self.scm.poll(session);
         if session.take_checkout_completed() {
             reload_after_checkout(session, lsp, remote.as_mut(), self.tree_root.as_deref());
+            // Git changed these files on deco's behalf, and the clean ones now
+            // show what is on disk. Without this, a save before the next check
+            // would take the checkout for another program's change. A file
+            // with unsaved changes keeps its old record, so a change made to
+            // it by someone else is still noticed.
+            if remote.is_none() {
+                for path in session.open_paths() {
+                    if session.is_dirty_at(&path) == Some(false) {
+                        self.disk.remember(&path);
+                    }
+                }
+            }
             *dirty = true;
         }
     }

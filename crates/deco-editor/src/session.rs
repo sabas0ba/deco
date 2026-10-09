@@ -3706,6 +3706,7 @@ impl Session {
             break;
         }
         if reloaded {
+            self.fit_split_view();
             // The file changed on disk, so its git status may have too.
             self.scm_changed();
             self.relayout();
@@ -3751,9 +3752,28 @@ impl Session {
         }
         self.clear_analysis_of_tab(index);
         self.committed.clear();
+        self.fit_split_view();
         self.relayout();
         self.refresh_context();
         true
+    }
+
+    /// Keeps the second group inside the active document after its text was
+    /// replaced from disk.
+    ///
+    /// Both groups show the active document, but a reload only moves the
+    /// focused group's cursor. The other group's could point past the new end
+    /// of the file, and it would draw nothing there.
+    fn fit_split_view(&mut self) {
+        if let Some(mut other) = self.split_view.take() {
+            let cursor = self
+                .document
+                .buffer
+                .clamp_position(other.selections.primary().active);
+            other.selections = deco_core::SelectionSet::caret(cursor);
+            other.reveal_cursor(&self.document.buffer, &self.document.settings);
+            self.split_view = Some(other);
+        }
     }
 
     /// Every document in display order, the active one between `left` and
@@ -5740,6 +5760,31 @@ mod tests {
             ),
             Outcome::Message(_)
         ));
+    }
+
+    #[test]
+    fn a_reload_that_shortens_the_file_keeps_the_other_group_inside_it() {
+        let mut s = Session::with_defaults();
+        let path = PathBuf::from("/w/long.txt");
+        let long: String = (0..50).map(|line| format!("line {line}\n")).collect();
+        s.open(path.clone(), &long);
+        s.resize(40, 10);
+        s.run("workbench.action.splitEditor", None, 0);
+        s.run("cursorBottom", None, 0);
+        s.run("workbench.action.focusFirstEditorGroup", None, 0);
+
+        assert!(s.reload_changed(&path, "short\n"));
+
+        let other = s.split_view.as_ref().expect("a second group");
+        assert_eq!(
+            other.selections.primary().active,
+            s.document.buffer.end_position()
+        );
+        assert!(
+            other.scroll_top <= other.selections.primary().active.line as usize,
+            "the cursor is in view, not 49 lines below the end: {}",
+            other.scroll_top
+        );
     }
 
     #[test]
