@@ -3636,6 +3636,65 @@ impl Session {
             .collect()
     }
 
+    /// Whether the document open at `path` has unsaved changes, or `None` when
+    /// no tab holds it.
+    pub fn is_dirty_at(&self, path: &Path) -> Option<bool> {
+        let wanted = normalise(path);
+        self.documents()
+            .find(|document| document.path.as_deref().map(normalise) == Some(wanted.clone()))
+            .map(|document| document.dirty)
+    }
+
+    /// Takes `text`, read from disk because the file changed there, into the
+    /// clean document open at `path`.
+    ///
+    /// Unlike [`Session::reload_open`], the replacement is one undo step, so
+    /// `ctrl+z` brings back the text from before the change, as after a
+    /// revert. Returns false when no tab holds `path`, when the document has
+    /// unsaved changes, or when the text is what the document already holds
+    /// (line endings normalised as when opening).
+    pub fn reload_changed(&mut self, path: &Path, text: &str) -> bool {
+        let wanted = normalise(path);
+        let settings = self.settings.clone();
+        let mut reloaded = false;
+        for (document, view) in self.documents_and_views() {
+            if document.path.as_deref().map(normalise) != Some(wanted.clone()) || document.dirty {
+                continue;
+            }
+            let resolved = EditorSettings::resolve(&settings, document.language_id.as_deref());
+            let incoming = Document::from_file(path.to_path_buf(), text, resolved);
+            let new_text = incoming.buffer.text();
+            if new_text == document.buffer.text() {
+                break;
+            }
+            let before = view.selections.clone();
+            let end = document.buffer.end_position();
+            let transaction = deco_core::Transaction::single(deco_core::Change::replace(
+                deco_core::Range::new(deco_core::Position::ZERO, end),
+                new_text,
+            ));
+            let inverse = document.apply(&transaction);
+            let after = deco_core::SelectionSet::caret(
+                document.buffer.clamp_position(before.primary().active),
+            );
+            view.selections = after.clone();
+            document
+                .history
+                .record(inverse, deco_core::EditKind::Discrete, before, after, 0);
+            document.dirty = false;
+            view.reveal_cursor(&document.buffer, &document.settings);
+            reloaded = true;
+            break;
+        }
+        if reloaded {
+            // The file changed on disk, so its git status may have too.
+            self.scm_changed();
+            self.relayout();
+            self.refresh_context();
+        }
+        reloaded
+    }
+
     /// Replaces the clean open buffer at `path` with its post-checkout text.
     ///
     /// The old undo history belongs to another branch and is dropped. Explicit
@@ -5594,6 +5653,33 @@ mod tests {
             ),
             Outcome::Message(_)
         ));
+    }
+
+    #[test]
+    fn a_clean_document_takes_a_change_from_disk_as_one_undo_step() {
+        use deco_core::Position;
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "one\ntwo\n");
+        s.view.selections = deco_core::SelectionSet::caret(Position::new(1, 2));
+        assert!(s.reload_changed(Path::new("/w/a.rs"), "one\ntwo\nthree\n"));
+        assert_eq!(s.document.buffer.text(), "one\ntwo\nthree\n");
+        assert!(!s.document.dirty);
+        assert_eq!(s.view.selections.primary().active, Position::new(1, 2));
+        // The same text again is not a change.
+        assert!(!s.reload_changed(Path::new("/w/a.rs"), "one\r\ntwo\r\nthree\r\n"));
+        s.run("undo", None, 1000);
+        assert_eq!(s.document.buffer.text(), "one\ntwo\n");
+    }
+
+    #[test]
+    fn a_document_with_unsaved_changes_is_not_reloaded() {
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "mine");
+        s.run("type", Some(&serde_json::json!({"text": "!"})), 0);
+        assert_eq!(s.is_dirty_at(Path::new("/w/a.rs")), Some(true));
+        assert!(!s.reload_changed(Path::new("/w/a.rs"), "theirs"));
+        assert_eq!(s.document.buffer.text(), "!mine");
+        assert_eq!(s.is_dirty_at(Path::new("/w/other.rs")), None);
     }
 
     #[test]

@@ -92,6 +92,17 @@ Reverting creates an undo entry, so `ctrl+z` restores the previous buffer conten
 
 An **untitled** document reverts to empty, since there is no file to re-read and it started empty. This is also how to close a scratch buffer without saving it.
 
+## Files changed by other programs
+
+deco checks the open files about once a second while no key is being pressed, by comparing each file's modification time and size with what they were when deco last read or wrote it. A file whose state changed is read and compared by content, so touching a file without changing it is not reported. Only local files are checked; a remote session's files are not. The GPU frontend does not check yet.
+
+- **A document with no unsaved changes takes the new text**, and the status line says it was reloaded. The reload is one undo step, so `ctrl+z` brings back the text shown before.
+- **A document with unsaved changes keeps them.** The status line reports the change once, and `Revert File` loads the file's text instead.
+- **Saving over such a file needs a second `ctrl+s`.** The first refuses and says why; the second overwrites the file. Auto-save never overwrites it, and `Save All` skips it and reports it as not saved.
+- A file that can no longer be read is reported once, and the tab keeps its text.
+
+Checking uses the filesystem's metadata rather than change notifications, which would need a platform-specific dependency for each operating system. A change made and undone within one second is therefore not seen, and a change that keeps both the size and the modification time is not seen either.
+
 ## Quitting with work unsaved
 
 `ctrl+q` refuses once and lists the unsaved documents, for example `2 tabs have unsaved changes: a.txt, b.rs`. A second `ctrl+q` quits anyway.

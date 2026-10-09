@@ -359,6 +359,9 @@ pub struct Driver {
     tree_root: Option<PathBuf>,
     /// The workspace's `git` status, collected outside the loop.
     scm: crate::scm::Scm,
+    /// The open files' state on disk, for noticing changes made by other
+    /// programs. Unused in a remote session.
+    disk: crate::disk::DiskWatch,
 }
 
 impl Driver {
@@ -376,6 +379,13 @@ impl Driver {
         } = options;
 
         resize(session, width, height);
+
+        let mut disk = crate::disk::DiskWatch::default();
+        if remote.is_none() {
+            for path in session.open_paths() {
+                disk.remember(&path);
+            }
+        }
 
         let (location, remote, remote_scm, is_remote) = match remote {
             Some(RemoteSession {
@@ -454,6 +464,7 @@ impl Driver {
                 ),
             },
             tree_root,
+            disk,
         }
     }
 
@@ -528,13 +539,17 @@ impl Driver {
     /// write once per keystroke, which the delay exists to prevent.
     pub fn idle(&mut self, session: &mut Session, now_ms: u64) -> Result<()> {
         self.poll(session, now_ms);
+        if self.remote.is_none() {
+            self.check_disk(session, now_ms);
+        }
         let Some(at) = self.edited_at else {
             return Ok(());
         };
         let idle = now_ms.saturating_sub(at);
         if auto_save_due(&session.document.settings, idle, session.document.dirty) {
-            save(session, self.remote.as_mut())?;
-            self.lsp.saved(session);
+            if save(session, self.remote.as_mut(), &mut self.disk, false)? {
+                self.lsp.saved(session);
+            }
             self.edited_at = None;
             self.dirty = true;
         } else if !session.document.dirty {
@@ -542,6 +557,32 @@ impl Driver {
             self.edited_at = None;
         }
         Ok(())
+    }
+
+    /// Applies changes other programs made to the open files.
+    fn check_disk(&mut self, session: &mut Session, now_ms: u64) {
+        let changes = self.disk.check(session, now_ms);
+        if changes.is_empty() {
+            return;
+        }
+        for change in &changes {
+            session.status = Some(match change {
+                crate::disk::Change::Reloaded(path) => {
+                    format!("Reloaded {}: it changed on disk", path.display())
+                }
+                crate::disk::Change::Conflict(path) => format!(
+                    "{} changed on disk; your unsaved changes are kept. Saving asks before \
+                     overwriting it, and Revert File loads it",
+                    path.display()
+                ),
+                crate::disk::Change::Gone(path) => format!(
+                    "{} can no longer be read from disk; the tab keeps its text",
+                    path.display()
+                ),
+            });
+        }
+        self.lsp.changed(session);
+        self.dirty = true;
     }
 
     /// Stops the language server and the source-control worker after the loop ends.
@@ -565,6 +606,7 @@ impl Driver {
             edited_at,
             tree_root,
             scm,
+            disk,
             ..
         } = self;
         *dirty = true;
@@ -588,8 +630,9 @@ impl Driver {
         match session.handle_chord(chord, now_ms) {
             Outcome::Quit => return Ok(Flow::Quit),
             Outcome::Save => {
-                save(session, remote.as_mut())?;
-                lsp.saved(session);
+                if save(session, remote.as_mut(), disk, true)? {
+                    lsp.saved(session);
+                }
             }
             // The picker selected a theme. The frontend reads it.
             Outcome::LoadTheme { label, path } => match load_theme(&label, path.as_deref()) {
@@ -630,6 +673,9 @@ impl Driver {
                 };
                 match written {
                     Ok(()) => {
+                        if remote.is_none() {
+                            disk.remember(&target);
+                        }
                         if let Outcome::Message(report) = session.rename_to(target) {
                             session.status = Some(report);
                         }
@@ -662,6 +708,9 @@ impl Driver {
                 });
                 match read {
                     Some(Ok(text)) => {
+                        if let (None, Some(target)) = (remote.as_ref(), target.as_deref()) {
+                            disk.remember(target);
+                        }
                         if let Outcome::Message(report) = session.revert_to(&text) {
                             session.status = Some(report);
                         }
@@ -822,7 +871,24 @@ impl Driver {
                 // The core runs the loop and builds the report. The frontend
                 // only performs the write, because only the frontend has
                 // filesystem access.
-                let outcome = session.save_all(write_file);
+                //
+                // A local file changed on disk since deco last read or wrote it
+                // is left alone, so other programs' changes are not lost
+                // without a question. Saving that file on its own asks.
+                let outcome = match remote {
+                    Some(_) => session.save_all(write_file),
+                    None => session.save_all(|path, contents| {
+                        if disk.changed_since_known(path) {
+                            return Err(format!(
+                                "{}: changed on disk; save it on its own to overwrite it",
+                                path.display()
+                            ));
+                        }
+                        write_file(path, contents)?;
+                        disk.remember(path);
+                        Ok(())
+                    }),
+                };
                 if let Outcome::Message(report) = outcome {
                     session.status = Some(report);
                 }
@@ -911,6 +977,9 @@ impl Driver {
                 };
                 match read {
                     Ok(text) => {
+                        if remote.is_none() {
+                            disk.remember(&target);
+                        }
                         session.open(target, &text);
                         if let Some(at) = at {
                             // Clamped, because the file on disk may have
@@ -1724,35 +1793,62 @@ fn write_file(path: &Path, contents: &str) -> std::result::Result<(), String> {
 /// A document with no path does not reach here, because [`Session`] turns
 /// `ctrl+s` into the save-as prompt. The arm remains as a guard rather than a
 /// `panic!`.
-fn save(session: &mut Session, remote: Option<&mut deco_remote::Client>) -> Result<()> {
+///
+/// A local file that changed on disk since deco last read or wrote it is not
+/// overwritten by an automatic save (`asked` false), and only by the second of
+/// two saves the user asked for. Returns whether the file was written.
+fn save(
+    session: &mut Session,
+    remote: Option<&mut deco_remote::Client>,
+    disk: &mut crate::disk::DiskWatch,
+    asked: bool,
+) -> Result<bool> {
     let Some(path) = session.document.path.clone() else {
         session.status = Some("This document has no filename yet".to_owned());
-        return Ok(());
+        return Ok(false);
     };
 
     // A failed remote write is reported and is *not* fatal. The connection can
     // drop while the editor keeps the text and can retry. A failed local write
     // remains fatal, so the editor never reports "saved" when the write failed.
     if let Some(client) = remote {
-        let asked = path.display().to_string();
-        return match client.write(&asked, &session.save_contents()) {
+        let name = path.display().to_string();
+        return match client.write(&name, &session.save_contents()) {
             Ok(()) => {
                 session.mark_saved();
-                session.status = Some(format!("Saved {asked} on the remote"));
-                Ok(())
+                session.status = Some(format!("Saved {name} on the remote"));
+                Ok(true)
             }
             Err(error) => {
-                session.status = Some(format!("could not save {asked}: {error}"));
-                Ok(())
+                session.status = Some(format!("could not save {name}: {error}"));
+                Ok(false)
             }
         };
     }
 
+    let refused = if asked {
+        !disk.may_overwrite(&path)
+    } else {
+        disk.changed_since_known(&path)
+    };
+    if refused {
+        session.status = Some(format!(
+            "{} changed on disk since deco read it. {}",
+            path.display(),
+            if asked {
+                "Save again to overwrite it, or use Revert File to load it"
+            } else {
+                "It was not saved automatically; save it to overwrite it"
+            }
+        ));
+        return Ok(false);
+    }
     std::fs::write(&path, session.save_contents())
         .with_context(|| format!("could not write {}", path.display()))?;
+    disk.remember(&path);
     session.mark_saved();
     session.status = Some(format!("Saved {}", path.display()));
-    Ok(())
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -2536,7 +2632,13 @@ mod tests {
         session.run("type", Some(&serde_json::json!({ "text": "scratch" })), 0);
         assert!(session.document.path.is_none(), "an untitled document");
 
-        save(&mut session, None).unwrap();
+        save(
+            &mut session,
+            None,
+            &mut crate::disk::DiskWatch::default(),
+            true,
+        )
+        .unwrap();
         assert_eq!(
             std::fs::read_to_string(&started_with).unwrap(),
             "fn main() {}\n",
@@ -2711,7 +2813,13 @@ mod tests {
     #[test]
     fn saving_an_untitled_document_says_so_instead_of_failing_silently() {
         let mut session = Session::with_defaults();
-        save(&mut session, None).unwrap();
+        save(
+            &mut session,
+            None,
+            &mut crate::disk::DiskWatch::default(),
+            true,
+        )
+        .unwrap();
         assert!(session.status.as_deref().unwrap().contains("no filename"));
     }
 }
