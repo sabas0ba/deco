@@ -237,6 +237,10 @@ pub fn run_with(
                 wanted_cursor_style(session).map(to_decscusr),
             )?;
         }
+        if let Some(sequence) = driver.terminal_output(session) {
+            out.write_all(sequence.as_bytes())?;
+            out.flush()?;
+        }
 
         // Wait with a timeout rather than blocking on `event::read`, so language
         // server diagnostics arrive while the user is idle instead of on the next
@@ -362,6 +366,8 @@ pub struct Driver {
     /// The open files' state on disk, for noticing changes made by other
     /// programs. Unused in a remote session.
     disk: crate::disk::DiskWatch,
+    /// Copies waiting to be sent to the terminal's clipboard.
+    clipboard: crate::clipboard::Pending,
 }
 
 impl Driver {
@@ -379,6 +385,9 @@ impl Driver {
         } = options;
 
         resize(session, width, height);
+
+        let clipboard = crate::clipboard::Pending::default();
+        session.clipboard = Box::new(crate::clipboard::TerminalClipboard::new(clipboard.clone()));
 
         let mut disk = crate::disk::DiskWatch::default();
         if remote.is_none() {
@@ -465,6 +474,7 @@ impl Driver {
             },
             tree_root,
             disk,
+            clipboard,
         }
     }
 
@@ -557,6 +567,20 @@ impl Driver {
             self.edited_at = None;
         }
         Ok(())
+    }
+
+    /// What to write to the terminal besides the frame: the OSC 52 sequence
+    /// that puts the latest copy on the clipboard.
+    ///
+    /// `deco.clipboard.osc52: false` keeps copies inside deco, for a terminal
+    /// that shows the sequence instead of acting on it.
+    pub fn terminal_output(&mut self, session: &Session) -> Option<String> {
+        let text = self.clipboard.take()?;
+        session
+            .settings
+            .get_bool("deco.clipboard.osc52", None)
+            .unwrap_or(true)
+            .then(|| crate::clipboard::osc52(&text))
     }
 
     /// Applies changes other programs made to the open files.

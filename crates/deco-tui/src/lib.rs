@@ -14,6 +14,7 @@
 //!   It writes only to stdout.
 
 pub mod app;
+pub mod clipboard;
 pub mod disk;
 pub mod extensions;
 pub mod files;

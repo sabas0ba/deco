@@ -140,6 +140,7 @@ Context keys are `editorHasSelection`. Implemented features use these identifier
 | Auto-indent (`editor.autoIndent`) | Yes — `advanced` and `full` resolve to `brackets` because there is no language configuration |
 | Trimming an auto-indent (`editor.trimAutoWhitespace`) | Yes — on the next edit rather than the next cursor move |
 | Auto-save (`files.autoSave`) | `off` and `afterDelay`; the focus-driven values are reported as not honoured |
+| Clipboard | Copy and cut reach the system clipboard through the terminal (OSC 52), also over SSH; paste uses deco's own copy — see [Editing](docs/editing.md#copy-and-paste-with-the-system-clipboard) |
 | Files changed by other programs | Reloaded as one undo step when the tab has no unsaved changes; otherwise reported, and saving over them needs a second `ctrl+s`. Local files only, checked once a second — see [Tabs](docs/tabs.md#files-changed-by-other-programs) |
 | Control characters (`editor.renderControlCharacters`) | Yes — and never written to the terminal as themselves, whatever the setting |
 | `renderWhitespace`, `rulers`, `lineNumbers`, `cursorStyle` | Yes in the terminal — `cursorStyle`'s thin and hollow shapes map to the nearest supported shape |
