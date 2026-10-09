@@ -12,7 +12,7 @@ Features that VS Code has and deco does not, with their prerequisites:
 
 | Missing | Depends on |
 | --- | --- |
-| Git — discard, push/pull ([the rest is built](git.md)) | nothing; each is its own decision about what it may lose or ask for |
+| Git — push/pull ([the rest is built](git.md)) | a decision on how credentials are asked for |
 | Integrated terminal | a PTY dependency; its home is the [panel](chrome.md) |
 | Task runner (`tasks.json`, `ctrl+shift+b`) | the terminal, for somewhere to run |
 | Test runner | the task runner, and later the extension host |
@@ -29,15 +29,15 @@ Two rules from the existing implementation apply to every section below:
 
 ## Git
 
-**Built.** The status bar shows the branch and the changes relative to it, the gutter marks changed lines, a source-control view stages, unstages and commits, and a local-branch picker switches branches after a checkout preflight. Git has [a page of its own](git.md); this section covers what remains.
+**Built.** The status bar shows the branch and the changes relative to it, the gutter marks changed lines, a source-control view stages, unstages, discards and commits, and a local-branch picker switches branches after a checkout preflight. Git has [a page of its own](git.md); this section covers what remains.
 
 **What VS Code has that deco still does not.**
 
-- **Discard.** `git clean` and `git checkout --` discard work with no undo and no trash. For the same reason, deco's file tree does not delete without confirmation, and discard needs a comparable safeguard.
+- **Discard all.** One file at a time is built, with a typed confirmation; discarding every change at once needs a confirmation that lists what would be lost.
 - **Push, pull, fetch.** These need credentials, and deco would have to be trusted to handle credential prompts. They should be designed deliberately, not added as an afterthought to a view that already works.
 **Steps.**
 
-1. Discard changes, with confirmation that identifies affected files and explains whether recovery is possible.
+1. Discard changes, with confirmation that identifies affected files and explains whether recovery is possible. Built for one file; discard all remains.
 2. Push, pull and fetch, after credential prompting is implemented.
 
 ## The integrated terminal
@@ -140,7 +140,7 @@ updater.
 - **Check tool calls through the capability broker.** File access would use resolved path scopes; process and network access would require their own declarations and policy decisions. Agent integration also needs session-scoped grants, revocation and an audit trail. These controls and the currently unsupported operations must be implemented before enabling agent tools.
 - **An agent's edits arrive as a `WorkspaceEdit`.** The multi-file, undoable edit used by rename is also the right unit for an agent's changes: applied atomically, reviewable as a diff before or after, and undone as **one step**, so `ctrl+z` recovers from a bad agent turn. This is the main reason `WorkspaceEdit` is treated as a foundation rather than a feature.
 - **Add MCP server and tool permissions.** Initial support would target local JSON-RPC servers over stdio, with process supervision similar to `deco-lsp`. The proposed `mcp.json` integration would require permission to start each server and separate grants for its tools before offering them to the model.
-- **External CLI agents are integrated through the terminal, not an API.** Users already run Claude Code and similar tools beside their editor. The integrated terminal would provide the initial integration: the agent runs there, and the editor detects what it changed. Files reload cleanly (this requires detecting external modification, which unsaved-conflict handling also needs), and the git gutter shows the agent's changes. Deeper integration, where the agent controls the editor, would use the same mediated API as extensions and nothing more.
+- **External CLI agents are integrated through the terminal, not an API.** Users already run Claude Code and similar tools beside their editor. The integrated terminal would provide the initial integration: the agent runs there, and the editor detects what it changed. Files reload cleanly (built: open files are checked once a second, a clean document takes the new text as one undo step, and a document with unsaved changes asks before saving over it — see [Tabs](tabs.md#files-changed-by-other-programs)), and the git gutter shows the agent's changes. Deeper integration, where the agent controls the editor, would use the same mediated API as extensions and nothing more.
 
 **Steps (agents).**
 

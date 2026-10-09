@@ -301,6 +301,13 @@ impl Editor {
         self.quit
     }
 
+    /// What the editor would write to the terminal besides the next frame,
+    /// such as the OSC 52 sequence for a copy. Taking it empties it, as the
+    /// event loop does.
+    pub fn terminal_output(&mut self) -> Option<String> {
+        self.driver.terminal_output(&self.session)
+    }
+
     /// The driver, for assertions about frontend state rather than the session:
     /// a received hover, an open completion list, a ready language server.
     pub fn driver(&self) -> &Driver {

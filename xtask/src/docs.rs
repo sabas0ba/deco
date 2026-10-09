@@ -570,6 +570,17 @@ impl Take {
                     branch.current = branch.name == *target;
                 }
             }
+            // The unstaged side goes: an untracked file disappears, and a
+            // file with nothing staged is no longer listed.
+            deco_scm::Operation::Discard { path, .. } => {
+                for (held, _, worktree) in self.scm.iter_mut() {
+                    if held.as_str() == path.to_string_lossy() {
+                        *worktree = '.';
+                    }
+                }
+                self.scm
+                    .retain(|(_, staged, worktree)| *staged != '.' || *worktree != '.');
+            }
         }
         self.refresh_scm();
     }

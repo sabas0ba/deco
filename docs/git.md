@@ -80,6 +80,7 @@ VS Code has no default key for most of these commands; its view uses buttons on 
 | `git.stage` | add the selected file's working-tree state to the index |
 | `git.stageAll` | add everything git reported |
 | `git.unstage` | take the selected file back out of the index |
+| `git.clean` | discard the selected file's unstaged changes, or delete it if it is untracked, after a typed `y` |
 | `git.commit` | `ctrl+enter` — ask for a message, then record what is staged |
 | `git.checkout` | list local branches, preview the switch, then ask for confirmation |
 | `git.refresh` | ask git again |
@@ -111,9 +112,20 @@ save or undo cannot put the previous branch's contents back. If a file is absent
 on the target branch, its old text is detached into an unsaved tab rather than
 silently closed.
 
-### What it deliberately will not do
+### Discarding changes
 
-**Discard.** `git clean` and `git checkout --` discard work with no undo and no trash. For the same reason, the [tree's delete](files.md) does not delete without confirmation. Discard is not built, rather than built without a way to recover.
+`git.clean` (Git: Discard Changes) throws away the selected file's unstaged changes. Git keeps no copy of them and deco has no trash, so it asks first, in the same way as the [tree's delete](files.md): the status line names the file and says that the changes cannot be recovered, and only a typed `y` followed by `enter` discards. `enter` alone keeps them.
+
+- **A changed file returns to its staged version**, or to `HEAD` when nothing is staged (`git checkout -- <file>`). A staged change is your work too, so it is kept; to discard it, unstage it first. A staged row is refused with that explanation.
+- **An untracked file is deleted** (`git clean --force -- <file>`). The question says that it has never been committed.
+- **A file with unsaved changes in the editor is refused.** The editor would keep the discarded text, and the next save would write it back.
+- **Merge conflicts are refused**, because they are resolved, not discarded.
+
+Git is asked for the file's state again immediately before the command runs. If another program has staged, committed or added the file since the view was drawn, nothing is discarded and the reason is shown. The path is passed with `--literal-pathspecs`, so a file named like a pattern, such as `[k]eep.txt`, never matches other files. Open files are read again afterwards, as after a checkout; a deleted untracked file's tab keeps its text as unsaved.
+
+There is no "discard all" yet.
+
+### What it deliberately will not do
 
 **Reach the network.** No push, pull or fetch. These require credentials, and deco would have to be trusted to handle credential prompts. Reading and staging need neither.
 

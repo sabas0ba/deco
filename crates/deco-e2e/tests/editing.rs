@@ -306,3 +306,35 @@ fn a_large_file_opens_and_edits_without_the_screen_losing_its_shape() {
     screen.assert_fits();
     screen.assert_status("Ln 200002");
 }
+
+#[test]
+fn copying_puts_the_text_on_the_terminal_s_clipboard() {
+    let scenario = Scenario::new("osc52").file("a.txt", "hello world\n");
+    let mut editor = scenario.launch(&["a.txt"]);
+
+    editor.press_all("shift+end ctrl+c");
+
+    // `hello world` in base64, in the sequence a terminal acts on.
+    assert_eq!(
+        editor.terminal_output().as_deref(),
+        Some("\x1b]52;c;aGVsbG8gd29ybGQ=\x1b\\")
+    );
+    assert_eq!(editor.terminal_output(), None, "sent once");
+    // Paste uses deco's own copy, whatever the terminal did with the sequence.
+    editor.press_all("end ctrl+v");
+    assert_eq!(editor.text(), "hello worldhello world\n");
+}
+
+#[test]
+fn the_terminal_clipboard_can_be_turned_off() {
+    let scenario = Scenario::new("osc52-off")
+        .user_settings(r#"{ "deco.clipboard.osc52": false }"#)
+        .file("a.txt", "hello\n");
+    let mut editor = scenario.launch(&["a.txt"]);
+
+    editor.press_all("shift+end ctrl+c");
+
+    assert_eq!(editor.terminal_output(), None);
+    editor.press_all("end ctrl+v");
+    assert_eq!(editor.text(), "hellohello\n");
+}

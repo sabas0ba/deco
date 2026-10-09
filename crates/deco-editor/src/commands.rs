@@ -343,6 +343,7 @@ pub const PALETTE: &[(&str, &str)] = &[
     ("git.stage", "Git: Stage Changes"),
     ("git.stageAll", "Git: Stage All Changes"),
     ("git.unstage", "Git: Unstage Changes"),
+    ("git.clean", "Git: Discard Changes"),
     ("git.commit", "Git: Commit"),
     ("git.checkout", "Git: Checkout to..."),
     ("git.refresh", "Git: Refresh"),
