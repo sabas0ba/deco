@@ -85,14 +85,15 @@ impl TerminalPanel {
 
     /// The program's output.
     pub(crate) fn feed(&mut self, bytes: &[u8]) {
-        let before = self.terminal.screen().scrollback_len();
+        let before = self.terminal.screen().scrolled();
         self.terminal.feed(bytes);
         let screen = self.terminal.screen_mut();
         // A view scrolled into the history keeps showing the same lines while
-        // new output arrives below.
+        // new output arrives below. Counted by lines scrolled rather than by
+        // the history's length, which stays the same once it is full.
         if self.back > 0 {
-            let added = screen.scrollback_len().saturating_sub(before);
-            self.back = (self.back + added).min(screen.scrollback_len());
+            let added = usize::try_from(screen.scrolled() - before).unwrap_or(usize::MAX);
+            self.back = self.back.saturating_add(added).min(screen.scrollback_len());
         }
         let replies = screen.take_responses();
         self.input.extend_from_slice(&replies);
@@ -137,5 +138,31 @@ impl TerminalPanel {
         } else {
             0
         };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn top_line(panel: &TerminalPanel) -> String {
+        panel
+            .screen()
+            .line(0, panel.back())
+            .map(deco_term::screen::Line::text)
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn a_view_in_the_history_stays_put_while_output_arrives_even_when_the_history_is_full() {
+        let mut panel = TerminalPanel::new(10, 2, 5);
+        let lines: String = (0..20).map(|n| format!("{n}\r\n")).collect();
+        panel.feed(lines.as_bytes());
+        assert_eq!(panel.screen().scrollback_len(), 5, "full");
+        panel.scroll(1);
+        let shown = top_line(&panel);
+        panel.feed(b"20\r\n");
+        assert_eq!(top_line(&panel), shown);
+        assert_eq!(panel.back(), 2);
     }
 }

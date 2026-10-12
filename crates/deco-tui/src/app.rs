@@ -92,7 +92,7 @@ fn to_crossterm(color: Rgba) -> Color {
 /// Starts the shell for the panel's terminal, in the workspace's directory.
 fn start_terminal(
     session: &mut Session,
-    terminal: &mut Option<deco_term::pty::Pty>,
+    terminal: &mut Option<Shell>,
     remote: bool,
     root: Option<&Path>,
     cols: u16,
@@ -112,7 +112,10 @@ fn start_terminal(
     command.env.extend(profile_env);
     match deco_term::pty::Pty::spawn(&command, deco_term::pty::Size { cols, rows }) {
         Ok(pty) => {
-            *terminal = Some(pty);
+            *terminal = Some(Shell {
+                pty,
+                quiet_since: None,
+            });
             session.terminal_started(cols, rows);
         }
         Err(error) => {
@@ -125,39 +128,44 @@ fn start_terminal(
 /// Moves bytes between the shell and the session: its output into the
 /// screen, and keys and status replies to it. Returns whether the screen
 /// changed.
-fn pump_terminal(terminal: &mut Option<deco_term::pty::Pty>, session: &mut Session) -> bool {
-    let Some(pty) = terminal.as_mut() else {
+fn pump_terminal(terminal: &mut Option<Shell>, session: &mut Session) -> bool {
+    let Some(shell) = terminal.as_mut() else {
         return false;
     };
     let mut changed = false;
-    let output = pty.read();
+    let output = shell.pty.read();
     if !output.bytes.is_empty() {
         session.terminal_output(&output.bytes);
         changed = true;
     }
     let input = session.take_terminal_input();
     if !input.is_empty() {
-        if let Err(error) = pty.write(&input) {
+        if let Err(error) = shell.pty.write(&input) {
             session.status = Some(format!("could not write to the terminal: {error}"));
         }
     }
-    // The shell has exited, or every program holding the terminal has closed
-    // it. On Windows the pseudo console keeps its output open after the
-    // program exits, so the exit code is checked as well as the output.
-    let mut code = pty.exit_code();
-    if output.ended || code.is_some() {
-        // What the program wrote just before exiting may still be on its way
-        // from the reader thread.
+    // The terminal is finished when its output has ended: the shell and
+    // everything it started have closed it, so nothing written is lost. The
+    // Windows pseudo console keeps its output open after the program exits,
+    // so there an exit is also accepted once the output has been quiet for
+    // `EXIT_GRACE`, which leaves time for the last output to arrive.
+    let code = shell.pty.exit_code();
+    let quiet_since = if output.bytes.is_empty() {
+        *shell.quiet_since.get_or_insert_with(Instant::now)
+    } else {
+        shell.quiet_since = None;
+        Instant::now()
+    };
+    if output.ended || (code.is_some() && quiet_since.elapsed() >= EXIT_GRACE) {
+        // The output can end a moment before the shell can be reaped. All of
+        // it has arrived, so waiting here for the exit code loses nothing.
+        let mut code = code;
         for _ in 0..20 {
-            let rest = pty.read();
-            if !rest.bytes.is_empty() {
-                session.terminal_output(&rest.bytes);
-            }
-            code = code.or_else(|| pty.exit_code());
-            if rest.ended && code.is_some() {
+            if code.is_some() {
                 break;
             }
             std::thread::sleep(Duration::from_millis(5));
+            code = shell.pty.exit_code();
         }
         session.terminal_exited(code);
         *terminal = None;
@@ -166,11 +174,21 @@ fn pump_terminal(terminal: &mut Option<deco_term::pty::Pty>, session: &mut Sessi
     changed
 }
 
+/// How long a shell that has exited may stay quiet before its terminal is
+/// treated as finished, when its output does not end on its own.
+const EXIT_GRACE: Duration = Duration::from_millis(500);
+
+/// The shell's pseudo-terminal and when its output last went quiet.
+struct Shell {
+    pty: deco_term::pty::Pty,
+    quiet_since: Option<Instant>,
+}
+
 /// Passes a new panel size on to the shell.
-fn fit_terminal(terminal: &mut Option<deco_term::pty::Pty>, session: &mut Session) {
+fn fit_terminal(terminal: &mut Option<Shell>, session: &mut Session) {
     if let Some((cols, rows)) = session.fit_terminal() {
-        if let Some(pty) = terminal.as_mut() {
-            let _ = pty.resize(deco_term::pty::Size { cols, rows });
+        if let Some(shell) = terminal.as_mut() {
+            let _ = shell.pty.resize(deco_term::pty::Size { cols, rows });
         }
     }
 }
@@ -455,7 +473,7 @@ pub struct Driver {
     /// Copies waiting to be sent to the terminal's clipboard.
     clipboard: crate::clipboard::Pending,
     /// The shell running in the panel's terminal.
-    terminal: Option<deco_term::pty::Pty>,
+    terminal: Option<Shell>,
 }
 
 impl Driver {

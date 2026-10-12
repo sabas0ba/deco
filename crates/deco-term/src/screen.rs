@@ -247,6 +247,9 @@ pub struct Screen {
     /// Lines that scrolled off the top of the primary screen, oldest first.
     scrollback: VecDeque<Line>,
     scrollback_limit: usize,
+    /// How many lines have moved into the history since the screen was made,
+    /// including lines the limit has since dropped.
+    scrolled: u64,
     /// Set while the alternate screen is shown.
     primary: Option<Stashed>,
     cursor: Cursor,
@@ -288,6 +291,7 @@ impl Screen {
             charsets: Charsets::default(),
             title: String::new(),
             last_printed: None,
+            scrolled: 0,
             responses: Vec::new(),
         }
     }
@@ -320,6 +324,14 @@ impl Screen {
     /// Whether the alternate screen is shown, which has no scrollback.
     pub fn is_alternate(&self) -> bool {
         self.primary.is_some()
+    }
+
+    /// How many lines output has moved into the history so far.
+    ///
+    /// A count rather than the history's length, which stops growing at the
+    /// limit while lines keep moving through it.
+    pub fn scrolled(&self) -> u64 {
+        self.scrolled
     }
 
     /// How many lines of history there are.
@@ -609,6 +621,7 @@ impl Screen {
             self.lines.insert(at, blank.clone());
         }
         if self.top == 0 && self.primary.is_none() {
+            self.scrolled += removed.len() as u64;
             self.scrollback.extend(removed);
             self.trim_scrollback();
         }
@@ -1179,6 +1192,7 @@ mod tests {
         let mut s = Screen::new(4, 2, 1);
         Parser::new().advance(&mut s, b"1\r\n2\r\n3\r\n4");
         assert_eq!(s.scrollback_len(), 1, "the limit holds");
+        assert_eq!(s.scrolled(), 2, "and every line that passed is counted");
     }
 
     #[test]
