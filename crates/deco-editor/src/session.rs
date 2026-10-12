@@ -504,6 +504,8 @@ pub struct Session {
     side_bar: bool,
     /// Whether the panel is showing.
     panel: bool,
+    /// The terminal in the panel, once one has been started.
+    terminal: Option<crate::terminal::TerminalPanel>,
     /// Which region has the keyboard.
     focus: Focus,
     /// File operations that can be taken back, most recent last.
@@ -768,6 +770,7 @@ impl Session {
             problems,
             side_bar: false,
             panel: false,
+            terminal: None,
             focus: Focus::Editor,
             explorer: None,
             explorer_undo: Vec::new(),
@@ -1420,6 +1423,16 @@ impl Session {
         self.context
             .set("sideBarFocus", self.focus == Focus::SideBar);
         self.context.set("panelFocus", self.focus == Focus::Panel);
+        // VS Code's keys for the terminal, which its default bindings for
+        // scrolling and pasting use.
+        let terminal_focus = self.focus == Focus::Panel && self.terminal.is_some();
+        self.context.set("terminalFocus", terminal_focus);
+        self.context.set(
+            "terminalAltBufferActive",
+            self.terminal
+                .as_ref()
+                .is_some_and(|terminal| terminal.screen().is_alternate()),
+        );
         // The tree's keys. `filesExplorerFocus` is VS Code's key for the explorer
         // having the keyboard, and `listFocus` is for any list having it. The
         // lists here are the explorer and the source-control view, so the two
@@ -1492,6 +1505,10 @@ impl Session {
     /// `now_ms` is a monotonic timestamp used for undo grouping. The frontend
     /// owns the clock so that this path stays testable.
     pub fn handle_chord(&mut self, chord: Chord, now_ms: u64) -> Outcome {
+        if let Some(outcome) = self.terminal_key(&chord, now_ms) {
+            self.refresh_context();
+            return outcome;
+        }
         let resolution = self
             .keymap
             .resolve(&mut self.view.chord, chord, &self.context);
@@ -1606,6 +1623,13 @@ impl Session {
             // wrap width.
             "workbench.action.toggleSidebarVisibility" => self.toggle_side_bar(),
             "workbench.action.togglePanel" => self.toggle_panel(),
+            "workbench.action.terminal.toggleTerminal" => self.toggle_terminal(),
+            "workbench.action.terminal.kill" => self.kill_terminal(),
+            "workbench.action.terminal.paste" => self.paste_into_terminal(),
+            "workbench.action.terminal.scrollUpPage" => self.scroll_terminal_page(true),
+            "workbench.action.terminal.scrollDownPage" => self.scroll_terminal_page(false),
+            "workbench.action.terminal.scrollToTop" => self.scroll_terminal_to(true),
+            "workbench.action.terminal.scrollToBottom" => self.scroll_terminal_to(false),
             "workbench.action.closeSidebar" => self.show_side_bar(false),
             "workbench.action.closePanel" => self.show_panel(false),
             "workbench.files.action.focusFilesExplorer" | "workbench.view.explorer" => {
@@ -3862,6 +3886,188 @@ impl Session {
             self.focus = Focus::Editor;
         }
         self.report_region("Panel", showing, self.regions().panel.is_some())
+    }
+
+    // ---- the terminal ----------------------------------------------------
+
+    /// The terminal in the panel, if one has been started.
+    pub fn terminal(&self) -> Option<&crate::terminal::TerminalPanel> {
+        self.terminal.as_ref()
+    }
+
+    /// The size the terminal's screen should have: the panel below its title
+    /// row, or `None` while the panel is hidden or has no room.
+    pub fn terminal_area(&self) -> Option<(usize, usize)> {
+        let panel = self.regions().panel?;
+        (panel.height > 1 && panel.width > 0).then(|| (panel.width, panel.height - 1))
+    }
+
+    /// `` ctrl+` ``: shows the terminal and gives it the keyboard, or hides it
+    /// when it already has the keyboard, as in VS Code.
+    ///
+    /// The first use, and the first after the shell exited, asks the frontend
+    /// to start a shell.
+    fn toggle_terminal(&mut self) -> Outcome {
+        let running = self
+            .terminal
+            .as_ref()
+            .is_some_and(|terminal| terminal.exited().is_none());
+        if running {
+            if self.focus == Focus::Panel {
+                return self.show_panel(false);
+            }
+            return self.focus_region(Focus::Panel);
+        }
+        self.panel = true;
+        let (width, height) = self.screen;
+        self.resize(width, height);
+        let Some((cols, rows)) = self.terminal_area() else {
+            return Outcome::Message("no room for the terminal in this window".to_owned());
+        };
+        self.focus = Focus::Panel;
+        self.refresh_context();
+        Outcome::StartTerminal {
+            cols: cols.min(usize::from(u16::MAX)) as u16,
+            rows: rows.min(usize::from(u16::MAX)) as u16,
+        }
+    }
+
+    /// The frontend started the shell; the screen is created at the size it
+    /// was started with.
+    pub fn terminal_started(&mut self, cols: u16, rows: u16) {
+        let scrollback = self
+            .settings
+            .get_u64("terminal.integrated.scrollback", None)
+            .map_or(crate::terminal::DEFAULT_SCROLLBACK, |lines| lines as usize);
+        self.terminal = Some(crate::terminal::TerminalPanel::new(
+            usize::from(cols),
+            usize::from(rows),
+            scrollback,
+        ));
+        self.refresh_context();
+    }
+
+    /// The frontend could not start the shell.
+    pub fn terminal_failed(&mut self, reason: &str) {
+        self.status = Some(format!("could not start the terminal: {reason}"));
+        if self.terminal.is_none() && self.focus == Focus::Panel {
+            self.focus = Focus::Editor;
+        }
+        self.refresh_context();
+    }
+
+    /// What the shell wrote.
+    pub fn terminal_output(&mut self, bytes: &[u8]) {
+        if let Some(terminal) = &mut self.terminal {
+            terminal.feed(bytes);
+            self.refresh_context();
+        }
+    }
+
+    /// The shell exited. The screen stays until a key is pressed in it.
+    pub fn terminal_exited(&mut self, code: Option<i32>) {
+        if let Some(terminal) = &mut self.terminal {
+            terminal.exit(code);
+            self.status = Some(match code {
+                Some(code) => format!(
+                    "The terminal process exited with code {code}. Press any key in it to close it"
+                ),
+                None => "The terminal process exited. Press any key in it to close it".to_owned(),
+            });
+        }
+    }
+
+    /// Takes the keys and replies waiting to be written to the shell.
+    pub fn take_terminal_input(&mut self) -> Vec<u8> {
+        self.terminal
+            .as_mut()
+            .map(crate::terminal::TerminalPanel::take_input)
+            .unwrap_or_default()
+    }
+
+    /// Resizes the terminal's screen to the panel. Returns the new size when
+    /// it changed, which the frontend passes on to the shell.
+    pub fn fit_terminal(&mut self) -> Option<(u16, u16)> {
+        let (cols, rows) = self.terminal_area()?;
+        let terminal = self.terminal.as_mut()?;
+        let (cols, rows) = (
+            cols.min(usize::from(u16::MAX)),
+            rows.min(usize::from(u16::MAX)),
+        );
+        terminal
+            .resize(cols, rows)
+            .then_some((cols as u16, rows as u16))
+    }
+
+    /// Sends a key to the terminal when it has the keyboard.
+    ///
+    /// Returns `None` when the key is the editor's: the terminal does not
+    /// have the keyboard, a prompt is open over it, or the key is bound to
+    /// one of [`crate::terminal::SKIP_SHELL`].
+    fn terminal_key(&mut self, chord: &Chord, now_ms: u64) -> Option<Outcome> {
+        if self.focus != Focus::Panel || self.prompt.is_some() {
+            return None;
+        }
+        let terminal = self.terminal.as_ref()?;
+        if terminal.exited().is_some() {
+            // Any key closes an exited terminal, as in VS Code.
+            self.terminal = None;
+            return Some(self.show_panel(false));
+        }
+        let resolution = self
+            .keymap
+            .resolve(&mut self.view.chord, *chord, &self.context);
+        match resolution {
+            Resolution::Match { command, args }
+                if crate::terminal::SKIP_SHELL.contains(&command.as_str()) =>
+            {
+                return Some(self.dispatch(&command, args.as_ref(), now_ms));
+            }
+            // A chord prefix such as `ctrl+k` is the shell's in the terminal.
+            Resolution::Pending { .. } => self.view.chord.reset(),
+            _ => {}
+        }
+        let terminal = self.terminal.as_mut()?;
+        let modes = terminal.screen().modes();
+        if let Some(bytes) = deco_term::input::encode(chord, modes) {
+            terminal.send(&bytes);
+        }
+        Some(Outcome::TerminalInput)
+    }
+
+    fn kill_terminal(&mut self) -> Outcome {
+        if self.terminal.take().is_none() {
+            return Outcome::Message("there is no terminal to kill".to_owned());
+        }
+        self.show_panel(false);
+        Outcome::KillTerminal
+    }
+
+    /// Pastes the clipboard into the terminal, bracketed when the program
+    /// asked for that.
+    fn paste_into_terminal(&mut self) -> Outcome {
+        let text = self.clipboard.read();
+        let Some(terminal) = self.terminal.as_mut().filter(|t| t.exited().is_none()) else {
+            return Outcome::Message("there is no terminal to paste into".to_owned());
+        };
+        let bytes = deco_term::input::paste(&text, terminal.screen().modes());
+        terminal.send(&bytes);
+        Outcome::TerminalInput
+    }
+
+    fn scroll_terminal_page(&mut self, up: bool) -> Outcome {
+        if let Some(terminal) = &mut self.terminal {
+            let page = terminal.screen().rows().max(2) as isize - 1;
+            terminal.scroll(if up { page } else { -page });
+        }
+        Outcome::Handled
+    }
+
+    fn scroll_terminal_to(&mut self, top: bool) -> Outcome {
+        if let Some(terminal) = &mut self.terminal {
+            terminal.scroll_to(top);
+        }
+        Outcome::Handled
     }
 
     /// Re-divides the window and reports the result when needed.
@@ -11489,19 +11695,123 @@ mod tests {
         assert!(regions.side_bar.expect("showing").x > regions.editor.x);
     }
 
+    /// A session with a running terminal of the panel's size.
+    fn with_terminal() -> Session {
+        let mut s = Session::with_defaults();
+        s.resize(80, 30);
+        let Outcome::StartTerminal { cols, rows } = press(&mut s, "ctrl+`") else {
+            panic!("the first ctrl+` asks for a shell");
+        };
+        assert_eq!(
+            s.terminal_area(),
+            Some((usize::from(cols), usize::from(rows)))
+        );
+        s.terminal_started(cols, rows);
+        s
+    }
+
+    #[test]
+    fn keys_go_to_the_terminal_except_the_editor_s_own() {
+        let mut s = with_terminal();
+        assert_eq!(s.focus(), Focus::Panel);
+
+        assert_eq!(press(&mut s, "l"), Outcome::TerminalInput);
+        press(&mut s, "s");
+        press(&mut s, "enter");
+        // `ctrl+k` starts editor chords, but in the terminal it is the shell's.
+        press(&mut s, "ctrl+k");
+        press(&mut s, "ctrl+c");
+        press(&mut s, "up");
+        assert_eq!(s.take_terminal_input(), b"ls\r\x0b\x03\x1b[A");
+        assert_eq!(s.document.buffer.text(), "", "nothing reached the document");
+
+        // The palette is the editor's, and a key in it is not the shell's.
+        press(&mut s, "ctrl+shift+p");
+        assert!(s.prompt.is_some());
+        press(&mut s, "x");
+        assert!(s.take_terminal_input().is_empty());
+        press(&mut s, "escape");
+
+        // `` ctrl+` `` hides the terminal it is in.
+        press(&mut s, "ctrl+`");
+        assert_eq!(s.focus(), Focus::Editor);
+        assert!(s.regions().panel.is_none());
+        assert_eq!(
+            press(&mut s, "ctrl+`"),
+            Outcome::Handled,
+            "a running shell is reused"
+        );
+        assert_eq!(s.focus(), Focus::Panel);
+    }
+
+    #[test]
+    fn output_is_drawn_into_the_screen_and_status_requests_are_answered() {
+        let mut s = with_terminal();
+        s.terminal_output(b"hello\r\nworld\x1b[6n");
+        let terminal = s.terminal().expect("started");
+        assert_eq!(terminal.screen().text(), "hello\nworld");
+        assert_eq!(s.take_terminal_input(), b"\x1b[2;6R");
+    }
+
+    #[test]
+    fn the_history_scrolls_with_shift_pageup_and_typing_returns_to_the_bottom() {
+        let mut s = with_terminal();
+        let lines: String = (0..100).map(|n| format!("{n}\r\n")).collect();
+        s.terminal_output(lines.as_bytes());
+        press(&mut s, "shift+pageup");
+        let back = s.terminal().unwrap().back();
+        assert!(back > 0);
+        press(&mut s, "a");
+        assert_eq!(s.terminal().unwrap().back(), 0);
+    }
+
+    #[test]
+    fn the_screen_follows_the_panel_size() {
+        let mut s = with_terminal();
+        assert_eq!(s.fit_terminal(), None, "already the panel's size");
+        s.resize(100, 40);
+        let (cols, rows) = s.fit_terminal().expect("a new size");
+        assert_eq!(
+            Some((usize::from(cols), usize::from(rows))),
+            s.terminal_area()
+        );
+        assert_eq!(s.terminal().unwrap().screen().cols(), usize::from(cols));
+    }
+
+    #[test]
+    fn an_exited_terminal_closes_on_the_next_key_and_the_next_toggle_starts_again() {
+        let mut s = with_terminal();
+        s.terminal_exited(Some(0));
+        assert!(s
+            .status
+            .as_deref()
+            .is_some_and(|status| status.contains("code 0")));
+        press(&mut s, "x");
+        assert!(s.terminal().is_none());
+        assert_eq!(s.focus(), Focus::Editor);
+        assert!(matches!(
+            press(&mut s, "ctrl+`"),
+            Outcome::StartTerminal { .. }
+        ));
+    }
+
+    #[test]
+    fn pasting_into_the_terminal_is_bracketed_when_asked() {
+        let mut s = with_terminal();
+        s.clipboard.write("echo hi\n");
+        s.terminal_output(b"\x1b[?2004h");
+        assert_eq!(press(&mut s, "ctrl+shift+v"), Outcome::TerminalInput);
+        assert_eq!(s.take_terminal_input(), b"\x1b[200~echo hi\n\x1b[201~");
+    }
+
     #[test]
     fn an_unimplemented_command_says_which_feature_it_is() {
-        // The panel exists, but the terminal that this key opens is not
-        // implemented.
         let mut s = searchable("x\n");
         assert_eq!(
-            s.run("workbench.action.terminal.toggleTerminal", None, 0),
-            Outcome::Message("Toggle Terminal is not implemented yet".to_owned())
+            s.run("workbench.action.toggleZenMode", None, 0),
+            Outcome::Message("Zen Mode is not implemented yet".to_owned())
         );
-        assert_eq!(
-            s.status.as_deref(),
-            Some("Toggle Terminal is not implemented yet")
-        );
+        assert_eq!(s.status.as_deref(), Some("Zen Mode is not implemented yet"));
     }
 
     #[test]

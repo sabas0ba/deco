@@ -225,6 +225,15 @@ pub const DEFAULT_KEYBINDINGS_JSONC: &str = r#"[
     { "key": "ctrl+b",       "mac": "cmd+b",       "command": "workbench.action.toggleSidebarVisibility" },
     { "key": "ctrl+j",       "mac": "cmd+j",       "command": "workbench.action.togglePanel" },
     { "key": "ctrl+`",       "command": "workbench.action.terminal.toggleTerminal" },
+
+    // ---- Terminal -------------------------------------------------------
+    // Only these keys and the rest of `SKIP_SHELL` in deco-editor stay with
+    // the editor while the terminal has the keyboard.
+    { "key": "shift+pageup",   "mac": "cmd+pageup",   "command": "workbench.action.terminal.scrollUpPage",   "when": "terminalFocus && !terminalAltBufferActive" },
+    { "key": "shift+pagedown", "mac": "cmd+pagedown", "command": "workbench.action.terminal.scrollDownPage", "when": "terminalFocus && !terminalAltBufferActive" },
+    { "key": "ctrl+home",      "mac": "cmd+home",     "command": "workbench.action.terminal.scrollToTop",    "when": "terminalFocus && !terminalAltBufferActive" },
+    { "key": "ctrl+end",       "mac": "cmd+end",      "command": "workbench.action.terminal.scrollToBottom", "when": "terminalFocus && !terminalAltBufferActive" },
+    { "key": "ctrl+shift+v",   "mac": "cmd+v",        "command": "workbench.action.terminal.paste",          "when": "terminalFocus" },
     { "key": "ctrl+k z",     "mac": "cmd+k z",     "command": "workbench.action.toggleZenMode" },
     { "key": "ctrl+=",       "mac": "cmd+=",       "command": "workbench.action.zoomIn" },
     { "key": "ctrl+-",       "mac": "cmd+-",       "command": "workbench.action.zoomOut" },

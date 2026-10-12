@@ -89,6 +89,92 @@ fn to_crossterm(color: Rgba) -> Color {
     }
 }
 
+/// Starts the shell for the panel's terminal, in the workspace's directory.
+fn start_terminal(
+    session: &mut Session,
+    terminal: &mut Option<deco_term::pty::Pty>,
+    remote: bool,
+    root: Option<&Path>,
+    cols: u16,
+    rows: u16,
+) {
+    if remote {
+        session.terminal_failed("a terminal on the remote machine is not implemented yet");
+        return;
+    }
+    let mut problems = Vec::new();
+    let mut command = crate::terminal::shell(&session.settings, &mut problems);
+    session.problems.extend(problems);
+    command.cwd = root.filter(|root| root.is_dir()).map(Path::to_path_buf);
+    // A profile's own variables win over the ones every shell gets.
+    let profile_env = std::mem::take(&mut command.env);
+    command.env = crate::terminal::environment();
+    command.env.extend(profile_env);
+    match deco_term::pty::Pty::spawn(&command, deco_term::pty::Size { cols, rows }) {
+        Ok(pty) => {
+            *terminal = Some(pty);
+            session.terminal_started(cols, rows);
+        }
+        Err(error) => {
+            let program = command.program.to_string_lossy().into_owned();
+            session.terminal_failed(&format!("{program}: {error}"));
+        }
+    }
+}
+
+/// Moves bytes between the shell and the session: its output into the
+/// screen, and keys and status replies to it. Returns whether the screen
+/// changed.
+fn pump_terminal(terminal: &mut Option<deco_term::pty::Pty>, session: &mut Session) -> bool {
+    let Some(pty) = terminal.as_mut() else {
+        return false;
+    };
+    let mut changed = false;
+    let output = pty.read();
+    if !output.bytes.is_empty() {
+        session.terminal_output(&output.bytes);
+        changed = true;
+    }
+    let input = session.take_terminal_input();
+    if !input.is_empty() {
+        if let Err(error) = pty.write(&input) {
+            session.status = Some(format!("could not write to the terminal: {error}"));
+        }
+    }
+    // The shell has exited, or every program holding the terminal has closed
+    // it. On Windows the pseudo console keeps its output open after the
+    // program exits, so the exit code is checked as well as the output.
+    let mut code = pty.exit_code();
+    if output.ended || code.is_some() {
+        // What the program wrote just before exiting may still be on its way
+        // from the reader thread.
+        for _ in 0..20 {
+            let rest = pty.read();
+            if !rest.bytes.is_empty() {
+                session.terminal_output(&rest.bytes);
+            }
+            code = code.or_else(|| pty.exit_code());
+            if rest.ended && code.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        session.terminal_exited(code);
+        *terminal = None;
+        changed = true;
+    }
+    changed
+}
+
+/// Passes a new panel size on to the shell.
+fn fit_terminal(terminal: &mut Option<deco_term::pty::Pty>, session: &mut Session) {
+    if let Some((cols, rows)) = session.fit_terminal() {
+        if let Some(pty) = terminal.as_mut() {
+            let _ = pty.resize(deco_term::pty::Size { cols, rows });
+        }
+    }
+}
+
 /// Writes a frame to the terminal.
 fn paint(out: &mut impl Write, frame: &Frame, style: Option<cursor::SetCursorStyle>) -> Result<()> {
     queue!(out, cursor::Hide, cursor::MoveTo(0, 0))?;
@@ -246,7 +332,7 @@ pub fn run_with(
         // server diagnostics arrive while the user is idle instead of on the next
         // keystroke. The interval is short enough for results to appear promptly
         // and long enough that an idle editor does not busy-loop.
-        if !event::poll(LSP_POLL_INTERVAL)? {
+        if !event::poll(driver.poll_interval())? {
             driver.idle(session, elapsed_ms(started))?;
             continue;
         }
@@ -368,6 +454,8 @@ pub struct Driver {
     disk: crate::disk::DiskWatch,
     /// Copies waiting to be sent to the terminal's clipboard.
     clipboard: crate::clipboard::Pending,
+    /// The shell running in the panel's terminal.
+    terminal: Option<deco_term::pty::Pty>,
 }
 
 impl Driver {
@@ -475,6 +563,7 @@ impl Driver {
             tree_root,
             disk,
             clipboard,
+            terminal: None,
         }
     }
 
@@ -488,6 +577,8 @@ impl Driver {
         // The find bar uses a row, so the text area's height depends on whether
         // it is open, which the last keypress may have changed.
         resize(session, self.width, self.height);
+        // The panel may have changed size with it.
+        fit_terminal(&mut self.terminal, session);
         // The marks are derived from the buffer, so they are updated here rather
         // than in the renderer. `render` holds the session by shared reference,
         // and the alternative would be a diff per frame. When nothing has been
@@ -551,6 +642,19 @@ impl Driver {
                 }
             }
             *dirty = true;
+        }
+        *dirty |= pump_terminal(&mut self.terminal, session);
+    }
+
+    /// How long the event loop waits for a key before polling again.
+    ///
+    /// Shorter while a shell is running, so its output appears as it is
+    /// written rather than up to one interval later.
+    pub fn poll_interval(&self) -> Duration {
+        if self.terminal.is_some() {
+            TERMINAL_POLL_INTERVAL
+        } else {
+            LSP_POLL_INTERVAL
         }
     }
 
@@ -623,6 +727,7 @@ impl Driver {
 
     /// Stops the language server and the source-control worker after the loop ends.
     pub fn shutdown(&mut self) {
+        self.terminal = None;
         self.lsp.detach();
         self.scm.shutdown();
     }
@@ -643,6 +748,7 @@ impl Driver {
             tree_root,
             scm,
             disk,
+            terminal,
             ..
         } = self;
         *dirty = true;
@@ -663,7 +769,26 @@ impl Driver {
             && !chord.modifiers.alt
             && !chord.modifiers.meta;
 
-        match session.handle_chord(chord, now_ms) {
+        let outcome = session.handle_chord(chord, now_ms);
+        // A key typed into the terminal is not an edit of the document, so
+        // none of the handling below applies to it.
+        if outcome == Outcome::TerminalInput {
+            pump_terminal(terminal, session);
+            return Ok(Flow::Continue);
+        }
+        match outcome {
+            Outcome::StartTerminal { cols, rows } => {
+                let root = tree_root.clone().or_else(|| cwd.clone());
+                start_terminal(
+                    session,
+                    terminal,
+                    remote.is_some(),
+                    root.as_deref(),
+                    cols,
+                    rows,
+                );
+            }
+            Outcome::KillTerminal => *terminal = None,
             Outcome::Quit => return Ok(Flow::Quit),
             Outcome::Save => {
                 if save(session, remote.as_mut(), disk, true)? {
@@ -1316,6 +1441,9 @@ fn printable(chord: &deco_keymap::keys::Chord) -> Option<char> {
 /// appears delayed, and 20 wakeups a second on an idle editor has no measurable
 /// cost.
 const LSP_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// The interval while a shell is running in the panel.
+const TERMINAL_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 /// Carries out one of the tree's file operations.
 ///

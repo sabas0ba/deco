@@ -308,6 +308,13 @@ fn render_text(session: &Session, width: usize, height: usize) -> Frame {
     let panel = regions
         .panel
         .map(|rect| region_rows(session, rect, Region::Panel, &palette));
+    // The terminal's cursor, below the panel's title row.
+    if let (deco_editor::Focus::Panel, Some(terminal), Some(rect)) =
+        (session.focus(), session.terminal(), regions.panel)
+    {
+        cursor_cell = crate::terminal::cursor(terminal, rect.width, rect.height.saturating_sub(1))
+            .map(|(x, y)| ((rect.x + x) as u16, (top + rect.y + 1 + y) as u16));
+    }
 
     for row_index in 0..text_height {
         // The middle of the row: the groups, the rule above the panel, or the
@@ -446,6 +453,7 @@ impl Region {
             }
             Self::SideBar if session.explorer().is_some() => "EXPLORER",
             Self::SideBar => "SIDE BAR",
+            Self::Panel if session.terminal().is_some() => "TERMINAL",
             Self::Panel => "PANEL",
         }
     }
@@ -505,6 +513,15 @@ fn region_rows(session: &Session, rect: Rect, region: Region, palette: &Palette)
         title_fg,
         title_bg,
     ));
+    // The terminal fills the panel below its title, with no blank row: its
+    // size is the one `Session::terminal_area` gives the shell.
+    if let (Region::Panel, Some(terminal)) = (region, session.terminal()) {
+        let colors = crate::terminal::Colors::from_theme(theme, &session.settings, fg, bg);
+        let height = rect.height.saturating_sub(1);
+        rows.extend(crate::terminal::rows(terminal, &colors, rect.width, height));
+        rows.truncate(rect.height);
+        return rows;
+    }
     if rect.height > 1 {
         rows.push(region_line("", rect.width, fg, bg));
     }

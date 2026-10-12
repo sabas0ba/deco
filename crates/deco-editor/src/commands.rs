@@ -44,6 +44,23 @@ impl Clipboard for MemoryClipboard {
 pub enum Outcome {
     /// The command ran; redraw.
     Handled,
+    /// The terminal in the panel should start a shell of `cols` by `rows`.
+    ///
+    /// The frontend starts it and reports back with
+    /// [`Session::terminal_started`](crate::Session::terminal_started) or
+    /// [`Session::terminal_failed`](crate::Session::terminal_failed).
+    StartTerminal {
+        /// Columns.
+        cols: u16,
+        /// Rows.
+        rows: u16,
+    },
+    /// The key went to the terminal. The bytes are waiting in
+    /// [`Session::take_terminal_input`](crate::Session::take_terminal_input).
+    TerminalInput,
+    /// The terminal's program should be stopped; the session has already
+    /// dropped its screen.
+    KillTerminal,
     /// No command with that identifier exists here.
     ///
     /// Not necessarily an error: a frontend implements commands the core cannot,
@@ -291,12 +308,6 @@ impl PaletteEntry {
 ///
 /// An identifier is removed from this list when the feature is implemented.
 pub const PENDING: &[(&str, &str)] = &[
-    // The panel exists, but a terminal for it needs a PTY dependency. See
-    // docs/roadmap.md.
-    (
-        "workbench.action.terminal.toggleTerminal",
-        "Toggle Terminal",
-    ),
     ("workbench.action.toggleZenMode", "Zen Mode"),
     // Needs a font size the frontend can change. The terminal frontend does not
     // control the font size.
@@ -369,6 +380,18 @@ pub const PALETTE: &[(&str, &str)] = &[
         "View: Focus into Primary Side Bar",
     ),
     ("workbench.action.focusPanel", "View: Focus into Panel"),
+    (
+        "workbench.action.terminal.toggleTerminal",
+        "View: Toggle Terminal",
+    ),
+    (
+        "workbench.action.terminal.kill",
+        "Terminal: Kill the Active Terminal Instance",
+    ),
+    (
+        "workbench.action.terminal.paste",
+        "Terminal: Paste into Active Terminal",
+    ),
     (
         "workbench.action.focusActiveEditorGroup",
         "View: Focus Active Editor Group",
