@@ -11696,8 +11696,11 @@ mod tests {
     }
 
     /// A session with a running terminal of the panel's size.
+    ///
+    /// With the Linux keymap, whatever the host, because the tests press
+    /// `ctrl+shift+p` and `ctrl+shift+v`, which macOS binds to `cmd`.
     fn with_terminal() -> Session {
-        let mut s = Session::with_defaults();
+        let mut s = Session::new(Settings::with_defaults(), None, Platform::Linux);
         s.resize(80, 30);
         let Outcome::StartTerminal { cols, rows } = press(&mut s, "ctrl+`") else {
             panic!("the first ctrl+` asks for a shell");
