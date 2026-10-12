@@ -105,6 +105,17 @@ The renderer substitutes characters in the document according to the setting. Th
 
 **Bidirectional overrides.** `U+202E` and related characters reorder the surrounding characters, so a line can display differently from its actual content. This is the Trojan Source class of attack, which matters most in code that will be compiled. These characters are printable rather than control characters, so this substitution does not change them. VS Code handles them with a separate setting (`editor.unicodeHighlight.*`) that deco does not read.
 
+## Copy and paste with the system clipboard
+
+In the terminal, `ctrl+c` and `ctrl+x` also put the text on the system clipboard by writing an OSC 52 sequence to the terminal, so a copy in deco can be pasted in other applications. This works over SSH, in a container and under WSL, because the terminal emulator, not deco, sets the clipboard. The sequence is the one deliberate exception to the rule above: deco writes it itself, with the copied text base64-encoded, and never from a file's contents.
+
+- The terminal must allow programs to set the clipboard. iTerm2, kitty, foot, WezTerm, Windows Terminal and recent xterm do; tmux needs `set -g set-clipboard on`.
+- `ctrl+v` pastes deco's own copy of the last text copied in deco. Reading the clipboard through OSC 52 is disabled by default in most terminals, because any program writing to the terminal could then read it, so deco does not ask. Text copied in another application is pasted with the terminal's paste key, which delivers it as typed text.
+- A copy larger than 1 MiB stays inside deco.
+- `"deco.clipboard.osc52": false` keeps copies inside deco, for a terminal that prints the sequence instead of acting on it.
+
+The GPU frontend does not use the system clipboard yet.
+
 ## Auto-closing brackets
 
 `editor.autoClosingBrackets` inserts the closing bracket or quote when you type the opening one, and types over an existing closer.

@@ -285,6 +285,72 @@ fn reverting_brings_back_what_is_on_the_disk() {
 }
 
 #[test]
+fn a_file_changed_by_another_program_is_reloaded_when_it_has_no_unsaved_changes() {
+    let scenario = Scenario::new("reload-changed").file("a.txt", "original\n");
+    let mut editor = scenario.launch(&["a.txt"]);
+
+    editor.change_on_disk("a.txt", "changed by a formatter\n");
+    editor.wait(1000);
+
+    assert_eq!(editor.text(), "changed by a formatter\n");
+    assert!(!editor.is_dirty());
+    assert!(
+        editor
+            .status()
+            .is_some_and(|status| status.contains("Reloaded")),
+        "{:?}",
+        editor.status()
+    );
+    // One undo step brings back what was showing before.
+    editor.press("ctrl+z");
+    assert_eq!(editor.text(), "original\n");
+}
+
+#[test]
+fn saving_over_a_file_changed_by_another_program_needs_a_second_save() {
+    let scenario = Scenario::new("save-conflict").file("a.txt", "original\n");
+    let mut editor = scenario.launch(&["a.txt"]);
+
+    editor.press("ctrl+end");
+    editor.type_text("mine\n");
+    editor.change_on_disk("a.txt", "theirs, which is longer\n");
+    editor.wait(1000);
+    // The unsaved changes are kept, and the change is reported.
+    assert_eq!(editor.text(), "original\nmine\n");
+    assert!(
+        editor
+            .status()
+            .is_some_and(|status| status.contains("changed on disk")),
+        "{:?}",
+        editor.status()
+    );
+
+    editor.press("ctrl+s");
+    assert_eq!(editor.on_disk("a.txt"), "theirs, which is longer\n");
+    assert!(editor.is_dirty());
+
+    editor.press("ctrl+s");
+    assert_eq!(editor.on_disk("a.txt"), "original\nmine\n");
+    assert!(!editor.is_dirty());
+}
+
+#[test]
+fn auto_save_never_overwrites_a_file_changed_by_another_program() {
+    let scenario = Scenario::new("auto-save-conflict")
+        .user_settings(r#"{ "files.autoSave": "afterDelay", "files.autoSaveDelay": 500 }"#)
+        .file("a.txt", "original\n");
+    let mut editor = scenario.launch(&["a.txt"]);
+
+    editor.press("ctrl+end");
+    editor.type_text("mine\n");
+    editor.change_on_disk("a.txt", "theirs, which is longer\n");
+    editor.wait(2000);
+
+    assert_eq!(editor.on_disk("a.txt"), "theirs, which is longer\n");
+    assert!(editor.is_dirty());
+}
+
+#[test]
 fn closing_a_tab_leaves_the_other_one_showing() {
     let scenario = Scenario::new("close-tab")
         .file("one.txt", "first\n")

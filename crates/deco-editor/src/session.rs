@@ -493,7 +493,8 @@ pub struct Session {
     replacing_in_files: bool,
     /// The query a replace-in-files is waiting to be given a replacement for.
     replace_query: String,
-    /// Set by a successful checkout until the frontend re-reads open files.
+    /// Set by a successful checkout or discard until the frontend re-reads open
+    /// files.
     checkout_completed: bool,
     /// Whether the side bar is showing.
     ///
@@ -523,6 +524,12 @@ pub struct Session {
     /// failure, such as undoing `a → b` after another program has created `a`,
     /// would lose the entry and leave nothing to retry.
     pending_undo: Option<crate::files::Operation>,
+    /// The discard the open confirmation asks about.
+    ///
+    /// Fixed when the question is asked, so the answer applies to the file
+    /// that was named even if the view's selection or status changes while
+    /// the prompt is open.
+    pending_discard: Option<deco_scm::Operation>,
     /// Files a delete took away that a language server still has open.
     closed_documents: Vec<PathBuf>,
     /// The workspace tree, once a frontend has said where the workspace is.
@@ -772,6 +779,7 @@ impl Session {
             screen: (80, 24),
             next_group: 0,
             scm: None,
+            pending_discard: None,
             side_bar_view: SideBarView::default(),
             repository_root: None,
             source_control: crate::scm::SourceControl::default(),
@@ -1610,6 +1618,7 @@ impl Session {
             "git.stage" => self.stage_selected(),
             "git.stageAll" => self.stage_all(),
             "git.unstage" => self.unstage_selected(),
+            "git.clean" => self.ask_discard(),
             "git.commit" => self.ask_commit_message(),
             "git.checkout" => self.ask_checkout(),
             "git.refresh" => {
@@ -2308,6 +2317,16 @@ impl Session {
                 }
                 None => Outcome::Message("branch switch cancelled".to_owned()),
             },
+            PromptKind::ConfirmDiscard => {
+                let pending = self.pending_discard.take();
+                // As for a delete: only a typed `y` discards.
+                match pending {
+                    Some(operation) if prompt.text().trim().eq_ignore_ascii_case("y") => {
+                        Outcome::GitOperation(operation)
+                    }
+                    _ => Outcome::Message("nothing was discarded".to_owned()),
+                }
+            }
             PromptKind::ConfirmDelete => {
                 // Only a typed `y` deletes. Enter on an empty input is a common
                 // way to dismiss an unread prompt, so it must not delete the
@@ -3636,6 +3655,66 @@ impl Session {
             .collect()
     }
 
+    /// Whether the document open at `path` has unsaved changes, or `None` when
+    /// no tab holds it.
+    pub fn is_dirty_at(&self, path: &Path) -> Option<bool> {
+        let wanted = normalise(path);
+        self.documents()
+            .find(|document| document.path.as_deref().map(normalise) == Some(wanted.clone()))
+            .map(|document| document.dirty)
+    }
+
+    /// Takes `text`, read from disk because the file changed there, into the
+    /// clean document open at `path`.
+    ///
+    /// Unlike [`Session::reload_open`], the replacement is one undo step, so
+    /// `ctrl+z` brings back the text from before the change, as after a
+    /// revert. Returns false when no tab holds `path`, when the document has
+    /// unsaved changes, or when the text is what the document already holds
+    /// (line endings normalised as when opening).
+    pub fn reload_changed(&mut self, path: &Path, text: &str) -> bool {
+        let wanted = normalise(path);
+        let settings = self.settings.clone();
+        let mut reloaded = false;
+        for (document, view) in self.documents_and_views() {
+            if document.path.as_deref().map(normalise) != Some(wanted.clone()) || document.dirty {
+                continue;
+            }
+            let resolved = EditorSettings::resolve(&settings, document.language_id.as_deref());
+            let incoming = Document::from_file(path.to_path_buf(), text, resolved);
+            let new_text = incoming.buffer.text();
+            if new_text == document.buffer.text() {
+                break;
+            }
+            let before = view.selections.clone();
+            let end = document.buffer.end_position();
+            let transaction = deco_core::Transaction::single(deco_core::Change::replace(
+                deco_core::Range::new(deco_core::Position::ZERO, end),
+                new_text,
+            ));
+            let inverse = document.apply(&transaction);
+            let after = deco_core::SelectionSet::caret(
+                document.buffer.clamp_position(before.primary().active),
+            );
+            view.selections = after.clone();
+            document
+                .history
+                .record(inverse, deco_core::EditKind::Discrete, before, after, 0);
+            document.dirty = false;
+            view.reveal_cursor(&document.buffer, &document.settings);
+            reloaded = true;
+            break;
+        }
+        if reloaded {
+            self.fit_split_view();
+            // The file changed on disk, so its git status may have too.
+            self.scm_changed();
+            self.relayout();
+            self.refresh_context();
+        }
+        reloaded
+    }
+
     /// Replaces the clean open buffer at `path` with its post-checkout text.
     ///
     /// The old undo history belongs to another branch and is dropped. Explicit
@@ -3673,9 +3752,28 @@ impl Session {
         }
         self.clear_analysis_of_tab(index);
         self.committed.clear();
+        self.fit_split_view();
         self.relayout();
         self.refresh_context();
         true
+    }
+
+    /// Keeps the second group inside the active document after its text was
+    /// replaced from disk.
+    ///
+    /// Both groups show the active document, but a reload only moves the
+    /// focused group's cursor. The other group's could point past the new end
+    /// of the file, and it would draw nothing there.
+    fn fit_split_view(&mut self) {
+        if let Some(mut other) = self.split_view.take() {
+            let cursor = self
+                .document
+                .buffer
+                .clamp_position(other.selections.primary().active);
+            other.selections = deco_core::SelectionSet::caret(cursor);
+            other.reveal_cursor(&self.document.buffer, &self.document.settings);
+            self.split_view = Some(other);
+        }
     }
 
     /// Every document in display order, the active one between `left` and
@@ -4579,6 +4677,68 @@ impl Session {
         })
     }
 
+    /// `git.clean`: ask before throwing away the selected file's changes.
+    ///
+    /// Only unstaged changes and untracked files can be discarded, as in VS
+    /// Code: a staged change is unstaged first. A file open with unsaved
+    /// changes is refused, because the editor would keep the discarded text
+    /// and the next save would write it back.
+    fn ask_discard(&mut self) -> Outcome {
+        let Some(row) = self.source_control.selection() else {
+            return Outcome::Message("nothing is selected in source control".to_owned());
+        };
+        let untracked = match row.group {
+            crate::scm::Group::Changes => false,
+            crate::scm::Group::Untracked => true,
+            crate::scm::Group::Staged => {
+                return Outcome::Message(format!(
+                    "{} is staged; unstage it before discarding its changes",
+                    row.name()
+                ))
+            }
+            crate::scm::Group::Conflicts => {
+                return Outcome::Message(format!(
+                    "{} has a merge conflict; resolve it rather than discarding it",
+                    row.name()
+                ))
+            }
+        };
+        // Compared by the end of the path, because documents hold absolute
+        // paths locally and workspace-relative ones in a remote session. A
+        // second file with the same ending also blocks the discard, which
+        // errs on the side of keeping work.
+        let unsaved = self
+            .unsaved()
+            .into_iter()
+            .any(|(path, _)| path.ends_with(&row.path));
+        if unsaved {
+            return Outcome::Message(format!(
+                "{} has unsaved changes in the editor; save or revert it first",
+                row.name()
+            ));
+        }
+        let question = if untracked {
+            format!(
+                "delete the untracked {}? it has never been committed, so it cannot be recovered",
+                row.name()
+            )
+        } else {
+            format!(
+                "discard the unstaged changes to {}? the file returns to its staged or committed \
+                 version, and the changes cannot be recovered",
+                row.name()
+            )
+        };
+        self.pending_discard = Some(deco_scm::Operation::Discard {
+            path: row.path.clone(),
+            untracked,
+        });
+        self.prompt = Some(Prompt::seeded(PromptKind::ConfirmDiscard, String::new()));
+        self.status = Some(question);
+        self.refresh_context();
+        Outcome::Handled
+    }
+
     /// `git.commit`: ask for a message.
     ///
     /// Rejected before the prompt opens when nothing is staged, rather than after
@@ -4697,9 +4857,15 @@ impl Session {
     /// changed something.
     pub fn git_operation_done(&mut self, operation: &deco_scm::Operation) {
         self.status = Some(operation.describe());
-        if matches!(operation, deco_scm::Operation::Checkout(_)) {
-            self.checkout_completed = true;
-            self.comparison = None;
+        match operation {
+            deco_scm::Operation::Checkout(_) => {
+                self.checkout_completed = true;
+                self.comparison = None;
+            }
+            // The working tree changed under any open copy of the file, so
+            // open files are read again, as after a checkout.
+            deco_scm::Operation::Discard { .. } => self.checkout_completed = true,
+            _ => {}
         }
         self.scm_changed();
         self.refresh_context();
@@ -5594,6 +5760,58 @@ mod tests {
             ),
             Outcome::Message(_)
         ));
+    }
+
+    #[test]
+    fn a_reload_that_shortens_the_file_keeps_the_other_group_inside_it() {
+        let mut s = Session::with_defaults();
+        let path = PathBuf::from("/w/long.txt");
+        let long: String = (0..50).map(|line| format!("line {line}\n")).collect();
+        s.open(path.clone(), &long);
+        s.resize(40, 10);
+        s.run("workbench.action.splitEditor", None, 0);
+        s.run("cursorBottom", None, 0);
+        s.run("workbench.action.focusFirstEditorGroup", None, 0);
+
+        assert!(s.reload_changed(&path, "short\n"));
+
+        let other = s.split_view.as_ref().expect("a second group");
+        assert_eq!(
+            other.selections.primary().active,
+            s.document.buffer.end_position()
+        );
+        assert!(
+            other.scroll_top <= other.selections.primary().active.line as usize,
+            "the cursor is in view, not 49 lines below the end: {}",
+            other.scroll_top
+        );
+    }
+
+    #[test]
+    fn a_clean_document_takes_a_change_from_disk_as_one_undo_step() {
+        use deco_core::Position;
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "one\ntwo\n");
+        s.view.selections = deco_core::SelectionSet::caret(Position::new(1, 2));
+        assert!(s.reload_changed(Path::new("/w/a.rs"), "one\ntwo\nthree\n"));
+        assert_eq!(s.document.buffer.text(), "one\ntwo\nthree\n");
+        assert!(!s.document.dirty);
+        assert_eq!(s.view.selections.primary().active, Position::new(1, 2));
+        // The same text again is not a change.
+        assert!(!s.reload_changed(Path::new("/w/a.rs"), "one\r\ntwo\r\nthree\r\n"));
+        s.run("undo", None, 1000);
+        assert_eq!(s.document.buffer.text(), "one\ntwo\n");
+    }
+
+    #[test]
+    fn a_document_with_unsaved_changes_is_not_reloaded() {
+        let mut s = session();
+        s.open(PathBuf::from("/w/a.rs"), "mine");
+        s.run("type", Some(&serde_json::json!({"text": "!"})), 0);
+        assert_eq!(s.is_dirty_at(Path::new("/w/a.rs")), Some(true));
+        assert!(!s.reload_changed(Path::new("/w/a.rs"), "theirs"));
+        assert_eq!(s.document.buffer.text(), "!mine");
+        assert_eq!(s.is_dirty_at(Path::new("/w/other.rs")), None);
     }
 
     #[test]
@@ -10714,6 +10932,79 @@ mod tests {
         assert!(
             matches!(s.run("git.stageAll", None, 0), Outcome::Message(_)),
             "and there is nothing left to stage either"
+        );
+    }
+
+    #[test]
+    fn discarding_asks_for_a_typed_yes_and_refuses_unsaved_or_staged_files() {
+        let mut s = with_tree();
+        s.fill_scm(Some(dirty_status()));
+        s.open(PathBuf::from("/w/work.rs"), "mine\n");
+        s.handle_chord(Chord::char('x'), 0);
+        s.run("workbench.view.scm", None, 0);
+        assert!(
+            matches!(s.run("git.clean", None, 0), Outcome::Message(ref message) if message.contains("unsaved")),
+            "the editor would write the discarded text back on the next save"
+        );
+
+        s.mark_saved_at(Path::new("/w/work.rs"));
+        assert!(matches!(s.run("git.clean", None, 0), Outcome::Handled));
+        assert_eq!(
+            s.prompt.as_ref().map(Prompt::kind),
+            Some(PromptKind::ConfirmDiscard)
+        );
+        assert!(
+            s.status
+                .as_deref()
+                .is_some_and(|status| status.contains("cannot be recovered")),
+            "{:?}",
+            s.status
+        );
+        assert!(
+            matches!(press(&mut s, "enter"), Outcome::Message(_)),
+            "enter alone keeps the changes"
+        );
+
+        s.run("git.clean", None, 0);
+        s.handle_chord(Chord::char('y'), 0);
+        assert_eq!(
+            press(&mut s, "enter"),
+            Outcome::GitOperation(deco_scm::Operation::Discard {
+                path: PathBuf::from("work.rs"),
+                untracked: false,
+            })
+        );
+
+        s.run("list.focusDown", None, 0);
+        s.run("git.clean", None, 0);
+        assert!(s
+            .status
+            .as_deref()
+            .is_some_and(|status| status.contains("untracked new.rs")));
+        s.handle_chord(Chord::char('y'), 0);
+        let Outcome::GitOperation(operation) = press(&mut s, "enter") else {
+            panic!("expected a discard");
+        };
+        assert_eq!(
+            operation,
+            deco_scm::Operation::Discard {
+                path: PathBuf::from("new.rs"),
+                untracked: true,
+            }
+        );
+        s.git_operation_done(&operation);
+        assert!(s.take_checkout_completed(), "open files are read again");
+
+        s.fill_scm(Some(
+            deco_scm::parse(
+                "# branch.oid 1c9d4e5\0# branch.head main\0\
+                 1 M. N... 100644 100644 100644 aaaaaaa bbbbbbb work.rs\0",
+            )
+            .expect("git's own format"),
+        ));
+        assert!(
+            matches!(s.run("git.clean", None, 0), Outcome::Message(ref message) if message.contains("unstage it")),
+            "only unstaged changes are discarded"
         );
     }
 

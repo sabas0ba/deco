@@ -83,6 +83,11 @@ pub enum PromptKind {
     Branches,
     /// Whether to perform a checkout after its impact has been shown.
     ConfirmCheckout,
+    /// `git.clean`: whether to really throw a file's changes away.
+    ///
+    /// Answered by typing `y`, as for [`PromptKind::ConfirmDelete`], because
+    /// the changes cannot be recovered.
+    ConfirmDiscard,
     /// `delete` in the tree: whether to really remove it.
     ///
     /// A confirmation is required because there is no trash to restore from and
@@ -123,6 +128,7 @@ impl PromptKind {
             Self::Branches => "Checkout to:",
             Self::ConfirmCheckout => "Switch branch?",
             Self::ConfirmDelete => "Delete permanently? (y/n)",
+            Self::ConfirmDiscard => "Discard permanently? (y/n)",
             Self::Snippets => "Insert snippet:",
             Self::SnippetChoice => "Choose:",
         }
@@ -170,7 +176,8 @@ impl PromptKind {
             | (Self::RenameFile, _)
             | (Self::CommitMessage, _)
             | (Self::ConfirmCheckout, _)
-            | (Self::ConfirmDelete, _) => "",
+            | (Self::ConfirmDelete, _)
+            | (Self::ConfirmDiscard, _) => "",
         }
     }
 
@@ -203,6 +210,7 @@ impl PromptKind {
             Self::NewFolder => "new folder",
             Self::RenameFile => "rename file",
             Self::ConfirmDelete => "the delete confirmation",
+            Self::ConfirmDiscard => "the discard confirmation",
             Self::Snippets => "the snippet list",
             Self::SnippetChoice => "the snippet choice list",
         }

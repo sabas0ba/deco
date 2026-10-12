@@ -346,7 +346,7 @@ impl Server {
         operation: &Operation,
     ) -> Result<(), ServerError> {
         let paths: Vec<&Path> = match operation {
-            Operation::Stage(path) => vec![path],
+            Operation::Stage(path) | Operation::Discard { path, .. } => vec![path],
             Operation::Unstage { path, original } => {
                 let mut paths = vec![path.as_path()];
                 if let Some(original) = original {
