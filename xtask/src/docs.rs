@@ -155,6 +155,10 @@ fn demos() -> Vec<Demo> {
             build: chrome,
         },
         Demo {
+            name: "terminal",
+            build: terminal,
+        },
+        Demo {
             name: "file-tree",
             build: file_tree,
         },
@@ -279,7 +283,15 @@ struct Take {
     /// workspace can be defined in memory. Each entry is a path and the file's
     /// text.
     workspace: Vec<(String, String)>,
+    /// The scripted shell behind the terminal: each command line and what it
+    /// prints. See `Take::shell`.
+    shell: Vec<(String, String)>,
+    /// The command line typed so far in the scripted shell.
+    shell_line: String,
 }
+
+/// The scripted shell's prompt.
+const SHELL_PROMPT: &str = "\x1b[32mdemo\x1b[0m:\x1b[34m~/demo\x1b[0m$ ";
 
 /// One captured moment: what the screen showed, and what produced it.
 struct Shot {
@@ -315,6 +327,57 @@ impl Take {
             checkout_plans: Vec::new(),
             branch: "main".to_owned(),
             workspace: Vec::new(),
+            shell: Vec::new(),
+            shell_line: String::new(),
+        }
+    }
+
+    /// Scripts the shell the terminal starts: what each command line prints.
+    ///
+    /// The demonstration acts as the shell, as it acts as the filesystem and
+    /// the repository, so the frames do not depend on the machine that
+    /// generated them. Everything between the shell and the screen is the
+    /// editor's own code: the parser, the screen and the renderer.
+    fn shell(&mut self, script: &[(&str, &str)]) -> &mut Self {
+        self.shell = script
+            .iter()
+            .map(|(line, output)| ((*line).to_owned(), (*output).to_owned()))
+            .collect();
+        self
+    }
+
+    /// The frontend's part of the terminal: starting the scripted shell, and
+    /// answering what was typed into it, echoing as a terminal does.
+    fn drive_terminal(&mut self, outcome: &deco_editor::Outcome) {
+        if let deco_editor::Outcome::StartTerminal { cols, rows } = *outcome {
+            self.session.terminal_started(cols, rows);
+            self.session.terminal_output(SHELL_PROMPT.as_bytes());
+        }
+        let input = self.session.take_terminal_input();
+        let mut output = String::new();
+        for byte in input {
+            match byte {
+                b'\r' => {
+                    let line = std::mem::take(&mut self.shell_line);
+                    let printed = self
+                        .shell
+                        .iter()
+                        .find(|(command, _)| *command == line)
+                        .map(|(_, printed)| printed.replace('\n', "\r\n"))
+                        .unwrap_or_else(|| panic!("the scripted shell has no `{line}`"));
+                    output.push_str("\r\n");
+                    output.push_str(&printed);
+                    output.push_str(SHELL_PROMPT);
+                }
+                0x20..=0x7e => {
+                    self.shell_line.push(char::from(byte));
+                    output.push(char::from(byte));
+                }
+                _ => {}
+            }
+        }
+        if !output.is_empty() {
+            self.session.terminal_output(output.as_bytes());
         }
     }
 
@@ -361,6 +424,7 @@ impl Take {
             let outcome = self
                 .session
                 .handle_chord(chord, self.shots.len() as u64 * 10_000);
+            self.drive_terminal(&outcome);
             // The frontend's part of a file operation. The session decides what
             // should happen to a file, and the demonstration acts as the
             // filesystem by applying it to the in-memory workspace. Without
@@ -730,8 +794,10 @@ impl Take {
             key: deco_keymap::keys::Key::Char(c),
             modifiers: Default::default(),
         };
-        self.session
+        let outcome = self
+            .session
             .handle_chord(chord, self.shots.len() as u64 * 10_000);
+        self.drive_terminal(&outcome);
     }
 
     /// Keeps the text area's height right when a bar opens or closes.
@@ -1259,6 +1325,40 @@ fn chrome() -> String {
 
     take.press_and_hold(&["ctrl+b"], 4)
         .press_and_hold(&["ctrl+j"], 4);
+    take.finish()
+}
+
+fn terminal() -> String {
+    let mut take = Take::new("main.rs", SAMPLE);
+    take.shell(&[
+        (
+            "cargo test",
+            "\x1b[1;32m   Compiling\x1b[0m demo v0.1.0 (/demo)\n\
+             \x1b[1;32m    Finished\x1b[0m `test` profile in 0.42s\n\
+             \x1b[1;32m     Running\x1b[0m unittests src/main.rs\n\n\
+             running 2 tests\n\
+             test greets ... \x1b[32mok\x1b[0m\n\
+             test parses ... \x1b[32mok\x1b[0m\n\n\
+             test result: \x1b[32mok\x1b[0m. 2 passed; 0 failed\n",
+        ),
+        (
+            "ls",
+            "Cargo.toml  \x1b[1;34msrc\x1b[0m  \x1b[1;34mtarget\x1b[0m\n",
+        ),
+    ]);
+    take.at(1, 8).capture("the editor has the whole window", 3);
+
+    // The panel opens with a shell in it, and the shell has the keyboard.
+    take.press_and_hold(&["ctrl+`"], 4);
+    take.type_text("cargo test");
+    take.press_and_hold(&["enter"], 7);
+    take.type_text("ls");
+    take.press_and_hold(&["enter"], 5);
+
+    // The same key takes the keyboard back to the text and hides the panel;
+    // the shell keeps running and comes back as it was.
+    take.press_and_hold(&["ctrl+`"], 4);
+    take.press_and_hold(&["ctrl+`"], 5);
     take.finish()
 }
 

@@ -298,7 +298,7 @@ impl PaletteEntry {
 ///
 /// A key bound to a command with no handler does nothing, which looks the same
 /// as an editor that has stopped responding. Listing the commands here lets the
-/// editor show a message such as `Toggle Terminal is not implemented yet`. A test
+/// editor show a message such as `Zen Mode is not implemented yet`. A test
 /// also checks that every command the default keymap binds either has a
 /// handler or is on this list, so a new binding cannot be added without a
 /// handler by accident.

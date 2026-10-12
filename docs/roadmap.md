@@ -13,19 +13,19 @@ Features that VS Code has and deco does not, with their prerequisites:
 | Missing | Depends on |
 | --- | --- |
 | Git — push/pull ([the rest is built](git.md)) | a decision on how credentials are asked for |
-| Integrated terminal | a PTY dependency; its home is the [panel](chrome.md) |
-| Task runner (`tasks.json`, `ctrl+shift+b`) | the terminal, for somewhere to run |
+| Integrated terminal — remote shells, several terminals, mouse selection ([the rest is built](terminal.md)) | the remote server's framing for the remote shell |
+| Task runner (`tasks.json`, `ctrl+shift+b`) | the terminal, for somewhere to run, which is built |
 | Test runner | the task runner, and later the extension host |
 | Self-update | nothing — `cargo xtask dist` already builds what it would install |
 | AI features — inline completions, chat, agent mode, MCP (`chat.disableAIFeatures`) | the extension host, ghost text, and the panel; agents additionally on `WorkspaceEdit` and the terminal; the off switch depends on nothing and comes first |
 | Debugging (DAP) | the panel; by far the largest item here |
 
-These dependencies determine the order of the sections below. One foundation remains: **implementing the remaining extension-host APIs**. The other two are built. The **[side bar and panel](chrome.md)** provide regions for the file tree, source-control view and planned terminal. **`WorkspaceEdit`** ([below](#the-gaps-behind-the-features)) is already used by rename, code actions and workspace-wide replace, and is intended for an agent's turn. The file tree's create, rename and delete use a separate file operation type, because a `WorkspaceEdit` describes edits within files; see [The file tree](files.md).
+These dependencies determine the order of the sections below. One foundation remains: **implementing the remaining extension-host APIs**. The other two are built. The **[side bar and panel](chrome.md)** provide regions for the file tree, source-control view and terminal. **`WorkspaceEdit`** ([below](#the-gaps-behind-the-features)) is already used by rename, code actions and workspace-wide replace, and is intended for an agent's turn. The file tree's create, rename and delete use a separate file operation type, because a `WorkspaceEdit` describes edits within files; see [The file tree](files.md).
 
 Two rules from the existing implementation apply to every section below:
 
 - **VS Code's identifiers, exactly.** The commands are `git.stage` and `workbench.action.terminal.toggleTerminal`, and the settings are `git.enabled` and `terminal.integrated.defaultProfile.linux`. deco does not add a `deco.*` synonym for anything VS Code already names, so an existing `keybindings.json` keeps its meaning.
-- **A key whose feature is missing reports it.** `` ctrl+` `` is bound and reports that the integrated terminal is not implemented; a test over the default keymap checks that unimplemented commands report an error. Once the feature is implemented, the command performs the operation; for example, `ctrl+b` and `ctrl+j` now toggle the side bar and panel.
+- **A key whose feature is missing reports it.** `ctrl+k z` is bound and reports that Zen Mode is not implemented; a test over the default keymap checks that unimplemented commands report an error. Once the feature is implemented, the command performs the operation; for example, `ctrl+b` and `ctrl+j` now toggle the side bar and panel.
 
 ## Git
 
@@ -42,20 +42,16 @@ Two rules from the existing implementation apply to every section below:
 
 ## The integrated terminal
 
-**What VS Code has.** Terminals in the panel, ``ctrl+` `` to toggle, profiles,
-and the `terminal.integrated.*` settings family.
+**What VS Code has.** Terminals in the panel, ``ctrl+` `` to toggle, profiles, and the `terminal.integrated.*` settings family.
 
-**What deco has.** The [panel](chrome.md) to hold a terminal, and the binding: ``ctrl+` `` is already bound to `workbench.action.terminal.toggleTerminal` and reports by name that it is not implemented. The terminal implementation must handle nested terminal input and output because deco's TUI runs inside an existing terminal.
+**Built.** ``ctrl+` `` runs the user's shell in the panel in the terminal frontend, with profiles read from user settings, keys routed as VS Code routes them, scrolling through the history, bracketed paste, and the theme's terminal colours. See [The integrated terminal](terminal.md). The VT parser, the screen model and the pseudo-terminal are deco's own code in `deco-term`; the pseudo-terminal goes through `libc` and `windows-sys`, which were already dependencies, so the feature added no crate.
 
-**The plan.** A PTY per terminal, a VT parser that updates a screen model, and the panel region drawing that model through the same pure render path, so a terminal's screen can be checked in CI like any other layout. This is the only section that adds a significant dependency (a PTY crate, and possibly a VT parser). The README publishes its count of 44 crates, so the addition is made once, listed in the dependency table, and justified by this feature alone. In the GUI the same model is drawn into the window; in the TUI the inner terminal's cells map onto the panel's cells, with colours through the existing theme layer. In a remote session the shell runs on the machine holding the files: the server gains a PTY endpoint over the existing `deco-remote` framing, in the same way that language servers already run there.
+**What remains.**
 
-**Steps.**
-
-1. Choose and justify the PTY dependency; spawn the user's shell (`terminal.integrated.defaultProfile.*`) and read its output.
-2. A screen model: grid, cursor, scrollback, SGR colours mapped through
-   `deco-theme`.
-3. Panel view and focus routing: keys go to the shell when the terminal has focus, except the keys VS Code also reserves (`ctrl+j`, ``ctrl+` ``).
-4. Remote PTYs over the session connection.
+1. Remote shells: the server gains a pseudo-terminal endpoint over the existing `deco-remote` framing, so the shell runs on the machine holding the files, as language servers already do.
+2. Several terminals, with tabs in the panel and `workbench.action.terminal.new`.
+3. Mouse selection and copy, which need mouse events in the terminal frontend.
+4. The GPU frontend, which can draw the same screen with its quads and text.
 
 ## The task runner
 
@@ -135,12 +131,12 @@ updater.
 
 ### Agent integration
 
-**Agent integration** would allow a model to edit multiple files and invoke tools. It requires separate support for edit review, process execution, permissions and MCP (Model Context Protocol), beyond completion and chat APIs. External CLI agents could also run in the planned integrated terminal.
+**Agent integration** would allow a model to edit multiple files and invoke tools. It requires separate support for edit review, process execution, permissions and MCP (Model Context Protocol), beyond completion and chat APIs. External CLI agents can already run in the integrated terminal.
 
 - **Check tool calls through the capability broker.** File access would use resolved path scopes; process and network access would require their own declarations and policy decisions. Agent integration also needs session-scoped grants, revocation and an audit trail. These controls and the currently unsupported operations must be implemented before enabling agent tools.
 - **An agent's edits arrive as a `WorkspaceEdit`.** The multi-file, undoable edit used by rename is also the right unit for an agent's changes: applied atomically, reviewable as a diff before or after, and undone as **one step**, so `ctrl+z` recovers from a bad agent turn. This is the main reason `WorkspaceEdit` is treated as a foundation rather than a feature.
 - **Add MCP server and tool permissions.** Initial support would target local JSON-RPC servers over stdio, with process supervision similar to `deco-lsp`. The proposed `mcp.json` integration would require permission to start each server and separate grants for its tools before offering them to the model.
-- **External CLI agents are integrated through the terminal, not an API.** Users already run Claude Code and similar tools beside their editor. The integrated terminal would provide the initial integration: the agent runs there, and the editor detects what it changed. Files reload cleanly (built: open files are checked once a second, a clean document takes the new text as one undo step, and a document with unsaved changes asks before saving over it — see [Tabs](tabs.md#files-changed-by-other-programs)), and the git gutter shows the agent's changes. Deeper integration, where the agent controls the editor, would use the same mediated API as extensions and nothing more.
+- **External CLI agents are integrated through the terminal, not an API.** Users already run Claude Code and similar tools beside their editor. The integrated terminal provides the initial integration: the agent runs there, and the editor detects what it changed. Files reload cleanly (built: open files are checked once a second, a clean document takes the new text as one undo step, and a document with unsaved changes asks before saving over it — see [Tabs](tabs.md#files-changed-by-other-programs)), and the git gutter shows the agent's changes. Deeper integration, where the agent controls the editor, would use the same mediated API as extensions and nothing more.
 
 **Steps (agents).**
 
