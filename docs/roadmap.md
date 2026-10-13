@@ -2,7 +2,7 @@
 
 > **Status:** this page describes planned features, their prerequisites and proposed implementation steps. Sections also identify completed prerequisites and link to their documentation. No delivery dates are specified.
 
-Most of this page covers features that VS Code already has. The last part, [Beyond VS Code](#beyond-vs-code), covers features that are practical *because* deco is not built on Electron.
+Most of this page covers features that VS Code already has. The last part, [Beyond VS Code](#beyond-vs-code), covers features proposed for deco's native architecture.
 
 ## Where deco stands against VS Code
 
@@ -13,14 +13,14 @@ Features that VS Code has and deco does not, with their prerequisites:
 | Missing | Depends on |
 | --- | --- |
 | Git — push/pull ([the rest is built](git.md)) | a decision on how credentials are asked for |
-| Integrated terminal | a PTY dependency; its home is the [panel](chrome.md) |
-| Task runner (`tasks.json`, `ctrl+shift+b`) | the terminal, for somewhere to run |
+| Integrated terminal | a PTY dependency and the [panel](chrome.md) |
+| Task runner (`tasks.json`, `ctrl+shift+b`) | the terminal, to execute tasks |
 | Test runner | the task runner, and later the extension host |
 | Self-update | nothing — `cargo xtask dist` already builds what it would install |
-| AI features — inline completions, chat, agent mode, MCP (`chat.disableAIFeatures`) | the extension host, ghost text, and the panel; agents additionally on `WorkspaceEdit` and the terminal; the off switch depends on nothing and comes first |
+| AI features — inline completions, chat, agent mode, MCP (`chat.disableAIFeatures`) | the extension host, ghost text, and the panel; agents additionally on `WorkspaceEdit` and the terminal; the disable setting has no prerequisites and is implemented first |
 | Debugging (DAP) | the panel; by far the largest item here |
 
-These dependencies determine the order of the sections below. One foundation remains: **implementing the remaining extension-host APIs**. The other two are built. The **[side bar and panel](chrome.md)** provide regions for the file tree, source-control view and planned terminal. **`WorkspaceEdit`** ([below](#the-gaps-behind-the-features)) is already used by rename, code actions and workspace-wide replace, and is intended for an agent's turn. The file tree's create, rename and delete use a separate file operation type, because a `WorkspaceEdit` describes edits within files; see [The file tree](files.md).
+These dependencies determine the order of the sections below. The remaining shared work is **implementing extension-host APIs**. The layout regions and `WorkspaceEdit` are already implemented. The **[side bar and panel](chrome.md)** provide regions for the file tree, source-control view and planned terminal. **`WorkspaceEdit`** ([below](#the-gaps-behind-the-features)) is already used by rename, code actions and workspace-wide replace, and is intended for an agent's turn. The file tree's create, rename and delete use a separate file operation type, because a `WorkspaceEdit` describes edits within files; see [The file tree](files.md).
 
 Two rules from the existing implementation apply to every section below:
 
@@ -34,7 +34,7 @@ Two rules from the existing implementation apply to every section below:
 **What VS Code has that deco still does not.**
 
 - **Discard all.** One file at a time is built, with a typed confirmation; discarding every change at once needs a confirmation that lists what would be lost.
-- **Push, pull, fetch.** These need credentials, and deco would have to be trusted to handle credential prompts. They should be designed deliberately, not added as an afterthought to a view that already works.
+- **Push, pull, fetch.** These need credentials, and deco would have to be trusted to handle credential prompts. Credential handling needs to be specified before these commands are implemented.
 **Steps.**
 
 1. Discard changes, with confirmation that identifies affected files and explains whether recovery is possible. Built for one file; discard all remains.
@@ -70,7 +70,7 @@ palette), problem matchers that turn output into diagnostics.
 **Steps.**
 
 1. Parse `tasks.json` (`shell` and `process` types, `group.kind == "build"`);
-   surface tasks in the palette under their VS Code command names.
+   list tasks in the palette under their VS Code command names.
 2. Run in a terminal; report exit status.
 3. The common problem matchers, into `deco-lsp`'s diagnostics store.
 4. `${workspaceFolder}` and related variables, resolved against the session.
@@ -84,12 +84,12 @@ in the gutter.
 **What deco has.** Nothing. (deco's *own* test suite is documented in
 [Testing](testing.md); this chapter is about running *your* tests.)
 
-**The plan.** Two stages. First, tests run as tasks: a `group.kind == "test"` task is bound to VS Code's test-task command and run in the terminal. This needs no new UI and is useful immediately. Second, a testing view once the extension host supports it. In VS Code, extensions *discover* tests, and deco will run those extensions instead of hardcoding one runner per language. The full feature therefore depends on the extension-host work described below, and the mediated API it needs (`tests.*`) requires an entry in the capability table, as `readFile` has.
+**The plan.** Two stages. First, tests run as tasks: a `group.kind == "test"` task is bound to VS Code's test-task command and run in the terminal. This reuses the task runner's UI. Second, a testing view once the extension host supports it. In VS Code, extensions *discover* tests, and deco will run those extensions instead of hardcoding one runner per language. The full feature therefore depends on the extension-host work described below, and the mediated API it needs (`tests.*`) requires an entry in the capability table, as `readFile` has.
 
 **Steps.**
 
 1. Test-group tasks through the task runner.
-2. The `vscode.tests` surface in the host shim, brokered like the rest.
+2. The `vscode.tests` API in the host shim, brokered like the rest.
 3. A side-bar testing view rendering what extensions report; run through tasks,
    results to gutter marks.
 
@@ -148,7 +148,7 @@ updater.
 2. Agent edits as `WorkspaceEdit`s: atomic apply, one-step undo, a diff view
    of what a turn changed.
 3. MCP: supervise `mcp.json` servers with the `deco-lsp` supervisor pattern,
-   surface each tool as a grantable capability.
+   represent each tool as a capability requiring permission.
 4. Terminal-first support for external CLI agents: external-change reload and
    gutter diffs are the integration.
 5. Agent mode in the chat view, last, gated by `chat.agent.enabled` and
@@ -171,7 +171,7 @@ variables, the debug console, `launch.json`, `F5`.
 
 ## Beyond VS Code
 
-Everything above brings deco closer to VS Code. This section covers features that are practical *because* deco is not built on Electron, and that VS Code therefore cannot reasonably provide. The requirement for a section here is stricter: there must be a reason VS Code lacks the feature, not just that nobody has implemented it. The identifier rule also changes: where VS Code has no name for something, deco names it, and `deco.*` is the correct namespace.
+This section describes proposed features that use deco's native architecture. Where no corresponding VS Code identifier exists, these features use the `deco.*` namespace.
 
 ### Several workspaces, switched between
 
@@ -185,7 +185,7 @@ One part already exists: `deco-config`'s `Scope::Folder` is part of the settings
 
 The root must first move into the session. It is currently held by a frontend, but switching must happen where the tabs, settings and context keys are. The same step implements `openFolder`, so both are one piece of work.
 
-**The main cost is language servers, not tabs.** This is the reason the feature is practical in deco. VS Code is expensive per window because each window is a browser. deco's per-workspace cost is a set of LSP servers, which is significant but an order of magnitude smaller. By default, every workspace's **tabs** stay loaded, because they are buffers that were already open and keeping them adds no cost, and **servers run only for the active workspace**. Keeping servers running for several workspaces would be a setting with a documented cost.
+**Workspace resources.** Each workspace retains its text buffers and may need its own language-server processes. The proposed default keeps tabs loaded and runs servers only for the active workspace. Retained buffers still consume memory; the total cost needs measurement. A separate setting would keep servers running for inactive workspaces, with the measured resource cost documented.
 
 **Identifiers.** `workbench.action.openRecent` keeps its name and meaning, as does the `.code-workspace` format if deco reads it. VS Code cannot *switch between workspaces loaded in the same process* and has no name for it, so this uses `deco.workspaces.*`. This is the one case where a new name is appropriate rather than a synonym.
 

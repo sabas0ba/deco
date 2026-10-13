@@ -43,13 +43,13 @@ The same design lets the tree work on a **remote** workspace: the request is ans
 
 ![Creating a file, typing into it, renaming it, and undoing that](img/file-mutations.svg)
 
-`ctrl+n` creates a file, `ctrl+shift+n` creates a folder, `F2` renames and `delete` deletes. The same keys have other meanings in the text: `F2` renames the *symbol* under the cursor, and `delete` deletes a character. Keyboard focus, exposed as `sideBarFocus`, selects the meaning.
+`ctrl+n` creates a file, `ctrl+shift+n` creates a folder, `F2` renames and `delete` deletes. The same keys have other meanings in the text: `F2` renames the *symbol* under the cursor, and `delete` deletes a character. The `sideBarFocus` context key determines which command handles the key.
 
 **A new file is created at the selection and opened.** It is created in the selected folder, or in the selected file's parent directory. The new file then opens and receives keyboard focus, as with `enter`. The animation types into the new file immediately after creating it.
 
 **The new entry is selected.** After a create or rename, the selection moves to the new name, so a following `F2` or `delete` acts on that entry rather than on the previously selected one.
 
-**A rename moves the tabs with the file.** Renaming an open file retargets its tab. The buffer, its unsaved changes and its undo history are kept. Renaming a *directory* retargets every tab inside it. Renaming `notes.txt` to `notes.md` also switches highlighting to Markdown, whether or not that tab is visible, unless the language was chosen manually. Save-as follows the same rule.
+**Renaming a file updates its open tabs.** Renaming an open file retargets its tab. The buffer, its unsaved changes and its undo history are kept. Renaming a *directory* retargets every tab inside it. Renaming `notes.txt` to `notes.md` also switches highlighting to Markdown, whether or not that tab is visible, unless the language was chosen manually. Save-as follows the same rule.
 
 ### The tree has its own undo
 

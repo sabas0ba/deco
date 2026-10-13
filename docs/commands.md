@@ -49,7 +49,7 @@ directory when it was started with none. The walk:
 
 - skips paths excluded by `files.exclude`, using VS Code's glob syntax, and treats a pattern set to `false` as disabled;
 - always skips `.git`, `node_modules`, `target`, `dist`, `build`, `.venv`, `__pycache__` and similar directories. These are fixed conventions rather than configuration, because build and dependency directories make the walk slow and fill the results with irrelevant files;
-- stops at 10,000 files or 24 directories deep, **and reports it**, so a missing file is not silently omitted. The depth limit also bounds symlink loops, since `read_dir` follows links.
+- stops at 10,000 files or 24 directories deep, **and reports it**, so the user can distinguish a search limit from a missing file. The depth limit also bounds symlink loops, since `read_dir` follows links.
 
 The list is rebuilt on every `ctrl+p`, so newly created files are included. It is sorted by path, because `read_dir` does not guarantee an order and the list should be stable between invocations.
 
@@ -61,7 +61,7 @@ Recency **only orders equal matches**. A row that matches the typed text better 
 
 Paths are compared after resolving `.` and `..`. The walk and `ctrl+o` can spell the same file differently, such as `src/main.rs` and `./src/main.rs`, and without normalisation a recent file would lose its recency position.
 
-**This session only.** VS Code keeps this history in workspace storage. deco [writes no files](configuration.md#colour-themes), so the list starts empty in each session. Sixty-four paths are remembered; older entries are ordered by path.
+**History is kept for the current session.** VS Code keeps this history in workspace storage. deco [writes no files](configuration.md#colour-themes), so the list starts empty in each session. Sixty-four paths are remembered; older entries are ordered by path.
 
 The core does not perform the walk because it has no filesystem access. A document receives its text, not a path to read, so the editing code can be tested without a filesystem. `ctrl+p` asks the frontend for the list, and accepting a choice asks the frontend to read the file, in the same way that saving asks it to write one.
 

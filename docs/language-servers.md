@@ -1,6 +1,6 @@
 # Language servers
 
-deco speaks the Language Server Protocol directly: `Content-Length` framing,
+deco implements the Language Server Protocol directly: `Content-Length` framing,
 JSON-RPC 2.0, the full lifecycle, and position-encoding negotiation. It does not
 route through an extension host, so a server works whether or not the matching
 VS Code extension exists.
@@ -166,11 +166,11 @@ Rename was the first feature in deco to use a **`WorkspaceEdit`**: one change ac
 
 Only then is anything written, and from that point nothing can fail.
 
-**Files that are not open are opened, not written.** A rename usually changes mostly files that are not open. VS Code writes those to disk; deco opens them as tabs with unsaved changes, and the status line reports how many. There are two reasons. deco's core performs no I/O, which allows all editing behaviour to be tested without a terminal or a filesystem. deco also does not rewrite files you have not seen unless you save them. `ctrl+k s` saves them; `ctrl+z` reverts the changes.
+**Rename opens affected files as unsaved tabs.** A rename usually changes mostly files that are not open. VS Code writes those to disk; deco opens them as tabs with unsaved changes, and the status line reports how many. There are two reasons. deco's core performs no I/O, which allows all editing behaviour to be tested without a terminal or a filesystem. deco also does not rewrite files you have not seen unless you save them. `ctrl+k s` saves them; `ctrl+z` reverts the changes.
 
 **One `ctrl+z` undoes the whole rename** from any of the affected files, because every document records its part under one shared undo step. If you type in one of those files first, that input is undone separately. The shared step remains below it and is undone after the later edits.
 
-A server that requests a file to be **created, renamed or deleted** as part of the change is refused with a message naming the operation. rust-analyzer does this when you rename a module. These operations arrive together with text edits that depend on them, so applying only the text edits would leave the project in a worse state than not renaming.
+A server that requests a file to be **created, renamed or deleted** as part of the change is refused with a message naming the operation. rust-analyzer does this when you rename a module. These operations arrive together with text edits that depend on them, so applying only the text edits could leave text references inconsistent with the filesystem.
 
 ## Configuring a server
 
