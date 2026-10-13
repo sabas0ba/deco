@@ -89,6 +89,110 @@ fn to_crossterm(color: Rgba) -> Color {
     }
 }
 
+/// Starts the shell for the panel's terminal, in the workspace's directory.
+fn start_terminal(
+    session: &mut Session,
+    terminal: &mut Option<Shell>,
+    remote: bool,
+    root: Option<&Path>,
+    cols: u16,
+    rows: u16,
+) {
+    if remote {
+        session.terminal_failed("a terminal on the remote machine is not implemented yet");
+        return;
+    }
+    let mut problems = Vec::new();
+    let mut command = crate::terminal::shell(&session.settings, &mut problems);
+    session.problems.extend(problems);
+    command.cwd = root.filter(|root| root.is_dir()).map(Path::to_path_buf);
+    // A profile's own variables win over the ones every shell gets.
+    let profile_env = std::mem::take(&mut command.env);
+    command.env = crate::terminal::environment();
+    command.env.extend(profile_env);
+    match deco_term::pty::Pty::spawn(&command, deco_term::pty::Size { cols, rows }) {
+        Ok(pty) => {
+            *terminal = Some(Shell {
+                pty,
+                quiet_since: None,
+            });
+            session.terminal_started(cols, rows);
+        }
+        Err(error) => {
+            let program = command.program.to_string_lossy().into_owned();
+            session.terminal_failed(&format!("{program}: {error}"));
+        }
+    }
+}
+
+/// Moves bytes between the shell and the session: its output into the
+/// screen, and keys and status replies to it. Returns whether the screen
+/// changed.
+fn pump_terminal(terminal: &mut Option<Shell>, session: &mut Session) -> bool {
+    let Some(shell) = terminal.as_mut() else {
+        return false;
+    };
+    let mut changed = false;
+    let output = shell.pty.read();
+    if !output.bytes.is_empty() {
+        session.terminal_output(&output.bytes);
+        changed = true;
+    }
+    let input = session.take_terminal_input();
+    if !input.is_empty() {
+        if let Err(error) = shell.pty.write(&input) {
+            session.status = Some(format!("could not write to the terminal: {error}"));
+        }
+    }
+    // The terminal is finished when its output has ended: the shell and
+    // everything it started have closed it, so nothing written is lost. The
+    // Windows pseudo console keeps its output open after the program exits,
+    // so there an exit is also accepted once the output has been quiet for
+    // `EXIT_GRACE`, which leaves time for the last output to arrive.
+    let code = shell.pty.exit_code();
+    let quiet_since = if output.bytes.is_empty() {
+        *shell.quiet_since.get_or_insert_with(Instant::now)
+    } else {
+        shell.quiet_since = None;
+        Instant::now()
+    };
+    if output.ended || (code.is_some() && quiet_since.elapsed() >= EXIT_GRACE) {
+        // The output can end a moment before the shell can be reaped. All of
+        // it has arrived, so waiting here for the exit code loses nothing.
+        let mut code = code;
+        for _ in 0..20 {
+            if code.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+            code = shell.pty.exit_code();
+        }
+        session.terminal_exited(code);
+        *terminal = None;
+        changed = true;
+    }
+    changed
+}
+
+/// How long a shell that has exited may stay quiet before its terminal is
+/// treated as finished, when its output does not end on its own.
+const EXIT_GRACE: Duration = Duration::from_millis(500);
+
+/// The shell's pseudo-terminal and when its output last went quiet.
+struct Shell {
+    pty: deco_term::pty::Pty,
+    quiet_since: Option<Instant>,
+}
+
+/// Passes a new panel size on to the shell.
+fn fit_terminal(terminal: &mut Option<Shell>, session: &mut Session) {
+    if let Some((cols, rows)) = session.fit_terminal() {
+        if let Some(shell) = terminal.as_mut() {
+            let _ = shell.pty.resize(deco_term::pty::Size { cols, rows });
+        }
+    }
+}
+
 /// Writes a frame to the terminal.
 fn paint(out: &mut impl Write, frame: &Frame, style: Option<cursor::SetCursorStyle>) -> Result<()> {
     queue!(out, cursor::Hide, cursor::MoveTo(0, 0))?;
@@ -246,7 +350,7 @@ pub fn run_with(
         // server diagnostics arrive while the user is idle instead of on the next
         // keystroke. The interval is short enough for results to appear promptly
         // and long enough that an idle editor does not busy-loop.
-        if !event::poll(LSP_POLL_INTERVAL)? {
+        if !event::poll(driver.poll_interval())? {
             driver.idle(session, elapsed_ms(started))?;
             continue;
         }
@@ -368,6 +472,8 @@ pub struct Driver {
     disk: crate::disk::DiskWatch,
     /// Copies waiting to be sent to the terminal's clipboard.
     clipboard: crate::clipboard::Pending,
+    /// The shell running in the panel's terminal.
+    terminal: Option<Shell>,
 }
 
 impl Driver {
@@ -475,6 +581,7 @@ impl Driver {
             tree_root,
             disk,
             clipboard,
+            terminal: None,
         }
     }
 
@@ -488,6 +595,8 @@ impl Driver {
         // The find bar uses a row, so the text area's height depends on whether
         // it is open, which the last keypress may have changed.
         resize(session, self.width, self.height);
+        // The panel may have changed size with it.
+        fit_terminal(&mut self.terminal, session);
         // The marks are derived from the buffer, so they are updated here rather
         // than in the renderer. `render` holds the session by shared reference,
         // and the alternative would be a diff per frame. When nothing has been
@@ -551,6 +660,19 @@ impl Driver {
                 }
             }
             *dirty = true;
+        }
+        *dirty |= pump_terminal(&mut self.terminal, session);
+    }
+
+    /// How long the event loop waits for a key before polling again.
+    ///
+    /// Shorter while a shell is running, so its output appears as it is
+    /// written rather than up to one interval later.
+    pub fn poll_interval(&self) -> Duration {
+        if self.terminal.is_some() {
+            TERMINAL_POLL_INTERVAL
+        } else {
+            LSP_POLL_INTERVAL
         }
     }
 
@@ -623,6 +745,7 @@ impl Driver {
 
     /// Stops the language server and the source-control worker after the loop ends.
     pub fn shutdown(&mut self) {
+        self.terminal = None;
         self.lsp.detach();
         self.scm.shutdown();
     }
@@ -643,6 +766,7 @@ impl Driver {
             tree_root,
             scm,
             disk,
+            terminal,
             ..
         } = self;
         *dirty = true;
@@ -663,7 +787,26 @@ impl Driver {
             && !chord.modifiers.alt
             && !chord.modifiers.meta;
 
-        match session.handle_chord(chord, now_ms) {
+        let outcome = session.handle_chord(chord, now_ms);
+        // A key typed into the terminal is not an edit of the document, so
+        // none of the handling below applies to it.
+        if outcome == Outcome::TerminalInput {
+            pump_terminal(terminal, session);
+            return Ok(Flow::Continue);
+        }
+        match outcome {
+            Outcome::StartTerminal { cols, rows } => {
+                let root = tree_root.clone().or_else(|| cwd.clone());
+                start_terminal(
+                    session,
+                    terminal,
+                    remote.is_some(),
+                    root.as_deref(),
+                    cols,
+                    rows,
+                );
+            }
+            Outcome::KillTerminal => *terminal = None,
             Outcome::Quit => return Ok(Flow::Quit),
             Outcome::Save => {
                 if save(session, remote.as_mut(), disk, true)? {
@@ -1316,6 +1459,9 @@ fn printable(chord: &deco_keymap::keys::Chord) -> Option<char> {
 /// appears delayed, and 20 wakeups a second on an idle editor has no measurable
 /// cost.
 const LSP_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// The interval while a shell is running in the panel.
+const TERMINAL_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 /// Carries out one of the tree's file operations.
 ///

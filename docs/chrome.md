@@ -13,7 +13,7 @@ deco divides its window into three regions: the **editor**, a **side bar** along
 | | `workbench.action.focusActiveEditorGroup` |
 | | `workbench.action.closeSidebar`, `workbench.action.closePanel` |
 
-The side bar displays the [file tree](files.md) or [source-control view](git.md). The panel has no implemented views yet. Empty regions display a label identifying the planned view. This page describes region layout and keyboard focus; feature pages describe the views within those regions.
+The side bar displays the [file tree](files.md) or [source-control view](git.md), and the panel displays the [integrated terminal](terminal.md). A region with no view displays a label identifying the planned view. This page describes region layout and keyboard focus; feature pages describe the views within those regions.
 
 ## Where the space comes from
 
@@ -59,6 +59,6 @@ Both frontends use the same layout; only the units differ. The terminal renderer
 
 ## Not built yet
 
-The panel has no implemented views. `` ctrl+` `` (`workbench.action.terminal.toggleTerminal`) reports that the terminal is not implemented. Terminal support requires a PTY and terminal rendering. See the [roadmap](roadmap.md) for planned panel features.
+The panel's only view is the [terminal](terminal.md). The problems and output views are not implemented; see the [roadmap](roadmap.md) for planned panel features.
 
 A region cannot be resized or dragged to the other side. The setting is the only way to move the side bar. Persisting resized dimensions would also require storage for view state.

@@ -149,7 +149,7 @@ All of these prompts use the same widget, which is built from the same one-line 
 
 Every command bound in the default keymap either runs or **reports why it does not**:
 
-- A recognised but unimplemented command reports its title, for example `Toggle Terminal is not implemented yet`. These commands are listed in `deco-editor::commands::PENDING`.
+- A recognised but unimplemented command reports its title, for example `Zen Mode is not implemented yet`. These commands are listed in `deco-editor::commands::PENDING`.
 - An unknown identifier reports that the command does not exist: `there is no command \`editor.action.nonsens\``. This usually indicates a typo in `keybindings.json` rather than a missing feature.
 
 A test checks that every default binding is handled or reports an error. Pending commands are excluded from the palette.

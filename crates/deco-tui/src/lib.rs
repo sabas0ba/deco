@@ -23,6 +23,7 @@ pub mod lsp;
 pub mod render;
 pub mod scm;
 pub mod suggest;
+pub mod terminal;
 pub mod themes;
 
 pub use app::{run, run_with, Driver, Flow, Options, RemoteSession};

@@ -622,6 +622,7 @@ dependencies = [
  "deco-lsp",
  "deco-scm",
  "deco-syntax",
+ "deco-term",
  "deco-theme",
  "libc",
  "serde_json",
@@ -708,6 +709,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "deco-term"
+version = "0.1.0"
+dependencies = [
+ "deco-keymap",
+ "libc",
+ "unicode-width",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "deco-theme"
 version = "0.1.0"
 dependencies = [
@@ -732,6 +743,7 @@ dependencies = [
  "deco-remote",
  "deco-scm",
  "deco-syntax",
+ "deco-term",
  "deco-theme",
  "serde_json",
  "unicode-width",

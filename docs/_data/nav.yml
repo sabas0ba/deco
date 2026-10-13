@@ -24,6 +24,11 @@
   url: /chrome.html
   blurb: The side bar and the panel, and where the space comes from
 
+- title: The integrated terminal
+  path: terminal.md
+  url: /terminal.html
+  blurb: A shell in the panel, which keys it gets, and how it is drawn
+
 - title: The file tree
   path: files.md
   url: /files.html
