@@ -29,11 +29,11 @@ Each marker is omitted when its count is zero, as with the problem counts. A per
 | `│` | it is there, and says something else |
 | `▔` | lines were removed just above this one |
 
-**Shape as well as colour.** VS Code distinguishes added from modified lines only by colour, so users who cannot tell its green from its blue lose the distinction. A heavy bar and a light bar carry the same distinction without relying on colour. The colours are VS Code's: `editorGutter.addedBackground`, `editorGutter.modifiedBackground` and `editorGutter.deletedBackground`, so a theme that sets them is applied.
+**Marks use both shape and colour.** VS Code distinguishes added from modified lines only by colour, so users who cannot tell its green from its blue lose the distinction. Thick and thin bars distinguish added and modified lines without relying on colour. The colours are VS Code's: `editorGutter.addedBackground`, `editorGutter.modifiedBackground` and `editorGutter.deletedBackground`, so a theme that sets them is applied.
 
 A deletion has no remaining line to mark, so its mark is drawn on the **top edge** of the line that now follows the removed lines. A run of *replaced* lines is one modified hunk, not an addition next to a deletion. This matches git's output and what the user changed.
 
-**The marks follow the buffer, not the file on disk.** Editing a line shows its mark immediately; restoring the line to the committed text removes the mark. This is why the diff runs in process: a gutter updated only on save would describe the file, not the screen.
+**The marks reflect the current buffer contents.** Editing a line shows its mark immediately; restoring the line to the committed text removes the mark. This is why the diff runs in process: a gutter updated only on save would describe the file, not the screen.
 
 The committed text and the comparison are therefore handled separately. Fetching the committed text requires a process, and the text changes only on commit. deco watches the commit id reported by `git status` and discards the cached text when it changes, so a `git commit` in another terminal clears the gutter. The comparison is pure, so it is recomputed as you type. This means one `git` process per commit and none per keystroke.
 
@@ -49,7 +49,7 @@ Rows are grouped by the action they need, in the order they must be handled: **M
 
 **A file can appear twice.** A file that is staged and modified again since appears as two rows under two headings, because unstaging the first and staging the second act on the same file in opposite directions. The status bar's `±` count deliberately counts the file once: it reports how many files need attention, and counting a file twice would contradict that meaning.
 
-**The selection follows the file, not the row number.** Staging reorders the list. If the selection kept its row index, it would move to a different file, and the next command would act on that file.
+**Selection remains on the same file when the list is reordered.** Staging reorders the list. If the selection kept its row index, it would move to a different file, and the next command would act on that file.
 
 `enter` opens a read-only, side-by-side diff and the keyboard goes with it.
 Staged rows compare **HEAD ↔ Index**; Changes and Untracked compare
@@ -87,7 +87,7 @@ VS Code has no default key for most of these commands; its view uses buttons on 
 
 **Every refusal happens before a process starts.** Staging a file that is already staged would succeed without changing anything, so deco reports that it could not stage the file instead of reporting a change. Committing with nothing staged does not open the message box, so you do not write a commit message only to learn that there was nothing to commit.
 
-**The commit runs your hooks.** A `pre-commit` hook that reformats or rejects a commit is part of your setup, and running it is the main reason to use the git binary instead of a library. Their stdin is closed and `GIT_TERMINAL_PROMPT` is `0`, so
+**Commits run Git hooks.** A `pre-commit` hook that reformats or rejects a commit is part of your setup, and running it is the main reason to use the git binary instead of a library. Their stdin is closed and `GIT_TERMINAL_PROMPT` is `0`, so
 Git's own terminal prompt is disabled and a hook reading stdin gets EOF. A hook
 is still an arbitrary program: it can open `/dev/tty`, show a graphical prompt
 or run for a long time, and deco does not sandbox or bypass that behaviour.
@@ -127,7 +127,7 @@ There is no "discard all" yet.
 
 ### What it deliberately will not do
 
-**Reach the network.** No push, pull or fetch. These require credentials, and deco would have to be trusted to handle credential prompts. Reading and staging need neither.
+**Network operations.** Push, pull and fetch are not implemented. These require credentials, and deco would have to be trusted to handle credential prompts. Reading and staging need neither.
 
 ## When it runs
 
@@ -188,7 +188,7 @@ The same three reasons VS Code has:
 
 `--untracked-files=all` is used instead of git's default `normal`, which reports a new directory as one `? newdir/` record. The count above is per *file*, so with the default a newly added folder containing a dozen files would count as `±1`, which undercounts a common operation. This requires walking untracked directories, but ignored files are still skipped, so directories such as `target/` and `node_modules/` are not walked.
 
-`-z` is used for correctness, not performance. Without it, git C-quotes any path containing a space, a quote or a non-ASCII byte, and separates a rename's two paths with a tab, which a path may also contain. A parser would have to reverse git's quoting exactly, and any mistake would affect exactly the unusual paths that expose it. With `-z`, every field ends with a NUL and there is no quoting.
+`-z` is used for correctness, not performance. Without it, git C-quotes any path containing a space, a quote or a non-ASCII byte, and separates a rename's two paths with a tab, which a path may also contain. A parser would have to reverse git's quoting exactly, and a parsing error could misidentify such paths. With `-z`, every field ends with a NUL and there is no quoting.
 
 The diff uses Myers' algorithm, as `git diff` does. The common prefix and suffix are removed before the search starts, so the cost of an edit in a thousand-line file depends on the size of the edit rather than the size of the file. The search stops after two thousand edits, because a file that has been replaced entirely has no useful gutter. Beyond that limit, the middle section becomes one modified block and this is reported, instead of showing approximate marks.
 

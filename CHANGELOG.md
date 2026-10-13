@@ -54,7 +54,7 @@ puts deco on a remote that has none, when asked, and only when it can run there.
 ### Known limits
 
 - No rename or code actions; no diff view; no integrated terminal.
-- The extension surface is small: no editor state, quick pick, tree views,
+- The supported extension API is limited: no editor state, quick pick, tree views,
   webviews or debug adapters, and `process`, `net`, `env`, `secrets` and
   `openExternal` are brokered and then refused because nothing implements them.
 - Extension hosts always run on the local machine, so a remote session cannot

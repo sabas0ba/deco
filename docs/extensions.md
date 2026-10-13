@@ -46,11 +46,11 @@ Container mode provides the following:
 
 **The workspace is not mounted inside the container.** Extensions read and write workspace files through brokered requests performed by deco, subject to capability and path-scope checks.
 
-If the workspace were bind-mounted, as in a dev container, the container would add little protection. The workspace contains the files an extension typically wants, and a mount would expose all of them, with the broker bypassed for anything the extension can access through `fs`.
+A workspace bind mount would allow direct access to files within the mount. Operations permitted through `fs` could then bypass the capability broker.
 
 ### If there is no container runtime
 
-deco refuses to start the host and reports the setting that allows you to proceed. It does **not** fall back to running the host without a container. A sandbox that degrades silently is worse than no sandbox, because the user cannot tell which one is active.
+deco refuses to start the host and reports the setting that allows you to proceed. It does **not** fall back to running the host without a container. This keeps the selected isolation mode in effect unless the user explicitly changes it.
 
 A workspace cannot make this decision either. `deco.extensions.sandbox`, `deco.extensions.containerRuntime` and `deco.extensions.containerImage` are read only from deco's defaults and **your own** settings. A `.vscode/settings.json` comes with a cloned repository and must not be able to disable isolation for its own extensions. Attempts to override these settings are reported.
 
@@ -106,8 +106,8 @@ does:
 | Value | Behaviour |
 | --- | --- |
 | `prompt` | Ask once, remember the answer (the default) |
-| `deny` | Refuse silently — right for shared machines and CI |
-| `allow` | The declaration becomes the only check |
+| `deny` | Reject without prompting; suitable for unattended sessions |
+| `allow` | Approve declared capabilities without prompting |
 
 <a id="the-honest-trade-off"></a>
 

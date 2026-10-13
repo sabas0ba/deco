@@ -2,11 +2,11 @@
 
 # deco
 
-A lightweight, VS Code-compatible text editor written in Rust. No Electron.
+A text editor written in Rust with support for VS Code configuration, keybindings and themes.
 
 deco reads VS Code's `settings.json`, `keybindings.json` and colour theme formats. Supported settings and commands use VS Code's identifiers. It runs in a terminal or a GPU-accelerated window. Code extensions run in a separate Node process, inside a container by default; supported file operations require permission checks through deco's capability broker.
 
-**Status: early.** File editing and the compatibility layers described below are implemented and tested. See [what is not built](#what-is-not-built-yet) for missing features and frontend limitations.
+**Status: early development.** File editing and the compatibility layers described below are implemented and tested. See [what is not built](#what-is-not-built-yet) for missing features and frontend limitations.
 
 ```console
 $ deco src/main.rs                # terminal
@@ -74,18 +74,18 @@ See [Building](#building) for other build and test commands.
 | --- | --- |
 | [Editing](docs/editing.md) | Motion, line and block comments, multiple cursors, word wrap, undo |
 | [Tabs](docs/tabs.md) | Several documents, one per tab; splitting; what a tab keeps |
-| [Chrome](docs/chrome.md) | The side bar and the panel: `ctrl+b`, `ctrl+j`, where the space comes from, and where the keyboard is |
-| [The file tree](docs/files.md) | Walking the workspace, opening files, and what it costs to open a big one |
+| [Chrome](docs/chrome.md) | The side bar and the panel: `ctrl+b`, `ctrl+j`, layout sizing and keyboard focus |
+| [The file tree](docs/files.md) | Browsing the workspace, opening files and large-file performance |
 | [Git](docs/git.md) | The branch, changed-line marks, side-by-side diffs, and a view that stages and commits |
 | [Syntax highlighting](docs/highlighting.md) | Scopes, languages, choosing one, and why not tree-sitter |
 | [Find and replace](docs/find-and-replace.md) | `ctrl+f`, `ctrl+h`, `F3`, the multi-cursor find keys, and replacing across the workspace |
 | [Running commands](docs/commands.md) | The command palette, quick open, go to symbol, search in files, go to line |
 | [Language servers](docs/language-servers.md) | Diagnostics, hover, definition, references, completion, symbols, semantic tokens, formatting, rename, code actions |
 | [Configuration](docs/configuration.md) | `settings.json`, `keybindings.json`, themes, and where they are read from |
-| [Extensions](docs/extensions.md) | The capability model, and why an extension gets less power here |
+| [Extensions](docs/extensions.md) | Extension capabilities, permission checks and isolation |
 | [Remote](docs/remote.md) | SSH, container and WSL authorities, and the server that runs in the remote environment |
 | [Testing](docs/testing.md) | Unit tests, end-to-end scenarios, and what each one is for |
-| [Roadmap](docs/roadmap.md) | What VS Code has that deco does not, the plan for each, and what is worth building because deco is not Electron |
+| [Roadmap](docs/roadmap.md) | Missing features, implementation plans and proposed workspace support |
 
 The animations are generated from deco's renderer by `cargo xtask docs`. CI runs `cargo xtask docs --check`, so the animations must match the current code.
 
@@ -93,7 +93,7 @@ The animations are generated from deco's renderer by `cargo xtask docs`. CI runs
 
 ## Why these choices
 
-**Rust, not Electron.** The editor is a native binary with a rope-backed text
+**Native implementation.** The editor is a native binary with a rope-backed text
 model. The terminal build uses 52 third-party crates in total, and the extension host uses no npm packages. See [Dependencies](#dependencies).
 
 The following measurements use a release build, one file and a 120×40 window:
@@ -124,7 +124,7 @@ Context keys are `editorHasSelection`. Implemented features use these identifier
 | Syntax highlighting | 19 languages, from a lexer — see [why not tree-sitter](docs/highlighting.md#why-not-tree-sitter) |
 | Command identifiers | Yes, for implemented commands |
 | Theme extensions from the marketplace | Yes — declarative, no host process; `ctrl+k ctrl+t` lists them |
-| Code extensions (`main`) | Commands run: the palette lists them, choosing one starts a sandboxed host. The surface an extension can reach is registering a command, the message and status-bar calls, the `workspace.fs` family, and `workspace.applyEdit` — everything else is refused by name, see [Extensions](docs/extensions.md#what-an-extension-can-reach-today) |
+| Code extensions (`main`) | Commands run: the palette lists them, choosing one starts a sandboxed host. Supported APIs include command registration, message and status-bar calls, the `workspace.fs` family, and `workspace.applyEdit` — everything else is refused by name, see [Extensions](docs/extensions.md#what-an-extension-can-reach-today) |
 | Remote SSH / containers / WSL | Open, edit and save a file on the remote environment with `--remote ssh-remote+host`, `--remote-install` installs deco there if it is missing, `--forward 3000` forwards a remote port, language servers and Git run remotely, `ctrl+shift+f` searches the remote environment, an extension's file access goes through the connection, and the remote machine's `machine-settings.json` is applied as the `remote` scope. Extension hosts still run locally — see [Remote](docs/remote.md) |
 | Language servers (LSP) | Diagnostics, hover, go-to-definition, references, completion, symbols, semantic tokens, formatting, rename (`F2`, across files, one undo step), code actions (`ctrl+.`, with `codeAction/resolve`) |
 | Find and replace (`ctrl+f`, `ctrl+h`, `F3`, `ctrl+d`, `ctrl+shift+l`, `ctrl+shift+h`) | Literal or regular-expression search (`alt+r`), with capture groups in replacements; replace across the workspace is one undoable edit |
@@ -376,15 +376,15 @@ An editor has access to your source code, and every dependency is code that you 
 | `xtask` (build tooling, never shipped) | 49 |
 | extension host (Node) | **0** |
 
-Every crate in the terminal build has a long publishing history and wide use: `ropey` for the text rope, `crossterm` for the terminal, `serde`/`serde_json`, `thiserror`/`anyhow`, `regex` (rust-lang), the `unicode-*` crates from the unicode-rs project, and `sha2` from RustCrypto.
+The terminal build uses `ropey` for the text rope, `crossterm` for the terminal, `serde`/`serde_json`, `thiserror`/`anyhow`, `regex` (rust-lang), the `unicode-*` crates from the unicode-rs project, and `sha2` from RustCrypto.
 
 `sha2` has one purpose: `--remote-install-download` checks a release archive against the `SHA256SUMS` published with that release, and **that check is implemented in deco**. Downloading and unpacking are delegated to `curl` and `tar`, which are available on every supported platform. This is why the count above is 52 rather than 93: an in-process HTTPS client adds about forty crates and a vendored TLS stack. deco computes and compares the checksum before passing the archive to `tar`. See [`crates/deco-remote/src/fetch.rs`](crates/deco-remote/src/fetch.rs). There are no git dependencies and no vendored forks. Every entry in `Cargo.lock` resolves to crates.io, and `cargo deny` fails the build otherwise.
 
 Dependency rules:
 
-- **`Cargo.lock` is committed and CI passes `--locked`.** Versions change only through a reviewable diff instead of being re-resolved on every run, so a newly published malicious version cannot enter an unreviewed build.
+- **`Cargo.lock` is committed and CI passes `--locked`.** Versions change only through a reviewable diff instead of being re-resolved on every run, so builds retain the locked versions until the lockfile is updated.
 - **`cargo deny` runs in CI** (`cargo xtask deny`) and checks RustSec advisories, crate sources, licences and a banned list. [`deny.toml`](deny.toml) documents the purpose of each check, and every advisory exemption has a reason and a removal condition.
-- **GitHub Actions are pinned to commit SHAs**, because tags are mutable and anyone who can move `@v4` would otherwise gain write access to this repository's CI.
+- **GitHub Actions are pinned to commit SHAs**, because mutable tags such as `@v4` can change which code runs with the workflow's permissions.
 - **The editor parses its own command line** ([`cli.rs`](crates/deco/src/cli.rs)) instead of using a derive-based argument parser. This removes fourteen crates, including a procedural macro that runs on the build machine, at the cost of about a hundred lines.
 - **The extension host has no npm dependencies**, and a test fails if one is added. It is the only process that intentionally loads untrusted code, so its trusted side contains only reviewed code.
 

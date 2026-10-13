@@ -1,14 +1,14 @@
 # deco documentation
 
-A lightweight VS Code-compatible editor in Rust. This directory is the detailed
+A Rust text editor with support for VS Code configuration, keybindings and themes. This directory is the detailed
 reference; the [top-level README](https://github.com/sabas0ba/deco#readme) provides an overview and lists missing features.
 
 | Page | What it covers |
 | --- | --- |
 | [Editing](editing.md) | Motion, selection, line and block comments, multiple cursors, undo |
 | [Tabs](tabs.md) | Several documents, one per tab; splitting; what a tab keeps |
-| [Chrome](chrome.md) | The side bar and the panel: `ctrl+b`, `ctrl+j`, where the space comes from, and where the keyboard is |
-| [The file tree](files.md) | Walking the workspace, opening files, and what it costs to open a big one |
+| [Chrome](chrome.md) | The side bar and the panel: `ctrl+b`, `ctrl+j`, layout sizing and keyboard focus |
+| [The file tree](files.md) | Browsing the workspace, opening files and large-file performance |
 | [Git](git.md) | The branch, changed-line marks, side-by-side diffs, and a view that stages and commits — by running the binary rather than linking a library |
 | [Syntax highlighting](highlighting.md) | Scopes, languages, choosing one, and why not tree-sitter |
 | [Find and replace](find-and-replace.md) | `ctrl+f`, `ctrl+h`, `F3`, the multi-cursor find keys, and replacing across the workspace |
@@ -16,14 +16,14 @@ reference; the [top-level README](https://github.com/sabas0ba/deco#readme) provi
 | [Language servers](language-servers.md) | Diagnostics, hover, definition, references, completion, symbols, semantic tokens, formatting, rename, code actions |
 | [Snippets](snippets.md) | Fields, variables, transforms, and your own snippet files |
 | [Configuration](configuration.md) | `settings.json`, `keybindings.json`, colour themes, and where they are read from |
-| [Extensions](extensions.md) | The capability model, and why an extension gets less power here than in VS Code |
+| [Extensions](extensions.md) | Extension capabilities, permission checks and isolation |
 | [Remote](remote.md) | SSH, container and WSL authorities, and which parts are implemented |
 | [Testing](testing.md) | Unit tests, end-to-end scenarios, and what each one is for |
-| [Roadmap](roadmap.md) | What VS Code has that deco does not, the plan for each, and what is worth building because deco is not Electron |
+| [Roadmap](roadmap.md) | Missing features, implementation plans and proposed workspace support |
 
 ## About the animations
 
-Every animation in these pages is **generated from deco's own renderer**. None are screen recordings or hand-drawn:
+The animations in these pages are generated from deco's renderer:
 
 ```console
 $ cargo xtask docs            # regenerate them
