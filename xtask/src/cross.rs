@@ -130,7 +130,12 @@ pub fn check_args(target: &str) -> Vec<String> {
 /// All other `deco-tui` tests compare rendered strings and never reach
 /// crossterm, so the rest of the frontend's suite runs under Wine, and
 /// `painting_` matches only the console-bound tests.
-pub const WINE_SKIPS: &[&str] = &["painting_"];
+///
+/// Every test that runs a program in a pseudo console, for the same reason:
+/// Wine has no ConPTY backed by a terminal, so the program's output never
+/// reaches the pipe. These carry the `in_a_pseudo_console_` prefix. The native
+/// Windows runner runs them.
+pub const WINE_SKIPS: &[&str] = &["painting_", "in_a_pseudo_console_"];
 
 /// The `cargo test` invocation the Wine pass runs.
 ///
@@ -433,6 +438,7 @@ mod tests {
             "painting_writes_every_span_and_positions_the_cursor",
             "painting_a_frame_with_no_cursor_leaves_it_hidden",
             "painting_never_emits_a_span_s_own_escape_sequence",
+            "in_a_pseudo_console_a_program_s_output_and_exit_code_come_back",
         ] {
             assert!(
                 WINE_SKIPS.iter().any(|skip| name.starts_with(skip)),

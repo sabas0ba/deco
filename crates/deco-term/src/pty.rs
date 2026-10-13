@@ -735,8 +735,10 @@ mod tests {
         }
     }
 
+    /// The `in_a_pseudo_console_` prefix keeps this out of the Wine pass;
+    /// see `WINE_SKIPS` in `xtask/src/cross.rs`.
     #[test]
-    fn a_program_s_output_and_exit_code_come_back() {
+    fn in_a_pseudo_console_a_program_s_output_and_exit_code_come_back() {
         let size = Size { cols: 80, rows: 24 };
         #[cfg(unix)]
         let script = "printf 'out:%s' \"$DECO_PTY_TEST\"; exit 3";
