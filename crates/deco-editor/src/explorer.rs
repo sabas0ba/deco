@@ -192,8 +192,7 @@ impl Explorer {
             self.rows()
                 .into_iter()
                 .filter(|row| {
-                    row.expanded
-                        && matches!(self.listings.get(&row.path), Some(Contents::Known(_)))
+                    row.expanded && matches!(self.listings.get(&row.path), Some(Contents::Known(_)))
                 })
                 .map(|row| row.path),
         );
@@ -227,7 +226,9 @@ impl Explorer {
         for gone in removed {
             self.forget_under(&gone);
         }
-        if let Some(index) = selected.and_then(|path| self.rows().iter().position(|row| row.path == path)) {
+        if let Some(index) =
+            selected.and_then(|path| self.rows().iter().position(|row| row.path == path))
+        {
             self.selected = index;
         }
         self.clamp();
@@ -657,7 +658,10 @@ mod tests {
         );
         assert!(changed);
         let names: Vec<_> = explorer.rows().into_iter().map(|r| r.name).collect();
-        assert_eq!(names, ["src", "main.rs", "build.rs", "Cargo.toml", "README.md"]);
+        assert_eq!(
+            names,
+            ["src", "main.rs", "build.rs", "Cargo.toml", "README.md"]
+        );
         assert_eq!(explorer.selection().unwrap().name, "README.md");
 
         // The same listing again changes nothing.
@@ -686,9 +690,17 @@ mod tests {
         // Created again with the same name: closed, and read when opened.
         explorer.refresh(
             Path::new("/w"),
-            vec![Entry::dir("src"), Entry::file("README.md"), Entry::file("Cargo.toml")],
+            vec![
+                Entry::dir("src"),
+                Entry::file("README.md"),
+                Entry::file("Cargo.toml"),
+            ],
         );
-        let src = explorer.rows().into_iter().find(|r| r.name == "src").unwrap();
+        let src = explorer
+            .rows()
+            .into_iter()
+            .find(|r| r.name == "src")
+            .unwrap();
         assert!(!src.expanded);
         // A directory that was never read is not refreshed.
         assert!(!explorer.refresh(Path::new("/w/src"), vec![Entry::file("x")]));

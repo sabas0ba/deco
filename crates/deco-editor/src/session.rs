@@ -5481,7 +5481,8 @@ impl Session {
     /// rather than the workspace. A hidden tree is brought up to date by the
     /// first refresh after it is shown again.
     pub fn directories_to_refresh(&self) -> Vec<PathBuf> {
-        let showing = self.regions().side_bar.is_some() && self.side_bar_view == SideBarView::Explorer;
+        let showing =
+            self.regions().side_bar.is_some() && self.side_bar_view == SideBarView::Explorer;
         match &self.explorer {
             Some(explorer) if showing => explorer.shown_directories(),
             _ => Vec::new(),

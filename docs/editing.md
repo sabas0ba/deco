@@ -109,9 +109,15 @@ The characters covered are the embeddings, overrides and isolates of Unicode's b
 
 The marker is drawn even with `editor.renderControlCharacters` set to `false`, because a blank would hide the reordering. The painter replaces these characters in file names, search results and other text as it does control characters.
 
+### Invisible characters
+
+The zero-width space (U+200B), the zero-width non-joiner and joiner (U+200C, U+200D), the word joiner and invisible operators (U+2060–U+2064), a byte order mark inside a line (U+FEFF), the soft hyphen (U+00AD) and U+180E have no visible form. With `editor.unicodeHighlight.invisibleCharacters` (default `true`, as in VS Code) each is drawn as the same `␦` marker; set to `false`, each is drawn as a blank.
+
+Neither setting writes the character itself. The layout counts every character as at least one column, and a terminal draws these in none, so writing one would move the rest of the row one column left of the caret. One consequence is that an emoji sequence joined with U+200D, such as a family emoji, is drawn as its parts with markers between them.
+
 ### What this does not cover
 
-Other invisible characters, such as zero-width spaces, and characters that look like others (`editor.unicodeHighlight.invisibleCharacters` and `.ambiguousCharacters` in VS Code) are not marked. The GPU frontend does not apply the substitution yet.
+Characters that look like others (`editor.unicodeHighlight.ambiguousCharacters` and `.nonBasicASCII` in VS Code) are not marked. Combining marks, which also have no width of their own, are still written to the terminal and can shift the rest of their row. The GPU frontend does not apply these substitutions yet.
 
 ## Copy and paste with the system clipboard
 

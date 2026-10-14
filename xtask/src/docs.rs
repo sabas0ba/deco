@@ -983,7 +983,10 @@ fn problems() -> String {
         }],
     );
     take.at(0, 0)
-        .capture("a server has reported on two files, one of them not open", 3)
+        .capture(
+            "a server has reported on two files, one of them not open",
+            3,
+        )
         .press_and_hold(&["ctrl+shift+m"], 5)
         .press_and_hold(&["down"], 3)
         .press_and_hold(&["enter"], 6);

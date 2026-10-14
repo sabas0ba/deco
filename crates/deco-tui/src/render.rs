@@ -1597,6 +1597,14 @@ fn line_spans(
             // Always marked, whatever `editor.renderControlCharacters` says: a
             // blank would hide the reordering this character exists to cause.
             cells.push((BIDI_PICTURE, cell, palette.bidi_fg));
+        } else if is_invisible(c) {
+            // Never written as itself: the layout counts it as one column, and
+            // a terminal would draw it in none, shifting the rest of the row.
+            if pane.document.settings.highlight_invisible_characters {
+                cells.push((BIDI_PICTURE, cell, palette.bidi_fg));
+            } else {
+                cells.push((' ', cell, fg));
+            }
         } else if let Some(picture) = control_picture(c) {
             // `editor.renderControlCharacters` selects the glyph or a blank. In both
             // cases the byte itself does not reach the terminal; see `control_picture`.
@@ -1685,7 +1693,7 @@ fn control_picture(c: char) -> Option<char> {
         '\0'..='\u{1f}' => char::from_u32(0x2400 + c as u32),
         // Delete, which sits on its own at U+2421.
         '\u{7f}' => Some('␡'),
-        c if is_bidi_control(c) => Some(BIDI_PICTURE),
+        c if is_bidi_control(c) || is_invisible(c) => Some(BIDI_PICTURE),
         _ => None,
     }
 }
@@ -1697,6 +1705,22 @@ fn control_picture(c: char) -> Option<char> {
 /// terminal, including those that draw East Asian ambiguous-width characters
 /// two columns wide.
 const BIDI_PICTURE: char = '\u{2426}';
+
+/// Whether `c` is a character with no visible form of its own that is not a
+/// control or bidirectional character: the zero-width space, joiners and
+/// word joiner, the byte order mark inside a line, and the soft hyphen.
+///
+/// The width table gives these zero columns, while the layout counts every
+/// character as at least one, so writing one to the terminal would move the
+/// rest of the row one column left of where the caret is drawn. They can also
+/// make two identifiers that look the same differ. VS Code marks them under
+/// `editor.unicodeHighlight.invisibleCharacters`.
+fn is_invisible(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00ad}' | '\u{180e}' | '\u{200b}'..='\u{200d}' | '\u{2060}'..='\u{2064}' | '\u{feff}'
+    )
+}
 
 /// Whether `c` is one of the characters that change the display order of the
 /// text around them.
@@ -4479,6 +4503,34 @@ mod tests {
         session.open(PathBuf::from("/w/trojan.c"), TROJAN);
         let frame = render(&session, 60, 4);
         assert_eq!(frame.rows[0].plain().matches(BIDI_PICTURE).count(), 4);
+    }
+
+    #[test]
+    fn an_invisible_character_is_marked_and_keeps_the_columns_aligned() {
+        let frame = render(&session("a\u{200b}b = 1\n"), 30, 4);
+        let line = frame.rows[0].plain();
+        assert_eq!(line, format!("  1 a{BIDI_PICTURE}b = 1{}", " ".repeat(19)));
+        // The caret after `b` is where the renderer drew `b` plus one.
+        let mut s = session("a\u{200b}b\n");
+        s.view.selections =
+            deco_core::selection::SelectionSet::caret(deco_core::Position::new(0, 3));
+        let frame = render(&s, 30, 4);
+        assert_eq!(frame.cursor.map(|(x, _)| x), Some(4 + 3));
+    }
+
+    #[test]
+    fn hiding_invisible_characters_draws_a_blank_and_never_the_character() {
+        let mut settings = deco_config::Settings::with_defaults();
+        settings.set(
+            deco_config::Scope::User,
+            "editor.unicodeHighlight.invisibleCharacters",
+            serde_json::json!(false),
+        );
+        let mut session = Session::new(settings, None, deco_keymap::binding::Platform::Linux);
+        session.open(PathBuf::from("/w/a.txt"), "a\u{200b}b\n");
+        let line = render(&session, 30, 4).rows[0].plain();
+        assert!(line.starts_with("  1 a b"), "{line:?}");
+        assert!(!line.contains('\u{200b}'));
     }
 
     #[test]
