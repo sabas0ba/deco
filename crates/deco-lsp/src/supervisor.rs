@@ -123,6 +123,22 @@ pub enum Update {
         /// successful answer and is reported as one.
         edit: Result<crate::WorkspaceEdit, crate::WorkspaceEditError>,
     },
+    /// A command run by [`Supervisor::execute_command`] has finished.
+    CommandDone {
+        /// The request this answers.
+        id: RequestId,
+    },
+    /// The server asked to change files while a command run by
+    /// [`Supervisor::execute_command`] was unanswered. Answer it with
+    /// [`Supervisor::answer_apply_edit`]; the server waits for the answer.
+    ApplyEdit {
+        /// The server's request, to answer.
+        id: RequestId,
+        /// The changes, or why they could not be read.
+        edit: Result<crate::WorkspaceEdit, crate::WorkspaceEditError>,
+        /// The server's description of the change, if it gave one.
+        label: Option<String>,
+    },
     /// An answer to [`Supervisor::code_action`].
     CodeActions {
         /// The request this answers.
@@ -774,6 +790,45 @@ impl Supervisor {
         self.request("codeAction/resolve", params).map(Some)
     }
 
+    /// Runs a code action's command on the server.
+    ///
+    /// Returns `Ok(None)` when the action has no command, or when the server
+    /// does not list the command among those it runs. The command's edit, if
+    /// it has one, arrives as an [`Update::ApplyEdit`] before the response.
+    pub fn execute_command(
+        &mut self,
+        action: &crate::requests::CodeAction,
+    ) -> Result<Option<RequestId>, SupervisorError> {
+        let Some(params) = action.execute_command_params() else {
+            return Ok(None);
+        };
+        let listed = self
+            .client
+            .capabilities()
+            .execute_command
+            .as_ref()
+            .is_some_and(|commands| {
+                commands
+                    .iter()
+                    .any(|c| Some(c.as_str()) == params["command"].as_str())
+            });
+        if !listed {
+            return Ok(None);
+        }
+        self.request("workspace/executeCommand", params).map(Some)
+    }
+
+    /// Answers an [`Update::ApplyEdit`]: `None` when the edit was applied,
+    /// or why it was not.
+    pub fn answer_apply_edit(
+        &mut self,
+        id: RequestId,
+        failure: Option<&str>,
+    ) -> Result<(), SupervisorError> {
+        let Outgoing(message) = self.client.answer_apply_edit(id, failure);
+        self.write(&message)
+    }
+
     /// The version last sent to the server for `path`.
     ///
     /// An incoming edit's `version` must match this. `None` for a document this
@@ -1071,6 +1126,9 @@ impl Supervisor {
                             action: Box::new(action),
                         })
                     }
+                    // The command's effect is the edit that arrived before
+                    // this answer; the answer only says it has finished.
+                    "workspace/executeCommand" => Some(Update::CommandDone { id }),
                     "textDocument/rename" => Some(Update::Renamed {
                         id,
                         edit: crate::WorkspaceEdit::from_json(&result),
@@ -1100,6 +1158,11 @@ impl Supervisor {
                 }
             }
             ClientEvent::Ignored { reason } => Some(Update::Noted { detail: reason }),
+            ClientEvent::ApplyEdit { id, edit, label } => Some(Update::ApplyEdit {
+                id,
+                edit: crate::WorkspaceEdit::from_json(&edit),
+                label,
+            }),
         }
     }
 

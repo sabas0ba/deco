@@ -20,6 +20,7 @@ pub const DEFAULT_SETTINGS_JSONC: &str = r#"{
     "editor.lineNumbers": "on",
     "editor.renderWhitespace": "selection",
     "editor.renderControlCharacters": true,
+    "editor.unicodeHighlight.invisibleCharacters": true,
     "editor.cursorBlinking": "blink",
     "editor.cursorStyle": "line",
     "editor.cursorSurroundingLines": 0,

@@ -433,3 +433,37 @@ fn quitting_with_unsaved_work_does_not_throw_it_away_silently() {
         screen.dump()
     );
 }
+
+#[test]
+fn a_file_another_program_creates_appears_in_the_tree() {
+    // A command run in the terminal, or an agent beside the editor, creates
+    // files while the tree is on screen. The tree reads its shown directories
+    // again every two seconds, so the file appears without a key press, and
+    // the selection stays on the row it was on.
+    let scenario = Scenario::new("tree-refresh")
+        .file("b.txt", "b\n")
+        .file("d.txt", "d\n");
+    let mut editor = scenario.launch(&["b.txt"]);
+    editor.press("ctrl+b").press("ctrl+shift+e").press("down");
+    editor.screen().assert_shows("d.txt").assert_lacks("a.txt");
+    let selected = editor
+        .session()
+        .explorer()
+        .and_then(deco_editor::Explorer::selection)
+        .map(|row| row.name);
+    assert_eq!(selected.as_deref(), Some("d.txt"));
+
+    editor.change_on_disk("a.txt", "a\n");
+    editor.wait(2_000);
+    editor.screen().assert_shows("a.txt");
+    let selected = editor
+        .session()
+        .explorer()
+        .and_then(deco_editor::Explorer::selection)
+        .map(|row| row.name);
+    assert_eq!(selected.as_deref(), Some("d.txt"), "still on the same file");
+
+    std::fs::remove_file(editor.workspace().join("a.txt")).unwrap();
+    editor.wait(2_000);
+    editor.screen().assert_lacks("a.txt");
+}

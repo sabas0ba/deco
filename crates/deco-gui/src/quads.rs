@@ -61,6 +61,12 @@ fn unclipped(layout: &Layout) -> Vec<Quad> {
         rect,
         color: colors.selection,
     }));
+    quads.extend(
+        layout
+            .marks
+            .iter()
+            .map(|&(rect, color)| Quad { rect, color }),
+    );
     if let Some(caret) = layout.cursor {
         let color = colors.cursor;
         if layout.cursor_style == CursorStyle::BlockOutline {

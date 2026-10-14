@@ -167,6 +167,13 @@ pub const DEFAULT_KEYBINDINGS_JSONC: &str = r#"[
     { "key": "end",          "command": "list.focusLast",   "when": "sideBarFocus" },
     { "key": "enter",        "command": "list.select",      "when": "sideBarFocus" },
     { "key": "escape",       "command": "workbench.action.focusActiveEditorGroup", "when": "sideBarFocus" },
+    // The same keys in the problems view, which is a list in the panel.
+    { "key": "down",         "command": "list.focusDown",   "when": "problemFocus" },
+    { "key": "up",           "command": "list.focusUp",     "when": "problemFocus" },
+    { "key": "home",         "command": "list.focusFirst",  "when": "problemFocus" },
+    { "key": "end",          "command": "list.focusLast",   "when": "problemFocus" },
+    { "key": "enter",        "command": "list.select",      "when": "problemFocus" },
+    { "key": "escape",       "command": "workbench.action.focusActiveEditorGroup", "when": "problemFocus" },
     // Changing the files themselves. VS Code's identifiers, and its keys — `F2`
     // and `delete` mean something else in the text, which is why both are gated.
     { "key": "f2",           "command": "renameFile",           "when": "filesExplorerFocus" },
@@ -225,6 +232,7 @@ pub const DEFAULT_KEYBINDINGS_JSONC: &str = r#"[
     { "key": "ctrl+b",       "mac": "cmd+b",       "command": "workbench.action.toggleSidebarVisibility" },
     { "key": "ctrl+j",       "mac": "cmd+j",       "command": "workbench.action.togglePanel" },
     { "key": "ctrl+`",       "command": "workbench.action.terminal.toggleTerminal" },
+    { "key": "ctrl+shift+m", "mac": "cmd+shift+m", "command": "workbench.actions.view.problems" },
 
     // ---- Terminal -------------------------------------------------------
     // Only these keys and the rest of `SKIP_SHELL` in deco-editor stay with

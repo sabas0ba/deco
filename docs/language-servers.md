@@ -20,6 +20,16 @@ Diagnostics arrive by `textDocument/publishDiagnostics` and replace the previous
 
 Information and hint diagnostics are not included in either count. They do not require action, and the status bar only has room for errors and warnings.
 
+### The problems view
+
+![ctrl+shift+m lists the problems in two files, and enter opens the one that is not open](img/problems.svg)
+
+`ctrl+shift+m` (`workbench.actions.view.problems`) opens the problems view in the [panel](chrome.md) and gives it the keyboard; pressing it again there hides the panel. The view lists every diagnostic the server has published, including those for files that are not open, one row per problem: a severity letter (`E`, `W`, `I`, `H`) in the theme's colour for that severity, the path relative to the workspace with a one-based line and column, and the first line of the message.
+
+Files are listed in path order and problems in position order within a file. `up`, `down`, `home` and `end` move the selection, `enter` opens the file at the problem and returns the keyboard to the text, and `escape` returns it without opening anything.
+
+When the server stops, or a document in another language replaces it, its problems are removed from the view, because nothing will update or clear them.
+
 ## Hover
 
 ![A hover box for the symbol under the caret](img/hover.svg)
@@ -145,12 +155,14 @@ The list shows actions that deco cannot perform instead of hiding them:
 | An action with no edit, from a server that resolves | Resolved, then applied |
 | An action with no edit, from one that does not | Declined, naming the action |
 | A disabled action | Listed with the server's reason, in the second column; choosing it repeats the reason |
-| A bare `Command` | Declined, naming the command — see below |
+| A bare `Command`, or an action with a command | The edit, if any, is applied; then the command is run on the server — see below |
 | An edit that creates, renames or deletes a file | Declined for **that action only**, naming the operation |
 
 Because of the last row, the edit is parsed when an action is chosen, not when the menu is built. One unsupported entry does not remove the other, valid entries from the menu.
 
-**A bare `Command` is not run.** Such actions require `workspace/executeCommand` and may cause the server to send a `workspace/applyEdit` request. deco does not implement this command-execution path and reports the unsupported command by name.
+**A command runs on the server, and only its edit is accepted.** An action's command is sent as `workspace/executeCommand`, after its edit if it has one, as the protocol orders them. It is sent only if the server lists it in `executeCommandProvider.commands`; a command the server did not offer is declined by name.
+
+A server carries out a command by sending the editor a `workspace/applyEdit` request before it answers. deco applies such a request **only while a command it sent is unanswered**, through the same checks as a rename, and answers whether it was applied. A request that arrives at any other time is an edit no user action asked for, and is answered `applied: false` without changing anything. The capability `workspace.applyEdit` is declared so that servers send command edits this way.
 
 ## Rename
 
@@ -210,7 +222,7 @@ There is **no option to trust a repository once.** VS Code has Workspace Trust, 
 
 ## Not built yet
 
-`workspace/executeCommand` is not sent, so a code action that is only a [bare `Command`](#code-actions) is declined. Supporting it requires handling the `workspace/applyEdit` request the server may send back, in which the server asks the editor to change files instead of answering an editor request. This is a decision about what a server may change, not only a missing function call. deco currently answers such requests with `applied: false`.
+`workspace/executeCommand` is sent only for a code action. Commands from code lenses or completion items are not run, because neither is shown.
 
 `textDocument/codeLens`, `textDocument/inlayHint` and `textDocument/documentHighlight` are not requested. Each needs a display element the editor does not have yet: a line above the code, non-text content within a line, and a second kind of selection highlight.
 

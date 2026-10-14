@@ -106,6 +106,16 @@ pub enum ClientEvent {
         /// Why it was ignored.
         reason: String,
     },
+    /// The server asked to change files while a command the user chose was
+    /// running. The editor must answer with [`Client::answer_apply_edit`].
+    ApplyEdit {
+        /// The server's request id, to answer.
+        id: RequestId,
+        /// The `WorkspaceEdit`, unparsed.
+        edit: serde_json::Value,
+        /// The server's description of the change, if it gave one.
+        label: Option<String>,
+    },
 }
 
 /// Why a call was refused.
@@ -498,6 +508,23 @@ impl Client {
         ))
     }
 
+    /// Whether a `workspace/executeCommand` the editor sent is unanswered.
+    fn running_command(&self) -> bool {
+        self.pending
+            .values()
+            .any(|pending| pending.method == "workspace/executeCommand" && !pending.cancelled)
+    }
+
+    /// The answer to a [`ClientEvent::ApplyEdit`]: whether the edit was
+    /// applied, and if not, why.
+    pub fn answer_apply_edit(&self, id: RequestId, failure: Option<&str>) -> Outgoing {
+        let result = match failure {
+            None => serde_json::json!({ "applied": true }),
+            Some(reason) => serde_json::json!({ "applied": false, "failureReason": reason }),
+        };
+        Outgoing(Message::Response(Response::ok(id, result)))
+    }
+
     fn classify_notification(&self, notification: Notification) -> ClientEvent {
         let params = notification.params.clone().unwrap_or_default();
         match notification.method.as_str() {
@@ -543,11 +570,31 @@ impl Client {
             // files without a user action. That requires a separate permission
             // decision, and the existence of the edit code does not make that
             // decision. `applied: false` is the protocol's response for this.
+            //
+            // The exception is an edit that arrives while a
+            // `workspace/executeCommand` the editor sent is unanswered. The user
+            // chose that command, and a server carries out a command's edit by
+            // sending this request before it answers. That edit is passed to the
+            // editor, which answers it with `answer_apply_edit`.
+            "workspace/applyEdit" if self.running_command() => {
+                let params = request.params.unwrap_or_default();
+                return (
+                    Vec::new(),
+                    vec![ClientEvent::ApplyEdit {
+                        id: request.id,
+                        edit: params.get("edit").cloned().unwrap_or_default(),
+                        label: params
+                            .get("label")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_owned),
+                    }],
+                );
+            }
             "workspace/applyEdit" => Response::ok(
                 request.id,
                 serde_json::json!({
                     "applied": false,
-                    "failureReason": "deco applies only the edits it asked for",
+                    "failureReason": "deco applies only the edits of a command the user chose",
                 }),
             ),
             "workspace/configuration" => {
@@ -975,6 +1022,50 @@ mod tests {
             ErrorCode::MethodNotFound as i64
         );
         assert!(matches!(events[0], ClientEvent::Ignored { .. }));
+    }
+
+    #[test]
+    fn an_edit_during_a_command_the_editor_sent_is_passed_on_and_answered_later() {
+        let (mut client, _) = ready(json!({}));
+        let (command, _) = client
+            .request("workspace/executeCommand", json!({"command": "fix"}))
+            .unwrap();
+        let (outgoing, events) = client
+            .handle(Message::Request(Request {
+                id: 9.into(),
+                method: "workspace/applyEdit".into(),
+                params: Some(json!({"label": "Fix it", "edit": {"changes": {}}})),
+            }))
+            .unwrap();
+        assert!(outgoing.is_empty(), "answered by the editor, not here");
+        let [ClientEvent::ApplyEdit { id, edit, label }] = &events[..] else {
+            panic!("{events:?}");
+        };
+        assert_eq!(*id, RequestId::from(9));
+        assert_eq!(edit, &json!({"changes": {}}));
+        assert_eq!(label.as_deref(), Some("Fix it"));
+
+        let Outgoing(Message::Response(answer)) = client.answer_apply_edit(id.clone(), None) else {
+            panic!("a response");
+        };
+        assert_eq!(answer.result.unwrap()["applied"], json!(true));
+
+        // Once the command has been answered, the window closes.
+        client
+            .handle(Message::Response(Response::ok(command, json!(null))))
+            .unwrap();
+        let (outgoing, events) = client
+            .handle(Message::Request(Request {
+                id: 10.into(),
+                method: "workspace/applyEdit".into(),
+                params: Some(json!({"edit": {}})),
+            }))
+            .unwrap();
+        assert!(events.is_empty());
+        let Outgoing(Message::Response(response)) = &outgoing[0] else {
+            panic!("expected a response");
+        };
+        assert_eq!(response.result.as_ref().unwrap()["applied"], json!(false));
     }
 
     #[test]

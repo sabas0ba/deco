@@ -101,9 +101,23 @@ The substitution is applied at every terminal write, not only where the document
 
 The renderer substitutes characters in the document according to the setting. The painter and the command-line output substitute them unconditionally. Applying the substitution at the write also covers output sources added later.
 
+### Bidirectional formatting characters
+
+`U+202E` and related characters reorder the characters around them, so a line can display differently from the code a compiler reads. This is the Trojan Source attack (CVE-2021-42574). deco draws each of them as `␦` (U+2426) in the theme's `editorUnicodeHighlight.border` colour, or `editorWarning.foreground` when the theme does not set it, and never writes the character itself to the terminal.
+
+The characters covered are the embeddings, overrides and isolates of Unicode's bidirectional algorithm (U+202A–U+202E, U+2066–U+2069) and the marks U+200E, U+200F and U+061C. Each marker takes one column, as the character was counted, so the layout does not change.
+
+The marker is drawn even with `editor.renderControlCharacters` set to `false`, because a blank would hide the reordering. The painter replaces these characters in file names, search results and other text as it does control characters.
+
+### Invisible characters
+
+The zero-width space (U+200B), the zero-width non-joiner and joiner (U+200C, U+200D), the word joiner and invisible operators (U+2060–U+2064), a byte order mark inside a line (U+FEFF), the soft hyphen (U+00AD) and U+180E have no visible form. With `editor.unicodeHighlight.invisibleCharacters` (default `true`, as in VS Code) each is drawn as the same `␦` marker; set to `false`, each is drawn as a blank.
+
+Neither setting writes the character itself. The layout counts every character as at least one column, and a terminal draws these in none, so writing one would move the rest of the row one column left of the caret. One consequence is that an emoji sequence joined with U+200D, such as a family emoji, is drawn as its parts with markers between them.
+
 ### What this does not cover
 
-**Bidirectional overrides.** `U+202E` and related characters reorder the surrounding characters, so a line can display differently from its actual content. This is the Trojan Source class of attack, which matters most in code that will be compiled. These characters are printable rather than control characters, so this substitution does not change them. VS Code handles them with a separate setting (`editor.unicodeHighlight.*`) that deco does not read.
+Characters that look like others (`editor.unicodeHighlight.ambiguousCharacters` and `.nonBasicASCII` in VS Code) are not marked. Combining marks, which also have no width of their own, are still written to the terminal and can shift the rest of their row. The GPU frontend applies the same substitutions to the text it hands to its shaper, which would otherwise apply the bidirectional characters itself; it draws the stand-ins in the text colour rather than the highlight colour.
 
 ## Copy and paste with the system clipboard
 

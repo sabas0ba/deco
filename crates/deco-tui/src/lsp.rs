@@ -96,6 +96,9 @@ pub struct Lsp {
     code_action_request: Option<RequestId>,
     /// The `codeAction/resolve` in flight, for the action that was chosen.
     resolve_request: Option<RequestId>,
+    /// The `workspace/executeCommand` in flight, and the title of the action
+    /// that ran it, for the status line.
+    command_request: Option<(RequestId, String)>,
     /// The code actions the server last returned, in the server's order.
     ///
     /// Stored here rather than in the session, because most of an action is the
@@ -438,6 +441,7 @@ impl Lsp {
             rename_request: None,
             code_action_request: None,
             resolve_request: None,
+            command_request: None,
             code_actions: Vec::new(),
         }
     }
@@ -865,6 +869,11 @@ impl Lsp {
                     self.resolve_request = Some(id);
                     session.status = Some(format!("{}…", action.title));
                 }
+                // No way to resolve, but a command to run: the command is the
+                // whole of what the action does.
+                Some(Ok(None)) if action.command.is_some() => {
+                    self.apply_code_action(session, &action, files);
+                }
                 // The server offered an action with no edit and no way to
                 // resolve one. Report the action by name, because there is
                 // nothing to apply.
@@ -882,50 +891,103 @@ impl Lsp {
         self.apply_code_action(session, &action, files);
     }
 
-    /// Applies a resolved action's edit, or reports why there is nothing to apply.
+    /// Applies a resolved action's edit and runs its command, or reports why
+    /// there is nothing to do.
+    ///
+    /// The protocol's order: the edit first, then the command. A command's
+    /// own changes arrive as a `workspace/applyEdit` request while it runs;
+    /// see [`Update::ApplyEdit`].
     fn apply_code_action(
         &mut self,
         session: &mut Session,
         action: &deco_lsp::CodeAction,
         files: &mut crate::extensions::Files<'_>,
     ) {
-        let Some(edit) = &action.edit else {
-            // Either the resolve returned no edit, or the action is only a
-            // `Command`. Running a server command uses `workspace/executeCommand`,
-            // and its result arrives as a server-to-client `workspace/applyEdit`
-            // *request*. That direction is not implemented here.
-            let detail = match &action.command {
-                Some(command) => {
-                    format!("it runs the server command `{command}`, which deco cannot")
-                }
-                None => "the server sent no edit for it".to_owned(),
-            };
-            session.status = Some(format!("`{}` was not applied: {detail}", action.title));
-            return;
-        };
-
-        let edit = match deco_lsp::WorkspaceEdit::from_json(edit) {
-            Ok(edit) => edit,
-            // A file create, rename or delete operation. Only this action is
-            // rejected, not the whole menu, which is why the edit is parsed here
-            // and not while listing.
-            Err(error) => {
-                self.report(session, format!("`{}`: {error}", action.title));
-                return;
-            }
-        };
-        if edit.is_empty() {
-            session.status = Some(format!("`{}` changes nothing", action.title));
+        if action.edit.is_none() && action.command.is_none() {
+            session.status = Some(format!(
+                "`{}` was not applied: the server sent no edit for it",
+                action.title
+            ));
             return;
         }
+        if let Some(edit) = &action.edit {
+            let edit = match deco_lsp::WorkspaceEdit::from_json(edit) {
+                Ok(edit) => edit,
+                // A file create, rename or delete operation. Only this action is
+                // rejected, not the whole menu, which is why the edit is parsed
+                // here and not while listing.
+                Err(error) => {
+                    self.report(session, format!("`{}`: {error}", action.title));
+                    return;
+                }
+            };
+            if edit.is_empty() && action.command.is_none() {
+                session.status = Some(format!("`{}` changes nothing", action.title));
+                return;
+            }
+            if !edit.is_empty()
+                && self
+                    .apply_server_edit(session, &edit, &action.title, files)
+                    .is_err()
+            {
+                // Not running the command after a failed edit: it may
+                // depend on the edit having been made.
+                return;
+            }
+        }
+        if action.command.is_some() {
+            self.run_command(session, action);
+        }
+    }
 
-        let Some(supervisor) = self.supervisor.as_ref() else {
+    /// Runs an action's command on the server.
+    fn run_command(&mut self, session: &mut Session, action: &deco_lsp::CodeAction) {
+        let name = action.command.clone().unwrap_or_default();
+        let Some(supervisor) = self.supervisor.as_mut() else {
+            session.status = Some(format!(
+                "`{}` was not run: no language server is running to run `{name}`",
+                action.title
+            ));
             return;
+        };
+        match supervisor.execute_command(action) {
+            Ok(Some(id)) => {
+                session.status = Some(format!("running `{}`…", action.title));
+                self.command_request = Some((id, action.title.clone()));
+            }
+            // The server did not list the command among those it runs.
+            // Sending it anyway could run something the server never offered
+            // as a command for the client.
+            Ok(None) => {
+                session.status = Some(format!(
+                    "`{}` was not run: the server does not offer the command `{name}`",
+                    action.title
+                ));
+            }
+            Err(error) => self.report(session, error.to_string()),
+        }
+    }
+
+    /// Plans and applies an edit the server sent, through the same checks as
+    /// a rename: open documents must be at the version the edit was computed
+    /// for, and every file is read through `files`.
+    ///
+    /// Sets the status line either way, and returns the failure, if any, for
+    /// a caller that has to report it to the server.
+    fn apply_server_edit(
+        &mut self,
+        session: &mut Session,
+        edit: &deco_lsp::WorkspaceEdit,
+        title: &str,
+        files: &mut crate::extensions::Files<'_>,
+    ) -> Result<(), String> {
+        let Some(supervisor) = self.supervisor.as_ref() else {
+            return Err("the language server has stopped".to_owned());
         };
         let paths = supervisor.paths();
         let planned = session
             .plan_workspace_edit(
-                &edit,
+                edit,
                 |uri| paths.from_uri(uri).ok(),
                 |path| supervisor.version_of(path),
             )
@@ -936,23 +998,20 @@ impl Lsp {
                 // locally would find either nothing or the wrong file.
                 plan.with_contents(|path| files.read(&path.display().to_string()))
             });
-
-        let plan = match planned {
-            Ok(plan) => plan,
-            Err(error) => {
-                self.report(session, error.to_string());
-                return;
-            }
-        };
-
-        match session.apply_workspace_edit(plan, 0) {
+        let result = planned.and_then(|plan| session.apply_workspace_edit(plan, 0));
+        match result {
             Ok(applied) => {
-                session.status = Some(applied.summary(&action.title));
+                session.status = Some(applied.summary(title));
                 // The response arrived through the poll rather than a keypress,
                 // so the loop's own sync has already run in this iteration.
                 self.changed(session);
+                Ok(())
             }
-            Err(error) => self.report(session, error.to_string()),
+            Err(error) => {
+                let reason = error.to_string();
+                self.report(session, reason.clone());
+                Err(reason)
+            }
         }
     }
 
@@ -1222,6 +1281,7 @@ impl Lsp {
         self.rename_request = None;
         self.code_action_request = None;
         self.resolve_request = None;
+        self.command_request = None;
         self.code_actions.clear();
     }
 
@@ -1248,7 +1308,11 @@ impl Lsp {
         }
 
         // A different language needs a different server, and the old server
-        // no longer has a document to work on.
+        // no longer has a document to work on. Its problems can no longer be
+        // updated or cleared, so the problems view drops them.
+        if self.supervisor.is_some() {
+            session.clear_file_diagnostics();
+        }
         self.detach();
 
         let candidates: Vec<_> = self
@@ -1454,12 +1518,19 @@ impl Lsp {
         for update in updates {
             match update {
                 Update::Diagnostics { uri, diagnostics } => {
-                    // Only the document on screen. A server may report on files
-                    // deco is not showing, and those reports are not stored here.
+                    // The document on screen gets them for its gutter and `F8`.
+                    // Every file's go to the problems view, including files
+                    // deco is not showing.
                     if Some(&uri) == open_uri.as_ref() {
                         session.set_diagnostics(diagnostics);
-                        changed = true;
+                    } else if let Some(path) = self
+                        .supervisor
+                        .as_ref()
+                        .and_then(|supervisor| supervisor.paths().from_uri(&uri).ok())
+                    {
+                        session.set_file_diagnostics(path, diagnostics);
                     }
+                    changed = true;
                 }
                 Update::Message { kind, message } => {
                     // 1 is an error, 2 a warning. Lower severities are
@@ -1476,6 +1547,7 @@ impl Lsp {
                     // No server will update or clear its diagnostics now, so
                     // they are removed.
                     session.set_diagnostics(Vec::new());
+                    session.clear_file_diagnostics();
                     self.supervisor = None;
                     self.language = None;
                     self.open = None;
@@ -1614,6 +1686,41 @@ impl Lsp {
                     self.apply_code_action(session, &action, files);
                     changed = true;
                 }
+                Update::ApplyEdit { id, edit, label } => {
+                    // The client passes one on only while a command it sent is
+                    // unanswered, which is the command the user chose.
+                    let title = label
+                        .or_else(|| self.command_request.as_ref().map(|(_, t)| t.clone()))
+                        .unwrap_or_else(|| "the server's edit".to_owned());
+                    let failure = match edit {
+                        Ok(edit) if edit.is_empty() => None,
+                        Ok(edit) => self.apply_server_edit(session, &edit, &title, files).err(),
+                        Err(error) => {
+                            let reason = error.to_string();
+                            self.report(session, format!("`{title}`: {reason}"));
+                            Some(reason)
+                        }
+                    };
+                    if let Some(supervisor) = self.supervisor.as_mut() {
+                        let _ = supervisor.answer_apply_edit(id, failure.as_deref());
+                    }
+                    changed = true;
+                }
+                Update::CommandDone { id } => {
+                    if self
+                        .command_request
+                        .as_ref()
+                        .is_some_and(|(sent, _)| *sent == id)
+                    {
+                        let (_, title) = self.command_request.take().expect("checked above");
+                        // A command that changed files has set the status to
+                        // the edit's summary. One that changed nothing says so.
+                        if session.status.as_deref() == Some(&format!("running `{title}`…")) {
+                            session.status = Some(format!("`{title}` finished"));
+                        }
+                        changed = true;
+                    }
+                }
                 Update::Renamed { id, edit } => {
                     if self.rename_request.as_ref() != Some(&id) {
                         continue;
@@ -1628,7 +1735,14 @@ impl Lsp {
                     }
                     changed = true;
                 }
-                Update::RequestFailed { method, reason, .. } => {
+                Update::RequestFailed { id, method, reason } => {
+                    if self
+                        .command_request
+                        .as_ref()
+                        .is_some_and(|(sent, _)| *sent == id)
+                    {
+                        self.command_request = None;
+                    }
                     // Use the last segment of the method name, which is easier to
                     // read in the status bar than `textDocument/hover`.
                     let short = method.rsplit('/').next().unwrap_or(&method);
@@ -1859,6 +1973,7 @@ impl Lsp {
         self.rename_request = None;
         self.code_action_request = None;
         self.resolve_request = None;
+        self.command_request = None;
         self.code_actions.clear();
     }
 
@@ -2704,10 +2819,10 @@ mod tests {
     }
 
     #[test]
-    fn an_action_that_only_runs_a_command_is_refused_by_name() {
-        // Running a command uses `workspace/executeCommand`, whose result arrives
-        // as a server-to-client request. Reporting this is better than a key that
-        // appears to work but changes nothing.
+    fn an_action_that_only_runs_a_command_names_it_when_it_cannot_run() {
+        // Running a command needs the server that offered it. Without one,
+        // reporting this is better than a key that appears to work but
+        // changes nothing.
         let mut s = session(Settings::with_defaults());
         let mut lsp = Lsp::new(&mut s, None);
         lsp.code_actions = code_actions(&json!([

@@ -7,6 +7,7 @@
 
 use deco_config::{LineNumbers, RenderWhitespace};
 use deco_core::position::Range;
+use deco_core::stand_in::{is_bidi_control, is_invisible};
 // The gutter width and the column division come from the session, not the
 // renderer. The session needs the same values to know how many columns are left
 // for text, which determines where a wrapped line breaks. Two implementations
@@ -64,6 +65,8 @@ struct Palette {
     find_match_bg: Rgba,
     find_highlight_bg: Rgba,
     whitespace_fg: Rgba,
+    /// The marker for a bidirectional formatting character.
+    bidi_fg: Rgba,
     ruler_bg: Rgba,
     status_fg: Rgba,
     status_bg: Rgba,
@@ -133,6 +136,14 @@ impl Palette {
                 .unwrap_or(fg),
             whitespace_fg: theme
                 .color("editorWhitespace.foreground")
+                .map(|c| c.over(bg))
+                .unwrap_or(fg),
+            // VS Code draws a highlighted Unicode character with
+            // `editorUnicodeHighlight.border`, whose default is the warning
+            // colour.
+            bidi_fg: theme
+                .color("editorUnicodeHighlight.border")
+                .or_else(|| theme.color("editorWarning.foreground"))
                 .map(|c| c.over(bg))
                 .unwrap_or(fg),
             // In VS Code a ruler is a thin line between two columns, but a
@@ -308,10 +319,20 @@ fn render_text(session: &Session, width: usize, height: usize) -> Frame {
     let panel = regions
         .panel
         .map(|rect| region_rows(session, rect, Region::Panel, &palette));
-    // The terminal's cursor, below the panel's title row.
-    if let (deco_editor::Focus::Panel, Some(terminal), Some(rect)) =
-        (session.focus(), session.terminal(), regions.panel)
-    {
+    // The terminal's cursor, below the panel's title row. Only while the
+    // panel shows the terminal: over the problems view it would mark a row of
+    // a different view.
+    if let (
+        deco_editor::Focus::Panel,
+        deco_editor::PanelView::Terminal,
+        Some(terminal),
+        Some(rect),
+    ) = (
+        session.focus(),
+        session.panel_view(),
+        session.terminal(),
+        regions.panel,
+    ) {
         cursor_cell = crate::terminal::cursor(terminal, rect.width, rect.height.saturating_sub(1))
             .map(|(x, y)| ((rect.x + x) as u16, (top + rect.y + 1 + y) as u16));
     }
@@ -453,6 +474,7 @@ impl Region {
             }
             Self::SideBar if session.explorer().is_some() => "EXPLORER",
             Self::SideBar => "SIDE BAR",
+            Self::Panel if session.panel_view() == deco_editor::PanelView::Problems => "PROBLEMS",
             Self::Panel if session.terminal().is_some() => "TERMINAL",
             Self::Panel => "PANEL",
         }
@@ -467,7 +489,7 @@ impl Region {
     fn waiting_on(self) -> &'static str {
         match self {
             Self::SideBar => "search",
-            Self::Panel => "the terminal, problems and output",
+            Self::Panel => "the output view",
         }
     }
 
@@ -513,6 +535,14 @@ fn region_rows(session: &Session, rect: Rect, region: Region, palette: &Palette)
         title_fg,
         title_bg,
     ));
+    if region == Region::Panel && session.panel_view() == deco_editor::PanelView::Problems {
+        problem_rows(session, rect, &mut rows, palette, fg, bg);
+        while rows.len() < rect.height {
+            rows.push(region_line("", rect.width, fg, bg));
+        }
+        rows.truncate(rect.height);
+        return rows;
+    }
     // The terminal fills the panel below its title, with no blank row: its
     // size is the one `Session::terminal_area` gives the shell.
     if let (Region::Panel, Some(terminal)) = (region, session.terminal()) {
@@ -731,6 +761,92 @@ fn dim(fg: Rgba, bg: Rgba) -> Rgba {
 /// A name too long for the side bar is cut with an ellipsis rather than wrapped,
 /// because a file name on two lines would look like two files.
 #[allow(clippy::too_many_arguments)]
+/// The problems view: one row per diagnostic, `path:line:column`, then the
+/// message, with a severity letter in the theme's colour for that severity.
+fn problem_rows(
+    session: &Session,
+    rect: Rect,
+    rows: &mut Vec<Row>,
+    palette: &Palette,
+    fg: Rgba,
+    bg: Rgba,
+) {
+    let theme = &session.theme;
+    let markers = session.markers();
+    let height = rect.height.saturating_sub(rows.len());
+    if height == 0 {
+        return;
+    }
+    if markers.is_empty() {
+        // VS Code's wording.
+        rows.push(region_line(
+            "No problems have been detected in the workspace.",
+            rect.width,
+            dim(fg, bg),
+            bg,
+        ));
+        return;
+    }
+    let focused = session.focus() == deco_editor::Focus::Panel;
+    let selected_bg = theme
+        .color(if focused {
+            "list.activeSelectionBackground"
+        } else {
+            "list.inactiveSelectionBackground"
+        })
+        .unwrap_or(palette.selection_bg);
+    let root = session.explorer().map(deco_editor::Explorer::root);
+    // Scrolled so the selection is on screen, with as many rows above it as fit.
+    let first = markers.selected().saturating_sub(height - 1);
+    for (index, row) in markers.rows().enumerate().skip(first).take(height) {
+        let (letter, key) = match row.diagnostic.severity {
+            deco_lsp::Severity::Error => ('E', "editorError.foreground"),
+            deco_lsp::Severity::Warning => ('W', "editorWarning.foreground"),
+            deco_lsp::Severity::Information => ('I', "editorInfo.foreground"),
+            deco_lsp::Severity::Hint => ('H', "editorInfo.foreground"),
+        };
+        let row_bg = if index == markers.selected() {
+            selected_bg
+        } else {
+            bg
+        };
+        let path = root
+            .and_then(|root| row.path.strip_prefix(root).ok())
+            .unwrap_or(row.path);
+        let start = row.diagnostic.range.start;
+        // One-based, as an editor shows positions and as `path:line:column`
+        // is written in a compiler's output.
+        let location = format!(
+            "{}:{}:{}",
+            path.display(),
+            start.line + 1,
+            start.character + 1
+        );
+        // The first line only: a multi-line message would not fit in one row.
+        let message = row.diagnostic.message.lines().next().unwrap_or_default();
+        let text = format!(" {location}  {message}");
+        let room = rect.width.saturating_sub(3);
+        let text = clip(&text, room);
+        let used = 2 + columns(&text);
+        let mut spans = vec![
+            Span {
+                text: format!(" {letter}"),
+                fg: theme.color(key).unwrap_or(fg),
+                bg: row_bg,
+            },
+            Span {
+                text,
+                fg,
+                bg: row_bg,
+            },
+        ];
+        if used < rect.width {
+            spans.push(blank(rect.width - used, row_bg));
+        }
+        rows.push(Row { spans });
+    }
+}
+
 fn tree_rows(
     session: &Session,
     explorer: &deco_editor::Explorer,
@@ -1488,6 +1604,18 @@ fn line_spans(
             }
         } else if marked && c == ' ' {
             cells.push(('·', cell, palette.whitespace_fg));
+        } else if is_bidi_control(c) {
+            // Always marked, whatever `editor.renderControlCharacters` says: a
+            // blank would hide the reordering this character exists to cause.
+            cells.push((BIDI_PICTURE, cell, palette.bidi_fg));
+        } else if is_invisible(c) {
+            // Never written as itself: the layout counts it as one column, and
+            // a terminal would draw it in none, shifting the rest of the row.
+            if pane.document.settings.highlight_invisible_characters {
+                cells.push((BIDI_PICTURE, cell, palette.bidi_fg));
+            } else {
+                cells.push((' ', cell, fg));
+            }
         } else if let Some(picture) = control_picture(c) {
             // `editor.renderControlCharacters` selects the glyph or a blank. In both
             // cases the byte itself does not reach the terminal; see `control_picture`.
@@ -1568,17 +1696,11 @@ fn line_spans(
 /// blank. It cannot send the byte itself, because that would give control of the
 /// terminal to the file's author.
 fn control_picture(c: char) -> Option<char> {
-    match c {
-        // Tab is expanded to spaces before this, and a line's content never contains
-        // its own line break.
-        '\t' | '\n' | '\r' => None,
-        // `␀` through `␟`, in order, at U+2400.
-        '\0'..='\u{1f}' => char::from_u32(0x2400 + c as u32),
-        // Delete, which sits on its own at U+2421.
-        '\u{7f}' => Some('␡'),
-        _ => None,
-    }
+    deco_core::stand_in::stand_in(c)
 }
+
+/// See [`deco_core::stand_in::MARKER`].
+const BIDI_PICTURE: char = deco_core::stand_in::MARKER;
 
 /// Every control character in `text` replaced by its picture.
 ///
@@ -1888,7 +2010,7 @@ fn overlay_hover(
     let box_height = lines.len() + 2;
     let box_width = lines
         .iter()
-        .map(|line| line.chars().map(|c| c.width().unwrap_or(1)).sum::<usize>())
+        .map(|line| columns(line))
         .max()
         .unwrap_or(0)
         .min(inner_width)
@@ -1919,7 +2041,7 @@ fn overlay_hover(
             i if i == box_height - 1 => border_line(box_width, '\u{2514}', '\u{2518}'),
             i => {
                 let text = lines.get(i - 1).map(String::as_str).unwrap_or("");
-                let used: usize = text.chars().map(|c| c.width().unwrap_or(1)).sum();
+                let used: usize = columns(text);
                 let pad = box_width.saturating_sub(used + 4);
                 format!("\u{2502} {text}{} \u{2502}", " ".repeat(pad))
             }
@@ -1982,7 +2104,7 @@ fn wrap(text: &str, width: usize, max_lines: usize) -> Vec<String> {
         let mut line = String::new();
         let mut columns = 0usize;
         for word in paragraph.split_whitespace() {
-            let word_width: usize = word.chars().map(|c| c.width().unwrap_or(1)).sum();
+            let word_width: usize = word.chars().map(cell_width).sum();
             let needed = if line.is_empty() {
                 word_width
             } else {
@@ -2004,7 +2126,7 @@ fn wrap(text: &str, width: usize, max_lines: usize) -> Vec<String> {
             if word_width > width {
                 let mut used = 0;
                 for c in word.chars() {
-                    let w = c.width().unwrap_or(1);
+                    let w = cell_width(c);
                     if used + w > width {
                         break;
                     }
@@ -2127,9 +2249,23 @@ fn overlay_suggest(
     }
 }
 
-/// A string's width in terminal columns.
+/// A string's width in terminal columns, as the painter writes it.
 fn columns(text: &str) -> usize {
-    text.chars().map(|c| c.width().unwrap_or(1)).sum()
+    text.chars().map(cell_width).sum()
+}
+
+/// One character's width in terminal columns, as the painter writes it.
+///
+/// A character [`sanitise`] replaces takes the width of its stand-in, one
+/// column, rather than its own: a bidirectional control or a zero-width space
+/// is zero columns in the width table but is painted as `␦`. Measuring the
+/// original would make a row holding one a column wider than the frame.
+fn cell_width(c: char) -> usize {
+    if control_picture(c).is_some() {
+        1
+    } else {
+        c.width().unwrap_or(1)
+    }
 }
 
 /// Cuts `text` to at most `width` columns, on a character boundary.
@@ -2137,7 +2273,7 @@ fn truncate_to(text: &str, width: usize) -> String {
     let mut out = String::new();
     let mut used = 0;
     for c in text.chars() {
-        let w = c.width().unwrap_or(1);
+        let w = cell_width(c);
         if used + w > width {
             break;
         }
@@ -2606,6 +2742,75 @@ mod tests {
             .iter()
             .map(|s| s.text.as_str())
             .collect()
+    }
+
+    #[test]
+    fn the_problems_view_lists_problems_relative_to_the_workspace() {
+        let mut session = session("fn main() {}\n");
+        session.set_workspace_root("/w");
+        session.resize(60, 20);
+        session.set_diagnostics(vec![problem(0, deco_lsp::Severity::Warning)]);
+        session.set_file_diagnostics(
+            PathBuf::from("/w/src/lib.rs"),
+            vec![problem(4, deco_lsp::Severity::Error)],
+        );
+        session.handle_chord(deco_keymap::keys::Chord::parse("ctrl+shift+m").unwrap(), 0);
+        let frame = render(&session, 60, 20);
+        let text: Vec<String> = frame.rows.iter().map(Row::plain).collect();
+        let title = text
+            .iter()
+            .position(|row| row.contains("PROBLEMS"))
+            .expect("the view's title");
+        assert!(text[title + 1].contains("W file.rs:1:1  boom"), "{text:#?}");
+        // In the platform's own separator, as the path is shown elsewhere.
+        let nested = std::path::Path::new("src").join("lib.rs");
+        assert!(
+            text[title + 2].contains(&format!("E {}:5:1  boom", nested.display())),
+            "{text:#?}"
+        );
+        for row in &frame.rows {
+            assert_eq!(row.plain().chars().count(), 60, "{:?}", row.plain());
+        }
+    }
+
+    #[test]
+    fn the_terminal_cursor_is_not_drawn_over_the_problems_view() {
+        let mut session = session("");
+        session.resize(60, 20);
+        session.handle_chord(deco_keymap::keys::Chord::parse("ctrl+`").unwrap(), 0);
+        let (cols, rows) = session.terminal_area().unwrap();
+        session.terminal_started(cols as u16, rows as u16);
+        assert!(
+            render(&session, 60, 20).cursor.is_some(),
+            "the shell's cursor"
+        );
+        session.handle_chord(deco_keymap::keys::Chord::parse("ctrl+shift+m").unwrap(), 0);
+        assert_eq!(render(&session, 60, 20).cursor, None);
+    }
+
+    #[test]
+    fn a_file_name_with_an_invisible_character_keeps_the_rows_their_width() {
+        let mut session = session("");
+        session.open(PathBuf::from("/w/a\u{200b}b\u{202e}.rs"), "x\n");
+        session.resize(40, 6);
+        for row in &render(&session, 40, 6).rows {
+            // What the painter writes, measured as the terminal measures it.
+            let painted = sanitise(&row.plain()).into_owned();
+            let width: usize = painted.chars().map(|c| c.width().unwrap_or(1)).sum();
+            assert_eq!(width, 40, "{painted:?}");
+        }
+    }
+
+    #[test]
+    fn an_empty_problems_view_says_so() {
+        let mut session = session("");
+        session.resize(60, 20);
+        session.handle_chord(deco_keymap::keys::Chord::parse("ctrl+shift+m").unwrap(), 0);
+        let frame = render(&session, 60, 20);
+        assert!(frame
+            .rows
+            .iter()
+            .any(|row| row.plain().contains("No problems have been detected")));
     }
 
     fn problem(line: u32, severity: deco_lsp::Severity) -> deco_lsp::Diagnostic {
@@ -4271,6 +4476,71 @@ mod tests {
         );
         let all: String = frame.rows.iter().map(Row::plain).collect();
         assert!(!all.chars().any(|c| c.is_control()), "{all:?}");
+    }
+
+    /// The Trojan Source example from the paper: the comment appears to end
+    /// before `return`, but the right-to-left override and isolates put the
+    /// `return` inside the comment for the compiler.
+    const TROJAN: &str = "/* \u{202e} } \u{2066}if (admin)\u{2069} \u{2066} begin admins only */\n";
+
+    #[test]
+    fn a_bidirectional_control_is_marked_and_never_drawn() {
+        let frame = render(&session(TROJAN), 60, 4);
+        let line = frame.rows[0].plain();
+        assert!(
+            !line.contains('\u{202e}') && !line.contains('\u{2066}'),
+            "{line:?}"
+        );
+        assert_eq!(line.matches(BIDI_PICTURE).count(), 4, "{line:?}");
+        assert_eq!(line.chars().count(), 60, "the markers cost one column each");
+    }
+
+    #[test]
+    fn a_bidirectional_control_is_marked_even_with_control_characters_hidden() {
+        let mut settings = deco_config::Settings::with_defaults();
+        settings.set(
+            deco_config::Scope::User,
+            "editor.renderControlCharacters",
+            serde_json::json!(false),
+        );
+        let mut session = Session::new(settings, None, deco_keymap::binding::Platform::Linux);
+        session.open(PathBuf::from("/w/trojan.c"), TROJAN);
+        let frame = render(&session, 60, 4);
+        assert_eq!(frame.rows[0].plain().matches(BIDI_PICTURE).count(), 4);
+    }
+
+    #[test]
+    fn an_invisible_character_is_marked_and_keeps_the_columns_aligned() {
+        let frame = render(&session("a\u{200b}b = 1\n"), 30, 4);
+        let line = frame.rows[0].plain();
+        assert_eq!(line, format!("  1 a{BIDI_PICTURE}b = 1{}", " ".repeat(19)));
+        // The caret after `b` is where the renderer drew `b` plus one.
+        let mut s = session("a\u{200b}b\n");
+        s.view.selections =
+            deco_core::selection::SelectionSet::caret(deco_core::Position::new(0, 3));
+        let frame = render(&s, 30, 4);
+        assert_eq!(frame.cursor.map(|(x, _)| x), Some(4 + 3));
+    }
+
+    #[test]
+    fn hiding_invisible_characters_draws_a_blank_and_never_the_character() {
+        let mut settings = deco_config::Settings::with_defaults();
+        settings.set(
+            deco_config::Scope::User,
+            "editor.unicodeHighlight.invisibleCharacters",
+            serde_json::json!(false),
+        );
+        let mut session = Session::new(settings, None, deco_keymap::binding::Platform::Linux);
+        session.open(PathBuf::from("/w/a.txt"), "a\u{200b}b\n");
+        let line = render(&session, 30, 4).rows[0].plain();
+        assert!(line.starts_with("  1 a b"), "{line:?}");
+        assert!(!line.contains('\u{200b}'));
+    }
+
+    #[test]
+    fn the_painter_replaces_a_bidirectional_control_in_a_file_name() {
+        assert_eq!(sanitise("a\u{202e}txt.exe"), "a\u{2426}txt.exe");
+        assert!(matches!(sanitise("plain"), std::borrow::Cow::Borrowed(_)));
     }
 
     #[test]

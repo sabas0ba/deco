@@ -107,6 +107,10 @@ fn demos() -> Vec<Demo> {
             build: diagnostics,
         },
         Demo {
+            name: "problems",
+            build: problems,
+        },
+        Demo {
             name: "hover",
             build: hover,
         },
@@ -952,6 +956,40 @@ fn diagnostics() -> String {
         .press_and_hold(&["f8"], 4)
         .press_and_hold(&["f8"], 4)
         .press_and_hold(&["f8"], 4);
+    take.finish()
+}
+
+fn problems() -> String {
+    const PARSE: &str = "pub fn tokens(src: &str) -> Vec<&str> {\n    src.split_whitespace().collect()\n}\n\npub fn count(src: &str) -> usize {\n    tokens(src).len() as u32\n}\n";
+    let mut take = Take::new("main.rs", SAMPLE);
+    take.workspace(&[("main.rs", SAMPLE), ("parse.rs", PARSE)]);
+    // Injected, as in the diagnostics demonstration. The second file is not
+    // open: a server reports on every file it checks, and the view lists them.
+    take.session.set_diagnostics(vec![Diagnostic {
+        range: Range::new(Position::new(2, 8), Position::new(2, 13)),
+        severity: Severity::Warning,
+        code: Some("unused_variables".to_owned()),
+        source: Some("rustc".to_owned()),
+        message: "unused variable: `count`".to_owned(),
+    }]);
+    take.session.set_file_diagnostics(
+        PathBuf::from("/demo/parse.rs"),
+        vec![Diagnostic {
+            range: Range::new(Position::new(5, 4), Position::new(5, 28)),
+            severity: Severity::Error,
+            code: Some("E0308".to_owned()),
+            source: Some("rustc".to_owned()),
+            message: "mismatched types: expected `usize`, found `u32`".to_owned(),
+        }],
+    );
+    take.at(0, 0)
+        .capture(
+            "a server has reported on two files, one of them not open",
+            3,
+        )
+        .press_and_hold(&["ctrl+shift+m"], 5)
+        .press_and_hold(&["down"], 3)
+        .press_and_hold(&["enter"], 6);
     take.finish()
 }
 

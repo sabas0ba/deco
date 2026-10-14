@@ -79,6 +79,19 @@ pub enum SideBarView {
     SourceControl,
 }
 
+/// Which view the panel is showing.
+///
+/// VS Code's panel holds several views, one at a time, and each command that
+/// shows a view selects it. The output view is not implemented.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PanelView {
+    /// The [integrated terminal](crate::terminal).
+    #[default]
+    Terminal,
+    /// Every diagnostic in the workspace; see [`crate::markers`].
+    Problems,
+}
+
 /// Which way [`Session::goto_marker`] walks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Direction {
@@ -506,6 +519,10 @@ pub struct Session {
     panel: bool,
     /// The terminal in the panel, once one has been started.
     terminal: Option<crate::terminal::TerminalPanel>,
+    /// Which view the panel shows.
+    panel_view: PanelView,
+    /// Every diagnostic published for the workspace, for the problems view.
+    markers: crate::markers::Markers,
     /// Which region has the keyboard.
     focus: Focus,
     /// File operations that can be taken back, most recent last.
@@ -771,6 +788,8 @@ impl Session {
             side_bar: false,
             panel: false,
             terminal: None,
+            panel_view: PanelView::default(),
+            markers: crate::markers::Markers::default(),
             focus: Focus::Editor,
             explorer: None,
             explorer_undo: Vec::new(),
@@ -1301,8 +1320,38 @@ impl Session {
     /// the complete set for a document each time, and an empty set means there
     /// are no problems.
     pub fn set_diagnostics(&mut self, diagnostics: Vec<deco_lsp::Diagnostic>) {
+        // The problems view lists the open document's problems too, so the two
+        // cannot disagree about it.
+        if let Some(path) = self.document.path.clone() {
+            self.markers.set(normalise(&path), diagnostics.clone());
+        }
         self.diagnostics = diagnostics;
         self.refresh_context();
+    }
+
+    /// Replaces the problems of any file, for the problems view.
+    ///
+    /// A frontend calls this for every `publishDiagnostics`, including those
+    /// for files that are not open. [`Session::set_diagnostics`] remains the
+    /// way to set the problems of the document on screen.
+    pub fn set_file_diagnostics(&mut self, path: PathBuf, diagnostics: Vec<deco_lsp::Diagnostic>) {
+        self.markers.set(normalise(&path), diagnostics);
+    }
+
+    /// Forgets every file's problems, when the server that published them
+    /// stops and nothing will update them.
+    pub fn clear_file_diagnostics(&mut self) {
+        self.markers.clear();
+    }
+
+    /// Every problem in the workspace, as the problems view lists them.
+    pub fn markers(&self) -> &crate::markers::Markers {
+        &self.markers
+    }
+
+    /// Which view the panel shows.
+    pub fn panel_view(&self) -> PanelView {
+        self.panel_view
     }
 
     /// The diagnostics under a position, worst first.
@@ -1425,7 +1474,14 @@ impl Session {
         self.context.set("panelFocus", self.focus == Focus::Panel);
         // VS Code's keys for the terminal, which its default bindings for
         // scrolling and pasting use.
-        let terminal_focus = self.focus == Focus::Panel && self.terminal.is_some();
+        let terminal_focus = self.focus == Focus::Panel
+            && self.panel_view == PanelView::Terminal
+            && self.terminal.is_some();
+        // VS Code's key for the problems view having the keyboard.
+        self.context.set(
+            "problemFocus",
+            self.focus == Focus::Panel && self.panel_view == PanelView::Problems,
+        );
         self.context.set("terminalFocus", terminal_focus);
         self.context.set(
             "terminalAltBufferActive",
@@ -1676,6 +1732,7 @@ impl Session {
             "deleteFile" => self.open_tree_prompt(PromptKind::ConfirmDelete),
             "workbench.action.focusSideBar" => self.focus_region(Focus::SideBar),
             "workbench.action.focusPanel" => self.focus_region(Focus::Panel),
+            "workbench.actions.view.problems" => self.toggle_problems(),
             // VS Code's way back to the text from anywhere in the chrome.
             "workbench.action.focusActiveEditorGroup" => self.focus_region(Focus::Editor),
             // Needs the view as well as the document, because wrapping depends on
@@ -3913,11 +3970,13 @@ impl Session {
             .as_ref()
             .is_some_and(|terminal| terminal.exited().is_none());
         if running {
-            if self.focus == Focus::Panel {
+            if self.focus == Focus::Panel && self.panel_view == PanelView::Terminal {
                 return self.show_panel(false);
             }
+            self.panel_view = PanelView::Terminal;
             return self.focus_region(Focus::Panel);
         }
+        self.panel_view = PanelView::Terminal;
         self.panel = true;
         let (width, height) = self.screen;
         self.resize(width, height);
@@ -4005,7 +4064,10 @@ impl Session {
     /// have the keyboard, a prompt is open over it, or the key is bound to
     /// one of [`crate::terminal::SKIP_SHELL`].
     fn terminal_key(&mut self, chord: &Chord, now_ms: u64) -> Option<Outcome> {
-        if self.focus != Focus::Panel || self.prompt.is_some() {
+        if self.focus != Focus::Panel
+            || self.panel_view != PanelView::Terminal
+            || self.prompt.is_some()
+        {
             return None;
         }
         let terminal = self.terminal.as_ref()?;
@@ -4033,6 +4095,39 @@ impl Session {
             terminal.send(&bytes);
         }
         Some(Outcome::TerminalInput)
+    }
+
+    /// `ctrl+shift+m`: shows the problems view and gives it the keyboard, or
+    /// hides the panel when the view already has it, as in VS Code.
+    fn toggle_problems(&mut self) -> Outcome {
+        if self.focus == Focus::Panel && self.panel_view == PanelView::Problems {
+            return self.show_panel(false);
+        }
+        self.panel_view = PanelView::Problems;
+        self.focus_region(Focus::Panel)
+    }
+
+    /// A `list.*` key in the problems view. `list.select` opens the file at
+    /// the problem and returns the keyboard to the text.
+    fn problems_key(&mut self, command: &str) -> Outcome {
+        match command {
+            "list.focusDown" => self.markers.select_next(),
+            "list.focusUp" => self.markers.select_previous(),
+            "list.focusFirst" => self.markers.select_first(),
+            "list.focusLast" => self.markers.select_last(),
+            "list.select" => {
+                let Some(row) = self.markers.selection() else {
+                    return Outcome::Handled;
+                };
+                let path = row.path.to_path_buf();
+                let at = row.diagnostic.range.start;
+                self.focus = Focus::Editor;
+                self.refresh_context();
+                return Outcome::OpenFile { path, at: Some(at) };
+            }
+            _ => {}
+        }
+        Outcome::Handled
     }
 
     fn kill_terminal(&mut self) -> Outcome {
@@ -5379,6 +5474,38 @@ impl Session {
         self.refresh_context();
     }
 
+    /// The directories a frontend should read again to pick up changes other
+    /// programs made, or none while the tree is not on screen.
+    ///
+    /// Only what is shown, so the cost of a refresh is bounded by the window
+    /// rather than the workspace. A hidden tree is brought up to date by the
+    /// first refresh after it is shown again.
+    pub fn directories_to_refresh(&self) -> Vec<PathBuf> {
+        let showing =
+            self.regions().side_bar.is_some() && self.side_bar_view == SideBarView::Explorer;
+        match &self.explorer {
+            Some(explorer) if showing => explorer.shown_directories(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// A newer listing of a directory the tree has already read. Returns
+    /// whether the tree changed, and so whether to redraw.
+    pub fn refresh_directory(
+        &mut self,
+        dir: &std::path::Path,
+        entries: Vec<crate::explorer::Entry>,
+    ) -> bool {
+        let changed = self
+            .explorer
+            .as_mut()
+            .is_some_and(|explorer| explorer.refresh(dir, entries));
+        if changed {
+            self.refresh_context();
+        }
+        changed
+    }
+
     /// `revealInExplorer`: opens the tree onto the file being edited.
     ///
     /// An untitled document has no path to reveal, so a message is shown instead
@@ -5407,6 +5534,9 @@ impl Session {
     /// is allowed. Such a key must not move a hidden selection while the user
     /// types in the editor.
     fn explorer_key(&mut self, command: &str) -> Outcome {
+        if self.focus == Focus::Panel && self.panel_view == PanelView::Problems {
+            return self.problems_key(command);
+        }
         if self.focus != Focus::SideBar {
             return Outcome::Handled;
         }
@@ -11693,6 +11823,80 @@ mod tests {
         let regions = s.regions();
         assert_eq!(regions.editor.x, 0, "the text keeps the left edge");
         assert!(regions.side_bar.expect("showing").x > regions.editor.x);
+    }
+
+    #[test]
+    fn the_problems_view_lists_every_file_and_opens_the_one_chosen() {
+        let mut s = session();
+        s.resize(80, 30);
+        s.open(PathBuf::from("/w/a.rs"), "fn main() {}\n");
+        s.set_diagnostics(vec![diagnostic(0, deco_lsp::Severity::Warning, "open")]);
+        s.set_file_diagnostics(
+            PathBuf::from("/w/b.rs"),
+            vec![
+                diagnostic(7, deco_lsp::Severity::Error, "second"),
+                diagnostic(2, deco_lsp::Severity::Error, "first"),
+            ],
+        );
+        assert_eq!(s.markers().len(), 3);
+
+        press(&mut s, "ctrl+shift+m");
+        assert_eq!(s.focus(), Focus::Panel);
+        assert_eq!(s.panel_view(), PanelView::Problems);
+        assert_eq!(s.context.get("problemFocus"), Some(&json!(true)));
+        // Keys move the selection rather than editing the text.
+        press(&mut s, "down");
+        press(&mut s, "down");
+        let row = s.markers().selection().unwrap();
+        assert_eq!(row.diagnostic.message, "second");
+        assert_eq!(s.document.buffer.text(), "fn main() {}\n");
+
+        assert_eq!(
+            press(&mut s, "enter"),
+            Outcome::OpenFile {
+                path: PathBuf::from("/w/b.rs"),
+                at: Some(Position::new(7, 0)),
+            }
+        );
+        assert_eq!(
+            s.focus(),
+            Focus::Editor,
+            "the keyboard goes back to the text"
+        );
+    }
+
+    #[test]
+    fn the_problems_key_hides_the_view_it_focused_and_the_terminal_key_switches_view() {
+        let mut s = with_terminal();
+        press(&mut s, "ctrl+shift+m");
+        assert_eq!(s.panel_view(), PanelView::Problems);
+        // A key in the problems view does not reach the shell.
+        press(&mut s, "x");
+        assert!(s.take_terminal_input().is_empty());
+        press(&mut s, "ctrl+`");
+        assert_eq!(s.panel_view(), PanelView::Terminal);
+        assert_eq!(s.focus(), Focus::Panel);
+        press(&mut s, "ctrl+shift+m");
+        press(&mut s, "ctrl+shift+m");
+        assert_eq!(s.focus(), Focus::Editor);
+        assert!(s.regions().panel.is_none());
+    }
+
+    #[test]
+    fn an_empty_publication_or_a_stopped_server_empties_the_problems_view() {
+        let mut s = session();
+        s.set_file_diagnostics(
+            PathBuf::from("/w/b.rs"),
+            vec![diagnostic(0, deco_lsp::Severity::Error, "x")],
+        );
+        s.set_file_diagnostics(PathBuf::from("/w/./b.rs"), Vec::new());
+        assert!(s.markers().is_empty(), "the same file, written differently");
+        s.set_file_diagnostics(
+            PathBuf::from("/w/b.rs"),
+            vec![diagnostic(0, deco_lsp::Severity::Error, "x")],
+        );
+        s.clear_file_diagnostics();
+        assert!(s.markers().is_empty());
     }
 
     /// A session with a running terminal of the panel's size.

@@ -84,11 +84,8 @@ pub struct LaidOutLine {
     pub y: f32,
     /// The gutter label, already padded.
     pub gutter: String,
-    /// The git status of this line, if any.
-    ///
-    /// Computed but not yet drawn. The marks are computed here so that, once
-    /// this frontend draws them, they match the terminal without a second
-    /// implementation.
+    /// The git status of this line, if any. [`Layout::marks`] holds the
+    /// rectangle drawn for it.
     pub mark: Option<deco_scm::Mark>,
     /// The line's text, tabs expanded.
     pub text: String,
@@ -115,6 +112,9 @@ pub struct Layout {
     pub cursor_style: CursorStyle,
     /// The line-highlight rectangle behind the cursor's line.
     pub current_line: Option<Rect>,
+    /// The git changed-line marks, in the gutter's last column, with the
+    /// colour each is drawn in.
+    pub marks: Vec<(Rect, Rgba)>,
     /// The editor region, in pixels. Rectangles are clipped to it, so a long
     /// selection does not run under a side bar on the right.
     pub editor_area: Rect,
@@ -284,8 +284,11 @@ fn caret_rect(style: CursorStyle, x: f32, y: f32, metrics: Metrics) -> Rect {
     }
 }
 
-fn expand_tabs(text: &str, tab_size: usize) -> String {
-    if !text.contains('\t') {
+fn expand_tabs(text: &str, tab_size: usize, settings: &deco_config::EditorSettings) -> String {
+    if !text
+        .chars()
+        .any(|c| c == '\t' || deco_core::stand_in::stand_in(c).is_some())
+    {
         return text.to_owned();
     }
     let mut out = String::with_capacity(text.len());
@@ -296,11 +299,41 @@ fn expand_tabs(text: &str, tab_size: usize) -> String {
             out.extend(std::iter::repeat_n(' ', stop));
             column += stop;
         } else {
-            out.push(c);
+            out.push(shown(c, settings));
             column += 1;
         }
     }
     out
+}
+
+/// The character drawn for `c`, by the terminal frontend's rules.
+///
+/// Never a control, bidirectional or invisible character itself: the text
+/// shaper would apply a bidirectional one, reordering the line so it reads
+/// differently from its content, and the others have no width of their own
+/// while the layout counts one column for every character. A control or
+/// invisible character the settings hide becomes a blank; a bidirectional
+/// one is always marked, because a blank would hide the reordering.
+fn shown(c: char, settings: &deco_config::EditorSettings) -> char {
+    use deco_core::stand_in::{control_picture, is_bidi_control, is_invisible, MARKER};
+    if let Some(picture) = control_picture(c) {
+        return if settings.render_control_characters {
+            picture
+        } else {
+            ' '
+        };
+    }
+    if is_bidi_control(c) {
+        return MARKER;
+    }
+    if is_invisible(c) {
+        return if settings.highlight_invisible_characters {
+            MARKER
+        } else {
+            ' '
+        };
+    }
+    c
 }
 
 /// Lays out one frame.
@@ -352,7 +385,7 @@ pub fn layout(session: &Session, width: f32, height: f32, metrics: Metrics) -> L
             .line_content(line)
             .map(|s| s.to_string())
             .unwrap_or_default();
-        let text = expand_tabs(&raw, tab_size);
+        let text = expand_tabs(&raw, tab_size, &session.document.settings);
 
         let gutter = if gutter_columns == 0 {
             String::new()
@@ -447,6 +480,47 @@ pub fn layout(session: &Session, width: f32, height: f32, metrics: Metrics) -> L
         }
     }
 
+    // In the gutter's padding column, between the number and the text, as
+    // the terminal draws them. An added or modified line gets a bar the
+    // height of the line; a deletion, a short bar along the top of the line
+    // that follows it, as VS Code draws one between two lines.
+    let marks = if gutter_columns == 0 {
+        Vec::new()
+    } else {
+        let bar = (metrics.cell_width * 0.3).max(2.0);
+        let x = text_left - metrics.cell_width + (metrics.cell_width - bar) / 2.0;
+        lines
+            .iter()
+            .filter_map(|line| {
+                let mark = line.mark?;
+                Some(match mark {
+                    deco_scm::Mark::Added | deco_scm::Mark::Modified => (
+                        Rect {
+                            x,
+                            y: line.y,
+                            width: bar,
+                            height: metrics.line_height,
+                        },
+                        if mark == deco_scm::Mark::Added {
+                            colors.added
+                        } else {
+                            colors.modified
+                        },
+                    ),
+                    deco_scm::Mark::Deleted => (
+                        Rect {
+                            x: text_left - metrics.cell_width,
+                            y: line.y,
+                            width: metrics.cell_width,
+                            height: (metrics.line_height * 0.15).max(2.0),
+                        },
+                        colors.deleted,
+                    ),
+                })
+            })
+            .collect()
+    };
+
     let current_line = on_screen.then(|| Rect {
         x: origin_x,
         y: origin_y + cursor_row.unwrap_or(0) as f32 * metrics.line_height,
@@ -460,6 +534,7 @@ pub fn layout(session: &Session, width: f32, height: f32, metrics: Metrics) -> L
         cursor: caret,
         cursor_style,
         current_line,
+        marks,
         editor_area: Rect {
             x: origin_x,
             y: origin_y,
@@ -514,7 +589,16 @@ fn chrome_lines(
                 };
                 let (x, y) = cell(rect.x, rect.y + head + index);
                 out.push(ChromeLine {
-                    text: format!("{}{marker}{}", "  ".repeat(row.depth), row.name),
+                    // A file name can hold any character the document can,
+                    // and reaches the shaper the same way.
+                    text: format!(
+                        "{}{marker}{}",
+                        "  ".repeat(row.depth),
+                        row.name
+                            .chars()
+                            .map(|c| deco_core::stand_in::stand_in(c).unwrap_or(c))
+                            .collect::<String>()
+                    ),
                     x: x + metrics.padding,
                     y,
                 });
@@ -723,10 +807,8 @@ mod tests {
     }
 
     #[test]
-    fn the_git_marks_are_worked_out_even_though_they_are_not_painted_yet() {
-        // Computed but not drawn, like the selection rectangles. Once this
-        // frontend draws them, they match the terminal without a second
-        // implementation.
+    fn the_git_marks_are_drawn_in_the_gutter_s_last_column() {
+        // The same marks as the terminal, from the same diff.
         let mut session = session("one\nTWO\nthree\nnew\n");
         session.fill_committed(
             session.document.path.clone().expect("a path"),
@@ -746,6 +828,19 @@ mod tests {
                 Some(deco_scm::Mark::Added),
             ]
         );
+        assert_eq!(laid.marks.len(), 2);
+        let (modified, colour) = laid.marks[0];
+        assert_eq!(colour, laid.colors.modified);
+        assert_eq!(modified.y, laid.lines[1].y);
+        assert!(
+            modified.x + modified.width <= laid.text_left,
+            "left of the text"
+        );
+        assert!(
+            modified.x >= laid.text_left - metrics().cell_width,
+            "in the last column"
+        );
+        assert_eq!(laid.marks[1].1, laid.colors.added);
     }
 
     #[test]
@@ -780,9 +875,21 @@ mod tests {
 
     #[test]
     fn tab_expansion_respects_tab_stops() {
-        assert_eq!(expand_tabs("ab\tx", 4), "ab  x");
-        assert_eq!(expand_tabs("abcd\tx", 4), "abcd    x");
-        assert_eq!(expand_tabs("no tabs", 4), "no tabs");
+        let settings = session("").document.settings.clone();
+        assert_eq!(expand_tabs("ab\tx", 4, &settings), "ab  x");
+        assert_eq!(expand_tabs("abcd\tx", 4, &settings), "abcd    x");
+        assert_eq!(expand_tabs("no tabs", 4, &settings), "no tabs");
+    }
+
+    #[test]
+    fn a_control_bidirectional_or_invisible_character_never_reaches_the_shaper() {
+        let mut settings = session("").document.settings.clone();
+        let line = "a\x1b\u{202e}b\u{200b}c";
+        assert_eq!(expand_tabs(line, 4, &settings), "a␛␦b␦c");
+        settings.render_control_characters = false;
+        settings.highlight_invisible_characters = false;
+        // The bidirectional control is marked whatever the settings say.
+        assert_eq!(expand_tabs(line, 4, &settings), "a ␦b c");
     }
 
     #[test]

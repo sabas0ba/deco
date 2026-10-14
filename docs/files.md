@@ -86,7 +86,7 @@ The symlink check has a similar race: a directory can be replaced between the ch
 
 **Rename and delete act on the entry type the tree was showing**, not on what is on disk when the frontend performs the operation. A folder replaced by a file since it was read is refused rather than moved as a folder, which would retarget every tab below the old path to a regular file.
 
-Delete follows the same rule. The confirmation names a file or a folder, and only that type is deleted. A file replaced by a directory since the tree last read it is refused rather than deleted recursively. The tree has no filesystem watcher, so its view can be out of date.
+Delete follows the same rule. The confirmation names a file or a folder, and only that type is deleted. A file replaced by a directory since the tree last read it is refused rather than deleted recursively. The tree reads its directories again only every two seconds, so its view can be out of date.
 
 Deleting an open file detaches its tab rather than closing it. The buffer is kept, its path is cleared, and the status line reports this, so you can save the text elsewhere. The file's diagnostics are removed, and the language server is told that the document is closed.
 
@@ -119,7 +119,7 @@ this workspace is empty
 
 ## Not built yet
 
-**The tree does not detect changes on disk.** A file created by another program appears when the directory is read again. There is no filesystem watcher. A watcher has platform-specific failure modes and should be implemented as a separate change.
+**Changes on disk are found by reading again, not by a watcher.** While the tree is on screen, the directories it shows are read again every two seconds, at most 64 per pass with each pass continuing where the last stopped, so a file another program creates, renames or deletes appears within two seconds. The selection stays on the same file when rows are added above it, and a folder that disappears is forgotten with its expansion state. A hidden tree is not read; it is brought up to date by the first pass after it is shown. This is local only: a remote workspace is listed whole, which is too costly to repeat on a timer, so a remote tree changes only when a directory is read again. A filesystem watcher would report sooner, but has platform-specific failure modes and would add a dependency.
 
 **No mouse, and no drag.** The tree is keyboard-only in both frontends, because mouse support has not been implemented in the GPU frontend. Moving a file to another folder is therefore not possible: rename accepts a name, not a path.
 

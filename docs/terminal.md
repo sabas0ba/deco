@@ -19,7 +19,7 @@ The scrolling keys apply only while the program is on its normal screen; a full-
 While the terminal has the keyboard, every key goes to the program in it except those bound to the following commands, which stay with the editor. This is the part of VS Code's `terminal.integrated.commandsToSkipShell` default that deco implements:
 
 - the terminal commands in the table above;
-- `ctrl+j`, `ctrl+b`, `ctrl+shift+p`, `ctrl+p`, `ctrl+q`;
+- `ctrl+j`, `ctrl+b`, `ctrl+shift+p`, `ctrl+p`, `ctrl+q`, and `ctrl+shift+m`, which switches the panel to the [problems view](language-servers.md#the-problems-view);
 - the keys that move the keyboard to another region: `ctrl+1`, `ctrl+2`, `ctrl+shift+e`, `ctrl+shift+g`, and `workbench.action.focusActiveEditorGroup`.
 
 A chord prefix such as `ctrl+k` belongs to the shell in the terminal, so `ctrl+k` deletes to the end of the line there as it does in any terminal. A prompt opened over the terminal, such as the command palette, takes the keys until it closes.

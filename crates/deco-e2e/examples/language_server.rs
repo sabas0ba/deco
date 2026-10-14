@@ -34,6 +34,9 @@ fn serve(role: &str) -> i32 {
     let mut output = stdout.lock();
     // The document the editor last opened, used in responses.
     let mut open_uri = String::new();
+    // A `workspace/executeCommand` waiting for the editor to answer the edit
+    // it caused, as a real server's command waits.
+    let mut running_command: Option<serde_json::Value> = None;
 
     loop {
         let Some((method, id, params)) = read_frame(&mut input) else {
@@ -71,6 +74,7 @@ fn serve(role: &str) -> i32 {
                             // With resolve support, to test code actions that
                             // arrive without an edit and must be resolved.
                             "codeActionProvider": {"resolveProvider": true},
+                            "executeCommandProvider": {"commands": ["example.organizeImports"]},
                             "documentFormattingProvider": true,
                             "completionProvider": completion,
                         }},
@@ -81,6 +85,41 @@ fn serve(role: &str) -> i32 {
                 open_uri = uri_of(&params);
                 if role == "diagnostics" {
                     publish(&mut output, &open_uri, 1);
+                }
+                // An edit nobody asked for, which the editor must decline.
+                if role == "unsolicited-edit" {
+                    send(
+                        &mut output,
+                        &apply_edit("unsolicited", &open_uri, "// injected\n"),
+                    );
+                }
+            }
+            // The command's change arrives as a request to the editor, and the
+            // command is answered only after the editor has answered that.
+            "workspace/executeCommand" => {
+                if params.get("command").and_then(|v| v.as_str()) == Some("example.organizeImports")
+                {
+                    send(
+                        &mut output,
+                        &apply_edit("organize", &open_uri, "use std::fmt;\n"),
+                    );
+                    running_command = id;
+                } else if let Some(id) = id {
+                    send(
+                        &mut output,
+                        &serde_json::json!({"jsonrpc": "2.0", "id": id, "result": null}),
+                    );
+                }
+            }
+            // A response from the editor, read with an empty method.
+            "" => {
+                if id == Some(serde_json::json!("organize")) {
+                    if let Some(command) = running_command.take() {
+                        send(
+                            &mut output,
+                            &serde_json::json!({"jsonrpc": "2.0", "id": command, "result": null}),
+                        );
+                    }
                 }
             }
             "textDocument/didChange" => {
@@ -383,13 +422,40 @@ fn read_frame(
     let mut body = vec![0u8; length?];
     input.read_exact(&mut body).ok()?;
     let message: serde_json::Value = serde_json::from_slice(&body).ok()?;
-    let method = message.get("method")?.as_str()?.to_owned();
+    // A response has no method; it is returned with an empty one.
+    let method = message
+        .get("method")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_owned();
     let id = message.get("id").cloned();
     let params = message
         .get("params")
         .cloned()
         .unwrap_or(serde_json::Value::Null);
     Some((method, id, params))
+}
+
+/// A `workspace/applyEdit` request inserting `text` at the start of `uri`.
+fn apply_edit(id: &str, uri: &str, text: &str) -> serde_json::Value {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "workspace/applyEdit",
+        "params": {
+            "label": "Organize imports",
+            "edit": {"documentChanges": [{
+                "textDocument": {"uri": uri, "version": null},
+                "edits": [{
+                    "range": {
+                        "start": {"line": 0, "character": 0},
+                        "end": {"line": 0, "character": 0},
+                    },
+                    "newText": text,
+                }],
+            }]},
+        },
+    })
 }
 
 /// Writes one framed message.
