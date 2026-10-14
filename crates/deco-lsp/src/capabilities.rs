@@ -150,6 +150,9 @@ pub struct ServerCapabilities {
     pub semantic_tokens: Option<SemanticTokensOptions>,
     /// `textDocument/codeAction`, and whether a chosen action can be resolved.
     pub code_action: Option<CodeActionOptions>,
+    /// `workspace/executeCommand`: the commands the server runs, or `None`
+    /// when it runs none.
+    pub execute_command: Option<Vec<String>>,
 }
 
 /// How code actions are offered.
@@ -254,6 +257,16 @@ impl ServerCapabilities {
             document_symbol: is_provider(value.get("documentSymbolProvider")),
             semantic_tokens: read_semantic_tokens(value.get("semanticTokensProvider")),
             code_action: read_code_action(value.get("codeActionProvider")),
+            execute_command: value
+                .get("executeCommandProvider")
+                .and_then(|provider| provider.get("commands"))
+                .and_then(|commands| commands.as_array())
+                .map(|commands| {
+                    commands
+                        .iter()
+                        .filter_map(|c| c.as_str().map(str::to_owned))
+                        .collect()
+                }),
         }
     }
 }
@@ -492,9 +505,14 @@ pub fn client_capabilities() -> serde_json::Value {
             },
         },
         "workspace": {
-            // `applyEdit` is not declared: deco declines server-initiated
-            // edits. `resourceOperations` is not declared: file operations
-            // are refused.
+            // Declared because a command's edit arrives this way. Only an edit
+            // that arrives while a command the user chose is running is
+            // applied; any other is answered `applied: false`. See
+            // `Client::handle_server_request`.
+            "applyEdit": true,
+            "executeCommand": { "dynamicRegistration": false },
+            // `resourceOperations` is not declared: file operations are
+            // refused.
             "workspaceEdit": {
                 // Each `TextDocumentEdit` carries the version the edit was
                 // computed for, which the stale-edit check needs.
@@ -663,6 +681,21 @@ mod tests {
     }
 
     #[test]
+    fn the_commands_a_server_runs_are_read_from_its_provider() {
+        assert_eq!(
+            ServerCapabilities::from_json(&json!({
+                "executeCommandProvider": {"commands": ["fix.all", 3, "organize"]}
+            }))
+            .execute_command,
+            Some(vec!["fix.all".to_owned(), "organize".to_owned()])
+        );
+        assert_eq!(
+            ServerCapabilities::from_json(&json!({})).execute_command,
+            None
+        );
+    }
+
+    #[test]
     fn code_actions_distinguish_resolve_support() {
         assert_eq!(
             ServerCapabilities::from_json(&json!({"codeActionProvider": true})).code_action,
@@ -759,13 +792,9 @@ mod tests {
             json!(false)
         );
         assert_eq!(caps["window"]["workDoneProgress"], json!(false));
-        assert!(
-            matches!(
-                caps["workspace"].get("applyEdit"),
-                None | Some(serde_json::Value::Bool(false))
-            ),
-            "deco declines server-initiated workspace/applyEdit"
-        );
+        // Declared, because a command's edit arrives as this request. The
+        // client accepts one only while a command the user chose is running.
+        assert_eq!(caps["workspace"]["applyEdit"], json!(true));
         assert!(
             caps["workspace"]["workspaceEdit"]
                 .get("resourceOperations")

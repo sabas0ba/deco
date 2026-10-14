@@ -337,7 +337,10 @@ fn an_action_with_no_edit_is_resolved_before_it_is_applied() {
 }
 
 #[test]
-fn an_action_that_only_runs_a_server_command_is_refused_by_name() {
+fn an_action_that_only_runs_a_server_command_applies_the_edit_the_command_sends() {
+    // The fourth entry is a bare `Command`. The server carries it out by
+    // sending a `workspace/applyEdit` request while the command is running,
+    // and answers the command only after the editor has answered that.
     let scenario = project("lsp-code-action-command", "full");
     let mut editor = started(&scenario);
 
@@ -345,21 +348,40 @@ fn an_action_that_only_runs_a_server_command_is_refused_by_name() {
     editor.settle_until("the action list", |editor| {
         editor.session().prompt.is_some()
     });
-    // The fourth entry: a bare `Command`.
     editor.press_times("down", 3);
     editor.press("enter");
-    editor.settle_until("the refusal", |editor| {
+    editor.settle_until("the command's edit", |editor| editor.is_dirty());
+    assert!(
+        editor.text().starts_with("use std::fmt;\n"),
+        "{:?}",
+        editor.text()
+    );
+    editor.settle_until("the command to finish", |editor| {
         editor
             .status()
-            .is_some_and(|line| line.contains("was not applied"))
+            .is_some_and(|line| line.contains("Organize imports") && !line.contains("running"))
     });
+}
 
-    let status = editor.status().unwrap_or_default().to_owned();
+#[test]
+fn an_edit_the_server_sends_on_its_own_is_declined() {
+    // Outside a command the user chose, a server's request to change files
+    // is answered `applied: false`, and the document is left alone.
+    let scenario = project("lsp-unsolicited-edit", "unsolicited-edit");
+    let mut editor = started(&scenario);
+    // The server sent the edit when the document was opened. A definition
+    // request sent now is answered after it, so once the caret has moved the
+    // edit has been read and answered.
+    editor.press("f12");
+    editor.settle_until("the caret to move", |editor| {
+        editor.session().view.selections.primary().active.line == 2
+    });
+    assert!(!editor.is_dirty());
     assert!(
-        status.contains("example.organizeImports"),
-        "the refusal should name the command it cannot run: {status}"
+        editor.text().starts_with("fn main()"),
+        "{:?}",
+        editor.text()
     );
-    assert!(!editor.is_dirty(), "and nothing should have changed");
 }
 
 #[test]

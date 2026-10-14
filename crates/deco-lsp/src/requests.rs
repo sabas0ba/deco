@@ -974,6 +974,24 @@ impl CodeAction {
         })
     }
 
+    /// The `workspace/executeCommand` parameters for this action's command:
+    /// the identifier and its arguments, exactly as the server sent them.
+    ///
+    /// `None` when the action has no command.
+    pub fn execute_command_params(&self) -> Option<serde_json::Value> {
+        let command = if self.is_command {
+            &self.raw
+        } else {
+            self.raw.get("command")?
+        };
+        let name = command.get("command")?.as_str()?;
+        let mut params = serde_json::json!({ "command": name });
+        if let Some(arguments) = command.get("arguments") {
+            params["arguments"] = arguments.clone();
+        }
+        Some(params)
+    }
+
     /// Whether choosing this would need a `codeAction/resolve` first.
     ///
     /// False for a bare `Command`, because resolve takes a `CodeAction`. Also
@@ -1262,6 +1280,25 @@ mod tests {
 
     fn uri() -> Uri {
         Uri::from_string("file:///w/a.rs")
+    }
+
+    #[test]
+    fn a_command_is_sent_with_its_arguments_whichever_shape_carried_it() {
+        let actions = CodeAction::list_from_json(&serde_json::json!([
+            {"title": "Bare", "command": "fix", "arguments": [1, "a"]},
+            {"title": "Nested", "kind": "quickfix",
+             "command": {"title": "Nested", "command": "organize"}},
+            {"title": "Edit only", "edit": {"changes": {}}},
+        ]));
+        assert_eq!(
+            actions[0].execute_command_params(),
+            Some(serde_json::json!({"command": "fix", "arguments": [1, "a"]}))
+        );
+        assert_eq!(
+            actions[1].execute_command_params(),
+            Some(serde_json::json!({"command": "organize"}))
+        );
+        assert_eq!(actions[2].execute_command_params(), None);
     }
 
     #[test]
