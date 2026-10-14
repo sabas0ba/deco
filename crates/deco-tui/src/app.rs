@@ -476,6 +476,10 @@ pub struct Driver {
     terminal: Option<Shell>,
     /// When the file tree's shown directories were last read again.
     tree_refreshed_ms: Option<u64>,
+    /// Where the next tree refresh starts in the list of shown directories,
+    /// so a tree with more than [`TREE_REFRESH_LIMIT`] of them is covered over
+    /// successive passes rather than always from the top.
+    tree_refresh_from: usize,
 }
 
 impl Driver {
@@ -585,6 +589,7 @@ impl Driver {
             clipboard,
             terminal: None,
             tree_refreshed_ms: None,
+            tree_refresh_from: 0,
         }
     }
 
@@ -727,7 +732,8 @@ impl Driver {
     ///
     /// Local only: a remote workspace is listed whole, which is too costly to
     /// repeat on a timer. At most [`TREE_REFRESH_LIMIT`] directories are read
-    /// per pass, so a tree with many folders open costs a bounded amount.
+    /// per pass, so a tree with many folders open costs a bounded amount;
+    /// the next pass continues where this one stopped.
     fn refresh_tree(&mut self, session: &mut Session, now_ms: u64) {
         let Some(root) = self.tree_root.clone() else {
             return;
@@ -739,12 +745,11 @@ impl Driver {
             return;
         }
         self.tree_refreshed_ms = Some(now_ms);
+        let shown = session.directories_to_refresh();
+        let (batch, next) = refresh_batch(shown.len(), self.tree_refresh_from);
+        self.tree_refresh_from = next;
         let mut changed = false;
-        for dir in session
-            .directories_to_refresh()
-            .into_iter()
-            .take(TREE_REFRESH_LIMIT)
-        {
+        for dir in batch.map(|index| shown[index].clone()) {
             let entries = crate::files::list_dir(&root, &dir, &session.settings);
             changed |= session.refresh_directory(&dir, entries);
         }
@@ -1506,6 +1511,20 @@ const TREE_REFRESH_INTERVAL_MS: u64 = 2000;
 /// The most directories one tree refresh reads.
 const TREE_REFRESH_LIMIT: usize = 64;
 
+/// The indices of the shown directories one refresh pass reads, starting at
+/// `from` and wrapping, and where the next pass starts.
+///
+/// At most [`TREE_REFRESH_LIMIT`]. With fewer shown, every pass reads all of
+/// them; with more, each directory is read once every few passes.
+fn refresh_batch(shown: usize, from: usize) -> (impl Iterator<Item = usize>, usize) {
+    if shown <= TREE_REFRESH_LIMIT {
+        return (Box::new(0..shown) as Box<dyn Iterator<Item = usize>>, 0);
+    }
+    let start = from % shown;
+    let batch = (0..TREE_REFRESH_LIMIT).map(move |offset| (start + offset) % shown);
+    (Box::new(batch), (start + TREE_REFRESH_LIMIT) % shown)
+}
+
 /// The interval while a shell is running in the panel.
 const TERMINAL_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
@@ -2095,6 +2114,28 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("a scratch directory");
         dir
+    }
+
+    #[test]
+    fn a_tree_refresh_reads_everything_shown_over_successive_passes() {
+        let (batch, next) = refresh_batch(3, 0);
+        assert_eq!(batch.collect::<Vec<_>>(), [0, 1, 2]);
+        assert_eq!(next, 0);
+
+        let shown = TREE_REFRESH_LIMIT + 10;
+        let mut from = 0;
+        let mut seen = vec![0usize; shown];
+        for _ in 0..2 {
+            let (batch, next) = refresh_batch(shown, from);
+            for index in batch {
+                seen[index] += 1;
+            }
+            from = next;
+        }
+        assert!(seen.iter().all(|&count| count >= 1), "{seen:?}");
+        // A list that shrank since the last pass still starts inside it.
+        let (batch, _) = refresh_batch(shown, shown * 3 + 5);
+        assert!(batch.into_iter().all(|index| index < shown));
     }
 
     #[test]

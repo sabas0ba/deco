@@ -318,10 +318,20 @@ fn render_text(session: &Session, width: usize, height: usize) -> Frame {
     let panel = regions
         .panel
         .map(|rect| region_rows(session, rect, Region::Panel, &palette));
-    // The terminal's cursor, below the panel's title row.
-    if let (deco_editor::Focus::Panel, Some(terminal), Some(rect)) =
-        (session.focus(), session.terminal(), regions.panel)
-    {
+    // The terminal's cursor, below the panel's title row. Only while the
+    // panel shows the terminal: over the problems view it would mark a row of
+    // a different view.
+    if let (
+        deco_editor::Focus::Panel,
+        deco_editor::PanelView::Terminal,
+        Some(terminal),
+        Some(rect),
+    ) = (
+        session.focus(),
+        session.panel_view(),
+        session.terminal(),
+        regions.panel,
+    ) {
         cursor_cell = crate::terminal::cursor(terminal, rect.width, rect.height.saturating_sub(1))
             .map(|(x, y)| ((rect.x + x) as u16, (top + rect.y + 1 + y) as u16));
     }
@@ -2050,7 +2060,7 @@ fn overlay_hover(
     let box_height = lines.len() + 2;
     let box_width = lines
         .iter()
-        .map(|line| line.chars().map(|c| c.width().unwrap_or(1)).sum::<usize>())
+        .map(|line| columns(line))
         .max()
         .unwrap_or(0)
         .min(inner_width)
@@ -2081,7 +2091,7 @@ fn overlay_hover(
             i if i == box_height - 1 => border_line(box_width, '\u{2514}', '\u{2518}'),
             i => {
                 let text = lines.get(i - 1).map(String::as_str).unwrap_or("");
-                let used: usize = text.chars().map(|c| c.width().unwrap_or(1)).sum();
+                let used: usize = columns(text);
                 let pad = box_width.saturating_sub(used + 4);
                 format!("\u{2502} {text}{} \u{2502}", " ".repeat(pad))
             }
@@ -2144,7 +2154,7 @@ fn wrap(text: &str, width: usize, max_lines: usize) -> Vec<String> {
         let mut line = String::new();
         let mut columns = 0usize;
         for word in paragraph.split_whitespace() {
-            let word_width: usize = word.chars().map(|c| c.width().unwrap_or(1)).sum();
+            let word_width: usize = word.chars().map(cell_width).sum();
             let needed = if line.is_empty() {
                 word_width
             } else {
@@ -2166,7 +2176,7 @@ fn wrap(text: &str, width: usize, max_lines: usize) -> Vec<String> {
             if word_width > width {
                 let mut used = 0;
                 for c in word.chars() {
-                    let w = c.width().unwrap_or(1);
+                    let w = cell_width(c);
                     if used + w > width {
                         break;
                     }
@@ -2289,9 +2299,23 @@ fn overlay_suggest(
     }
 }
 
-/// A string's width in terminal columns.
+/// A string's width in terminal columns, as the painter writes it.
 fn columns(text: &str) -> usize {
-    text.chars().map(|c| c.width().unwrap_or(1)).sum()
+    text.chars().map(cell_width).sum()
+}
+
+/// One character's width in terminal columns, as the painter writes it.
+///
+/// A character [`sanitise`] replaces takes the width of its stand-in, one
+/// column, rather than its own: a bidirectional control or a zero-width space
+/// is zero columns in the width table but is painted as `␦`. Measuring the
+/// original would make a row holding one a column wider than the frame.
+fn cell_width(c: char) -> usize {
+    if control_picture(c).is_some() {
+        1
+    } else {
+        c.width().unwrap_or(1)
+    }
 }
 
 /// Cuts `text` to at most `width` columns, on a character boundary.
@@ -2299,7 +2323,7 @@ fn truncate_to(text: &str, width: usize) -> String {
     let mut out = String::new();
     let mut used = 0;
     for c in text.chars() {
-        let w = c.width().unwrap_or(1);
+        let w = cell_width(c);
         if used + w > width {
             break;
         }
@@ -2788,12 +2812,42 @@ mod tests {
             .position(|row| row.contains("PROBLEMS"))
             .expect("the view's title");
         assert!(text[title + 1].contains("W file.rs:1:1  boom"), "{text:#?}");
+        // In the platform's own separator, as the path is shown elsewhere.
+        let nested = std::path::Path::new("src").join("lib.rs");
         assert!(
-            text[title + 2].contains("E src/lib.rs:5:1  boom"),
+            text[title + 2].contains(&format!("E {}:5:1  boom", nested.display())),
             "{text:#?}"
         );
         for row in &frame.rows {
             assert_eq!(row.plain().chars().count(), 60, "{:?}", row.plain());
+        }
+    }
+
+    #[test]
+    fn the_terminal_cursor_is_not_drawn_over_the_problems_view() {
+        let mut session = session("");
+        session.resize(60, 20);
+        session.handle_chord(deco_keymap::keys::Chord::parse("ctrl+`").unwrap(), 0);
+        let (cols, rows) = session.terminal_area().unwrap();
+        session.terminal_started(cols as u16, rows as u16);
+        assert!(
+            render(&session, 60, 20).cursor.is_some(),
+            "the shell's cursor"
+        );
+        session.handle_chord(deco_keymap::keys::Chord::parse("ctrl+shift+m").unwrap(), 0);
+        assert_eq!(render(&session, 60, 20).cursor, None);
+    }
+
+    #[test]
+    fn a_file_name_with_an_invisible_character_keeps_the_rows_their_width() {
+        let mut session = session("");
+        session.open(PathBuf::from("/w/a\u{200b}b\u{202e}.rs"), "x\n");
+        session.resize(40, 6);
+        for row in &render(&session, 40, 6).rows {
+            // What the painter writes, measured as the terminal measures it.
+            let painted = sanitise(&row.plain()).into_owned();
+            let width: usize = painted.chars().map(|c| c.width().unwrap_or(1)).sum();
+            assert_eq!(width, 40, "{painted:?}");
         }
     }
 
