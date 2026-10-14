@@ -64,6 +64,8 @@ struct Palette {
     find_match_bg: Rgba,
     find_highlight_bg: Rgba,
     whitespace_fg: Rgba,
+    /// The marker for a bidirectional formatting character.
+    bidi_fg: Rgba,
     ruler_bg: Rgba,
     status_fg: Rgba,
     status_bg: Rgba,
@@ -133,6 +135,14 @@ impl Palette {
                 .unwrap_or(fg),
             whitespace_fg: theme
                 .color("editorWhitespace.foreground")
+                .map(|c| c.over(bg))
+                .unwrap_or(fg),
+            // VS Code draws a highlighted Unicode character with
+            // `editorUnicodeHighlight.border`, whose default is the warning
+            // colour.
+            bidi_fg: theme
+                .color("editorUnicodeHighlight.border")
+                .or_else(|| theme.color("editorWarning.foreground"))
                 .map(|c| c.over(bg))
                 .unwrap_or(fg),
             // In VS Code a ruler is a thin line between two columns, but a
@@ -1488,6 +1498,10 @@ fn line_spans(
             }
         } else if marked && c == ' ' {
             cells.push(('·', cell, palette.whitespace_fg));
+        } else if is_bidi_control(c) {
+            // Always marked, whatever `editor.renderControlCharacters` says: a
+            // blank would hide the reordering this character exists to cause.
+            cells.push((BIDI_PICTURE, cell, palette.bidi_fg));
         } else if let Some(picture) = control_picture(c) {
             // `editor.renderControlCharacters` selects the glyph or a blank. In both
             // cases the byte itself does not reach the terminal; see `control_picture`.
@@ -1576,8 +1590,37 @@ fn control_picture(c: char) -> Option<char> {
         '\0'..='\u{1f}' => char::from_u32(0x2400 + c as u32),
         // Delete, which sits on its own at U+2421.
         '\u{7f}' => Some('␡'),
+        c if is_bidi_control(c) => Some(BIDI_PICTURE),
         _ => None,
     }
+}
+
+/// The stand-in for a bidirectional formatting character: `␦`, U+2426.
+///
+/// Control Pictures has no glyph for these characters. U+2426 is from the same
+/// block, so it has the same width as the other stand-ins, one column in every
+/// terminal, including those that draw East Asian ambiguous-width characters
+/// two columns wide.
+const BIDI_PICTURE: char = '\u{2426}';
+
+/// Whether `c` is one of the characters that change the display order of the
+/// text around them.
+///
+/// These are the embeddings, overrides and isolates of Unicode's
+/// bidirectional algorithm (UAX #9), and the three implicit marks. A file can
+/// use them to display differently from the code that is compiled, which is
+/// the Trojan Source attack (CVE-2021-42574), so they are never written to the
+/// terminal, where the terminal could apply them.
+fn is_bidi_control(c: char) -> bool {
+    matches!(
+        c,
+        // ARABIC LETTER MARK, LEFT-TO-RIGHT MARK, RIGHT-TO-LEFT MARK.
+        '\u{061c}' | '\u{200e}' | '\u{200f}'
+        // LRE, RLE, PDF, LRO, RLO.
+        | '\u{202a}'..='\u{202e}'
+        // LRI, RLI, FSI, PDI.
+        | '\u{2066}'..='\u{2069}'
+    )
 }
 
 /// Every control character in `text` replaced by its picture.
@@ -4271,6 +4314,40 @@ mod tests {
         );
         let all: String = frame.rows.iter().map(Row::plain).collect();
         assert!(!all.chars().any(|c| c.is_control()), "{all:?}");
+    }
+
+    /// The Trojan Source example from the paper: the comment appears to end
+    /// before `return`, but the right-to-left override and isolates put the
+    /// `return` inside the comment for the compiler.
+    const TROJAN: &str = "/* \u{202e} } \u{2066}if (admin)\u{2069} \u{2066} begin admins only */\n";
+
+    #[test]
+    fn a_bidirectional_control_is_marked_and_never_drawn() {
+        let frame = render(&session(TROJAN), 60, 4);
+        let line = frame.rows[0].plain();
+        assert!(!line.contains('\u{202e}') && !line.contains('\u{2066}'), "{line:?}");
+        assert_eq!(line.matches(BIDI_PICTURE).count(), 4, "{line:?}");
+        assert_eq!(line.chars().count(), 60, "the markers cost one column each");
+    }
+
+    #[test]
+    fn a_bidirectional_control_is_marked_even_with_control_characters_hidden() {
+        let mut settings = deco_config::Settings::with_defaults();
+        settings.set(
+            deco_config::Scope::User,
+            "editor.renderControlCharacters",
+            serde_json::json!(false),
+        );
+        let mut session = Session::new(settings, None, deco_keymap::binding::Platform::Linux);
+        session.open(PathBuf::from("/w/trojan.c"), TROJAN);
+        let frame = render(&session, 60, 4);
+        assert_eq!(frame.rows[0].plain().matches(BIDI_PICTURE).count(), 4);
+    }
+
+    #[test]
+    fn the_painter_replaces_a_bidirectional_control_in_a_file_name() {
+        assert_eq!(sanitise("a\u{202e}txt.exe"), "a\u{2426}txt.exe");
+        assert!(matches!(sanitise("plain"), std::borrow::Cow::Borrowed(_)));
     }
 
     #[test]

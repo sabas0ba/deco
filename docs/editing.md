@@ -101,9 +101,17 @@ The substitution is applied at every terminal write, not only where the document
 
 The renderer substitutes characters in the document according to the setting. The painter and the command-line output substitute them unconditionally. Applying the substitution at the write also covers output sources added later.
 
+### Bidirectional formatting characters
+
+`U+202E` and related characters reorder the characters around them, so a line can display differently from the code a compiler reads. This is the Trojan Source attack (CVE-2021-42574). deco draws each of them as `␦` (U+2426) in the theme's `editorUnicodeHighlight.border` colour, or `editorWarning.foreground` when the theme does not set it, and never writes the character itself to the terminal.
+
+The characters covered are the embeddings, overrides and isolates of Unicode's bidirectional algorithm (U+202A–U+202E, U+2066–U+2069) and the marks U+200E, U+200F and U+061C. Each marker takes one column, as the character was counted, so the layout does not change.
+
+The marker is drawn even with `editor.renderControlCharacters` set to `false`, because a blank would hide the reordering. The painter replaces these characters in file names, search results and other text as it does control characters.
+
 ### What this does not cover
 
-**Bidirectional overrides.** `U+202E` and related characters reorder the surrounding characters, so a line can display differently from its actual content. This is the Trojan Source class of attack, which matters most in code that will be compiled. These characters are printable rather than control characters, so this substitution does not change them. VS Code handles them with a separate setting (`editor.unicodeHighlight.*`) that deco does not read.
+Other invisible characters, such as zero-width spaces, and characters that look like others (`editor.unicodeHighlight.invisibleCharacters` and `.ambiguousCharacters` in VS Code) are not marked. The GPU frontend does not apply the substitution yet.
 
 ## Copy and paste with the system clipboard
 
