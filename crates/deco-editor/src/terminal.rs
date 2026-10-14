@@ -43,6 +43,7 @@ pub const SKIP_SHELL: &[&str] = &[
     "workbench.files.action.focusFilesExplorer",
     "workbench.view.explorer",
     "workbench.view.scm",
+    "workbench.actions.view.problems",
 ];
 
 /// The terminal in the panel.

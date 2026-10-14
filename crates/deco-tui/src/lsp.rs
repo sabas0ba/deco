@@ -1248,7 +1248,11 @@ impl Lsp {
         }
 
         // A different language needs a different server, and the old server
-        // no longer has a document to work on.
+        // no longer has a document to work on. Its problems can no longer be
+        // updated or cleared, so the problems view drops them.
+        if self.supervisor.is_some() {
+            session.clear_file_diagnostics();
+        }
         self.detach();
 
         let candidates: Vec<_> = self
@@ -1454,12 +1458,19 @@ impl Lsp {
         for update in updates {
             match update {
                 Update::Diagnostics { uri, diagnostics } => {
-                    // Only the document on screen. A server may report on files
-                    // deco is not showing, and those reports are not stored here.
+                    // The document on screen gets them for its gutter and `F8`.
+                    // Every file's go to the problems view, including files
+                    // deco is not showing.
                     if Some(&uri) == open_uri.as_ref() {
                         session.set_diagnostics(diagnostics);
-                        changed = true;
+                    } else if let Some(path) = self
+                        .supervisor
+                        .as_ref()
+                        .and_then(|supervisor| supervisor.paths().from_uri(&uri).ok())
+                    {
+                        session.set_file_diagnostics(path, diagnostics);
                     }
+                    changed = true;
                 }
                 Update::Message { kind, message } => {
                     // 1 is an error, 2 a warning. Lower severities are
@@ -1476,6 +1487,7 @@ impl Lsp {
                     // No server will update or clear its diagnostics now, so
                     // they are removed.
                     session.set_diagnostics(Vec::new());
+                    session.clear_file_diagnostics();
                     self.supervisor = None;
                     self.language = None;
                     self.open = None;

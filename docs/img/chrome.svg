@@ -178,9 +178,9 @@
 <rect x="12.0" y="183.0" width="8.5" height="19.0" fill="#181818"/>
 <rect x="20.5" y="183.0" width="246.5" height="19.0" fill="#181818"/>
 <text x="267.0" y="197.0" font-size="14px" fill="#6e7681" textLength="8.5" lengthAdjust="spacingAndGlyphs">│</text>
-<rect x="275.5" y="183.0" width="289.0" height="19.0" fill="#181818"/>
-<text x="275.5" y="197.0" font-size="14px" fill="#cccccc" textLength="289.0" lengthAdjust="spacingAndGlyphs"> the terminal, problems and output</text>
-<rect x="564.5" y="183.0" width="93.5" height="19.0" fill="#181818"/>
+<rect x="275.5" y="183.0" width="136.0" height="19.0" fill="#181818"/>
+<text x="275.5" y="197.0" font-size="14px" fill="#cccccc" textLength="136.0" lengthAdjust="spacingAndGlyphs"> the output view</text>
+<rect x="411.5" y="183.0" width="246.5" height="19.0" fill="#181818"/>
 <rect x="12.0" y="202.0" width="8.5" height="19.0" fill="#181818"/>
 <rect x="20.5" y="202.0" width="246.5" height="19.0" fill="#181818"/>
 <text x="267.0" y="216.0" font-size="14px" fill="#6e7681" textLength="8.5" lengthAdjust="spacingAndGlyphs">│</text>
@@ -265,9 +265,9 @@
 <rect x="12.0" y="183.0" width="8.5" height="19.0" fill="#181818"/>
 <rect x="20.5" y="183.0" width="246.5" height="19.0" fill="#181818"/>
 <text x="267.0" y="197.0" font-size="14px" fill="#6e7681" textLength="8.5" lengthAdjust="spacingAndGlyphs">│</text>
-<rect x="275.5" y="183.0" width="289.0" height="19.0" fill="#181818"/>
-<text x="275.5" y="197.0" font-size="14px" fill="#cccccc" textLength="289.0" lengthAdjust="spacingAndGlyphs"> the terminal, problems and output</text>
-<rect x="564.5" y="183.0" width="93.5" height="19.0" fill="#181818"/>
+<rect x="275.5" y="183.0" width="136.0" height="19.0" fill="#181818"/>
+<text x="275.5" y="197.0" font-size="14px" fill="#cccccc" textLength="136.0" lengthAdjust="spacingAndGlyphs"> the output view</text>
+<rect x="411.5" y="183.0" width="246.5" height="19.0" fill="#181818"/>
 <rect x="12.0" y="202.0" width="8.5" height="19.0" fill="#181818"/>
 <rect x="20.5" y="202.0" width="246.5" height="19.0" fill="#181818"/>
 <text x="267.0" y="216.0" font-size="14px" fill="#6e7681" textLength="8.5" lengthAdjust="spacingAndGlyphs">│</text>
@@ -319,9 +319,9 @@
 <rect x="63.0" y="145.0" width="595.0" height="19.0" fill="#181818"/>
 <rect x="12.0" y="164.0" width="8.5" height="19.0" fill="#181818"/>
 <rect x="20.5" y="164.0" width="637.5" height="19.0" fill="#181818"/>
-<rect x="12.0" y="183.0" width="289.0" height="19.0" fill="#181818"/>
-<text x="12.0" y="197.0" font-size="14px" fill="#cccccc" textLength="289.0" lengthAdjust="spacingAndGlyphs"> the terminal, problems and output</text>
-<rect x="301.0" y="183.0" width="357.0" height="19.0" fill="#181818"/>
+<rect x="12.0" y="183.0" width="136.0" height="19.0" fill="#181818"/>
+<text x="12.0" y="197.0" font-size="14px" fill="#cccccc" textLength="136.0" lengthAdjust="spacingAndGlyphs"> the output view</text>
+<rect x="148.0" y="183.0" width="510.0" height="19.0" fill="#181818"/>
 <rect x="12.0" y="202.0" width="127.5" height="19.0" fill="#181818"/>
 <text x="12.0" y="216.0" font-size="14px" fill="#cccccc" textLength="127.5" lengthAdjust="spacingAndGlyphs"> will live here</text>
 <rect x="139.5" y="202.0" width="518.5" height="19.0" fill="#181818"/>

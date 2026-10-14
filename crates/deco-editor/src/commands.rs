@@ -385,6 +385,10 @@ pub const PALETTE: &[(&str, &str)] = &[
         "View: Toggle Terminal",
     ),
     (
+        "workbench.actions.view.problems",
+        "View: Toggle Problems (Errors, Warnings, Infos)",
+    ),
+    (
         "workbench.action.terminal.kill",
         "Terminal: Kill the Active Terminal Instance",
     ),

@@ -16,6 +16,7 @@ pub mod files;
 pub mod find;
 pub mod input;
 pub mod layout;
+pub mod markers;
 pub mod prompt;
 pub mod scm;
 pub mod session;
@@ -32,6 +33,7 @@ pub use find::Find;
 pub use prompt::{Prompt, PromptKind};
 pub use scm::{Group as ScmGroup, Row as ScmRow, SourceControl};
 pub use session::{
-    ComparisonLine, ComparisonLineKind, ComparisonPane, Focus, Pane, Session, SideBarView,
+    ComparisonLine, ComparisonLineKind, ComparisonPane, Focus, Pane, PanelView, Session,
+    SideBarView,
 };
 pub use workspace::{Applied, Plan, WorkspaceError};

@@ -463,6 +463,7 @@ impl Region {
             }
             Self::SideBar if session.explorer().is_some() => "EXPLORER",
             Self::SideBar => "SIDE BAR",
+            Self::Panel if session.panel_view() == deco_editor::PanelView::Problems => "PROBLEMS",
             Self::Panel if session.terminal().is_some() => "TERMINAL",
             Self::Panel => "PANEL",
         }
@@ -477,7 +478,7 @@ impl Region {
     fn waiting_on(self) -> &'static str {
         match self {
             Self::SideBar => "search",
-            Self::Panel => "the terminal, problems and output",
+            Self::Panel => "the output view",
         }
     }
 
@@ -523,6 +524,14 @@ fn region_rows(session: &Session, rect: Rect, region: Region, palette: &Palette)
         title_fg,
         title_bg,
     ));
+    if region == Region::Panel && session.panel_view() == deco_editor::PanelView::Problems {
+        problem_rows(session, rect, &mut rows, palette, fg, bg);
+        while rows.len() < rect.height {
+            rows.push(region_line("", rect.width, fg, bg));
+        }
+        rows.truncate(rect.height);
+        return rows;
+    }
     // The terminal fills the panel below its title, with no blank row: its
     // size is the one `Session::terminal_area` gives the shell.
     if let (Region::Panel, Some(terminal)) = (region, session.terminal()) {
@@ -741,6 +750,92 @@ fn dim(fg: Rgba, bg: Rgba) -> Rgba {
 /// A name too long for the side bar is cut with an ellipsis rather than wrapped,
 /// because a file name on two lines would look like two files.
 #[allow(clippy::too_many_arguments)]
+/// The problems view: one row per diagnostic, `path:line:column`, then the
+/// message, with a severity letter in the theme's colour for that severity.
+fn problem_rows(
+    session: &Session,
+    rect: Rect,
+    rows: &mut Vec<Row>,
+    palette: &Palette,
+    fg: Rgba,
+    bg: Rgba,
+) {
+    let theme = &session.theme;
+    let markers = session.markers();
+    let height = rect.height.saturating_sub(rows.len());
+    if height == 0 {
+        return;
+    }
+    if markers.is_empty() {
+        // VS Code's wording.
+        rows.push(region_line(
+            "No problems have been detected in the workspace.",
+            rect.width,
+            dim(fg, bg),
+            bg,
+        ));
+        return;
+    }
+    let focused = session.focus() == deco_editor::Focus::Panel;
+    let selected_bg = theme
+        .color(if focused {
+            "list.activeSelectionBackground"
+        } else {
+            "list.inactiveSelectionBackground"
+        })
+        .unwrap_or(palette.selection_bg);
+    let root = session.explorer().map(deco_editor::Explorer::root);
+    // Scrolled so the selection is on screen, with as many rows above it as fit.
+    let first = markers.selected().saturating_sub(height - 1);
+    for (index, row) in markers.rows().enumerate().skip(first).take(height) {
+        let (letter, key) = match row.diagnostic.severity {
+            deco_lsp::Severity::Error => ('E', "editorError.foreground"),
+            deco_lsp::Severity::Warning => ('W', "editorWarning.foreground"),
+            deco_lsp::Severity::Information => ('I', "editorInfo.foreground"),
+            deco_lsp::Severity::Hint => ('H', "editorInfo.foreground"),
+        };
+        let row_bg = if index == markers.selected() {
+            selected_bg
+        } else {
+            bg
+        };
+        let path = root
+            .and_then(|root| row.path.strip_prefix(root).ok())
+            .unwrap_or(row.path);
+        let start = row.diagnostic.range.start;
+        // One-based, as an editor shows positions and as `path:line:column`
+        // is written in a compiler's output.
+        let location = format!(
+            "{}:{}:{}",
+            path.display(),
+            start.line + 1,
+            start.character + 1
+        );
+        // The first line only: a multi-line message would not fit in one row.
+        let message = row.diagnostic.message.lines().next().unwrap_or_default();
+        let text = format!(" {location}  {message}");
+        let room = rect.width.saturating_sub(3);
+        let text = clip(&text, room);
+        let used = 2 + columns(&text);
+        let mut spans = vec![
+            Span {
+                text: format!(" {letter}"),
+                fg: theme.color(key).unwrap_or(fg),
+                bg: row_bg,
+            },
+            Span {
+                text,
+                fg,
+                bg: row_bg,
+            },
+        ];
+        if used < rect.width {
+            spans.push(blank(rect.width - used, row_bg));
+        }
+        rows.push(Row { spans });
+    }
+}
+
 fn tree_rows(
     session: &Session,
     explorer: &deco_editor::Explorer,
@@ -2651,6 +2746,45 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn the_problems_view_lists_problems_relative_to_the_workspace() {
+        let mut session = session("fn main() {}\n");
+        session.set_workspace_root("/w");
+        session.resize(60, 20);
+        session.set_diagnostics(vec![problem(0, deco_lsp::Severity::Warning)]);
+        session.set_file_diagnostics(
+            PathBuf::from("/w/src/lib.rs"),
+            vec![problem(4, deco_lsp::Severity::Error)],
+        );
+        session.handle_chord(deco_keymap::keys::Chord::parse("ctrl+shift+m").unwrap(), 0);
+        let frame = render(&session, 60, 20);
+        let text: Vec<String> = frame.rows.iter().map(Row::plain).collect();
+        let title = text
+            .iter()
+            .position(|row| row.contains("PROBLEMS"))
+            .expect("the view's title");
+        assert!(text[title + 1].contains("W file.rs:1:1  boom"), "{text:#?}");
+        assert!(
+            text[title + 2].contains("E src/lib.rs:5:1  boom"),
+            "{text:#?}"
+        );
+        for row in &frame.rows {
+            assert_eq!(row.plain().chars().count(), 60, "{:?}", row.plain());
+        }
+    }
+
+    #[test]
+    fn an_empty_problems_view_says_so() {
+        let mut session = session("");
+        session.resize(60, 20);
+        session.handle_chord(deco_keymap::keys::Chord::parse("ctrl+shift+m").unwrap(), 0);
+        let frame = render(&session, 60, 20);
+        assert!(frame
+            .rows
+            .iter()
+            .any(|row| row.plain().contains("No problems have been detected")));
+    }
+
     fn problem(line: u32, severity: deco_lsp::Severity) -> deco_lsp::Diagnostic {
         deco_lsp::Diagnostic {
             range: deco_core::position::Range::new(
@@ -4325,7 +4459,10 @@ mod tests {
     fn a_bidirectional_control_is_marked_and_never_drawn() {
         let frame = render(&session(TROJAN), 60, 4);
         let line = frame.rows[0].plain();
-        assert!(!line.contains('\u{202e}') && !line.contains('\u{2066}'), "{line:?}");
+        assert!(
+            !line.contains('\u{202e}') && !line.contains('\u{2066}'),
+            "{line:?}"
+        );
         assert_eq!(line.matches(BIDI_PICTURE).count(), 4, "{line:?}");
         assert_eq!(line.chars().count(), 60, "the markers cost one column each");
     }

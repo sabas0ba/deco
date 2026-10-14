@@ -20,6 +20,16 @@ Diagnostics arrive by `textDocument/publishDiagnostics` and replace the previous
 
 Information and hint diagnostics are not included in either count. They do not require action, and the status bar only has room for errors and warnings.
 
+### The problems view
+
+![ctrl+shift+m lists the problems in two files, and enter opens the one that is not open](img/problems.svg)
+
+`ctrl+shift+m` (`workbench.actions.view.problems`) opens the problems view in the [panel](chrome.md) and gives it the keyboard; pressing it again there hides the panel. The view lists every diagnostic the server has published, including those for files that are not open, one row per problem: a severity letter (`E`, `W`, `I`, `H`) in the theme's colour for that severity, the path relative to the workspace with a one-based line and column, and the first line of the message.
+
+Files are listed in path order and problems in position order within a file. `up`, `down`, `home` and `end` move the selection, `enter` opens the file at the problem and returns the keyboard to the text, and `escape` returns it without opening anything.
+
+When the server stops, or a document in another language replaces it, its problems are removed from the view, because nothing will update or clear them.
+
 ## Hover
 
 ![A hover box for the symbol under the caret](img/hover.svg)
