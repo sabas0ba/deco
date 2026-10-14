@@ -207,6 +207,11 @@ pub struct Document {
     pub settings: EditorSettings,
     /// Whether the buffer differs from what is on disk.
     pub dirty: bool,
+    /// Whether this is a preview, as `workbench.editor.enablePreview` makes a
+    /// file opened from the tree: the next file opened the same way replaces
+    /// it rather than opening beside it. Editing it, or
+    /// `workbench.action.keepEditor`, keeps it.
+    pub preview: bool,
     /// Highlighting for this document's language.
     ///
     /// Stored here rather than in a frontend because the lexer state at the
@@ -288,6 +293,7 @@ impl Document {
             indentation_overridden: false,
             auto_whitespace: Vec::new(),
             dirty: false,
+            preview: false,
             syntax: Syntax::new(None),
         }
     }
@@ -322,6 +328,7 @@ impl Document {
             indentation_overridden: false,
             auto_whitespace: Vec::new(),
             dirty: false,
+            preview: false,
         };
         document.apply_overrides();
         document

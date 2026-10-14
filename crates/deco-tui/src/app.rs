@@ -6,7 +6,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
 use crossterm::event::{self, Event};
-use crossterm::style::{Color, ResetColor, SetBackgroundColor, SetForegroundColor};
+use crossterm::style::{
+    Attribute, Color, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor,
+};
 use crossterm::{cursor, execute, queue, terminal};
 use deco_editor::{Outcome, Session};
 use deco_keymap::keys::Chord;
@@ -204,12 +206,18 @@ fn paint(out: &mut impl Write, frame: &Frame, style: Option<cursor::SetCursorSty
                 SetForegroundColor(to_crossterm(span.fg)),
                 SetBackgroundColor(to_crossterm(span.bg))
             )?;
+            if span.italic {
+                queue!(out, SetAttribute(Attribute::Italic))?;
+            }
             // All text is made printable before it reaches the terminal. The renderer
             // already substitutes document text. This covers everything else, such as
             // a file name containing an escape byte or a search result containing a
             // line from another file. A terminal interprets what is written to it, and
             // `\x1b]52;c;…` writes the clipboard.
             out.write_all(render::sanitise(&span.text).as_bytes())?;
+            if span.italic {
+                queue!(out, SetAttribute(Attribute::NoItalic))?;
+            }
         }
         queue!(out, ResetColor)?;
     }
@@ -3028,6 +3036,7 @@ mod tests {
                     text: "hi".to_owned(),
                     fg: Rgba::WHITE,
                     bg: Rgba::BLACK,
+                    italic: false,
                 }],
             }],
             cursor: Some((3, 0)),
@@ -3052,6 +3061,7 @@ mod tests {
                     text: "\u{1b}]52;c;aGVsbG8=\u{7}\u{1b}[31m".to_owned(),
                     fg: Rgba::WHITE,
                     bg: Rgba::BLACK,
+                    italic: false,
                 }],
             }],
             cursor: None,

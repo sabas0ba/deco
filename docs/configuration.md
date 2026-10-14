@@ -77,8 +77,7 @@ These are read only from deco's defaults and your user settings. Workspace, fold
 
 If the sandbox is `"container"` and no runtime can be found, deco **refuses to start the extension host** and names this setting in the error. It does not fall back to `"process"`. See [Extensions](extensions.md#the-container) for the reason.
 
-Four keys have a **default** in deco but are not used yet: `editor.tabCompletion`, `editor.largeFileOptimizations`, `files.encoding` and
-`workbench.editor.enablePreview`. Changing these values currently has no effect.
+Three keys have a **default** in deco but are not used yet: `editor.tabCompletion`, `editor.largeFileOptimizations` and `files.encoding`. Changing these values currently has no effect.
 
 `editor.fontFamily`, `editor.fontSize` and `editor.lineHeight` apply only to the GPU frontend, because a terminal has no font size. The GPU frontend does not wrap or draw whitespace, so `editor.wordWrap`, `editor.wrappingIndent`, `editor.renderWhitespace`, `editor.rulers` and `editor.lineNumbers: "interval"` apply only to the terminal frontend. The [top-level README](https://github.com/sabas0ba/deco#readme) lists features that are not built.
 

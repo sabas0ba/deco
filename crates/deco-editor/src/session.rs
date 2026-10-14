@@ -204,6 +204,9 @@ pub struct TabLabel {
     pub dirty: bool,
     /// Whether this is the tab on screen.
     pub active: bool,
+    /// Whether the tab is a preview, which a frontend shows in italics as VS
+    /// Code does; see [`Document::preview`].
+    pub preview: bool,
 }
 
 /// How many paths the recency list keeps.
@@ -521,6 +524,9 @@ pub struct Session {
     terminal: Option<crate::terminal::TerminalPanel>,
     /// Which view the panel shows.
     panel_view: PanelView,
+    /// The file the tree asked to open as a preview, until the frontend opens
+    /// it with [`Session::open`].
+    preview_pending: Option<PathBuf>,
     /// Every diagnostic published for the workspace, for the problems view.
     markers: crate::markers::Markers,
     /// Which region has the keyboard.
@@ -789,6 +795,7 @@ impl Session {
             panel: false,
             terminal: None,
             panel_view: PanelView::default(),
+            preview_pending: None,
             markers: crate::markers::Markers::default(),
             focus: Focus::Editor,
             explorer: None,
@@ -824,13 +831,34 @@ impl Session {
 
     /// Replaces the open document.
     pub fn open(&mut self, path: PathBuf, text: &str) {
+        // Whether the tree asked for this file as a preview. Any other way of
+        // opening it, such as quick open, opens it kept.
+        let preview = self
+            .preview_pending
+            .take()
+            .is_some_and(|pending| normalise(&pending) == normalise(&path));
+
         // Switch to a file that is already open instead of opening it twice. Two
         // tabs for one file would be two divergent copies, and the last save
         // would overwrite the other without warning.
         if let Some(index) = self.tab_of(&path) {
             self.switch_to(index);
+            // Opened again other than as a preview: kept, as VS Code keeps a
+            // preview opened a second time.
+            if !preview {
+                self.document.preview = false;
+            }
             self.refresh_context();
             return;
+        }
+
+        // A preview replaces the previous preview, unless that one has been
+        // edited since, which keeps it.
+        if preview {
+            if let Some(index) = self.preview_tab() {
+                self.switch_to(index);
+                self.close_active_tab();
+            }
         }
 
         let language = crate::document::language_for_path(&path);
@@ -875,10 +903,39 @@ impl Session {
         if !carried_query.is_empty() {
             self.find.set_query(carried_query);
         }
+        self.document.preview = preview;
         // A different file can have a different gutter width, which changes the
         // text width.
         self.relayout();
         self.refresh_context();
+    }
+
+    /// The display index of the tab holding an unedited preview, if any.
+    fn preview_tab(&self) -> Option<usize> {
+        let is_preview = |document: &Document| document.preview && !document.dirty;
+        if let Some(index) = self.left.iter().position(|tab| is_preview(&tab.document)) {
+            return Some(index);
+        }
+        if is_preview(&self.document) {
+            return Some(self.left.len());
+        }
+        self.right
+            .iter()
+            .position(|tab| is_preview(&tab.document))
+            .map(|index| self.left.len() + 1 + index)
+    }
+
+    /// Whether `workbench.editor.enablePreview` lets the tree open previews.
+    fn previews_enabled(&self) -> bool {
+        self.settings
+            .get_bool("workbench.editor.enablePreview", None)
+            .unwrap_or(true)
+    }
+
+    /// `workbench.action.keepEditor`: the active tab stops being a preview.
+    fn keep_editor(&mut self) -> Outcome {
+        self.document.preview = false;
+        Outcome::Handled
     }
 
     /// Whether the active tab is an untitled document nobody has typed into.
@@ -930,6 +987,7 @@ impl Session {
                         title: comparison.left.label.to_owned(),
                         dirty: false,
                         active: !comparison.focused_right,
+                        preview: false,
                     }],
                     focused: !comparison.focused_right,
                     comparison: Some(ComparisonPane {
@@ -946,6 +1004,7 @@ impl Session {
                         title: comparison.right.label.to_owned(),
                         dirty: false,
                         active: comparison.focused_right,
+                        preview: false,
                     }],
                     focused: comparison.focused_right,
                     comparison: Some(ComparisonPane {
@@ -1006,6 +1065,7 @@ impl Session {
             title: document.title(),
             dirty: document.dirty,
             active,
+            preview: document.preview,
         };
         let mut labels: Vec<TabLabel> = self
             .left
@@ -1424,6 +1484,11 @@ impl Session {
     /// that a binding gated on `editorHasSelection` becomes active in the same
     /// frame the selection appears.
     pub fn refresh_context(&mut self) {
+        // Editing a preview keeps it, as in VS Code. Checked here because every
+        // command that changes the text ends by refreshing the context.
+        if self.document.dirty {
+            self.document.preview = false;
+        }
         if self
             .document
             .snippet
@@ -1733,6 +1798,8 @@ impl Session {
             "workbench.action.focusSideBar" => self.focus_region(Focus::SideBar),
             "workbench.action.focusPanel" => self.focus_region(Focus::Panel),
             "workbench.actions.view.problems" => self.toggle_problems(),
+            "workbench.action.keepEditor" => self.keep_editor(),
+            "filesExplorer.openFilePreserveFocus" => self.open_from_tree(false),
             // VS Code's way back to the text from anywhere in the chrome.
             "workbench.action.focusActiveEditorGroup" => self.focus_region(Focus::Editor),
             // Needs the view as well as the document, because wrapping depends on
@@ -5506,6 +5573,31 @@ impl Session {
         changed
     }
 
+    /// Opens the tree's selected file, as a preview when
+    /// `workbench.editor.enablePreview` allows, and moves the keyboard to the
+    /// text if `focus_text`. `space` keeps it in the tree, so files can be
+    /// looked at one after another with the arrow keys and `space`, each
+    /// replacing the last.
+    fn open_from_tree(&mut self, focus_text: bool) -> Outcome {
+        let Some(row) = self.explorer.as_ref().and_then(crate::Explorer::selection) else {
+            return Outcome::Handled;
+        };
+        if row.is_dir {
+            return Outcome::Handled;
+        }
+        if self.previews_enabled() {
+            self.preview_pending = Some(row.path.clone());
+        }
+        if focus_text {
+            self.focus = Focus::Editor;
+        }
+        self.refresh_context();
+        Outcome::OpenFile {
+            path: row.path,
+            at: None,
+        }
+    }
+
     /// `revealInExplorer`: opens the tree onto the file being edited.
     ///
     /// An untitled document has no path to reveal, so a message is shown instead
@@ -5567,12 +5659,7 @@ impl Session {
                 } else {
                     // Focus moves to the editor with the opened file, so the
                     // user can type in it without another keystroke.
-                    self.focus = Focus::Editor;
-                    self.refresh_context();
-                    return Outcome::OpenFile {
-                        path: row.path,
-                        at: None,
-                    };
+                    return self.open_from_tree(true);
                 }
             }
             _ => {}
@@ -9863,6 +9950,117 @@ mod tests {
             s.focus(),
             Focus::Editor,
             "opening a file puts the keyboard where the file is"
+        );
+    }
+
+    /// A tree of three files at the root, with the keyboard in it.
+    fn with_files() -> Session {
+        let mut s = session();
+        s.resize(100, 30);
+        s.set_workspace_root("/w");
+        s.fill_directory(
+            Path::new("/w"),
+            ["a.rs", "b.rs", "c.rs"]
+                .into_iter()
+                .map(crate::explorer::Entry::file)
+                .collect(),
+        );
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+        s
+    }
+
+    /// Presses `space` in the tree and opens what it asks for, as a frontend does.
+    fn space_open(s: &mut Session) {
+        let Outcome::OpenFile { path, .. } = press(s, "space") else {
+            panic!("space on a file opens it");
+        };
+        s.open(path, "text\n");
+    }
+
+    fn previews(s: &Session) -> Vec<(String, bool)> {
+        s.tab_labels()
+            .into_iter()
+            .map(|label| (label.title, label.preview))
+            .collect()
+    }
+
+    #[test]
+    fn files_looked_at_from_the_tree_share_one_preview_tab() {
+        let mut s = with_files();
+        space_open(&mut s);
+        assert_eq!(
+            s.focus(),
+            Focus::SideBar,
+            "space leaves the keyboard in the tree"
+        );
+        press(&mut s, "down");
+        space_open(&mut s);
+        press(&mut s, "down");
+        space_open(&mut s);
+        assert_eq!(previews(&s), [("c.rs".to_owned(), true)]);
+    }
+
+    #[test]
+    fn editing_a_preview_or_keeping_it_makes_the_next_one_open_beside_it() {
+        let mut s = with_files();
+        space_open(&mut s);
+        // Edited: kept.
+        s.run("workbench.action.focusActiveEditorGroup", None, 0);
+        press(&mut s, "x");
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+        press(&mut s, "down");
+        space_open(&mut s);
+        assert_eq!(
+            previews(&s),
+            [("a.rs".to_owned(), false), ("b.rs".to_owned(), true)]
+        );
+        // `ctrl+k enter`: kept without an edit.
+        s.run("workbench.action.focusActiveEditorGroup", None, 0);
+        press(&mut s, "ctrl+k");
+        press(&mut s, "enter");
+        assert!(!s.tab_labels()[1].preview);
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+        press(&mut s, "down");
+        space_open(&mut s);
+        assert_eq!(s.tab_count(), 3);
+    }
+
+    #[test]
+    fn a_file_opened_any_other_way_is_not_a_preview_and_keeps_one() {
+        let mut s = with_files();
+        space_open(&mut s);
+        // Quick open, a search result, go to definition: a plain `open`.
+        s.open(PathBuf::from("/w/a.rs"), "text\n");
+        assert_eq!(previews(&s), [("a.rs".to_owned(), false)]);
+        s.open(PathBuf::from("/w/z.rs"), "z\n");
+        assert!(!s.tab_labels()[1].preview);
+    }
+
+    #[test]
+    fn with_previews_disabled_the_tree_opens_every_file_in_its_own_tab() {
+        let mut settings = Settings::with_defaults();
+        settings.set(
+            deco_config::Scope::User,
+            "workbench.editor.enablePreview",
+            serde_json::json!(false),
+        );
+        let mut s = Session::new(settings, None, Platform::Linux);
+        s.resize(100, 30);
+        s.set_workspace_root("/w");
+        s.fill_directory(
+            Path::new("/w"),
+            vec![
+                crate::explorer::Entry::file("a.rs"),
+                crate::explorer::Entry::file("b.rs"),
+            ],
+        );
+        s.run("workbench.files.action.focusFilesExplorer", None, 0);
+        space_open(&mut s);
+        press(&mut s, "down");
+        space_open(&mut s);
+        assert_eq!(
+            previews(&s),
+            [("a.rs".to_owned(), false), ("b.rs".to_owned(), false)]
         );
     }
 

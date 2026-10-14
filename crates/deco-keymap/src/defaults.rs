@@ -177,6 +177,9 @@ pub const DEFAULT_KEYBINDINGS_JSONC: &str = r#"[
     // Changing the files themselves. VS Code's identifiers, and its keys — `F2`
     // and `delete` mean something else in the text, which is why both are gated.
     { "key": "f2",           "command": "renameFile",           "when": "filesExplorerFocus" },
+    // Opens the selected file as a preview and leaves the keyboard in the
+    // tree. Not while a prompt is open over the tree, where a space is text.
+    { "key": "space",        "command": "filesExplorer.openFilePreserveFocus", "when": "filesExplorerFocus && !inQuickOpen" },
     // `cmd+backspace` on macOS, where the key labelled Delete reports as
     // Backspace and forward-delete is the awkward one. VS Code's explorer binds
     // the same pair.
@@ -232,6 +235,7 @@ pub const DEFAULT_KEYBINDINGS_JSONC: &str = r#"[
     { "key": "ctrl+b",       "mac": "cmd+b",       "command": "workbench.action.toggleSidebarVisibility" },
     { "key": "ctrl+j",       "mac": "cmd+j",       "command": "workbench.action.togglePanel" },
     { "key": "ctrl+`",       "command": "workbench.action.terminal.toggleTerminal" },
+    { "key": "ctrl+k enter", "mac": "cmd+k enter", "command": "workbench.action.keepEditor" },
     { "key": "ctrl+shift+m", "mac": "cmd+shift+m", "command": "workbench.actions.view.problems" },
 
     // ---- Terminal -------------------------------------------------------

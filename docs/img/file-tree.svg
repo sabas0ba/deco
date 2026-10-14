@@ -501,7 +501,7 @@
 <rect width="670" height="316" rx="6" fill="#1f1f1f"/>
 <rect x="12.0" y="12.0" width="76.5" height="19.0" fill="#181818"/>
 <text x="12.0" y="26.0" font-size="14px" fill="#cccccc" textLength="76.5" lengthAdjust="spacingAndGlyphs"> main.rs </text>
-<text x="88.5" y="26.0" font-size="14px" fill="#cccccc" textLength="85.0" lengthAdjust="spacingAndGlyphs"> lexer.rs </text>
+<text x="88.5" y="26.0" font-size="14px" fill="#cccccc" font-style="italic" textLength="85.0" lengthAdjust="spacingAndGlyphs"> lexer.rs </text>
 <rect x="173.5" y="12.0" width="484.5" height="19.0" fill="#181818"/>
 <rect x="12.0" y="31.0" width="76.5" height="19.0" fill="#181818"/>
 <text x="12.0" y="45.0" font-size="14px" fill="#cccccc" textLength="76.5" lengthAdjust="spacingAndGlyphs"> EXPLORER</text>

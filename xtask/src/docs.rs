@@ -2408,10 +2408,15 @@ fn frame_body(out: &mut String, frame: &Frame, bg: Rgba) {
                 continue;
             }
             out.push_str(&format!(
-                "<text x=\"{x:.1}\" y=\"{:.1}\" font-size=\"{FONT:.0}px\" fill=\"{}\" \
+                "<text x=\"{x:.1}\" y=\"{:.1}\" font-size=\"{FONT:.0}px\" fill=\"{}\"{} \
                  textLength=\"{:.1}\" lengthAdjust=\"spacingAndGlyphs\">{}</text>\n",
                 top + LINE - 5.0,
                 hex(span.fg),
+                if span.italic {
+                    " font-style=\"italic\""
+                } else {
+                    ""
+                },
                 cells as f32 * CELL,
                 escape(&span.text)
             ));
@@ -2559,6 +2564,7 @@ mod tests {
                         text: "ab".to_owned(),
                         fg: Rgba::WHITE,
                         bg: Rgba::BLACK,
+                        italic: false,
                     }],
                 }],
                 cursor: None,
@@ -2583,6 +2589,7 @@ mod tests {
                         text: "ab".to_owned(),
                         fg: Rgba::WHITE,
                         bg: Rgba::rgb(1, 2, 3),
+                        italic: false,
                     }],
                 }],
                 cursor: None,
@@ -2604,6 +2611,7 @@ mod tests {
                         text: "    ".to_owned(),
                         fg: Rgba::WHITE,
                         bg: Rgba::BLACK,
+                        italic: false,
                     }],
                 }],
                 cursor: None,

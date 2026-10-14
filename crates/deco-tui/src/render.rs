@@ -27,6 +27,8 @@ pub struct Span {
     pub fg: Rgba,
     /// Background colour.
     pub bg: Rgba,
+    /// Drawn in italics, as VS Code draws a preview tab's title.
+    pub italic: bool,
 }
 
 /// One terminal row.
@@ -346,6 +348,7 @@ fn render_text(session: &Session, width: usize, height: usize) -> Frame {
                     text: "─".repeat(editor.width),
                     fg: palette.gutter_fg,
                     bg: palette.bg,
+                    italic: false,
                 }],
             }
         } else if row_index < editor.height {
@@ -379,6 +382,7 @@ fn render_text(session: &Session, width: usize, height: usize) -> Frame {
                     .to_owned(),
                     fg: palette.gutter_fg,
                     bg: palette.bg,
+                    italic: false,
                 };
                 let mut spans = Vec::new();
                 if rect.x == 0 {
@@ -693,6 +697,7 @@ fn scm_rows(
                     text,
                     fg: row_fg,
                     bg: row_bg,
+                    italic: false,
                 }],
             },
         ));
@@ -832,11 +837,13 @@ fn problem_rows(
                 text: format!(" {letter}"),
                 fg: theme.color(key).unwrap_or(fg),
                 bg: row_bg,
+                italic: false,
             },
             Span {
                 text,
                 fg,
                 bg: row_bg,
+                italic: false,
             },
         ];
         if used < rect.width {
@@ -929,6 +936,7 @@ fn region_line(text: &str, width: usize, fg: Rgba, bg: Rgba) -> Row {
         text: format!(" {clipped}"),
         fg,
         bg,
+        italic: false,
     }];
     if used + 1 < width {
         spans.push(blank(width - used - 1, bg));
@@ -957,6 +965,7 @@ fn stitch(frames: &[Frame], row_index: usize, palette: &Palette) -> Row {
                 text: "│".to_owned(),
                 fg: palette.gutter_fg,
                 bg: palette.bg,
+                italic: false,
             });
         }
         match frame.rows.get(row_index) {
@@ -1063,11 +1072,13 @@ fn pane_rows(
                         text: format!("{label:>width$}", width = gutter - 1),
                         fg: number_fg,
                         bg: line_bg,
+                        italic: false,
                     });
                     spans.push(Span {
                         text: glyph.to_string(),
                         fg,
                         bg: line_bg,
+                        italic: false,
                     });
                 }
                 // One span when there is no mark, which is the common case.
@@ -1076,6 +1087,7 @@ fn pane_rows(
                     text: format!("{label:>width$} ", width = gutter - 1),
                     fg: number_fg,
                     bg: line_bg,
+                    italic: false,
                 }),
             }
         }
@@ -1147,7 +1159,13 @@ fn tab_bar(
         } else {
             (inactive_fg, inactive_bg)
         };
-        spans.push(Span { text, fg, bg });
+        // A preview's title in italics, as VS Code draws it.
+        spans.push(Span {
+            text,
+            fg,
+            bg,
+            italic: label.preview,
+        });
         used += cells;
     }
     if used < width {
@@ -1155,6 +1173,7 @@ fn tab_bar(
             text: " ".repeat(width - used),
             fg: inactive_fg,
             bg: bar_bg,
+            italic: false,
         });
     }
     Row { spans }
@@ -1224,7 +1243,12 @@ fn choice_row(
         (palette.status_fg, palette.status_bg)
     };
     Row {
-        spans: vec![Span { text, fg, bg }],
+        spans: vec![Span {
+            text,
+            fg,
+            bg,
+            italic: false,
+        }],
     }
 }
 
@@ -1365,6 +1389,7 @@ fn highlighted(
         text: text.to_owned(),
         fg: palette.status_fg,
         bg: palette.status_bg,
+        italic: false,
     };
     let end = prompt.len() + field.len();
     if !selected || field.is_empty() || text.len() < end || !text.starts_with(prompt) {
@@ -1378,6 +1403,7 @@ fn highlighted(
             // list.
             fg: palette.bg,
             bg: palette.status_fg,
+            italic: false,
         },
         plain(&text[end..]),
     ]
@@ -1425,6 +1451,7 @@ fn blank(width: usize, bg: Rgba) -> Span {
         text: " ".repeat(width),
         fg: bg,
         bg,
+        italic: false,
     }
 }
 
@@ -1684,6 +1711,7 @@ fn line_spans(
                 text: c.into_owned(),
                 fg,
                 bg,
+                italic: false,
             }),
         }
     }
@@ -1991,6 +2019,7 @@ fn status_bar(session: &Session, width: usize, palette: &Palette) -> Row {
             text,
             fg: palette.status_fg,
             bg: palette.status_bg,
+            italic: false,
         }],
     }
 }
@@ -2069,6 +2098,7 @@ fn overlay_hover(
                     text: content,
                     fg: palette.status_fg,
                     bg: palette.status_bg,
+                    italic: false,
                 },
                 // The rest of the row keeps the editor background, so the box
                 // appears as a floating box rather than a full-width banner.
@@ -2076,6 +2106,7 @@ fn overlay_hover(
                     text: " ".repeat(width.saturating_sub(box_width)),
                     fg: palette.bg,
                     bg: palette.bg,
+                    italic: false,
                 },
             ],
         };
@@ -2248,11 +2279,17 @@ fn overlay_suggest(
         };
         frame.rows[row] = Row {
             spans: vec![
-                Span { text, fg, bg },
+                Span {
+                    text,
+                    fg,
+                    bg,
+                    italic: false,
+                },
                 Span {
                     text: " ".repeat(width.saturating_sub(box_width)),
                     fg: palette.bg,
                     bg: palette.bg,
+                    italic: false,
                 },
             ],
         };
@@ -2802,6 +2839,35 @@ mod tests {
             let width: usize = painted.chars().map(|c| c.width().unwrap_or(1)).sum();
             assert_eq!(width, 40, "{painted:?}");
         }
+    }
+
+    #[test]
+    fn a_preview_tab_s_title_is_in_italics() {
+        let mut session = session("");
+        session.resize(60, 10);
+        session.set_workspace_root("/w");
+        session.fill_directory(
+            std::path::Path::new("/w"),
+            vec![deco_editor::explorer::Entry::file("a.rs")],
+        );
+        session.run("workbench.files.action.focusFilesExplorer", None, 0);
+        session.handle_chord(deco_keymap::keys::Chord::parse("space").unwrap(), 0);
+        session.open(PathBuf::from("/w/a.rs"), "x\n");
+        let frame = render(&session, 60, 10);
+        let tab = frame
+            .rows
+            .iter()
+            .flat_map(|row| &row.spans)
+            .find(|span| span.text.contains("a.rs"))
+            .expect("the tab");
+        assert!(tab.italic);
+        let kept = frame
+            .rows
+            .iter()
+            .flat_map(|row| &row.spans)
+            .find(|span| span.text.contains("file.rs"))
+            .expect("the first tab");
+        assert!(!kept.italic);
     }
 
     #[test]
