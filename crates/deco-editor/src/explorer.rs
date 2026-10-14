@@ -111,6 +111,18 @@ pub struct Explorer {
     revealing: Option<PathBuf>,
 }
 
+/// Directories first, then names case-insensitively, as in VS Code's explorer
+/// and common file managers. `read_dir` has no defined order, and the tree
+/// should not reorder on each read.
+fn sort_entries(entries: &mut [Entry]) {
+    entries.sort_by(|a, b| {
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+}
+
 impl Explorer {
     /// An explorer rooted at `root`, with the root's own listing outstanding.
     pub fn new(root: impl Into<PathBuf>) -> Self {
@@ -161,23 +173,72 @@ impl Explorer {
     /// case-insensitively by name, as in VS Code's explorer and common file
     /// managers.
     pub fn fill(&mut self, dir: &Path, mut entries: Vec<Entry>) {
-        entries.sort_by(|a, b| {
-            b.is_dir
-                .cmp(&a.is_dir)
-                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-                .then_with(|| a.name.cmp(&b.name))
-        });
+        sort_entries(&mut entries);
         self.listings
             .insert(dir.to_path_buf(), Contents::Known(entries));
         self.land_reveal();
         self.clamp();
     }
 
+    /// The directories whose listings are on screen: the root and every
+    /// expanded directory with a visible row. These are what a refresh reads
+    /// again, so its cost is bounded by what is shown.
+    pub fn shown_directories(&self) -> Vec<PathBuf> {
+        if !self.loaded() {
+            return Vec::new();
+        }
+        let mut dirs = vec![self.root.clone()];
+        dirs.extend(
+            self.rows()
+                .into_iter()
+                .filter(|row| {
+                    row.expanded
+                        && matches!(self.listings.get(&row.path), Some(Contents::Known(_)))
+                })
+                .map(|row| row.path),
+        );
+        dirs
+    }
+
+    /// Replaces an already-read listing with a newer one, for a refresh.
+    ///
+    /// Returns whether anything changed, so an unchanged directory costs no
+    /// redraw. Unlike [`Explorer::fill`], it keeps the selection on the same
+    /// path rather than the same row index: a file created above the selected
+    /// row would otherwise move the selection to its neighbour. A
+    /// subdirectory that has gone is forgotten with everything under it, so a
+    /// directory created later with that name does not appear expanded.
+    pub fn refresh(&mut self, dir: &Path, mut entries: Vec<Entry>) -> bool {
+        sort_entries(&mut entries);
+        let Some(Contents::Known(old)) = self.listings.get(dir) else {
+            return false;
+        };
+        if *old == entries {
+            return false;
+        }
+        let removed: Vec<PathBuf> = old
+            .iter()
+            .filter(|entry| entry.is_dir && !entries.iter().any(|new| new.name == entry.name))
+            .map(|entry| dir.join(&entry.name))
+            .collect();
+        let selected = self.selection().map(|row| row.path);
+        self.listings
+            .insert(dir.to_path_buf(), Contents::Known(entries));
+        for gone in removed {
+            self.forget_under(&gone);
+        }
+        if let Some(index) = selected.and_then(|path| self.rows().iter().position(|row| row.path == path)) {
+            self.selected = index;
+        }
+        self.clamp();
+        true
+    }
+
     /// Forgets `dir`'s contents so it is read again when next shown.
     ///
-    /// The tree cannot detect new files on disk because there is no file
-    /// watcher, which would need separate platform-specific work. Refresh is
-    /// implemented with this method.
+    /// Used after deco's own file operations. Changes made by other programs
+    /// are picked up by [`Explorer::refresh`] instead, which keeps the rows on
+    /// screen until the new listing arrives.
     pub fn invalidate(&mut self, dir: &Path) {
         if self.listings.contains_key(dir) {
             self.listings.insert(dir.to_path_buf(), Contents::Pending);
@@ -569,6 +630,68 @@ mod tests {
 
         // It is now shown and not loaded, so the tree requests it.
         assert_eq!(explorer.wanted().as_deref(), Some(Path::new("/w/src")));
+    }
+
+    #[test]
+    fn a_refresh_reads_the_shown_directories_and_keeps_the_selection_on_its_path() {
+        let mut explorer = tree();
+        explorer.select_first();
+        explorer.expand();
+        explorer.fill(Path::new("/w/src"), vec![Entry::file("main.rs")]);
+        assert_eq!(
+            explorer.shown_directories(),
+            [PathBuf::from("/w"), PathBuf::from("/w/src")]
+        );
+        explorer.select_last();
+        assert_eq!(explorer.selection().unwrap().name, "README.md");
+
+        // A file created by another program, sorted above the selection.
+        let changed = explorer.refresh(
+            Path::new("/w"),
+            vec![
+                Entry::file("README.md"),
+                Entry::dir("src"),
+                Entry::file("Cargo.toml"),
+                Entry::file("build.rs"),
+            ],
+        );
+        assert!(changed);
+        let names: Vec<_> = explorer.rows().into_iter().map(|r| r.name).collect();
+        assert_eq!(names, ["src", "main.rs", "build.rs", "Cargo.toml", "README.md"]);
+        assert_eq!(explorer.selection().unwrap().name, "README.md");
+
+        // The same listing again changes nothing.
+        assert!(!explorer.refresh(
+            Path::new("/w"),
+            vec![
+                Entry::file("build.rs"),
+                Entry::file("Cargo.toml"),
+                Entry::dir("src"),
+                Entry::file("README.md"),
+            ],
+        ));
+    }
+
+    #[test]
+    fn a_refresh_forgets_a_directory_that_has_gone() {
+        let mut explorer = tree();
+        explorer.select_first();
+        explorer.expand();
+        explorer.fill(Path::new("/w/src"), vec![Entry::file("main.rs")]);
+        assert!(explorer.refresh(
+            Path::new("/w"),
+            vec![Entry::file("README.md"), Entry::file("Cargo.toml")],
+        ));
+        assert_eq!(explorer.shown_directories(), [PathBuf::from("/w")]);
+        // Created again with the same name: closed, and read when opened.
+        explorer.refresh(
+            Path::new("/w"),
+            vec![Entry::dir("src"), Entry::file("README.md"), Entry::file("Cargo.toml")],
+        );
+        let src = explorer.rows().into_iter().find(|r| r.name == "src").unwrap();
+        assert!(!src.expanded);
+        // A directory that was never read is not refreshed.
+        assert!(!explorer.refresh(Path::new("/w/src"), vec![Entry::file("x")]));
     }
 
     #[test]

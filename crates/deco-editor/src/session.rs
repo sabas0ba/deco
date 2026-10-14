@@ -5474,6 +5474,37 @@ impl Session {
         self.refresh_context();
     }
 
+    /// The directories a frontend should read again to pick up changes other
+    /// programs made, or none while the tree is not on screen.
+    ///
+    /// Only what is shown, so the cost of a refresh is bounded by the window
+    /// rather than the workspace. A hidden tree is brought up to date by the
+    /// first refresh after it is shown again.
+    pub fn directories_to_refresh(&self) -> Vec<PathBuf> {
+        let showing = self.regions().side_bar.is_some() && self.side_bar_view == SideBarView::Explorer;
+        match &self.explorer {
+            Some(explorer) if showing => explorer.shown_directories(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// A newer listing of a directory the tree has already read. Returns
+    /// whether the tree changed, and so whether to redraw.
+    pub fn refresh_directory(
+        &mut self,
+        dir: &std::path::Path,
+        entries: Vec<crate::explorer::Entry>,
+    ) -> bool {
+        let changed = self
+            .explorer
+            .as_mut()
+            .is_some_and(|explorer| explorer.refresh(dir, entries));
+        if changed {
+            self.refresh_context();
+        }
+        changed
+    }
+
     /// `revealInExplorer`: opens the tree onto the file being edited.
     ///
     /// An untitled document has no path to reveal, so a message is shown instead

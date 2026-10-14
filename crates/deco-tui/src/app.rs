@@ -474,6 +474,8 @@ pub struct Driver {
     clipboard: crate::clipboard::Pending,
     /// The shell running in the panel's terminal.
     terminal: Option<Shell>,
+    /// When the file tree's shown directories were last read again.
+    tree_refreshed_ms: Option<u64>,
 }
 
 impl Driver {
@@ -582,6 +584,7 @@ impl Driver {
             disk,
             clipboard,
             terminal: None,
+            tree_refreshed_ms: None,
         }
     }
 
@@ -685,6 +688,7 @@ impl Driver {
         self.poll(session, now_ms);
         if self.remote.is_none() {
             self.check_disk(session, now_ms);
+            self.refresh_tree(session, now_ms);
         }
         let Some(at) = self.edited_at else {
             return Ok(());
@@ -715,6 +719,40 @@ impl Driver {
             .get_bool("deco.clipboard.osc52", None)
             .unwrap_or(true)
             .then(|| crate::clipboard::osc52(&text))
+    }
+
+    /// Reads the tree's shown directories again, at most once per
+    /// [`TREE_REFRESH_INTERVAL_MS`], so files other programs create, rename
+    /// or delete appear without a file watcher.
+    ///
+    /// Local only: a remote workspace is listed whole, which is too costly to
+    /// repeat on a timer. At most [`TREE_REFRESH_LIMIT`] directories are read
+    /// per pass, so a tree with many folders open costs a bounded amount.
+    fn refresh_tree(&mut self, session: &mut Session, now_ms: u64) {
+        let Some(root) = self.tree_root.clone() else {
+            return;
+        };
+        if self
+            .tree_refreshed_ms
+            .is_some_and(|last| now_ms.saturating_sub(last) < TREE_REFRESH_INTERVAL_MS)
+        {
+            return;
+        }
+        self.tree_refreshed_ms = Some(now_ms);
+        let mut changed = false;
+        for dir in session
+            .directories_to_refresh()
+            .into_iter()
+            .take(TREE_REFRESH_LIMIT)
+        {
+            let entries = crate::files::list_dir(&root, &dir, &session.settings);
+            changed |= session.refresh_directory(&dir, entries);
+        }
+        if changed {
+            // A directory that reappeared may need reading if it is expanded.
+            let _ = fill_tree(session, &root, None);
+            self.dirty = true;
+        }
     }
 
     /// Applies changes other programs made to the open files.
@@ -1459,6 +1497,14 @@ fn printable(chord: &deco_keymap::keys::Chord) -> Option<char> {
 /// appears delayed, and 20 wakeups a second on an idle editor has no measurable
 /// cost.
 const LSP_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// How often the file tree's shown directories are read again. Two seconds,
+/// twice the open-file check: a listing costs more than a `stat`, and a new
+/// file in the tree is less urgent than a changed one in the editor.
+const TREE_REFRESH_INTERVAL_MS: u64 = 2000;
+
+/// The most directories one tree refresh reads.
+const TREE_REFRESH_LIMIT: usize = 64;
 
 /// The interval while a shell is running in the panel.
 const TERMINAL_POLL_INTERVAL: Duration = Duration::from_millis(10);
