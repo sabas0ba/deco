@@ -293,14 +293,19 @@ fn expand_tabs(text: &str, tab_size: usize, settings: &deco_config::EditorSettin
     }
     let mut out = String::with_capacity(text.len());
     let mut column = 0usize;
-    for c in text.chars() {
-        if c == '\t' {
+    for (cluster, _) in deco_core::cluster::clusters(text) {
+        if cluster == "\t" {
             let stop = tab_size - (column % tab_size);
             out.extend(std::iter::repeat_n(' ', stop));
             column += stop;
-        } else {
-            out.push(shown(c, settings));
+        } else if deco_core::cluster::stand_in(cluster).is_some() {
+            // A single character with a stand-in. A joiner inside an emoji
+            // sequence is part of a longer cluster and is drawn with it.
+            out.push(shown(cluster.chars().next().unwrap_or(' '), settings));
             column += 1;
+        } else {
+            out.push_str(cluster);
+            column += cluster.chars().count();
         }
     }
     out

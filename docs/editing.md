@@ -113,11 +113,19 @@ The marker is drawn even with `editor.renderControlCharacters` set to `false`, b
 
 The zero-width space (U+200B), the zero-width non-joiner and joiner (U+200C, U+200D), the word joiner and invisible operators (U+2060–U+2064), a byte order mark inside a line (U+FEFF), the soft hyphen (U+00AD) and U+180E have no visible form. With `editor.unicodeHighlight.invisibleCharacters` (default `true`, as in VS Code) each is drawn as the same `␦` marker; set to `false`, each is drawn as a blank.
 
-Neither setting writes the character itself. The layout counts every character as at least one column, and a terminal draws these in none, so writing one would move the rest of the row one column left of the caret. One consequence is that an emoji sequence joined with U+200D, such as a family emoji, is drawn as its parts with markers between them.
+Neither setting writes the character itself. The layout gives every cluster at least one column, and a terminal draws these in none, so writing one would move the rest of the row one column left of the caret. A joiner *inside* a cluster, such as the U+200D in a family emoji or a ZWNJ after a letter, is part of that cluster and is drawn with it; only a joiner standing on its own is marked.
+
+### Combining marks and other clusters
+
+Text is measured and drawn by extended grapheme cluster (UAX #29): what a reader sees as one character, even when it is several. A letter with a combining accent (`e` + U+0301), a kana with a voicing mark (`か` + U+3099), an Indic conjunct, a flag of two regional indicators, and an emoji joined with U+200D each take the columns of one character, are wrapped as one unit, and are passed over by one press of `left` or `right`. The caret, selections and wrapping all use the same measurement, so the caret stays on the character it is next to.
+
+A cluster's width is the width of the whole sequence: two columns for an East Asian wide character or an emoji, one otherwise. A terminal that draws an emoji sequence as its separate parts disagrees with this and shifts the rest of that row; the editor cannot detect how the terminal draws it.
+
+This is separate from surrogate pairs. A character outside the Basic Multilingual Plane, such as most emoji and CJK Extension B, is two UTF-16 code units; positions are converted at that boundary, as LSP requires, and such a character has always been one character to the caret.
 
 ### What this does not cover
 
-Characters that look like others (`editor.unicodeHighlight.ambiguousCharacters` and `.nonBasicASCII` in VS Code) are not marked. Combining marks, which also have no width of their own, are still written to the terminal and can shift the rest of their row. The GPU frontend applies the same substitutions to the text it hands to its shaper, which would otherwise apply the bidirectional characters itself; it draws the stand-ins in the text colour rather than the highlight colour.
+Characters that look like others (`editor.unicodeHighlight.ambiguousCharacters` and `.nonBasicASCII` in VS Code) are not marked. The GPU frontend still lays out one column per character rather than per cluster. It applies the same substitutions to the text it hands to its shaper, which would otherwise apply the bidirectional characters itself; it draws the stand-ins in the text colour rather than the highlight colour.
 
 ## Copy and paste with the system clipboard
 
