@@ -284,8 +284,11 @@ fn caret_rect(style: CursorStyle, x: f32, y: f32, metrics: Metrics) -> Rect {
     }
 }
 
-fn expand_tabs(text: &str, tab_size: usize) -> String {
-    if !text.contains('\t') {
+fn expand_tabs(text: &str, tab_size: usize, settings: &deco_config::EditorSettings) -> String {
+    if !text
+        .chars()
+        .any(|c| c == '\t' || deco_core::stand_in::stand_in(c).is_some())
+    {
         return text.to_owned();
     }
     let mut out = String::with_capacity(text.len());
@@ -296,11 +299,41 @@ fn expand_tabs(text: &str, tab_size: usize) -> String {
             out.extend(std::iter::repeat_n(' ', stop));
             column += stop;
         } else {
-            out.push(c);
+            out.push(shown(c, settings));
             column += 1;
         }
     }
     out
+}
+
+/// The character drawn for `c`, by the terminal frontend's rules.
+///
+/// Never a control, bidirectional or invisible character itself: the text
+/// shaper would apply a bidirectional one, reordering the line so it reads
+/// differently from its content, and the others have no width of their own
+/// while the layout counts one column for every character. A control or
+/// invisible character the settings hide becomes a blank; a bidirectional
+/// one is always marked, because a blank would hide the reordering.
+fn shown(c: char, settings: &deco_config::EditorSettings) -> char {
+    use deco_core::stand_in::{control_picture, is_bidi_control, is_invisible, MARKER};
+    if let Some(picture) = control_picture(c) {
+        return if settings.render_control_characters {
+            picture
+        } else {
+            ' '
+        };
+    }
+    if is_bidi_control(c) {
+        return MARKER;
+    }
+    if is_invisible(c) {
+        return if settings.highlight_invisible_characters {
+            MARKER
+        } else {
+            ' '
+        };
+    }
+    c
 }
 
 /// Lays out one frame.
@@ -352,7 +385,7 @@ pub fn layout(session: &Session, width: f32, height: f32, metrics: Metrics) -> L
             .line_content(line)
             .map(|s| s.to_string())
             .unwrap_or_default();
-        let text = expand_tabs(&raw, tab_size);
+        let text = expand_tabs(&raw, tab_size, &session.document.settings);
 
         let gutter = if gutter_columns == 0 {
             String::new()
@@ -556,7 +589,16 @@ fn chrome_lines(
                 };
                 let (x, y) = cell(rect.x, rect.y + head + index);
                 out.push(ChromeLine {
-                    text: format!("{}{marker}{}", "  ".repeat(row.depth), row.name),
+                    // A file name can hold any character the document can,
+                    // and reaches the shaper the same way.
+                    text: format!(
+                        "{}{marker}{}",
+                        "  ".repeat(row.depth),
+                        row.name
+                            .chars()
+                            .map(|c| deco_core::stand_in::stand_in(c).unwrap_or(c))
+                            .collect::<String>()
+                    ),
                     x: x + metrics.padding,
                     y,
                 });
@@ -833,9 +875,21 @@ mod tests {
 
     #[test]
     fn tab_expansion_respects_tab_stops() {
-        assert_eq!(expand_tabs("ab\tx", 4), "ab  x");
-        assert_eq!(expand_tabs("abcd\tx", 4), "abcd    x");
-        assert_eq!(expand_tabs("no tabs", 4), "no tabs");
+        let settings = session("").document.settings.clone();
+        assert_eq!(expand_tabs("ab\tx", 4, &settings), "ab  x");
+        assert_eq!(expand_tabs("abcd\tx", 4, &settings), "abcd    x");
+        assert_eq!(expand_tabs("no tabs", 4, &settings), "no tabs");
+    }
+
+    #[test]
+    fn a_control_bidirectional_or_invisible_character_never_reaches_the_shaper() {
+        let mut settings = session("").document.settings.clone();
+        let line = "a\x1b\u{202e}b\u{200b}c";
+        assert_eq!(expand_tabs(line, 4, &settings), "a␛␦b␦c");
+        settings.render_control_characters = false;
+        settings.highlight_invisible_characters = false;
+        // The bidirectional control is marked whatever the settings say.
+        assert_eq!(expand_tabs(line, 4, &settings), "a ␦b c");
     }
 
     #[test]

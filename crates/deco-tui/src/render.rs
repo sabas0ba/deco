@@ -7,6 +7,7 @@
 
 use deco_config::{LineNumbers, RenderWhitespace};
 use deco_core::position::Range;
+use deco_core::stand_in::{is_bidi_control, is_invisible};
 // The gutter width and the column division come from the session, not the
 // renderer. The session needs the same values to know how many columns are left
 // for text, which determines where a wrapped line breaks. Two implementations
@@ -1695,62 +1696,11 @@ fn line_spans(
 /// blank. It cannot send the byte itself, because that would give control of the
 /// terminal to the file's author.
 fn control_picture(c: char) -> Option<char> {
-    match c {
-        // Tab is expanded to spaces before this, and a line's content never contains
-        // its own line break.
-        '\t' | '\n' | '\r' => None,
-        // `␀` through `␟`, in order, at U+2400.
-        '\0'..='\u{1f}' => char::from_u32(0x2400 + c as u32),
-        // Delete, which sits on its own at U+2421.
-        '\u{7f}' => Some('␡'),
-        c if is_bidi_control(c) || is_invisible(c) => Some(BIDI_PICTURE),
-        _ => None,
-    }
+    deco_core::stand_in::stand_in(c)
 }
 
-/// The stand-in for a bidirectional formatting character: `␦`, U+2426.
-///
-/// Control Pictures has no glyph for these characters. U+2426 is from the same
-/// block, so it has the same width as the other stand-ins, one column in every
-/// terminal, including those that draw East Asian ambiguous-width characters
-/// two columns wide.
-const BIDI_PICTURE: char = '\u{2426}';
-
-/// Whether `c` is a character with no visible form of its own that is not a
-/// control or bidirectional character: the zero-width space, joiners and
-/// word joiner, the byte order mark inside a line, and the soft hyphen.
-///
-/// The width table gives these zero columns, while the layout counts every
-/// character as at least one, so writing one to the terminal would move the
-/// rest of the row one column left of where the caret is drawn. They can also
-/// make two identifiers that look the same differ. VS Code marks them under
-/// `editor.unicodeHighlight.invisibleCharacters`.
-fn is_invisible(c: char) -> bool {
-    matches!(
-        c,
-        '\u{00ad}' | '\u{180e}' | '\u{200b}'..='\u{200d}' | '\u{2060}'..='\u{2064}' | '\u{feff}'
-    )
-}
-
-/// Whether `c` is one of the characters that change the display order of the
-/// text around them.
-///
-/// These are the embeddings, overrides and isolates of Unicode's
-/// bidirectional algorithm (UAX #9), and the three implicit marks. A file can
-/// use them to display differently from the code that is compiled, which is
-/// the Trojan Source attack (CVE-2021-42574), so they are never written to the
-/// terminal, where the terminal could apply them.
-fn is_bidi_control(c: char) -> bool {
-    matches!(
-        c,
-        // ARABIC LETTER MARK, LEFT-TO-RIGHT MARK, RIGHT-TO-LEFT MARK.
-        '\u{061c}' | '\u{200e}' | '\u{200f}'
-        // LRE, RLE, PDF, LRO, RLO.
-        | '\u{202a}'..='\u{202e}'
-        // LRI, RLI, FSI, PDI.
-        | '\u{2066}'..='\u{2069}'
-    )
-}
+/// See [`deco_core::stand_in::MARKER`].
+const BIDI_PICTURE: char = deco_core::stand_in::MARKER;
 
 /// Every control character in `text` replaced by its picture.
 ///

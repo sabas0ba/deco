@@ -117,7 +117,7 @@ Neither setting writes the character itself. The layout counts every character a
 
 ### What this does not cover
 
-Characters that look like others (`editor.unicodeHighlight.ambiguousCharacters` and `.nonBasicASCII` in VS Code) are not marked. Combining marks, which also have no width of their own, are still written to the terminal and can shift the rest of their row. The GPU frontend does not apply these substitutions yet.
+Characters that look like others (`editor.unicodeHighlight.ambiguousCharacters` and `.nonBasicASCII` in VS Code) are not marked. Combining marks, which also have no width of their own, are still written to the terminal and can shift the rest of their row. The GPU frontend applies the same substitutions to the text it hands to its shaper, which would otherwise apply the bidirectional characters itself; it draws the stand-ins in the text colour rather than the highlight colour.
 
 ## Copy and paste with the system clipboard
 

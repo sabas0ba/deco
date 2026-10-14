@@ -21,6 +21,7 @@ pub mod movement;
 pub mod position;
 pub mod search;
 pub mod selection;
+pub mod stand_in;
 pub mod wrap;
 
 pub use buffer::{Buffer, LineEnding};
