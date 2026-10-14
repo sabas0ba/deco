@@ -568,6 +568,7 @@ dependencies = [
  "deco-lsp",
  "deco-remote",
  "deco-scm",
+ "deco-term",
  "deco-theme",
  "deco-tui",
  "serde_json",

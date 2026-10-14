@@ -50,6 +50,7 @@ pub mod fetch;
 pub mod forward;
 pub mod frame;
 pub mod install;
+pub mod pty;
 pub mod server;
 pub mod transport;
 

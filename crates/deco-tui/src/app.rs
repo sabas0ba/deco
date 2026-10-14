@@ -91,18 +91,47 @@ fn to_crossterm(color: Rgba) -> Color {
     }
 }
 
+/// Which machine the terminal's shell runs on.
+enum TerminalAt {
+    /// This one.
+    Here,
+    /// The remote machine of a remote session, through this transport
+    /// command; `None` when the remote deco cannot run a terminal.
+    Remote(Option<deco_remote::transport::Command>),
+}
+
 /// Starts the shell for the panel's terminal, in the workspace's directory.
 fn start_terminal(
     session: &mut Session,
     terminal: &mut Option<Shell>,
-    remote: bool,
+    at: &TerminalAt,
     root: Option<&Path>,
     cols: u16,
     rows: u16,
 ) {
-    if remote {
-        session.terminal_failed("a terminal on the remote machine is not implemented yet");
-        return;
+    match at {
+        TerminalAt::Here => {}
+        TerminalAt::Remote(None) => {
+            session.terminal_failed("the remote deco cannot run a terminal; update it");
+            return;
+        }
+        // The remote's own shell, in the workspace the remote serves; see
+        // `deco_remote::pty`.
+        TerminalAt::Remote(Some(command)) => {
+            match deco_remote::pty::RemotePty::spawn(command, cols, rows) {
+                Ok(pty) => {
+                    *terminal = Some(Shell {
+                        pty: Backend::Remote(pty),
+                        quiet_since: None,
+                    });
+                    session.terminal_started(cols, rows);
+                }
+                Err(error) => {
+                    session.terminal_failed(&format!("{}: {error}", command.program));
+                }
+            }
+            return;
+        }
     }
     let mut problems = Vec::new();
     let mut command = crate::terminal::shell(&session.settings, &mut problems);
@@ -115,7 +144,7 @@ fn start_terminal(
     match deco_term::pty::Pty::spawn(&command, deco_term::pty::Size { cols, rows }) {
         Ok(pty) => {
             *terminal = Some(Shell {
-                pty,
+                pty: Backend::Here(pty),
                 quiet_since: None,
             });
             session.terminal_started(cols, rows);
@@ -182,8 +211,50 @@ const EXIT_GRACE: Duration = Duration::from_millis(500);
 
 /// The shell's pseudo-terminal and when its output last went quiet.
 struct Shell {
-    pty: deco_term::pty::Pty,
+    pty: Backend,
     quiet_since: Option<Instant>,
+}
+
+/// A pseudo-terminal here or on the remote machine, driven the same way.
+enum Backend {
+    Here(deco_term::pty::Pty),
+    Remote(deco_remote::pty::RemotePty),
+}
+
+impl Backend {
+    fn read(&mut self) -> deco_term::pty::Output {
+        match self {
+            Self::Here(pty) => pty.read(),
+            Self::Remote(pty) => {
+                let output = pty.read();
+                deco_term::pty::Output {
+                    bytes: output.bytes,
+                    ended: output.ended,
+                }
+            }
+        }
+    }
+
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        match self {
+            Self::Here(pty) => pty.write(bytes),
+            Self::Remote(pty) => pty.write(bytes),
+        }
+    }
+
+    fn resize(&mut self, size: deco_term::pty::Size) -> std::io::Result<()> {
+        match self {
+            Self::Here(pty) => pty.resize(size),
+            Self::Remote(pty) => pty.resize(size.cols, size.rows),
+        }
+    }
+
+    fn exit_code(&mut self) -> Option<i32> {
+        match self {
+            Self::Here(pty) => pty.exit_code(),
+            Self::Remote(pty) => pty.exit_code(),
+        }
+    }
 }
 
 /// Passes a new panel size on to the shell.
@@ -309,6 +380,9 @@ pub struct RemoteSession {
     pub scm: Option<deco_remote::Client>,
     /// Where language servers run, which is the same machine.
     pub location: crate::lsp::Location,
+    /// The transport command that runs a terminal on the remote machine, or
+    /// `None` when the remote deco is too old to run one.
+    pub terminal: Option<deco_remote::transport::Command>,
 }
 
 /// The editor, optionally against a remote workspace.
@@ -482,6 +556,8 @@ pub struct Driver {
     clipboard: crate::clipboard::Pending,
     /// The shell running in the panel's terminal.
     terminal: Option<Shell>,
+    /// Which machine a terminal's shell runs on.
+    terminal_at: TerminalAt,
     /// When the file tree's shown directories were last read again.
     tree_refreshed_ms: Option<u64>,
     /// Where the next tree refresh starts in the list of shown directories,
@@ -516,12 +592,17 @@ impl Driver {
             }
         }
 
+        let mut remote_terminal = None;
         let (location, remote, remote_scm, is_remote) = match remote {
             Some(RemoteSession {
                 client,
                 scm,
                 location,
-            }) => (location, Some(client), scm, true),
+                terminal,
+            }) => {
+                remote_terminal = terminal;
+                (location, Some(client), scm, true)
+            }
             None => (crate::lsp::Location::Here, None, None, false),
         };
         let workspace_roots = match &location {
@@ -596,6 +677,11 @@ impl Driver {
             disk,
             clipboard,
             terminal: None,
+            terminal_at: if is_remote {
+                TerminalAt::Remote(remote_terminal)
+            } else {
+                TerminalAt::Here
+            },
             tree_refreshed_ms: None,
             tree_refresh_from: 0,
         }
@@ -818,6 +904,7 @@ impl Driver {
             scm,
             disk,
             terminal,
+            terminal_at,
             ..
         } = self;
         *dirty = true;
@@ -848,14 +935,7 @@ impl Driver {
         match outcome {
             Outcome::StartTerminal { cols, rows } => {
                 let root = tree_root.clone().or_else(|| cwd.clone());
-                start_terminal(
-                    session,
-                    terminal,
-                    remote.is_some(),
-                    root.as_deref(),
-                    cols,
-                    rows,
-                );
+                start_terminal(session, terminal, terminal_at, root.as_deref(), cols, rows);
             }
             Outcome::KillTerminal => *terminal = None,
             Outcome::Quit => return Ok(Flow::Quit),

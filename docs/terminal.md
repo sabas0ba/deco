@@ -47,6 +47,12 @@ Every shell gets `TERM=xterm-256color`, `COLORTERM=truecolor`, `TERM_PROGRAM=dec
 
 `terminal.integrated.scrollback` sets how many lines of history are kept; the default is 1000, as in VS Code. `terminal.integrated.drawBoldTextInBrightColors` is honoured and defaults to `true`.
 
+## In a remote session
+
+In a [remote session](remote.md), `` ctrl+` `` runs the shell on the remote machine, in the workspace the remote serves. The editor starts `deco --pty --workspace DIR --stdio` on the remote through the same transport as the file server (SSH, a container or WSL), and the remote deco opens the pseudo-terminal there. Keys, size changes, output and the exit code travel as small binary frames over that process's standard input and output; see [Remote](remote.md#the-integrated-terminal).
+
+The remote shell is the remote user's default (`$SHELL`, or `/bin/sh`). The `terminal.integrated.profiles.*` settings name programs on the editor's machine and are not used for it. A remote deco too old to run a terminal is detected from its handshake, and `` ctrl+` `` says to update it.
+
 ## How it is drawn
 
 The terminal's screen is drawn into the panel below its title row, one terminal cell per panel cell, through the same renderer as the rest of the window. When the panel changes size, the screen and the shell are told the new size. Lines are not reflowed: a line keeps its cells and is cut or padded, as in xterm.
@@ -69,6 +75,5 @@ A program in the terminal cannot reach the editor. Window titles are kept but no
 
 - **One terminal.** There are no tabs or splits for several shells, and no `workbench.action.terminal.new`.
 - **No mouse.** Text cannot be selected in the terminal, so there is no copy from it, and mouse reporting to programs is accepted but not sent.
-- **Not in a remote session.** A remote session refuses to open the terminal. The plan is to run the shell on the remote machine through the server, as language servers are; see the [roadmap](roadmap.md#the-integrated-terminal).
 - **Not in the GPU frontend**, which reports that the terminal is only in the terminal frontend so far.
 - **No `terminal.integrated.cwd`, `env.*` or `commandsToSkipShell` settings.** The working directory is the workspace and the list of editor keys is fixed.

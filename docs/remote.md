@@ -207,6 +207,14 @@ The SSH control socket needs stricter protection, because it *is* an authenticat
 
 Nothing new listens on the remote. Tunnel processes are started per connection through the transport's stdio, so there is no daemon on the remote.
 
+## The integrated terminal
+
+`` ctrl+` `` in a remote session runs the remote user's shell on the remote machine. A terminal is a long-lived, two-way stream whose size changes, which the request–response protocol below does not carry, so it uses its own transport process, as a forwarded port does: `deco --pty --workspace DIR --stdio` on the remote, started through the same SSH, container or WSL command as the server.
+
+The two ends exchange frames over that process's standard input and output: a one-byte type, a four-byte big-endian length, and the payload. The editor sends the terminal's size first, then keys and size changes; the remote sends the shell's output and finally its exit code. Binary rather than JSON, because terminal output is arbitrary bytes and is most of the traffic. A frame is at most 1 MiB, so a corrupt length cannot make either end allocate without limit.
+
+The shell runs in the workspace directory with the remote user's own permissions. Unlike the server, it is not confined to the workspace: a shell is a program that runs other programs, and the transport has already given the editor the remote user's account. The server advertises `pty.stdio` in its handshake when it can run a terminal; an editor connected to an older remote says to update it instead of starting one that fails.
+
 ## Authorities
 
 VS Code addresses a remote with an authority inside a `vscode-remote://` URI. deco

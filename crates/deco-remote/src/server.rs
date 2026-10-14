@@ -454,6 +454,9 @@ impl Server {
                     "scm.branches",
                     "scm.checkoutPlan",
                     "scm.apply",
+                    // Not a method on this connection: the remote can run a
+                    // terminal over its own (`deco --pty`); see `crate::pty`.
+                    crate::pty::CAPABILITY,
                     "$/shutdown"
                 ],
             })),

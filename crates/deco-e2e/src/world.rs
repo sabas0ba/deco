@@ -353,9 +353,23 @@ impl Scenario {
         scm.handshake()
             .unwrap_or_else(|error| panic!("the SCM server should answer: {error}"));
 
+        // The terminal runs the same binary as `--pty`, with no transport in
+        // between, as the file server does here.
+        let terminal = deco_remote::transport::Command {
+            program: server_binary.display().to_string(),
+            args: vec![
+                "--pty".to_owned(),
+                "--workspace".to_owned(),
+                self.served_workspace().display().to_string(),
+                "--stdio".to_owned(),
+            ],
+        };
         let remote = deco_tui::RemoteSession {
             client,
             scm: Some(scm),
+            terminal: hello
+                .serves(deco_remote::pty::CAPABILITY)
+                .then_some(terminal),
             location: deco_tui::lsp::Location::Remote {
                 authority: deco_remote::Authority::parse("attached-container+scenario")
                     .expect("an authority"),
