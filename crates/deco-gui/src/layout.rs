@@ -84,11 +84,8 @@ pub struct LaidOutLine {
     pub y: f32,
     /// The gutter label, already padded.
     pub gutter: String,
-    /// The git status of this line, if any.
-    ///
-    /// Computed but not yet drawn. The marks are computed here so that, once
-    /// this frontend draws them, they match the terminal without a second
-    /// implementation.
+    /// The git status of this line, if any. [`Layout::marks`] holds the
+    /// rectangle drawn for it.
     pub mark: Option<deco_scm::Mark>,
     /// The line's text, tabs expanded.
     pub text: String,
@@ -115,6 +112,9 @@ pub struct Layout {
     pub cursor_style: CursorStyle,
     /// The line-highlight rectangle behind the cursor's line.
     pub current_line: Option<Rect>,
+    /// The git changed-line marks, in the gutter's last column, with the
+    /// colour each is drawn in.
+    pub marks: Vec<(Rect, Rgba)>,
     /// The editor region, in pixels. Rectangles are clipped to it, so a long
     /// selection does not run under a side bar on the right.
     pub editor_area: Rect,
@@ -447,6 +447,47 @@ pub fn layout(session: &Session, width: f32, height: f32, metrics: Metrics) -> L
         }
     }
 
+    // In the gutter's padding column, between the number and the text, as
+    // the terminal draws them. An added or modified line gets a bar the
+    // height of the line; a deletion, a short bar along the top of the line
+    // that follows it, as VS Code draws one between two lines.
+    let marks = if gutter_columns == 0 {
+        Vec::new()
+    } else {
+        let bar = (metrics.cell_width * 0.3).max(2.0);
+        let x = text_left - metrics.cell_width + (metrics.cell_width - bar) / 2.0;
+        lines
+            .iter()
+            .filter_map(|line| {
+                let mark = line.mark?;
+                Some(match mark {
+                    deco_scm::Mark::Added | deco_scm::Mark::Modified => (
+                        Rect {
+                            x,
+                            y: line.y,
+                            width: bar,
+                            height: metrics.line_height,
+                        },
+                        if mark == deco_scm::Mark::Added {
+                            colors.added
+                        } else {
+                            colors.modified
+                        },
+                    ),
+                    deco_scm::Mark::Deleted => (
+                        Rect {
+                            x: text_left - metrics.cell_width,
+                            y: line.y,
+                            width: metrics.cell_width,
+                            height: (metrics.line_height * 0.15).max(2.0),
+                        },
+                        colors.deleted,
+                    ),
+                })
+            })
+            .collect()
+    };
+
     let current_line = on_screen.then(|| Rect {
         x: origin_x,
         y: origin_y + cursor_row.unwrap_or(0) as f32 * metrics.line_height,
@@ -460,6 +501,7 @@ pub fn layout(session: &Session, width: f32, height: f32, metrics: Metrics) -> L
         cursor: caret,
         cursor_style,
         current_line,
+        marks,
         editor_area: Rect {
             x: origin_x,
             y: origin_y,
@@ -723,10 +765,8 @@ mod tests {
     }
 
     #[test]
-    fn the_git_marks_are_worked_out_even_though_they_are_not_painted_yet() {
-        // Computed but not drawn, like the selection rectangles. Once this
-        // frontend draws them, they match the terminal without a second
-        // implementation.
+    fn the_git_marks_are_drawn_in_the_gutter_s_last_column() {
+        // The same marks as the terminal, from the same diff.
         let mut session = session("one\nTWO\nthree\nnew\n");
         session.fill_committed(
             session.document.path.clone().expect("a path"),
@@ -746,6 +786,19 @@ mod tests {
                 Some(deco_scm::Mark::Added),
             ]
         );
+        assert_eq!(laid.marks.len(), 2);
+        let (modified, colour) = laid.marks[0];
+        assert_eq!(colour, laid.colors.modified);
+        assert_eq!(modified.y, laid.lines[1].y);
+        assert!(
+            modified.x + modified.width <= laid.text_left,
+            "left of the text"
+        );
+        assert!(
+            modified.x >= laid.text_left - metrics().cell_width,
+            "in the last column"
+        );
+        assert_eq!(laid.marks[1].1, laid.colors.added);
     }
 
     #[test]
