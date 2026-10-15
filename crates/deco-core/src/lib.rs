@@ -15,6 +15,7 @@
 //! against those cases.
 
 pub mod buffer;
+pub mod cluster;
 pub mod edit;
 pub mod history;
 pub mod movement;

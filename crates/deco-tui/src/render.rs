@@ -17,7 +17,6 @@ use deco_editor::find::Field;
 use deco_editor::layout::{column_widths, gutter_width as gutter_width_of, Rect};
 use deco_editor::Session;
 use deco_theme::Rgba;
-use unicode_width::UnicodeWidthChar;
 
 /// A run of characters sharing one style.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,6 +27,8 @@ pub struct Span {
     pub fg: Rgba,
     /// Background colour.
     pub bg: Rgba,
+    /// Drawn in italics, as VS Code draws a preview tab's title.
+    pub italic: bool,
 }
 
 /// One terminal row.
@@ -347,6 +348,7 @@ fn render_text(session: &Session, width: usize, height: usize) -> Frame {
                     text: "─".repeat(editor.width),
                     fg: palette.gutter_fg,
                     bg: palette.bg,
+                    italic: false,
                 }],
             }
         } else if row_index < editor.height {
@@ -380,6 +382,7 @@ fn render_text(session: &Session, width: usize, height: usize) -> Frame {
                     .to_owned(),
                     fg: palette.gutter_fg,
                     bg: palette.bg,
+                    italic: false,
                 };
                 let mut spans = Vec::new();
                 if rect.x == 0 {
@@ -694,6 +697,7 @@ fn scm_rows(
                     text,
                     fg: row_fg,
                     bg: row_bg,
+                    italic: false,
                 }],
             },
         ));
@@ -833,11 +837,13 @@ fn problem_rows(
                 text: format!(" {letter}"),
                 fg: theme.color(key).unwrap_or(fg),
                 bg: row_bg,
+                italic: false,
             },
             Span {
                 text,
                 fg,
                 bg: row_bg,
+                italic: false,
             },
         ];
         if used < rect.width {
@@ -930,6 +936,7 @@ fn region_line(text: &str, width: usize, fg: Rgba, bg: Rgba) -> Row {
         text: format!(" {clipped}"),
         fg,
         bg,
+        italic: false,
     }];
     if used + 1 < width {
         spans.push(blank(width - used - 1, bg));
@@ -942,7 +949,7 @@ fn clip(text: &str, limit: usize) -> String {
     if columns(text) <= limit {
         return text.to_owned();
     }
-    text.chars().take(limit).collect()
+    truncate_to(text, limit)
 }
 
 /// Joins one row of every group into the row that goes on screen.
@@ -958,6 +965,7 @@ fn stitch(frames: &[Frame], row_index: usize, palette: &Palette) -> Row {
                 text: "│".to_owned(),
                 fg: palette.gutter_fg,
                 bg: palette.bg,
+                italic: false,
             });
         }
         match frame.rows.get(row_index) {
@@ -1064,11 +1072,13 @@ fn pane_rows(
                         text: format!("{label:>width$}", width = gutter - 1),
                         fg: number_fg,
                         bg: line_bg,
+                        italic: false,
                     });
                     spans.push(Span {
                         text: glyph.to_string(),
                         fg,
                         bg: line_bg,
+                        italic: false,
                     });
                 }
                 // One span when there is no mark, which is the common case.
@@ -1077,6 +1087,7 @@ fn pane_rows(
                     text: format!("{label:>width$} ", width = gutter - 1),
                     fg: number_fg,
                     bg: line_bg,
+                    italic: false,
                 }),
             }
         }
@@ -1148,7 +1159,13 @@ fn tab_bar(
         } else {
             (inactive_fg, inactive_bg)
         };
-        spans.push(Span { text, fg, bg });
+        // A preview's title in italics, as VS Code draws it.
+        spans.push(Span {
+            text,
+            fg,
+            bg,
+            italic: label.preview,
+        });
         used += cells;
     }
     if used < width {
@@ -1156,6 +1173,7 @@ fn tab_bar(
             text: " ".repeat(width - used),
             fg: inactive_fg,
             bg: bar_bg,
+            italic: false,
         });
     }
     Row { spans }
@@ -1225,7 +1243,12 @@ fn choice_row(
         (palette.status_fg, palette.status_bg)
     };
     Row {
-        spans: vec![Span { text, fg, bg }],
+        spans: vec![Span {
+            text,
+            fg,
+            bg,
+            italic: false,
+        }],
     }
 }
 
@@ -1366,6 +1389,7 @@ fn highlighted(
         text: text.to_owned(),
         fg: palette.status_fg,
         bg: palette.status_bg,
+        italic: false,
     };
     let end = prompt.len() + field.len();
     if !selected || field.is_empty() || text.len() < end || !text.starts_with(prompt) {
@@ -1379,6 +1403,7 @@ fn highlighted(
             // list.
             fg: palette.bg,
             bg: palette.status_fg,
+            italic: false,
         },
         plain(&text[end..]),
     ]
@@ -1426,6 +1451,7 @@ fn blank(width: usize, bg: Rgba) -> Span {
         text: " ".repeat(width),
         fg: bg,
         bg,
+        italic: false,
     }
 }
 
@@ -1449,12 +1475,14 @@ fn line_spans(
     // cursor is positioned by column. `column` counts *terminal columns*, not
     // characters. A CJK character occupies two, so padding by character count
     // would push rows past the right edge.
-    let mut cells: Vec<(char, Cell, Rgba)> = Vec::new();
+    // One entry per grapheme cluster, which may be several characters drawn
+    // in the cells of one; see `deco_core::cluster`.
+    let mut cells: Vec<(std::borrow::Cow<'_, str>, Cell, Rgba)> = Vec::new();
     // The indent of a continuation row. It is part of the cell run rather than a
     // separate span, so a selection or ruler crossing the indent is still drawn.
     let mut column = 0usize;
     while column < visual.indent.min(width) {
-        cells.push((' ', Cell::Plain, palette.fg));
+        cells.push((" ".into(), Cell::Plain, palette.fg));
         column += 1;
     }
     let mut utf16 = 0u32;
@@ -1564,11 +1592,16 @@ fn line_spans(
     // Indexed, because `boundary` mode has to see the characters either side.
     let chars: Vec<char> = text.chars().collect();
 
-    for (index, &c) in chars.iter().enumerate() {
-        // Characters before this row belong to the row above, but their offsets
+    // The index into `chars` of each cluster's first character.
+    let mut index = 0usize;
+    for (cluster, length) in deco_core::cluster::clusters(text) {
+        let c = cluster.chars().next().unwrap_or(' ');
+        let first = index;
+        index += cluster.chars().count();
+        // Clusters before this row belong to the row above, but their offsets
         // are still counted because the lookups below use the column in the line.
         if utf16 < visual.start {
-            utf16 += c.len_utf16() as u32;
+            utf16 += length;
             continue;
         }
         // Characters from the next row's start belong to that row.
@@ -1577,10 +1610,10 @@ fn line_spans(
         }
         let cell = cell_at(utf16);
         let fg = colour_at(utf16);
-        let advance = if c == '\t' {
+        let advance = if cluster == "\t" {
             tab_size - (column % tab_size)
         } else {
-            c.width().unwrap_or(1).max(1)
+            deco_core::cluster::width(cluster)
         };
         // Stop before a character that would straddle the right edge rather
         // than half-drawing it.
@@ -1590,33 +1623,38 @@ fn line_spans(
         let marked = marks_whitespace(
             whitespace_mode,
             &chars,
-            index,
+            first,
             utf16,
             trailing_from,
             cell != Cell::Plain,
         );
-        if c == '\t' {
+        let single = deco_core::cluster::stand_in(cluster).is_some();
+        if cluster == "\t" {
             // The arrow at the start of the tab's span, followed by spaces, so the
             // glyph is at the tab's position rather than at the next tab stop.
             for offset in 0..advance {
-                let glyph = if marked && offset == 0 { '→' } else { ' ' };
-                cells.push((glyph, cell, if marked { palette.whitespace_fg } else { fg }));
+                let glyph = if marked && offset == 0 { "→" } else { " " };
+                cells.push((
+                    glyph.into(),
+                    cell,
+                    if marked { palette.whitespace_fg } else { fg },
+                ));
             }
-        } else if marked && c == ' ' {
-            cells.push(('·', cell, palette.whitespace_fg));
-        } else if is_bidi_control(c) {
+        } else if marked && cluster == " " {
+            cells.push(("·".into(), cell, palette.whitespace_fg));
+        } else if single && is_bidi_control(c) {
             // Always marked, whatever `editor.renderControlCharacters` says: a
             // blank would hide the reordering this character exists to cause.
-            cells.push((BIDI_PICTURE, cell, palette.bidi_fg));
-        } else if is_invisible(c) {
+            cells.push((BIDI_PICTURE.to_string().into(), cell, palette.bidi_fg));
+        } else if single && is_invisible(c) {
             // Never written as itself: the layout counts it as one column, and
             // a terminal would draw it in none, shifting the rest of the row.
             if pane.document.settings.highlight_invisible_characters {
-                cells.push((BIDI_PICTURE, cell, palette.bidi_fg));
+                cells.push((BIDI_PICTURE.to_string().into(), cell, palette.bidi_fg));
             } else {
-                cells.push((' ', cell, fg));
+                cells.push((" ".into(), cell, fg));
             }
-        } else if let Some(picture) = control_picture(c) {
+        } else if let Some(picture) = deco_core::cluster::stand_in(cluster) {
             // `editor.renderControlCharacters` selects the glyph or a blank. In both
             // cases the byte itself does not reach the terminal; see `control_picture`.
             let shown = if pane.document.settings.render_control_characters {
@@ -1624,12 +1662,12 @@ fn line_spans(
             } else {
                 (' ', fg)
             };
-            cells.push((shown.0, cell, shown.1));
+            cells.push((shown.0.to_string().into(), cell, shown.1));
         } else {
-            cells.push((c, cell, fg));
+            cells.push((cluster.into(), cell, fg));
         }
         column += advance;
-        utf16 += c.len_utf16() as u32;
+        utf16 += length;
     }
 
     // A selection that runs past the end of the line gets one extra cell, so a
@@ -1637,11 +1675,11 @@ fn line_spans(
     // line break is at the end.
     let trailing = cell_at(utf16);
     if visual.end.is_none() && trailing != Cell::Plain && column < width {
-        cells.push((' ', trailing, palette.fg));
+        cells.push((" ".into(), trailing, palette.fg));
         column += 1;
     }
     while column < width {
-        cells.push((' ', Cell::Plain, palette.fg));
+        cells.push((" ".into(), Cell::Plain, palette.fg));
         column += 1;
     }
 
@@ -1668,11 +1706,12 @@ fn line_spans(
         match spans.last_mut() {
             // Coalesced on both colours, so a run of one style is one span.
             // Highlighting breaks runs much more often than a selection does.
-            Some(last) if last.bg == bg && last.fg == fg => last.text.push(c),
+            Some(last) if last.bg == bg && last.fg == fg => last.text.push_str(&c),
             _ => spans.push(Span {
-                text: c.to_string(),
+                text: c.into_owned(),
                 fg,
                 bg,
+                italic: false,
             }),
         }
     }
@@ -1708,15 +1747,21 @@ const BIDI_PICTURE: char = deco_core::stand_in::MARKER;
 /// the document. A file *name* containing an escape byte reaches the tab bar, and a
 /// search result puts a line from another file into a prompt row. Each character is
 /// replaced by one of the same width, so layout does not depend on the text's source.
+///
+/// By cluster, so a joiner inside an emoji sequence stays part of it; see
+/// [`deco_core::cluster::stand_in`].
 pub fn sanitise(text: &str) -> std::borrow::Cow<'_, str> {
     if !text.chars().any(|c| control_picture(c).is_some()) {
         return std::borrow::Cow::Borrowed(text);
     }
-    std::borrow::Cow::Owned(
-        text.chars()
-            .map(|c| control_picture(c).unwrap_or(c))
-            .collect(),
-    )
+    let mut out = String::with_capacity(text.len());
+    for (cluster, _) in deco_core::cluster::clusters(text) {
+        match deco_core::cluster::stand_in(cluster) {
+            Some(picture) => out.push(picture),
+            None => out.push_str(cluster),
+        }
+    }
+    std::borrow::Cow::Owned(out)
 }
 
 /// A string's length in UTF-16 code units, which is what a column is measured in.
@@ -1974,6 +2019,7 @@ fn status_bar(session: &Session, width: usize, palette: &Palette) -> Row {
             text,
             fg: palette.status_fg,
             bg: palette.status_bg,
+            italic: false,
         }],
     }
 }
@@ -2052,6 +2098,7 @@ fn overlay_hover(
                     text: content,
                     fg: palette.status_fg,
                     bg: palette.status_bg,
+                    italic: false,
                 },
                 // The rest of the row keeps the editor background, so the box
                 // appears as a floating box rather than a full-width banner.
@@ -2059,6 +2106,7 @@ fn overlay_hover(
                     text: " ".repeat(width.saturating_sub(box_width)),
                     fg: palette.bg,
                     bg: palette.bg,
+                    italic: false,
                 },
             ],
         };
@@ -2104,7 +2152,7 @@ fn wrap(text: &str, width: usize, max_lines: usize) -> Vec<String> {
         let mut line = String::new();
         let mut columns = 0usize;
         for word in paragraph.split_whitespace() {
-            let word_width: usize = word.chars().map(cell_width).sum();
+            let word_width = deco_core::cluster::text_width(word);
             let needed = if line.is_empty() {
                 word_width
             } else {
@@ -2124,16 +2172,9 @@ fn wrap(text: &str, width: usize, max_lines: usize) -> Vec<String> {
             // A single word longer than the box is cut so it does not overflow
             // and break the border.
             if word_width > width {
-                let mut used = 0;
-                for c in word.chars() {
-                    let w = cell_width(c);
-                    if used + w > width {
-                        break;
-                    }
-                    line.push(c);
-                    used += w;
-                }
-                columns += used;
+                let cut = truncate_to(word, width);
+                columns += deco_core::cluster::text_width(&cut);
+                line.push_str(&cut);
             } else {
                 line.push_str(word);
                 columns += word_width;
@@ -2238,11 +2279,17 @@ fn overlay_suggest(
         };
         frame.rows[row] = Row {
             spans: vec![
-                Span { text, fg, bg },
+                Span {
+                    text,
+                    fg,
+                    bg,
+                    italic: false,
+                },
                 Span {
                     text: " ".repeat(width.saturating_sub(box_width)),
                     fg: palette.bg,
                     bg: palette.bg,
+                    italic: false,
                 },
             ],
         };
@@ -2250,34 +2297,26 @@ fn overlay_suggest(
 }
 
 /// A string's width in terminal columns, as the painter writes it.
-fn columns(text: &str) -> usize {
-    text.chars().map(cell_width).sum()
-}
-
-/// One character's width in terminal columns, as the painter writes it.
 ///
-/// A character [`sanitise`] replaces takes the width of its stand-in, one
-/// column, rather than its own: a bidirectional control or a zero-width space
-/// is zero columns in the width table but is painted as `␦`. Measuring the
-/// original would make a row holding one a column wider than the frame.
-fn cell_width(c: char) -> usize {
-    if control_picture(c).is_some() {
-        1
-    } else {
-        c.width().unwrap_or(1)
-    }
+/// Measured by cluster, with a character [`sanitise`] replaces taking its
+/// stand-in's one column: a bidirectional control or a zero-width space is
+/// zero columns in the width table but is painted as `␦`, and a combining
+/// mark adds nothing to its base. See [`deco_core::cluster::width`].
+fn columns(text: &str) -> usize {
+    deco_core::cluster::text_width(text)
 }
 
-/// Cuts `text` to at most `width` columns, on a character boundary.
+/// Cuts `text` to at most `width` columns, between clusters, so an accent is
+/// never separated from its letter.
 fn truncate_to(text: &str, width: usize) -> String {
     let mut out = String::new();
     let mut used = 0;
-    for c in text.chars() {
-        let w = cell_width(c);
+    for (cluster, _) in deco_core::cluster::clusters(text) {
+        let w = deco_core::cluster::width(cluster);
         if used + w > width {
             break;
         }
-        out.push(c);
+        out.push_str(cluster);
         used += w;
     }
     out
@@ -2288,6 +2327,7 @@ mod tests {
     use super::*;
     use deco_core::{Position, Selection, SelectionSet};
     use std::path::PathBuf;
+    use unicode_width::UnicodeWidthChar;
 
     /// A session pinned to the Linux keymap.
     ///
@@ -2799,6 +2839,35 @@ mod tests {
             let width: usize = painted.chars().map(|c| c.width().unwrap_or(1)).sum();
             assert_eq!(width, 40, "{painted:?}");
         }
+    }
+
+    #[test]
+    fn a_preview_tab_s_title_is_in_italics() {
+        let mut session = session("");
+        session.resize(60, 10);
+        session.set_workspace_root("/w");
+        session.fill_directory(
+            std::path::Path::new("/w"),
+            vec![deco_editor::explorer::Entry::file("a.rs")],
+        );
+        session.run("workbench.files.action.focusFilesExplorer", None, 0);
+        session.handle_chord(deco_keymap::keys::Chord::parse("space").unwrap(), 0);
+        session.open(PathBuf::from("/w/a.rs"), "x\n");
+        let frame = render(&session, 60, 10);
+        let tab = frame
+            .rows
+            .iter()
+            .flat_map(|row| &row.spans)
+            .find(|span| span.text.contains("a.rs"))
+            .expect("the tab");
+        assert!(tab.italic);
+        let kept = frame
+            .rows
+            .iter()
+            .flat_map(|row| &row.spans)
+            .find(|span| span.text.contains("file.rs"))
+            .expect("the first tab");
+        assert!(!kept.italic);
     }
 
     #[test]
@@ -4520,6 +4589,29 @@ mod tests {
             deco_core::selection::SelectionSet::caret(deco_core::Position::new(0, 3));
         let frame = render(&s, 30, 4);
         assert_eq!(frame.cursor.map(|(x, _)| x), Some(4 + 3));
+    }
+
+    #[test]
+    fn a_combining_mark_is_drawn_with_its_letter_and_the_caret_stays_aligned() {
+        // `e` + U+0301, a kana with a voicing mark, and an emoji family joined
+        // with U+200D: each one cluster, drawn in the cells of one character.
+        let text = "e\u{301}x か\u{3099}y 👨\u{200d}👩\u{200d}👧z\n";
+        let mut s = session(text);
+        let z = text.find('z').unwrap();
+        let caret = text[..z].encode_utf16().count() as u32;
+        s.view.selections =
+            deco_core::selection::SelectionSet::caret(deco_core::Position::new(0, caret));
+        let frame = render(&s, 40, 4);
+        let line = frame.rows[0].plain();
+        assert!(line.contains("e\u{301}x"), "{line:?}");
+        assert!(
+            line.contains("👨\u{200d}👩\u{200d}👧"),
+            "the joiners stay inside: {line:?}"
+        );
+        // Measured as the terminal measures it, the row is exactly the frame's width.
+        assert_eq!(deco_core::cluster::text_width(&line), 40, "{line:?}");
+        // gutter 4 + "éx " 3 + "が" 2 + "y " 2 + family 2 = column of `z`.
+        assert_eq!(frame.cursor.map(|(x, _)| x), Some(4 + 3 + 2 + 2 + 2));
     }
 
     #[test]

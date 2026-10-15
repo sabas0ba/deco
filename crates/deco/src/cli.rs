@@ -101,6 +101,13 @@ pub struct Cli {
     /// and pipes it to stdin and stdout. This lets a port be forwarded over a
     /// transport that has no concept of ports.
     pub forward_to: Option<String>,
+    /// Run a shell in a terminal for an editor on another machine, rather
+    /// than as an editor.
+    ///
+    /// Set by `--pty`. The remote half of the integrated terminal in a remote
+    /// session; it speaks `deco_remote::pty` frames over stdin and stdout and
+    /// starts the shell in `--workspace`.
+    pub pty: bool,
 }
 
 /// What `parse` decided the process should do.
@@ -190,6 +197,7 @@ Options:
                              release built for it and check it against SHA256SUMS
       --forward <PORT>       Reach a port on the remote here, as 3000 or 8080:3000
       --forward-to <ADDR>    Pipe stdin and stdout to a loopback address; the remote half
+      --pty                  Run a shell in a terminal over stdin and stdout; the remote half
   -h, --help                 Print help
   -V, --version              Print version
 ";
@@ -226,6 +234,7 @@ where
             "--print-config" => cli.print_config = true,
             "--clean" => cli.clean = true,
             "--server" => cli.server = true,
+            "--pty" => cli.pty = true,
             // Accepted and ignored: stdio is the only transport, and the transport
             // command already passes this flag. Rejecting it would make the
             // client and server code in this repository disagree.
@@ -501,6 +510,7 @@ mod tests {
             remote_install_download: false,
             forwards: Vec::new(),
             forward_to: None,
+            pty: false,
         };
         assert_eq!(run(&["--clean", "a.rs", "--frontend", "gui"]), expected);
         assert_eq!(run(&["a.rs", "--frontend=gui", "--clean"]), expected);

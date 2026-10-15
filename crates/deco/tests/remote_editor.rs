@@ -440,3 +440,40 @@ fn a_far_end_with_no_settings_of_its_own_changes_nothing() {
     );
     editor.screen().assert_shows("the needle is here");
 }
+
+/// What the remote terminal's screen shows, as text.
+#[cfg(unix)]
+fn terminal_text(editor: &deco_e2e::Editor) -> String {
+    editor
+        .session()
+        .terminal()
+        .map(|terminal| terminal.screen().text())
+        .unwrap_or_default()
+}
+
+#[test]
+#[cfg(unix)]
+fn the_terminal_runs_a_shell_on_the_far_end_in_its_workspace() {
+    // `deco --pty` on the remote side, over its own process as a transport
+    // would run it. The listing shows a file that exists only on the far end.
+    let scenario = scenario("remote-terminal");
+    let mut editor = scenario.launch_remote(&["notes.txt"], server());
+
+    editor.press("ctrl+`");
+    editor.settle_until("the remote shell", |editor| {
+        editor.session().terminal().is_some()
+    });
+    editor.type_text("echo far:$TERM; ls\n");
+    editor.settle_until("the command's output", |editor| {
+        let text = terminal_text(editor);
+        text.contains("far:xterm-256color") && text.contains("README.md")
+    });
+
+    // The exit code comes back over the connection.
+    editor.type_text("exit 3\n");
+    editor.settle_until("the exit", |editor| {
+        editor
+            .status()
+            .is_some_and(|status| status.contains("code 3"))
+    });
+}

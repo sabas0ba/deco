@@ -20,6 +20,9 @@ deco-keymap.workspace = true
 # The remote side of remote development: `deco --server` is this same binary, so
 # the remote needs only one binary to install and one version to match.
 deco-remote.workspace = true
+# The remote half of the integrated terminal (`deco --pty`) runs the shell in a
+# pseudo-terminal itself. Already in the graph through deco-tui.
+deco-term.workspace = true
 deco-theme.workspace = true
 deco-tui.workspace = true
 deco-gui = { workspace = true, optional = true }

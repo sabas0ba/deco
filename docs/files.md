@@ -13,6 +13,7 @@ The workspace tree is shown in the [side bar](chrome.md). `ctrl+b` shows it, `ct
 | `←` | `list.collapse` — closes a folder, or goes up to the one above |
 | `home` `end` | `list.focusFirst`, `list.focusLast` |
 | `enter` | `list.select` — opens a file, toggles a folder |
+| `space` | `filesExplorer.openFilePreserveFocus` — opens a file and keeps the keyboard in the tree |
 | `escape` | `workbench.action.focusActiveEditorGroup` |
 | `ctrl+n` | `explorer.newFile` |
 | `ctrl+shift+n` | `explorer.newFolder` |
@@ -24,6 +25,8 @@ The workspace tree is shown in the [side bar](chrome.md). `ctrl+b` shows it, `ct
 `→` and `←` each have two actions, as in VS Code's explorer. Right expands the selected folder, or moves into it if it is already expanded. Left collapses the folder, or moves to the parent when the selection is a file or a collapsed folder.
 
 **Enter moves focus to the editor.** Opening a file moves keyboard focus into the editor, so you can type without another keystroke. The animation types `// ` immediately after `enter` to show this. Enter on a *folder* opens it and keeps focus in the tree.
+
+**`space` opens a file and stays in the tree.** Files opened from the tree are [previews](tabs.md#previews), so walking the tree with `↓` and `space` shows one file after another in a single tab rather than opening a tab for each.
 
 ## What it costs to open a big workspace
 

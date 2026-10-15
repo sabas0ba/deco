@@ -44,7 +44,7 @@
 //! fall differently. If the indent were not measured, text would be drawn in one
 //! place and broken in another.
 
-use unicode_width::UnicodeWidthChar as _;
+use crate::cluster::{clusters, width as cluster_width};
 
 /// The UTF-16 column each visual row of `text` starts at.
 ///
@@ -79,12 +79,12 @@ pub fn row_starts(text: &str, width: usize, tab_size: usize, indent: usize) -> V
     let mut word_on_row = false;
     let mut column = 0u32;
 
-    for c in text.chars() {
-        let whitespace = c.is_whitespace();
-        let advance = if c == '\t' {
+    for (cluster, utf16) in clusters(text) {
+        let whitespace = cluster.chars().all(char::is_whitespace);
+        let advance = if cluster == "\t" {
             tab_size - (used % tab_size)
         } else {
-            c.width().unwrap_or(0).max(1)
+            cluster_width(cluster)
         };
 
         // Break *before* this character when it would overflow, so a wide
@@ -108,7 +108,7 @@ pub fn row_starts(text: &str, width: usize, tab_size: usize, indent: usize) -> V
         }
 
         used += advance;
-        column += c.len_utf16() as u32;
+        column += utf16;
         if whitespace {
             // Recorded after the character, so the space stays at the end of the
             // current row instead of starting the next one.
@@ -149,18 +149,18 @@ pub fn width_between_from(text: &str, from: u32, to: u32, tab_size: usize, at: u
 fn display_width_from(text: &str, from: u32, to: u32, tab_size: usize, at: usize) -> usize {
     let mut used = at;
     let mut column = 0u32;
-    for c in text.chars() {
+    for (cluster, utf16) in clusters(text) {
         if column >= to {
             break;
         }
         if column >= from {
-            used += if c == '\t' {
+            used += if cluster == "\t" {
                 tab_size - (used % tab_size)
             } else {
-                c.width().unwrap_or(0).max(1)
+                cluster_width(cluster)
             };
         }
-        column += c.len_utf16() as u32;
+        column += utf16;
     }
     used - at
 }
@@ -205,9 +205,9 @@ pub fn column_in_row_from(
     // The last position the caret may take on this row.
     let mut last = start;
 
-    for c in text.chars() {
+    for (cluster, utf16) in clusters(text) {
         if column < start {
-            column += c.len_utf16() as u32;
+            column += utf16;
             continue;
         }
         if end.is_some_and(|end| column >= end) {
@@ -216,23 +216,23 @@ pub fn column_in_row_from(
         if used >= display {
             return column;
         }
-        let advance = if c == '\t' {
+        let advance = if cluster == "\t" {
             tab_size - (used % tab_size)
         } else {
-            c.width().unwrap_or(0).max(1)
+            cluster_width(cluster)
         };
         // A column inside a tab or a wide character snaps to the nearer edge. This
         // keeps vertical motion through indented or CJK text stable.
         if used + advance > display {
             return if display - used >= advance.div_ceil(2) {
-                column + c.len_utf16() as u32
+                column + utf16
             } else {
                 column
             };
         }
         used += advance;
         last = column;
-        column += c.len_utf16() as u32;
+        column += utf16;
     }
 
     // End of row reached. On a line's last row the caret may be one past the
@@ -240,6 +240,21 @@ pub fn column_in_row_from(
     match end {
         None => column,
         Some(_) => last.max(start),
+    }
+}
+
+#[cfg(test)]
+mod cluster_tests {
+    use super::*;
+
+    #[test]
+    fn a_combining_mark_takes_no_room_on_a_row() {
+        // Five letters, each with an accent: five columns, not ten.
+        let text = "e\u{301}".repeat(5);
+        assert_eq!(width_between(&text, 0, 10, 4), 5);
+        assert_eq!(row_starts(&text, 5, 4, 0), [0]);
+        // And a break never falls between a letter and its accent.
+        assert_eq!(row_starts(&text, 3, 4, 0), [0, 6]);
     }
 }
 

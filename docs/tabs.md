@@ -33,6 +33,18 @@ While the editor is split, both groups show the same tab and therefore share the
 - **Opening a file replaces a pristine untitled tab** (unmodified, unnamed and empty) rather than opening beside it. This is VS Code's rule, and it prevents `deco file.rs` from starting with an empty tab next to the file.
 - The dirty marker in the bar is the same `*` used in the status bar.
 
+## Previews
+
+With `workbench.editor.enablePreview` (default `true`, as in VS Code), a file opened from the [file tree](files.md) with `enter` or `space` opens as a **preview**: its title is in italics, and the next file opened from the tree replaces it instead of opening beside it. A preview becomes an ordinary tab when:
+
+- its text is edited;
+- `ctrl+k enter` (`workbench.action.keepEditor`) keeps it;
+- it is opened again by any other means, such as `ctrl+p`.
+
+A file opened any other way — quick open, a search result, go to definition, the problems view, the command line — is never a preview. VS Code's `workbench.editor.enablePreviewFromQuickOpen` and `enablePreviewFromCodeNavigation` default to `false`, which is this behaviour; deco does not read those two settings. With `enablePreview` set to `false`, every file opens in its own tab.
+
+The italics depend on the terminal: most draw them, and one that does not draws a preview's title like any other.
+
 ## Language servers follow the active tab
 
 Switching tabs tells the server which file is on screen (`didClose`/`didOpen`). Switching to a file in a different language switches to that language's server. A server publishes diagnostics for every file it knows about, but only the visible document's diagnostics are displayed. When a tab becomes active again, its diagnostics are taken from the stored set.

@@ -45,6 +45,10 @@ fn main() -> Result<()> {
     if let Some(target) = cli.forward_to.as_deref() {
         return forward_to(target);
     }
+    // And this one is the far end of an editor's terminal.
+    if cli.pty {
+        return pty_stdio(cli.workspace.as_deref());
+    }
 
     let boot = Boot::from_process();
 
@@ -264,6 +268,19 @@ fn connect(
     // The workspace path as the *remote side* reports it. Every URI sent to a
     // language server on the remote must be built from it, and this machine
     // cannot determine it on its own.
+    // The integrated terminal runs the remote's shell over its own transport
+    // process. Only offered when the remote says it can, so an older remote
+    // gives a message rather than a terminal that fails to start.
+    let terminal = if hello.serves(deco_remote::pty::CAPABILITY) {
+        deco_remote::command_for(
+            &authority,
+            &deco_remote::pty::pty_command(&server_path, &hello.workspace),
+            &options,
+        )
+        .ok()
+    } else {
+        None
+    };
     let location = deco_tui::lsp::Location::Remote {
         authority,
         options,
@@ -274,6 +291,7 @@ fn connect(
             client,
             scm,
             location,
+            terminal,
         },
         server_path,
         remote_settings,
@@ -370,6 +388,93 @@ fn forward_to(target: &str) -> Result<()> {
     // keep an idle connection open.
     drop(upstream);
     Ok(())
+}
+
+/// The remote half of the integrated terminal: a shell in a pseudo-terminal
+/// here, carried as `deco_remote::pty` frames over stdin and stdout.
+///
+/// The shell is this machine's default (`$SHELL`, or `/bin/sh`), started in
+/// `workspace`. No settings are read: the editor's terminal profiles name
+/// programs on the editor's machine.
+fn pty_stdio(workspace: Option<&std::path::Path>) -> Result<()> {
+    use deco_remote::pty::{read_frame, write_frame, Frame};
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    // The editor sends the size first, because the shell must start at the
+    // right size: a program that draws the screen at once reads it at start.
+    let mut input = std::io::stdin().lock();
+    let size = match read_frame(&mut input).context("reading the terminal's size")? {
+        Some(Frame::Resize { cols, rows }) => deco_term::pty::Size { cols, rows },
+        _ => anyhow::bail!("the editor did not send the terminal's size first"),
+    };
+    drop(input);
+
+    let mut command =
+        deco_tui::terminal::shell(&deco_config::Settings::with_defaults(), &mut Vec::new());
+    command.cwd = workspace
+        .map(std::path::Path::to_path_buf)
+        .or_else(|| std::env::current_dir().ok())
+        .filter(|directory| directory.is_dir());
+    command.env = deco_tui::terminal::environment();
+    let mut pty = deco_term::pty::Pty::spawn(&command, size)
+        .with_context(|| format!("could not start {}", command.program.to_string_lossy()))?;
+
+    // Keys and sizes from the editor, on a thread because reading stdin
+    // blocks. The pty itself stays on this thread, which owns it.
+    let (sender, frames) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut input = std::io::stdin().lock();
+        while let Ok(Some(frame)) = read_frame(&mut input) {
+            if sender.send(frame).is_err() {
+                break;
+            }
+        }
+    });
+
+    let mut output = std::io::stdout().lock();
+    let mut quiet_since: Option<Instant> = None;
+    loop {
+        loop {
+            match frames.try_recv() {
+                Ok(Frame::Data(bytes)) => {
+                    let _ = pty.write(&bytes);
+                }
+                Ok(Frame::Resize { cols, rows }) => {
+                    let _ = pty.resize(deco_term::pty::Size { cols, rows });
+                }
+                Ok(Frame::Exit(_)) | Err(mpsc::TryRecvError::Empty) => break,
+                // The editor closed the terminal or lost the connection:
+                // the shell is hung up with it, by dropping the pty.
+                Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
+            }
+        }
+        let read = pty.read();
+        if read.bytes.is_empty() {
+            quiet_since.get_or_insert_with(Instant::now);
+        } else {
+            quiet_since = None;
+            write_frame(&mut output, &Frame::Data(read.bytes)).context("writing to the editor")?;
+        }
+        // Finished as the editor's own terminal is: when the output ends,
+        // or once the shell has exited and the output has been quiet for a
+        // moment, which the Windows pseudo console needs.
+        let code = pty.exit_code();
+        let quiet = quiet_since.is_some_and(|since| since.elapsed() >= Duration::from_millis(500));
+        if read.ended || (code.is_some() && quiet) {
+            let mut code = code;
+            for _ in 0..20 {
+                if code.is_some() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+                code = pty.exit_code();
+            }
+            write_frame(&mut output, &Frame::Exit(code)).context("writing to the editor")?;
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
 
 /// The message shown when the remote does not answer.

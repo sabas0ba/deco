@@ -4,7 +4,6 @@
 //! frontend, the GPU frontend and the headless tests share the same motions.
 
 use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthStr;
 
 use crate::buffer::Buffer;
 use crate::position::{Position, Range};
@@ -96,11 +95,11 @@ pub fn display_column(text: &str, utf16_col: u32, tab_size: usize) -> usize {
     let tab_size = tab_size.max(1);
     let end = utf16_to_byte(text, utf16_col);
     let mut col = 0usize;
-    for c in text[..end].chars() {
-        if c == '\t' {
+    for (cluster, _) in crate::cluster::clusters(&text[..end]) {
+        if cluster == "\t" {
             col += tab_size - (col % tab_size);
         } else {
-            col += c.to_string().width().max(1);
+            col += crate::cluster::width(cluster);
         }
     }
     col
@@ -115,25 +114,25 @@ pub fn utf16_col_at_display(text: &str, display_col: usize, tab_size: usize) -> 
     let tab_size = tab_size.max(1);
     let mut col = 0usize;
     let mut utf16 = 0u32;
-    for c in text.chars() {
+    for (cluster, length) in crate::cluster::clusters(text) {
         if col >= display_col {
             return utf16;
         }
-        let width = if c == '\t' {
+        let width = if cluster == "\t" {
             tab_size - (col % tab_size)
         } else {
-            c.to_string().width().max(1)
+            crate::cluster::width(cluster)
         };
-        // If the target lands inside this character, pick the closer edge.
+        // If the target lands inside this cluster, pick the closer edge.
         if col + width > display_col {
             return if display_col - col >= width.div_ceil(2) {
-                utf16 + c.len_utf16() as u32
+                utf16 + length
             } else {
                 utf16
             };
         }
         col += width;
-        utf16 += c.len_utf16() as u32;
+        utf16 += length;
     }
     utf16
 }

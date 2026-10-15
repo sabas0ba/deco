@@ -157,6 +157,7 @@ pub fn rows(terminal: &TerminalPanel, colors: &Colors, width: usize, height: usi
                     text: " ".repeat(width),
                     fg: colors.bg,
                     bg: colors.bg,
+                    italic: false,
                 }],
             },
         });
@@ -198,7 +199,12 @@ fn line_row(line: &Line, colors: &Colors, width: usize) -> Row {
         }
         match spans.last_mut() {
             Some(last) if last.fg == fg && last.bg == bg => last.text.push_str(&text),
-            _ => spans.push(Span { text, fg, bg }),
+            _ => spans.push(Span {
+                text,
+                fg,
+                bg,
+                italic: false,
+            }),
         }
         used += cell_width;
     }
@@ -207,6 +213,7 @@ fn line_row(line: &Line, colors: &Colors, width: usize) -> Row {
             text: " ".repeat(width - used),
             fg: colors.bg,
             bg: colors.bg,
+            italic: false,
         });
     }
     Row { spans }
