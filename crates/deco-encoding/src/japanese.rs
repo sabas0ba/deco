@@ -57,7 +57,16 @@ pub fn encode_shift_jis(character: char, out: &mut Vec<u8>) -> bool {
             } else {
                 character
             };
-            let Some(pointer) = index::shift_jis_pointer(character) else {
+            // The user-defined area, which the decoder reads into the
+            // Private Use Area, written back to the bytes it came from. The
+            // standard's encoder has no such step, so a file using it could
+            // be opened but not saved.
+            let pointer = if ('\u{E000}'..='\u{E757}').contains(&character) {
+                Some((u32::from(character) - 0xE000) as usize + 8836)
+            } else {
+                index::shift_jis_pointer(character)
+            };
+            let Some(pointer) = pointer else {
                 return false;
             };
             let lead = pointer / 188;
@@ -187,8 +196,17 @@ mod tests {
     }
 
     #[test]
-    fn shift_jis_user_defined_area_is_the_private_use_area() {
+    fn shift_jis_user_defined_area_is_the_private_use_area_both_ways() {
         assert_eq!(decode_shift_jis(&[0xF0, 0x40]).unwrap(), "\u{E000}");
+        assert_eq!(shift_jis("\u{E000}"), [0xF0, 0x40]);
+        // The last pointer of the area, 10715.
+        let last = shift_jis("\u{E757}");
+        assert_eq!(last, [0xF9, 0xFC]);
+        assert_eq!(decode_shift_jis(&last).unwrap(), "\u{E757}");
+        // And the whole area round-trips, through `encode` and its check.
+        let area: String = ('\u{E000}'..='\u{E757}').collect();
+        let bytes = crate::encode(&area, crate::Encoding::ShiftJis).unwrap();
+        assert_eq!(decode_shift_jis(&bytes).unwrap(), area);
     }
 
     #[test]

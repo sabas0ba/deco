@@ -428,7 +428,9 @@ impl ApplicationHandler for App<'_> {
                         let target = self.session.document.path.clone();
                         let encoding = self.session.document.encoding;
                         match target.as_deref().map(|path| read_file(path, encoding)) {
-                            Some(Ok(text)) => {
+                            Some(Ok((text, read_in))) => {
+                                // Saved back the way it was read now.
+                                self.session.document.encoding = read_in;
                                 if let Outcome::Message(report) = self.session.revert_to(&text) {
                                     self.session.status = Some(report);
                                 }
@@ -509,15 +511,14 @@ fn write_file(
     std::fs::write(path, bytes).map_err(|error| format!("{}: {error}", path.display()))
 }
 
-/// Reads `path` in `encoding`, unless a byte order mark says otherwise.
+/// Reads `path` in `encoding`, unless a byte order mark says otherwise, and
+/// returns the encoding used with the text.
 fn read_file(
     path: &std::path::Path,
     encoding: deco_encoding::Encoding,
-) -> std::result::Result<String, String> {
+) -> std::result::Result<(String, deco_encoding::Encoding), String> {
     let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
-    deco_encoding::decode(&bytes, encoding)
-        .map(|(text, _)| text)
-        .map_err(|error| error.to_string())
+    deco_encoding::decode(&bytes, encoding).map_err(|error| error.to_string())
 }
 
 /// Writes the open document to disk, only ever to its own path.

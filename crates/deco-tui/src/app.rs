@@ -1517,14 +1517,21 @@ fn reload_after_checkout(
         let read = match remote.as_deref_mut() {
             Some(client) => client
                 .read(&path.display().to_string())
+                .map(|text| (text, None))
                 .map_err(|error| error.to_string()),
             None => crate::text_file::read(&path, session.encoding_of(&path).unwrap_or_default())
-                .map(|(text, _)| text)
+                .map(|(text, encoding)| (text, Some(encoding)))
                 .map_err(|error| error.to_string()),
         };
         match read {
-            Ok(text) => {
-                session.reload_open(&path, &text);
+            Ok((text, encoding)) => {
+                // The file is now what was read, byte order mark included,
+                // so its next save uses the encoding it was read in.
+                if session.reload_open(&path, &text) {
+                    if let Some(encoding) = encoding {
+                        session.set_encoding_of(&path, encoding);
+                    }
+                }
             }
             Err(_) => detached += session.detach_tabs_under(&path),
         }
