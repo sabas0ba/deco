@@ -979,7 +979,9 @@ impl Driver {
                     Some(client) => client
                         .write(&target.display().to_string(), &session.save_contents())
                         .map_err(|error| format!("{}: {error}", target.display())),
-                    None => write_file(&target, &session.save_contents()),
+                    None => {
+                        write_file(&target, &session.save_contents(), session.document.encoding)
+                    }
                 };
                 match written {
                     Ok(()) => {
@@ -1014,7 +1016,16 @@ impl Driver {
                     Some(client) => client
                         .read(&target.display().to_string())
                         .map_err(|error| std::io::Error::other(error.to_string())),
-                    None => std::fs::read_to_string(target),
+                    // In the encoding the document has, unless the file now
+                    // starts with a byte order mark that says otherwise.
+                    None => crate::text_file::read(
+                        target,
+                        session.encoding_of(target).unwrap_or_default(),
+                    )
+                    .map(|(text, encoding)| {
+                        session.set_encoding_of(target, encoding);
+                        text
+                    }),
                 });
                 match read {
                     Some(Ok(text)) => {
@@ -1187,14 +1198,14 @@ impl Driver {
                 // without a question. Saving that file on its own asks.
                 let outcome = match remote {
                     Some(_) => session.save_all(write_file),
-                    None => session.save_all(|path, contents| {
+                    None => session.save_all(|path, contents, encoding| {
                         if disk.changed_since_known(path) {
                             return Err(format!(
                                 "{}: changed on disk; save it on its own to overwrite it",
                                 path.display()
                             ));
                         }
-                        write_file(path, contents)?;
+                        write_file(path, contents, encoding)?;
                         disk.remember(path);
                         Ok(())
                     }),
@@ -1279,18 +1290,32 @@ impl Driver {
                     Some(_) => target,
                     None => resolve_path(&target, path.as_deref(), home.as_deref(), cwd.as_deref()),
                 };
+                // A file already open keeps the encoding its tab has; a new
+                // one takes what it was read in.
+                let was_open = session.encoding_of(&target).is_some();
+                let mut read_encoding = deco_encoding::Encoding::default();
                 let read = match remote.as_mut() {
                     Some(client) => client
                         .read(&target.display().to_string())
                         .map_err(|error| std::io::Error::other(error.to_string())),
-                    None => std::fs::read_to_string(&target),
+                    None => crate::text_file::read(
+                        &target,
+                        crate::text_file::default_encoding(&session.settings, &target),
+                    )
+                    .map(|(text, encoding)| {
+                        read_encoding = encoding;
+                        text
+                    }),
                 };
                 match read {
                     Ok(text) => {
                         if remote.is_none() {
                             disk.remember(&target);
                         }
-                        session.open(target, &text);
+                        session.open(target.clone(), &text);
+                        if remote.is_none() && !was_open {
+                            session.set_encoding_of(&target, read_encoding);
+                        }
                         if let Some(at) = at {
                             // Clamped, because the file on disk may have
                             // changed since it was searched.
@@ -1493,7 +1518,9 @@ fn reload_after_checkout(
             Some(client) => client
                 .read(&path.display().to_string())
                 .map_err(|error| error.to_string()),
-            None => std::fs::read_to_string(&path).map_err(|error| error.to_string()),
+            None => crate::text_file::read(&path, session.encoding_of(&path).unwrap_or_default())
+                .map(|(text, _)| text)
+                .map_err(|error| error.to_string()),
         };
         match read {
             Ok(text) => {
@@ -2117,8 +2144,13 @@ fn load_theme(
 }
 
 /// Writes `contents` to `path`, describing the failure in a form fit to show.
-fn write_file(path: &Path, contents: &str) -> std::result::Result<(), String> {
-    std::fs::write(path, contents).map_err(|error| format!("{}: {error}", path.display()))
+fn write_file(
+    path: &Path,
+    contents: &str,
+    encoding: deco_encoding::Encoding,
+) -> std::result::Result<(), String> {
+    crate::text_file::write(path, contents, encoding)
+        .map_err(|error| format!("{}: {error}", path.display()))
 }
 
 /// Writes the open document to disk.
@@ -2183,8 +2215,17 @@ fn save(
         ));
         return Ok(false);
     }
-    std::fs::write(&path, session.save_contents())
-        .with_context(|| format!("could not write {}", path.display()))?;
+    // An encoding that cannot hold the text is reported rather than fatal:
+    // nothing was written, and the text is still in the editor.
+    if let Err(error) =
+        crate::text_file::write(&path, &session.save_contents(), session.document.encoding)
+    {
+        if error.kind() == std::io::ErrorKind::InvalidData {
+            session.status = Some(format!("{}: {error}", path.display()));
+            return Ok(false);
+        }
+        return Err(error).with_context(|| format!("could not write {}", path.display()));
+    }
     disk.remember(&path);
     session.mark_saved();
     session.status = Some(format!("Saved {}", path.display()));

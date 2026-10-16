@@ -140,7 +140,8 @@ impl DiskWatch {
             if self.reported.get(&path) == Some(&current) {
                 continue;
             }
-            let Ok(text) = std::fs::read_to_string(&path) else {
+            let encoding = session.encoding_of(&path).unwrap_or_default();
+            let Ok((text, _)) = crate::text_file::read(&path, encoding) else {
                 self.reported.insert(path.clone(), current);
                 changes.push(Change::Gone(path));
                 continue;

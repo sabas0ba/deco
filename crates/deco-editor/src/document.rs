@@ -212,6 +212,11 @@ pub struct Document {
     /// it rather than opening beside it. Editing it, or
     /// `workbench.action.keepEditor`, keeps it.
     pub preview: bool,
+    /// The encoding the file was read in and is written back in.
+    ///
+    /// `files.encoding` for a new document; the frontend sets it from what it
+    /// read, which a byte order mark can override; see `deco_encoding::decode`.
+    pub encoding: deco_encoding::Encoding,
     /// Highlighting for this document's language.
     ///
     /// Stored here rather than in a frontend because the lexer state at the
@@ -280,6 +285,7 @@ impl Document {
         if let Some(eol) = configured_eol(settings.eol) {
             buffer.set_line_ending(eol);
         }
+        let encoding = settings.encoding;
         Self {
             buffer,
             snippet: None,
@@ -294,6 +300,7 @@ impl Document {
             auto_whitespace: Vec::new(),
             dirty: false,
             preview: false,
+            encoding,
             syntax: Syntax::new(None),
         }
     }
@@ -314,6 +321,7 @@ impl Document {
                 buffer.set_line_ending(eol);
             }
         }
+        let encoding = settings.encoding;
         let mut document = Self {
             buffer,
             snippet: None,
@@ -329,6 +337,7 @@ impl Document {
             auto_whitespace: Vec::new(),
             dirty: false,
             preview: false,
+            encoding,
         };
         document.apply_overrides();
         document

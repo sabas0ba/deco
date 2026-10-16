@@ -3706,6 +3706,30 @@ impl Session {
         contents_of(&self.document)
     }
 
+    /// The encoding the tab holding `path` is written in, if one does.
+    pub fn encoding_of(&self, path: &Path) -> Option<deco_encoding::Encoding> {
+        let wanted = normalise(path);
+        self.documents()
+            .find(|document| document.path.as_deref().map(normalise) == Some(wanted.clone()))
+            .map(|document| document.encoding)
+    }
+
+    /// Records the encoding the frontend read `path` in, so the tab is
+    /// written back the same way.
+    pub fn set_encoding_of(&mut self, path: &Path, encoding: deco_encoding::Encoding) {
+        let wanted = normalise(path);
+        let matches =
+            |document: &Document| document.path.as_deref().map(normalise) == Some(wanted.clone());
+        if matches(&self.document) {
+            self.document.encoding = encoding;
+        }
+        for tab in self.left.iter_mut().chain(self.right.iter_mut()) {
+            if matches(&tab.document) {
+                tab.document.encoding = encoding;
+            }
+        }
+    }
+
     /// Writes every unsaved document, using `write` for the bytes.
     ///
     /// The loop and its reporting are here so both frontends behave identically,
@@ -3722,7 +3746,7 @@ impl Session {
     /// and deco does not choose one for the user.
     pub fn save_all(
         &mut self,
-        mut write: impl FnMut(&Path, &str) -> Result<(), String>,
+        mut write: impl FnMut(&Path, &str, deco_encoding::Encoding) -> Result<(), String>,
     ) -> Outcome {
         let pending = self.unsaved();
         let untitled = self.unsaved_untitled();
@@ -3733,7 +3757,8 @@ impl Session {
         let mut written = 0usize;
         let mut failures = Vec::new();
         for (path, contents) in pending {
-            match write(&path, &contents) {
+            let encoding = self.encoding_of(&path).unwrap_or_default();
+            match write(&path, &contents, encoding) {
                 Ok(()) => {
                     self.mark_saved_at(&path);
                     written += 1;
@@ -9688,7 +9713,7 @@ mod tests {
     fn save_all_writes_every_edited_tab_and_leaves_the_clean_ones_alone() {
         let mut s = three_tabs();
         let mut written = Vec::new();
-        let outcome = s.save_all(|path, contents| {
+        let outcome = s.save_all(|path, contents, _| {
             written.push((path.to_path_buf(), contents.to_owned()));
             Ok(())
         });
@@ -9736,7 +9761,7 @@ mod tests {
     fn a_failed_write_leaves_that_document_dirty() {
         // A tab must not appear saved when its write failed.
         let mut s = three_tabs();
-        let outcome = s.save_all(|path, _| {
+        let outcome = s.save_all(|path, _, _| {
             if path == Path::new("/w/a.txt") {
                 Err("/w/a.txt: permission denied".to_owned())
             } else {
@@ -9760,7 +9785,7 @@ mod tests {
         let mut s = session();
         s.resize(80, 10);
         press(&mut s, "x");
-        let outcome = s.save_all(|_, _| panic!("nothing to write"));
+        let outcome = s.save_all(|_, _, _| panic!("nothing to write"));
         assert_eq!(
             outcome,
             Outcome::Message("Saved 0 files; 1 document has no filename yet".to_owned())
@@ -9774,7 +9799,7 @@ mod tests {
         s.resize(80, 10);
         s.open(PathBuf::from("/w/a.txt"), "a\n");
         assert_eq!(
-            s.save_all(|_, _| panic!("nothing to write")),
+            s.save_all(|_, _, _| panic!("nothing to write")),
             Outcome::Message("Nothing to save".to_owned())
         );
     }
@@ -9805,7 +9830,7 @@ mod tests {
         press(&mut s, "y");
 
         let mut written = std::collections::HashMap::new();
-        s.save_all(|path, contents| {
+        s.save_all(|path, contents, _| {
             written.insert(path.to_path_buf(), contents.to_owned());
             Ok(())
         });

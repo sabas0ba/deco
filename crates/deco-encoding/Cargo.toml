@@ -1,0 +1,14 @@
+[package]
+name = "deco-encoding"
+description = "Text encodings for deco's file reads and writes, implemented from the WHATWG Encoding Standard"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+# The index tables in data/whatwg/ are compiled in, and to that extent are
+# under the BSD 3-Clause License; see data/whatwg/README.md.
+license = "Apache-2.0 AND BSD-3-Clause"
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+thiserror.workspace = true

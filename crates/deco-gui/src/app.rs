@@ -426,7 +426,8 @@ impl ApplicationHandler for App<'_> {
                     }
                     Outcome::Revert => {
                         let target = self.session.document.path.clone();
-                        match target.as_deref().map(std::fs::read_to_string) {
+                        let encoding = self.session.document.encoding;
+                        match target.as_deref().map(|path| read_file(path, encoding)) {
                             Some(Ok(text)) => {
                                 if let Outcome::Message(report) = self.session.revert_to(&text) {
                                     self.session.status = Some(report);
@@ -498,8 +499,25 @@ fn refuse_overlays(session: &mut Session) {
 }
 
 /// Writes the open document to disk.
-fn write_file(path: &std::path::Path, contents: &str) -> std::result::Result<(), String> {
-    std::fs::write(path, contents).map_err(|error| format!("{}: {error}", path.display()))
+fn write_file(
+    path: &std::path::Path,
+    contents: &str,
+    encoding: deco_encoding::Encoding,
+) -> std::result::Result<(), String> {
+    let bytes = deco_encoding::encode(contents, encoding)
+        .map_err(|error| format!("{}: not saved: {error}", path.display()))?;
+    std::fs::write(path, bytes).map_err(|error| format!("{}: {error}", path.display()))
+}
+
+/// Reads `path` in `encoding`, unless a byte order mark says otherwise.
+fn read_file(
+    path: &std::path::Path,
+    encoding: deco_encoding::Encoding,
+) -> std::result::Result<String, String> {
+    let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
+    deco_encoding::decode(&bytes, encoding)
+        .map(|(text, _)| text)
+        .map_err(|error| error.to_string())
 }
 
 /// Writes the open document to disk, only ever to its own path.
@@ -509,8 +527,8 @@ fn write_file(path: &std::path::Path, contents: &str) -> std::result::Result<(),
 fn save(session: &mut Session) -> Result<()> {
     match session.document.path.clone() {
         Some(path) => {
-            std::fs::write(&path, session.save_contents())
-                .with_context(|| format!("could not write {}", path.display()))?;
+            write_file(&path, &session.save_contents(), session.document.encoding)
+                .map_err(anyhow::Error::msg)?;
             session.mark_saved();
             session.status = Some(format!("Saved {}", path.display()));
         }
