@@ -123,14 +123,16 @@ pub fn open_local(session: &mut Session, files: &[PathBuf], boot: &Boot) -> Resu
         // same file from `ctrl+p` opened it twice, in two buffers with two undo
         // histories.
         let path = absolute(path, boot.cwd.as_deref());
-        let text = match std::fs::read_to_string(&path) {
-            Ok(text) => text,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        let default = deco_tui::text_file::default_encoding(&session.settings, &path);
+        let (text, encoding) = match deco_tui::text_file::read(&path, default) {
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (String::new(), default),
             Err(error) => {
                 return Err(error).with_context(|| format!("could not read {}", path.display()))
             }
         };
-        session.open(path, &text);
+        session.open(path.clone(), &text);
+        session.set_encoding_of(&path, encoding);
     }
     Ok(())
 }

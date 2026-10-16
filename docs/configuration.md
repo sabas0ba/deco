@@ -77,7 +77,7 @@ These are read only from deco's defaults and your user settings. Workspace, fold
 
 If the sandbox is `"container"` and no runtime can be found, deco **refuses to start the extension host** and names this setting in the error. It does not fall back to `"process"`. See [Extensions](extensions.md#the-container) for the reason.
 
-Three keys have a **default** in deco but are not used yet: `editor.tabCompletion`, `editor.largeFileOptimizations` and `files.encoding`. Changing these values currently has no effect.
+Two keys have a **default** in deco but are not used yet: `editor.tabCompletion` and `editor.largeFileOptimizations`. Changing these values currently has no effect.
 
 `editor.fontFamily`, `editor.fontSize` and `editor.lineHeight` apply only to the GPU frontend, because a terminal has no font size. The GPU frontend does not wrap or draw whitespace, so `editor.wordWrap`, `editor.wrappingIndent`, `editor.renderWhitespace`, `editor.rulers` and `editor.lineNumbers: "interval"` apply only to the terminal frontend. The [top-level README](https://github.com/sabas0ba/deco#readme) lists features that are not built.
 
@@ -123,6 +123,28 @@ Four settings change how the text area looks rather than how it behaves.
 - **`line-thin` and `block-outline` are mapped** to `line` and `block`. `DECSCUSR` supports a bar, a block and an underline, with no thin or hollow variants, so deco uses the nearest shape.
 
 `editor.cursorBlinking` is not read. The caret blinks, which is VS Code's default.
+
+### File encodings
+
+`files.encoding` (default `utf8`) is the encoding a file is read in and saved in, with VS Code's values:
+
+| Value | Encoding |
+| --- | --- |
+| `utf8` | UTF-8 |
+| `utf8bom` | UTF-8 with a byte order mark, which a save writes |
+| `utf16le`, `utf16be` | UTF-16, with a byte order mark |
+| `windows1252` | Western (Windows 1252) |
+| `iso88591` | Western (ISO 8859-1), every byte its own code point |
+| `shiftjis` | Japanese (Shift JIS), as the WHATWG Encoding Standard defines it, which is Windows-31J |
+| `eucjp` | Japanese (EUC-JP); JIS X 0212 characters are read but cannot be saved |
+
+Like other settings it can be set per workspace or per language, for example `{ "files.encoding": "shiftjis" }` in a project's `.vscode/settings.json`. A **byte order mark** in the file wins over the setting, as in VS Code, and the file is saved with the same mark. The status bar names the encoding of a file that is not plain UTF-8.
+
+**deco never changes bytes it cannot read or write.** A file that is not valid in its encoding is not opened, and the message gives the byte offset of the first invalid sequence. A save that the encoding cannot hold, such as `é` in Shift_JIS, writes nothing and names the character and its line. This is stricter than VS Code, which replaces such bytes with U+FFFD and would write the replacements back. It also refuses the few characters the standard's encoders write as another character's bytes: U+00A5 YEN SIGN, which Shift_JIS and EUC-JP write as `0x5C`, reads back as a backslash.
+
+The encodings are deco's own code, in `deco-encoding`, following the [WHATWG Encoding Standard](https://encoding.spec.whatwg.org/) and its index tables, copied unchanged with their licence into `crates/deco-encoding/data/whatwg/`. No encoding crate is used. A remote session reads and writes files as UTF-8 for now, because its server transfers text.
+
+Other encodings, `files.autoGuessEncoding`, and VS Code's *Reopen with Encoding* and *Save with Encoding* commands are not built.
 
 ### Saving on a delay
 

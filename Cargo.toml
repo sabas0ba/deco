@@ -4,6 +4,7 @@ members = [
     "crates/deco",
     "crates/deco-core",
     "crates/deco-config",
+    "crates/deco-encoding",
     "crates/deco-e2e",
     "crates/deco-editor",
     "crates/deco-ext",
@@ -33,6 +34,7 @@ authors = ["deco contributors"]
 [workspace.dependencies]
 deco-core = { path = "crates/deco-core", version = "0.1.0" }
 deco-config = { path = "crates/deco-config", version = "0.1.0" }
+deco-encoding = { path = "crates/deco-encoding", version = "0.1.0" }
 deco-keymap = { path = "crates/deco-keymap", version = "0.1.0" }
 deco-theme = { path = "crates/deco-theme", version = "0.1.0" }
 deco-ext = { path = "crates/deco-ext", version = "0.1.0" }

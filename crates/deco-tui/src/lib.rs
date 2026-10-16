@@ -24,6 +24,7 @@ pub mod render;
 pub mod scm;
 pub mod suggest;
 pub mod terminal;
+pub mod text_file;
 pub mod themes;
 
 pub use app::{run, run_with, Driver, Flow, Options, RemoteSession};

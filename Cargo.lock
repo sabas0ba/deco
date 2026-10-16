@@ -578,6 +578,7 @@ dependencies = [
 name = "deco-config"
 version = "0.1.0"
 dependencies = [
+ "deco-encoding",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
@@ -619,6 +620,7 @@ version = "0.1.0"
 dependencies = [
  "deco-config",
  "deco-core",
+ "deco-encoding",
  "deco-keymap",
  "deco-lsp",
  "deco-scm",
@@ -629,6 +631,13 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.20",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "deco-encoding"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -649,6 +658,7 @@ dependencies = [
  "deco-config",
  "deco-core",
  "deco-editor",
+ "deco-encoding",
  "deco-keymap",
  "deco-scm",
  "deco-theme",
@@ -738,6 +748,7 @@ dependencies = [
  "deco-config",
  "deco-core",
  "deco-editor",
+ "deco-encoding",
  "deco-ext",
  "deco-keymap",
  "deco-lsp",
