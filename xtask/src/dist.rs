@@ -207,8 +207,8 @@ fn write_zip(stage_root: &Path, inner_name: &str, archive: &Path) -> Result<()> 
     let file =
         fs::File::create(archive).with_context(|| format!("creating {}", archive.display()))?;
     let mut writer = zip::ZipWriter::new(file);
-    let options: zip::write::FileOptions<'_, ()> =
-        zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
 
     let mut stack = vec![(stage_root.to_path_buf(), PathBuf::from(inner_name))];
     while let Some((directory, relative)) = stack.pop() {
@@ -412,6 +412,45 @@ mod tests {
             !to.join("test").exists(),
             "development-only files were copied"
         );
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_zip_holds_the_staged_tree_under_its_inner_name() {
+        let root = std::env::temp_dir().join(format!("deco-zip-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let stage = root.join("stage");
+        fs::create_dir_all(stage.join("host")).unwrap();
+        fs::write(stage.join("deco.exe"), b"binary").unwrap();
+        fs::write(stage.join("host/package.json"), b"{}").unwrap();
+        let archive = root.join("deco.zip");
+
+        write_zip(&stage, "deco-x86_64-pc-windows-msvc", &archive).unwrap();
+
+        let mut zip = zip::ZipArchive::new(fs::File::open(&archive).unwrap()).unwrap();
+        let mut names: Vec<String> = zip
+            .file_names()
+            .map(|name| name.unwrap().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            [
+                "deco-x86_64-pc-windows-msvc/deco.exe",
+                "deco-x86_64-pc-windows-msvc/host/",
+                "deco-x86_64-pc-windows-msvc/host/package.json",
+            ]
+        );
+        let mut contents = String::new();
+        std::io::Read::read_to_string(
+            &mut zip
+                .by_name("deco-x86_64-pc-windows-msvc/host/package.json")
+                .unwrap(),
+            &mut contents,
+        )
+        .unwrap();
+        assert_eq!(contents, "{}");
 
         fs::remove_dir_all(&root).ok();
     }
