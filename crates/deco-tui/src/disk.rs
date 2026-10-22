@@ -140,7 +140,8 @@ impl DiskWatch {
             if self.reported.get(&path) == Some(&current) {
                 continue;
             }
-            let Ok(text) = std::fs::read_to_string(&path) else {
+            let encoding = session.encoding_of(&path).unwrap_or_default();
+            let Ok((text, read_in)) = crate::text_file::read(&path, encoding) else {
                 self.reported.insert(path.clone(), current);
                 changes.push(Change::Gone(path));
                 continue;
@@ -156,6 +157,10 @@ impl DiskWatch {
                     if session.reload_changed(&path, &text) {
                         changes.push(Change::Reloaded(path.clone()));
                     }
+                    // The document now holds what was read, so it is saved
+                    // the way it was read: a byte order mark added or
+                    // removed by the other program is kept.
+                    session.set_encoding_of(&path, read_in);
                     // Reloaded, or the same text: either way the document
                     // now matches the file as it was read.
                     self.remember_as(&path, current);
@@ -223,6 +228,29 @@ mod tests {
         );
         assert_eq!(session.document.buffer.text(), "new\n");
         assert!(watch.check(&mut session, 4000).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_reload_keeps_the_encoding_the_file_now_has() {
+        // Another program added a byte order mark: the next save keeps it.
+        let dir = scratch("reload-encoding");
+        let path = dir.join("a.txt");
+        std::fs::write(&path, "old\n").expect("a write");
+        let mut session = Session::new(Settings::with_defaults(), None, Platform::Linux);
+        session.open(path.clone(), "old\n");
+        let mut watch = DiskWatch::default();
+        watch.remember(&path);
+        rewrite(&path, "\u{FEFF}new\n");
+        assert_eq!(
+            watch.check(&mut session, 2000),
+            [Change::Reloaded(path.clone())]
+        );
+        assert_eq!(session.document.buffer.text(), "new\n");
+        assert_eq!(
+            session.encoding_of(&path),
+            Some(deco_encoding::Encoding::Utf8Bom)
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

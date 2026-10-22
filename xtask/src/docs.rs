@@ -1728,7 +1728,8 @@ fn save_all() -> String {
     // the loop and the report, and only the write is the frontend's. Here the
     // write succeeds without touching a disk, using the same closure as the
     // tests.
-    if let deco_editor::commands::Outcome::Message(report) = take.session.save_all(|_, _| Ok(())) {
+    if let deco_editor::commands::Outcome::Message(report) = take.session.save_all(|_, _, _| Ok(()))
+    {
         take.session.status = Some(report);
     }
     take.resize_for_chrome();

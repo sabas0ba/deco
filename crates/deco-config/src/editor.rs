@@ -246,6 +246,11 @@ pub struct EditorSettings {
     pub render_control_characters: bool,
     /// `editor.unicodeHighlight.invisibleCharacters`.
     pub highlight_invisible_characters: bool,
+    /// `files.encoding`: what a file without a byte order mark is read and
+    /// written in.
+    pub encoding: deco_encoding::Encoding,
+    /// A `files.encoding` value deco does not implement, kept to report it.
+    pub unknown_encoding: Option<String>,
     /// `files.autoSave`.
     pub auto_save: AutoSave,
     /// `files.autoSaveDelay`, in milliseconds.
@@ -323,6 +328,14 @@ impl EditorSettings {
             highlight_invisible_characters: s
                 .get_bool("editor.unicodeHighlight.invisibleCharacters", l)
                 .unwrap_or(true),
+            encoding: s
+                .get_str("files.encoding", l)
+                .and_then(deco_encoding::Encoding::from_setting)
+                .unwrap_or_default(),
+            unknown_encoding: s
+                .get_str("files.encoding", l)
+                .filter(|value| deco_encoding::Encoding::from_setting(value).is_none())
+                .map(str::to_owned),
             trim_auto_whitespace: s.get_bool("editor.trimAutoWhitespace", l).unwrap_or(true),
             auto_indent: match s.get_str("editor.autoIndent", l) {
                 Some("none") => AutoIndent::None,
@@ -421,6 +434,13 @@ impl EditorSettings {
     /// the user learns that the setting has no effect. An unknown colour theme is
     /// reported the same way.
     pub fn unsupported(&self) -> Option<String> {
+        if let Some(value) = &self.unknown_encoding {
+            return Some(format!(
+                "`files.encoding: \"{value}\"` is not one deco reads; files are read as UTF-8. \
+                 deco reads utf8, utf8bom, utf16le, utf16be, windows1252, iso88591, shiftjis \
+                 and eucjp"
+            ));
+        }
         let value = match self.auto_save {
             AutoSave::OnFocusChange => "onFocusChange",
             AutoSave::OnWindowChange => "onWindowChange",

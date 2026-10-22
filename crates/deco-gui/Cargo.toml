@@ -10,6 +10,7 @@ authors.workspace = true
 
 [dependencies]
 deco-config.workspace = true
+deco-encoding.workspace = true
 deco-core.workspace = true
 deco-editor.workspace = true
 deco-scm.workspace = true

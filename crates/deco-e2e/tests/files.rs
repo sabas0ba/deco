@@ -467,3 +467,52 @@ fn a_file_another_program_creates_appears_in_the_tree() {
     editor.wait(2_000);
     editor.screen().assert_lacks("a.txt");
 }
+
+#[test]
+fn a_shift_jis_file_is_read_and_saved_in_shift_jis() {
+    // 日本 in Shift_JIS, with `files.encoding` naming it for the workspace,
+    // as a project of older Japanese sources would.
+    let scenario = Scenario::new("encoding-shift-jis")
+        .workspace_settings(r#"{ "files.encoding": "shiftjis" }"#)
+        .bytes("old.txt", &[0x93, 0xFA, 0x96, 0x7B, b'\n']);
+    let mut editor = scenario.launch(&["old.txt"]);
+    assert_eq!(editor.text(), "日本\n");
+    editor.screen().assert_status("Japanese (Shift JIS)");
+
+    editor.press("end").type_text("語").press("ctrl+s");
+    assert_eq!(
+        editor.on_disk_bytes("old.txt"),
+        [0x93, 0xFA, 0x96, 0x7B, 0x8C, 0xEA, b'\n'],
+        "written back in Shift_JIS"
+    );
+
+    // A character Shift_JIS cannot hold: refused, and the file is untouched.
+    editor.type_text("é").press("ctrl+s");
+    assert!(
+        editor
+            .status()
+            .is_some_and(|status| status.contains("cannot hold")),
+        "{:?}",
+        editor.status()
+    );
+    assert_eq!(editor.on_disk_bytes("old.txt").len(), 7);
+}
+
+#[test]
+fn a_byte_order_mark_wins_over_the_setting_and_is_kept() {
+    let scenario = Scenario::new("encoding-bom")
+        .user_settings(r#"{ "files.encoding": "shiftjis" }"#)
+        .bytes("bom.txt", b"\xEF\xBB\xBFhello\n");
+    let mut editor = scenario.launch(&["bom.txt"]);
+    assert_eq!(editor.text(), "hello\n");
+    editor.press("end").type_text("!").press("ctrl+s");
+    assert_eq!(editor.on_disk_bytes("bom.txt"), b"\xEF\xBB\xBFhello!\n");
+}
+
+#[test]
+fn a_file_that_is_not_valid_in_its_encoding_says_where_and_how_to_read_it() {
+    let scenario = Scenario::new("encoding-invalid").bytes("bad.txt", b"ok\n\xFF\n");
+    let error = scenario.startup_error(&["bad.txt"]);
+    assert!(error.contains("not valid UTF-8 at byte 3"), "{error}");
+    assert!(error.contains("files.encoding"), "{error}");
+}

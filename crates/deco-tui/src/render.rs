@@ -1991,11 +1991,18 @@ fn status_bar(session: &Session, width: usize, palette: &Palette) -> Row {
     // The branch comes first in the right-hand group, because it describes the
     // workspace and everything after it describes this file. VS Code puts it at
     // the far left, but deco uses that end for the document title and messages.
+    // The encoding, only when it is not UTF-8, which is what nearly every file
+    // is and what a save writes unless told otherwise.
+    let encoding = match session.document.encoding {
+        deco_encoding::Encoding::Utf8 => String::new(),
+        other => format!("{}  ", other.label()),
+    };
     let right = format!(
-        " {}{}{}  {}  Ln {}, Col {} ",
+        " {}{}{}  {}{}  Ln {}, Col {} ",
         branch_summary(session),
         problem_summary(session),
         language,
+        encoding,
         indentation(session),
         cursor.line + 1,
         cursor.character + 1
@@ -4886,6 +4893,22 @@ mod tests {
         let frame = render(&session("const a = {\n  b: 1,\n};\n"), 60, 8);
         let bar = frame.rows.last().unwrap().plain();
         assert!(bar.contains("Spaces: 2 (detected)"), "{bar:?}");
+    }
+
+    #[test]
+    fn the_status_bar_names_an_encoding_other_than_utf8() {
+        let mut session = session("x\n");
+        let bar = |session: &Session| render(session, 100, 4).rows.last().unwrap().plain();
+        assert!(!bar(&session).contains("UTF-8"), "UTF-8 is not named");
+        session.set_encoding_of(
+            std::path::Path::new("/w/file.rs"),
+            deco_encoding::Encoding::ShiftJis,
+        );
+        assert!(
+            bar(&session).contains("Japanese (Shift JIS)"),
+            "{:?}",
+            bar(&session)
+        );
     }
 
     /// What `git status --porcelain=v2 --branch -z` writes for a branch with
