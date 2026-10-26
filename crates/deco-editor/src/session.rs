@@ -531,6 +531,9 @@ pub struct Session {
     active_terminal: usize,
     /// The number the next terminal is given.
     next_terminal_id: u32,
+    /// Whether files can only be read and written as UTF-8, as in a remote
+    /// session, whose server transfers text.
+    utf8_only: bool,
     /// Which view the panel shows.
     panel_view: PanelView,
     /// The file the tree asked to open as a preview, until the frontend opens
@@ -805,6 +808,7 @@ impl Session {
             terminals: Vec::new(),
             active_terminal: 0,
             next_terminal_id: 1,
+            utf8_only: false,
             panel_view: PanelView::default(),
             preview_pending: None,
             markers: crate::markers::Markers::default(),
@@ -2195,6 +2199,12 @@ impl Session {
     /// file again or write it, as VS Code does, before asking for the
     /// encoding.
     fn offer_encoding_actions(&mut self) -> Outcome {
+        if self.utf8_only {
+            return Outcome::Message(
+                "this session reads and writes files as UTF-8; the encoding cannot be changed"
+                    .to_owned(),
+            );
+        }
         let current = self.document.encoding.label();
         let entries = vec![
             crate::commands::PaletteEntry::new(REOPEN_WITH_ENCODING, "Reopen with Encoding")
@@ -2205,6 +2215,13 @@ impl Session {
         self.prompt = Some(Prompt::list(PromptKind::EncodingAction, entries));
         self.refresh_context();
         Outcome::Handled
+    }
+
+    /// Makes files readable and writable only as UTF-8, so `Change File
+    /// Encoding` is refused before anything is chosen: set by a frontend
+    /// whose files travel as text, as a remote session's do.
+    pub fn set_utf8_only(&mut self, utf8_only: bool) {
+        self.utf8_only = utf8_only;
     }
 
     /// Lists every encoding for `kind`, with the document's current one
@@ -9907,6 +9924,25 @@ mod tests {
             matches!(&outcome, Outcome::Message(text) if text.contains("no file")),
             "{outcome:?}"
         );
+    }
+
+    #[test]
+    fn a_utf8_only_session_refuses_before_anything_is_chosen() {
+        // Including an untitled document, whose Save with Encoding would
+        // otherwise set the encoding and go straight to Save As.
+        let mut s = Session::new(
+            deco_config::Settings::with_defaults(),
+            None,
+            Platform::Linux,
+        );
+        s.set_utf8_only(true);
+        let outcome = s.run("workbench.action.editor.changeEncoding", None, 0);
+        assert!(
+            matches!(&outcome, Outcome::Message(text) if text.contains("UTF-8")),
+            "{outcome:?}"
+        );
+        assert!(s.prompt.is_none());
+        assert_eq!(s.document.encoding, deco_encoding::Encoding::Utf8);
     }
 
     #[test]

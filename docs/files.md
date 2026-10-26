@@ -40,7 +40,7 @@ For the same reason, the tree reads one level at a time when revealing a file. `
 
 The tree does not read the filesystem. `deco-editor`'s `Explorer` stores the directory contents it has received and requests missing ones; the frontend provides them using `std::fs`. The core contains no `read_dir`, so the editing code, including this tree, can be tested without a filesystem.
 
-The same design lets the tree work on a **remote** workspace: the request is answered over the connection instead, and the model is unchanged. The first version derives a remote directory's contents from the whole-workspace listing that the protocol already provides, which is the same listing `ctrl+p` requests on every press. A per-directory request would be cheaper, but requires a protocol change.
+The same design lets the tree work on a **remote** workspace: the request is answered over the connection instead, and the model is unchanged. A remote directory is read with `fs.dir`, one directory at a time, which reports each entry's kind, so an empty folder is shown. With an older remote deco that lacks it, a directory's contents are derived from the whole-workspace file listing, which cannot show empty folders.
 
 ## Changing the files themselves
 
@@ -122,7 +122,7 @@ this workspace is empty
 
 ## Not built yet
 
-**Changes on disk are found by reading again, not by a watcher.** While the tree is on screen, the directories it shows are read again every two seconds, at most 64 per pass with each pass continuing where the last stopped, so a file another program creates, renames or deletes appears within two seconds. The selection stays on the same file when rows are added above it, and a folder that disappears is forgotten with its expansion state. A hidden tree is not read; it is brought up to date by the first pass after it is shown. This is local only: a remote workspace is listed whole, which is too costly to repeat on a timer, so a remote tree changes only when a directory is read again. A filesystem watcher would report sooner, but has platform-specific failure modes and would add a dependency.
+**Changes on disk are found by reading again, not by a watcher.** While the tree is on screen, the directories it shows are read again every two seconds, at most 64 per pass with each pass continuing where the last stopped, so a file another program creates, renames or deletes appears within two seconds. The selection stays on the same file when rows are added above it, and a folder that disappears is forgotten with its expansion state. A hidden tree is not read; it is brought up to date by the first pass after it is shown. This is local only: a remote tree changes only when a directory is read again, such as after a change made from the tree. A filesystem watcher would report sooner, but has platform-specific failure modes and would add a dependency.
 
 **No mouse, and no drag.** The tree is keyboard-only in both frontends, because mouse support has not been implemented in the GPU frontend. Moving a file to another folder is therefore not possible: rename accepts a name, not a path.
 

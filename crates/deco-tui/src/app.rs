@@ -628,6 +628,9 @@ impl Driver {
         // them.
         lsp.attach(session);
         session.frontend_commands = frontend_commands();
+        // A remote server sends and receives text, which it reads and writes
+        // as UTF-8, so no other encoding can be chosen.
+        session.set_utf8_only(is_remote);
 
         // The file tree root. The language server and quick open use the same
         // root, so `ctrl+p` and the tree show the same workspace. In a remote
@@ -1971,11 +1974,20 @@ fn fill_tree(
             return Ok(());
         };
         let entries = match remote.as_mut() {
-            // The protocol only lists the whole workspace, so a directory's
-            // contents are derived from that listing. This is less efficient
-            // than a per-directory call, but no worse than `ctrl+p`, which
-            // requests the same list on every press. A `list_dir` method would
-            // improve this and requires a protocol change.
+            // One directory at a time, with each entry's kind, so an empty
+            // folder, which a file listing cannot show, is in the tree.
+            Some(client) if client.serves("fs.dir") => {
+                match client.read_directory(&dir.display().to_string()) {
+                    Ok(listed) => crate::files::remote_dir(root, &dir, &listed, &session.settings),
+                    Err(error) => {
+                        session.status = Some(format!("could not list the remote: {error}"));
+                        Vec::new()
+                    }
+                }
+            }
+            // An older server lists only the whole workspace, so a
+            // directory's contents are derived from that listing, without
+            // the empty folders it cannot show.
             Some(client) => match client.list() {
                 Ok(files) => remote_children(&files, root, &dir),
                 Err(error) => {

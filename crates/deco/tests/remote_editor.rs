@@ -553,3 +553,39 @@ fn a_rename_onto_a_file_on_the_far_end_is_refused_there() {
         editor.status()
     );
 }
+
+#[test]
+fn a_new_empty_folder_on_the_far_end_stays_in_the_tree() {
+    // A listing of files cannot show an empty folder, so the tree reads the
+    // remote one directory at a time, with each entry's kind.
+    let scenario = scenario("remote-tree-folder");
+    let mut editor = scenario.launch_remote(&["notes.txt"], server());
+    editor
+        .press("ctrl+b")
+        .press("ctrl+shift+e")
+        .press("ctrl+shift+n");
+    editor.type_text("empty").press("enter");
+    assert!(editor.workspace().join("src/empty").is_dir());
+    let names: Vec<String> = editor
+        .session()
+        .explorer()
+        .map(|explorer| explorer.rows().into_iter().map(|row| row.name).collect())
+        .unwrap_or_default();
+    assert!(names.iter().any(|name| name == "empty"), "{names:?}");
+}
+
+#[test]
+fn the_encoding_cannot_be_changed_in_a_remote_session() {
+    let scenario = scenario("remote-encoding");
+    let mut editor = scenario.launch_remote(&["notes.txt"], server());
+    editor.press("ctrl+n");
+    editor.palette("Change File Encoding");
+    assert!(
+        editor
+            .status()
+            .is_some_and(|status| status.contains("UTF-8")),
+        "{:?}",
+        editor.status()
+    );
+    assert!(editor.session().prompt.is_none());
+}
