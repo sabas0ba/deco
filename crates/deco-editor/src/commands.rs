@@ -44,23 +44,26 @@ impl Clipboard for MemoryClipboard {
 pub enum Outcome {
     /// The command ran; redraw.
     Handled,
-    /// The terminal in the panel should start a shell of `cols` by `rows`.
+    /// A terminal in the panel should start a shell of `cols` by `rows`.
     ///
     /// The frontend starts it and reports back with
     /// [`Session::terminal_started`](crate::Session::terminal_started) or
-    /// [`Session::terminal_failed`](crate::Session::terminal_failed).
+    /// [`Session::terminal_failed`](crate::Session::terminal_failed), naming
+    /// it by `id` in those and every later call about it.
     StartTerminal {
+        /// The terminal's number, unique in the session.
+        id: u32,
         /// Columns.
         cols: u16,
         /// Rows.
         rows: u16,
     },
-    /// The key went to the terminal. The bytes are waiting in
+    /// The key went to the active terminal. The bytes are waiting in
     /// [`Session::take_terminal_input`](crate::Session::take_terminal_input).
     TerminalInput,
-    /// The terminal's program should be stopped; the session has already
-    /// dropped its screen.
-    KillTerminal,
+    /// The program of the terminal numbered this should be stopped; the
+    /// session has already dropped its screen.
+    KillTerminal(u32),
     /// No command with that identifier exists here.
     ///
     /// Not necessarily an error: a frontend implements commands the core cannot,
@@ -408,6 +411,18 @@ pub const PALETTE: &[(&str, &str)] = &[
     (
         "workbench.action.terminal.kill",
         "Terminal: Kill the Active Terminal Instance",
+    ),
+    (
+        "workbench.action.terminal.new",
+        "Terminal: Create New Terminal",
+    ),
+    (
+        "workbench.action.terminal.focusNext",
+        "Terminal: Focus Next Terminal",
+    ),
+    (
+        "workbench.action.terminal.focusPrevious",
+        "Terminal: Focus Previous Terminal",
     ),
     (
         "workbench.action.terminal.paste",

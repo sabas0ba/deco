@@ -100,19 +100,19 @@ enum TerminalAt {
     Remote(Option<deco_remote::transport::Command>),
 }
 
-/// Starts the shell for the panel's terminal, in the workspace's directory.
+/// Starts the shell for the panel's terminal `id`, in the workspace's
+/// directory.
 fn start_terminal(
     session: &mut Session,
-    terminal: &mut Option<Shell>,
+    terminals: &mut Vec<Shell>,
     at: &TerminalAt,
     root: Option<&Path>,
-    cols: u16,
-    rows: u16,
+    (id, cols, rows): (u32, u16, u16),
 ) {
     match at {
         TerminalAt::Here => {}
         TerminalAt::Remote(None) => {
-            session.terminal_failed("the remote deco cannot run a terminal; update it");
+            session.terminal_failed(id, "the remote deco cannot run a terminal; update it");
             return;
         }
         // The remote's own shell, in the workspace the remote serves; see
@@ -120,14 +120,15 @@ fn start_terminal(
         TerminalAt::Remote(Some(command)) => {
             match deco_remote::pty::RemotePty::spawn(command, cols, rows) {
                 Ok(pty) => {
-                    *terminal = Some(Shell {
+                    terminals.push(Shell {
+                        id,
                         pty: Backend::Remote(pty),
                         quiet_since: None,
                     });
-                    session.terminal_started(cols, rows);
+                    session.terminal_started(id, cols, rows);
                 }
                 Err(error) => {
-                    session.terminal_failed(&format!("{}: {error}", command.program));
+                    session.terminal_failed(id, &format!("{}: {error}", command.program));
                 }
             }
             return;
@@ -143,33 +144,43 @@ fn start_terminal(
     command.env.extend(profile_env);
     match deco_term::pty::Pty::spawn(&command, deco_term::pty::Size { cols, rows }) {
         Ok(pty) => {
-            *terminal = Some(Shell {
+            terminals.push(Shell {
+                id,
                 pty: Backend::Here(pty),
                 quiet_since: None,
             });
-            session.terminal_started(cols, rows);
+            session.terminal_started(id, cols, rows);
         }
         Err(error) => {
             let program = command.program.to_string_lossy().into_owned();
-            session.terminal_failed(&format!("{program}: {error}"));
+            session.terminal_failed(id, &format!("{program}: {error}"));
         }
     }
 }
 
-/// Moves bytes between the shell and the session: its output into the
-/// screen, and keys and status replies to it. Returns whether the screen
+/// Moves bytes between every shell and the session: their output into their
+/// screens, and keys and status replies to them. Returns whether a screen
 /// changed.
-fn pump_terminal(terminal: &mut Option<Shell>, session: &mut Session) -> bool {
-    let Some(shell) = terminal.as_mut() else {
-        return false;
-    };
+fn pump_terminal(terminals: &mut Vec<Shell>, session: &mut Session) -> bool {
+    let mut changed = false;
+    terminals.retain_mut(|shell| {
+        let (screen_changed, running) = pump_shell(shell, session);
+        changed |= screen_changed;
+        running
+    });
+    changed
+}
+
+/// [`pump_terminal`] for one shell. Returns whether its screen changed and
+/// whether it is still running.
+fn pump_shell(shell: &mut Shell, session: &mut Session) -> (bool, bool) {
     let mut changed = false;
     let output = shell.pty.read();
     if !output.bytes.is_empty() {
-        session.terminal_output(&output.bytes);
+        session.terminal_output(shell.id, &output.bytes);
         changed = true;
     }
-    let input = session.take_terminal_input();
+    let input = session.take_terminal_input(shell.id);
     if !input.is_empty() {
         if let Err(error) = shell.pty.write(&input) {
             session.status = Some(format!("could not write to the terminal: {error}"));
@@ -198,19 +209,20 @@ fn pump_terminal(terminal: &mut Option<Shell>, session: &mut Session) -> bool {
             std::thread::sleep(Duration::from_millis(5));
             code = shell.pty.exit_code();
         }
-        session.terminal_exited(code);
-        *terminal = None;
-        changed = true;
+        session.terminal_exited(shell.id, code);
+        return (true, false);
     }
-    changed
+    (changed, true)
 }
 
 /// How long a shell that has exited may stay quiet before its terminal is
 /// treated as finished, when its output does not end on its own.
 const EXIT_GRACE: Duration = Duration::from_millis(500);
 
-/// The shell's pseudo-terminal and when its output last went quiet.
+/// A shell's pseudo-terminal and when its output last went quiet.
 struct Shell {
+    /// The session's number for the terminal it runs in.
+    id: u32,
     pty: Backend,
     quiet_since: Option<Instant>,
 }
@@ -257,10 +269,10 @@ impl Backend {
     }
 }
 
-/// Passes a new panel size on to the shell.
-fn fit_terminal(terminal: &mut Option<Shell>, session: &mut Session) {
-    if let Some((cols, rows)) = session.fit_terminal() {
-        if let Some(shell) = terminal.as_mut() {
+/// Passes a new panel size on to every shell.
+fn fit_terminal(terminals: &mut [Shell], session: &mut Session) {
+    for (id, cols, rows) in session.fit_terminal() {
+        if let Some(shell) = terminals.iter_mut().find(|shell| shell.id == id) {
             let _ = shell.pty.resize(deco_term::pty::Size { cols, rows });
         }
     }
@@ -554,8 +566,8 @@ pub struct Driver {
     disk: crate::disk::DiskWatch,
     /// Copies waiting to be sent to the terminal's clipboard.
     clipboard: crate::clipboard::Pending,
-    /// The shell running in the panel's terminal.
-    terminal: Option<Shell>,
+    /// The shells running in the panel's terminals.
+    terminals: Vec<Shell>,
     /// Which machine a terminal's shell runs on.
     terminal_at: TerminalAt,
     /// When the file tree's shown directories were last read again.
@@ -676,7 +688,7 @@ impl Driver {
             tree_root,
             disk,
             clipboard,
-            terminal: None,
+            terminals: Vec::new(),
             terminal_at: if is_remote {
                 TerminalAt::Remote(remote_terminal)
             } else {
@@ -698,7 +710,7 @@ impl Driver {
         // it is open, which the last keypress may have changed.
         resize(session, self.width, self.height);
         // The panel may have changed size with it.
-        fit_terminal(&mut self.terminal, session);
+        fit_terminal(&mut self.terminals, session);
         // The marks are derived from the buffer, so they are updated here rather
         // than in the renderer. `render` holds the session by shared reference,
         // and the alternative would be a diff per frame. When nothing has been
@@ -763,7 +775,7 @@ impl Driver {
             }
             *dirty = true;
         }
-        *dirty |= pump_terminal(&mut self.terminal, session);
+        *dirty |= pump_terminal(&mut self.terminals, session);
     }
 
     /// How long the event loop waits for a key before polling again.
@@ -771,7 +783,7 @@ impl Driver {
     /// Shorter while a shell is running, so its output appears as it is
     /// written rather than up to one interval later.
     pub fn poll_interval(&self) -> Duration {
-        if self.terminal.is_some() {
+        if !self.terminals.is_empty() {
             TERMINAL_POLL_INTERVAL
         } else {
             LSP_POLL_INTERVAL
@@ -882,7 +894,7 @@ impl Driver {
 
     /// Stops the language server and the source-control worker after the loop ends.
     pub fn shutdown(&mut self) {
-        self.terminal = None;
+        self.terminals.clear();
         self.lsp.detach();
         self.scm.shutdown();
     }
@@ -903,7 +915,7 @@ impl Driver {
             tree_root,
             scm,
             disk,
-            terminal,
+            terminals,
             terminal_at,
             ..
         } = self;
@@ -929,15 +941,21 @@ impl Driver {
         // A key typed into the terminal is not an edit of the document, so
         // none of the handling below applies to it.
         if outcome == Outcome::TerminalInput {
-            pump_terminal(terminal, session);
+            pump_terminal(terminals, session);
             return Ok(Flow::Continue);
         }
         match outcome {
-            Outcome::StartTerminal { cols, rows } => {
+            Outcome::StartTerminal { id, cols, rows } => {
                 let root = tree_root.clone().or_else(|| cwd.clone());
-                start_terminal(session, terminal, terminal_at, root.as_deref(), cols, rows);
+                start_terminal(
+                    session,
+                    terminals,
+                    terminal_at,
+                    root.as_deref(),
+                    (id, cols, rows),
+                );
             }
-            Outcome::KillTerminal => *terminal = None,
+            Outcome::KillTerminal(id) => terminals.retain(|shell| shell.id != id),
             Outcome::Quit => return Ok(Flow::Quit),
             Outcome::Save => {
                 if save(session, remote.as_mut(), disk, true)? {

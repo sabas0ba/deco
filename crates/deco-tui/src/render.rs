@@ -468,7 +468,17 @@ enum Region {
 
 impl Region {
     /// The heading, in the same letter case as VS Code's view titles.
-    fn title(self, session: &Session) -> &'static str {
+    ///
+    /// The panel names which terminal it shows when there are several, as
+    /// `TERMINAL 2/3`, since there are no tabs to tell them apart.
+    fn title(self, session: &Session) -> std::borrow::Cow<'static, str> {
+        let count = session.terminals().len();
+        if self == Self::Panel
+            && session.panel_view() == deco_editor::PanelView::Terminal
+            && count > 1
+        {
+            return format!("TERMINAL {}/{count}", session.active_terminal() + 1).into();
+        }
         match self {
             // Named after the view it contains, if any, as VS Code names the
             // view rather than its container.
@@ -481,6 +491,7 @@ impl Region {
             Self::Panel if session.terminal().is_some() => "TERMINAL",
             Self::Panel => "PANEL",
         }
+        .into()
     }
 
     /// The planned contents of this region, shown while it has no view.
@@ -533,7 +544,7 @@ fn region_rows(session: &Session, rect: Rect, region: Region, palette: &Palette)
 
     let mut rows: Vec<Row> = Vec::with_capacity(rect.height);
     rows.push(region_line(
-        region.title(session),
+        &region.title(session),
         rect.width,
         title_fg,
         title_bg,
@@ -2826,7 +2837,7 @@ mod tests {
         session.resize(60, 20);
         session.handle_chord(deco_keymap::keys::Chord::parse("ctrl+`").unwrap(), 0);
         let (cols, rows) = session.terminal_area().unwrap();
-        session.terminal_started(cols as u16, rows as u16);
+        session.terminal_started(1, cols as u16, rows as u16);
         assert!(
             render(&session, 60, 20).cursor.is_some(),
             "the shell's cursor"

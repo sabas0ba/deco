@@ -24,6 +24,9 @@ const MAX_SCROLLBACK: usize = 100_000;
 /// and side-bar toggles, quitting, and the terminal's own commands.
 pub const SKIP_SHELL: &[&str] = &[
     "workbench.action.terminal.toggleTerminal",
+    "workbench.action.terminal.new",
+    "workbench.action.terminal.focusNext",
+    "workbench.action.terminal.focusPrevious",
     "workbench.action.terminal.kill",
     "workbench.action.terminal.paste",
     "workbench.action.terminal.scrollUpPage",
@@ -46,9 +49,11 @@ pub const SKIP_SHELL: &[&str] = &[
     "workbench.actions.view.problems",
 ];
 
-/// The terminal in the panel.
+/// One of the terminals in the panel.
 #[derive(Debug, Clone)]
 pub struct TerminalPanel {
+    /// The number the frontend knows its process by, unique in the session.
+    id: u32,
     terminal: Terminal,
     /// How many lines the view is scrolled back into the history.
     back: usize,
@@ -59,14 +64,20 @@ pub struct TerminalPanel {
 }
 
 impl TerminalPanel {
-    /// An empty terminal of `cols` by `rows`.
-    pub fn new(cols: usize, rows: usize, scrollback: usize) -> Self {
+    /// An empty terminal of `cols` by `rows`, known to the frontend as `id`.
+    pub fn new(id: u32, cols: usize, rows: usize, scrollback: usize) -> Self {
         Self {
+            id,
             terminal: Terminal::new(cols, rows, scrollback.min(MAX_SCROLLBACK)),
             back: 0,
             exited: None,
             input: Vec::new(),
         }
+    }
+
+    /// The number the frontend knows this terminal's process by.
+    pub fn id(&self) -> u32 {
+        self.id
     }
 
     /// What the terminal shows.
@@ -156,7 +167,7 @@ mod tests {
 
     #[test]
     fn a_view_in_the_history_stays_put_while_output_arrives_even_when_the_history_is_full() {
-        let mut panel = TerminalPanel::new(10, 2, 5);
+        let mut panel = TerminalPanel::new(1, 10, 2, 5);
         let lines: String = (0..20).map(|n| format!("{n}\r\n")).collect();
         panel.feed(lines.as_bytes());
         assert_eq!(panel.screen().scrollback_len(), 5, "full");

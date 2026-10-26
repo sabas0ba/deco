@@ -460,9 +460,10 @@ impl ApplicationHandler for App<'_> {
                     }
                     // The integrated terminal is drawn only by the terminal
                     // frontend so far.
-                    Outcome::StartTerminal { .. } => self
-                        .session
-                        .terminal_failed("the terminal is only in the terminal frontend so far"),
+                    Outcome::StartTerminal { id, .. } => self.session.terminal_failed(
+                        id,
+                        "the terminal is only in the terminal frontend so far",
+                    ),
                     _ => {}
                 }
                 refuse_overlays(self.session);
