@@ -84,6 +84,9 @@ pub struct Lsp {
     symbols_request: Option<(RequestId, PathBuf)>,
     /// A fingerprint of the text last sent to the server.
     sent: Option<u64>,
+    /// Whether the next change must carry the whole text, because a change
+    /// failed to send and the edits it carried are not recorded any more.
+    whole_next: bool,
     /// The completion list on screen, if one is open.
     suggest: Option<Suggest>,
     /// The completion request in flight.
@@ -435,6 +438,7 @@ impl Lsp {
             semantic_request: None,
             symbols_request: None,
             sent: None,
+            whole_next: false,
             suggest: None,
             completion_request: None,
             format_request: None,
@@ -1418,10 +1422,13 @@ impl Lsp {
             let _ = supervisor.did_close(&previous);
         }
         let text = session.document.buffer.text();
+        // The server gets the whole text, so the edits before it are not news.
+        session.document.take_sync_changes();
         match supervisor.did_open(path, language, &text) {
             Ok(()) => {
                 self.open = Some(path.to_owned());
                 self.sent = Some(fingerprint(&text));
+                self.whole_next = false;
                 self.request_semantic_tokens(session);
             }
             Err(error) => self.report(session, error.to_string()),
@@ -1430,12 +1437,11 @@ impl Lsp {
 
     /// Notifies the server that the document changed.
     ///
-    /// Always sends the full text. The incremental path exists in `deco-lsp` and
-    /// is tested, but the editor does not yet record the applied ranges per
-    /// notification, and reconstructing them from the undo history would be
-    /// unreliable. Sending the whole document is correct but less efficient. A
-    /// wrong incremental range would corrupt the server's copy without any
-    /// error.
+    /// Sends the edits the document recorded since the last notification, so
+    /// a server that negotiated incremental sync receives ranges rather than
+    /// the whole file. The whole text is sent instead when an edit went
+    /// unrecorded (an undo or a redo), when the last notification failed, and
+    /// to a server that asked for full syncs; see `Document::take_sync_changes`.
     pub fn changed(&mut self, session: &mut Session) {
         let (Some(path), Some(supervisor)) =
             (session.document.path.clone(), self.supervisor.as_mut())
@@ -1446,6 +1452,13 @@ impl Lsp {
             return;
         }
         let text = session.document.buffer.text();
+        // Taken whether or not anything is sent: when the text is what the
+        // server already has, the edits between are not news either. No
+        // ranges means the whole text.
+        let changes = match session.document.take_sync_changes() {
+            Some(changes) if !self.whole_next => changes,
+            _ => Vec::new(),
+        };
 
         let outcome = send_if_changed(&mut self.sent, &text, || {
             // The old classification describes the text before this edit. It
@@ -1453,12 +1466,19 @@ impl Lsp {
             // token list applied to shifted text colours the wrong words. The
             // lexer's colouring alone is better until the response arrives.
             session.semantic_tokens.clear();
-            supervisor.did_change(&path, &[], &text)
+            supervisor.did_change(&path, &changes, &text)
         });
         match outcome {
-            None => {}
-            Some(Ok(())) => self.request_semantic_tokens(session),
-            Some(Err(error)) => self.report(session, error.to_string()),
+            None => self.whole_next = false,
+            Some(Ok(())) => {
+                self.whole_next = false;
+                self.request_semantic_tokens(session);
+            }
+            Some(Err(error)) => {
+                // The edits taken are lost with the failed notification.
+                self.whole_next = true;
+                self.report(session, error.to_string());
+            }
         }
     }
 

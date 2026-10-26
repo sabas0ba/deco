@@ -47,6 +47,10 @@ pub fn language_for_path(path: &Path) -> Option<&'static str> {
     })
 }
 
+/// The most edits recorded for one `textDocument/didChange`. Beyond this
+/// the whole text is sent instead.
+const MAX_SYNC_CHANGES: usize = 1024;
+
 /// Every language deco knows an identifier for, and what to call it.
 ///
 /// # Why this is a list and not derived from [`language_for_path`]
@@ -189,6 +193,12 @@ pub struct Document {
     pub(crate) snippet: Option<crate::snippet::ActiveSnippet>,
     /// The text.
     pub buffer: Buffer,
+    /// The edits since a language server was last told about the text, in
+    /// the order `textDocument/didChange` sends them, or `None` once an edit
+    /// went unrecorded and only the whole text describes the change.
+    ///
+    /// See [`Document::take_sync_changes`].
+    sync_changes: Option<Vec<deco_lsp::sync::ContentChange>>,
     /// Undo/redo for this document.
     pub history: History,
     /// Where it came from, if it was loaded from disk.
@@ -288,6 +298,7 @@ impl Document {
         let encoding = settings.encoding;
         Self {
             buffer,
+            sync_changes: Some(Vec::new()),
             snippet: None,
             history: History::default(),
             path: None,
@@ -324,6 +335,7 @@ impl Document {
         let encoding = settings.encoding;
         let mut document = Self {
             buffer,
+            sync_changes: Some(Vec::new()),
             snippet: None,
             history: History::default(),
             path: Some(path),
@@ -399,7 +411,44 @@ impl Document {
             .min()
             .unwrap_or(0);
         self.syntax.invalidate_from(first);
+        self.record_sync_changes(transaction);
         self.buffer.apply(transaction)
+    }
+
+    /// Records `transaction`, about to be applied, for the next
+    /// `textDocument/didChange`.
+    ///
+    /// A transaction's ranges all refer to the text before it, as the buffer
+    /// applies them. A server applies each change to the text the previous one
+    /// left, so they are recorded last first: a change never moves the text
+    /// before it, so every earlier range still means the same text. Two
+    /// insertions at one place are applied in the same order by both, which
+    /// leaves them in the transaction's order. Each range is clamped as the
+    /// buffer clamps it, so the server replaces exactly what the buffer does.
+    fn record_sync_changes(&mut self, transaction: &Transaction) {
+        let Some(changes) = self.sync_changes.as_mut() else {
+            return;
+        };
+        if changes.len() + transaction.changes().len() > MAX_SYNC_CHANGES {
+            // Past this the whole text is no more to send, and a journal for
+            // a document no server reads would otherwise grow without end.
+            self.sync_changes = None;
+            return;
+        }
+        for change in transaction.changes().iter().rev() {
+            changes.push(deco_lsp::sync::ContentChange::Incremental {
+                range: self.buffer.clamp_range(change.range),
+                text: change.text.to_string(),
+            });
+        }
+    }
+
+    /// The edits since the last call, for an incremental
+    /// `textDocument/didChange`, or `None` when an edit went unrecorded (an
+    /// undo, a redo) and the whole text must be sent. Starts recording again
+    /// from the current text either way.
+    pub fn take_sync_changes(&mut self) -> Option<Vec<deco_lsp::sync::ContentChange>> {
+        self.sync_changes.replace(Vec::new())
     }
 
     /// Marks everything derived from the text as unknown.
@@ -408,6 +457,7 @@ impl Document {
     /// undo and redo, which apply their own transactions inside the history.
     pub fn invalidate(&mut self) {
         self.snippet = None;
+        self.sync_changes = None;
         self.syntax.invalidate_from(0);
     }
 
@@ -908,6 +958,84 @@ mod tests {
 
     fn settings() -> EditorSettings {
         EditorSettings::default()
+    }
+
+    /// The text a server has after applying `changes` to `text` one after
+    /// another, as LSP defines incremental changes: each range in the
+    /// coordinates the previous change left.
+    fn as_a_server_applies(text: &str, changes: &[deco_lsp::sync::ContentChange]) -> String {
+        let mut server = Buffer::from_text(text);
+        for change in changes {
+            let deco_lsp::sync::ContentChange::Incremental { range, text } = change else {
+                panic!("only ranges are recorded: {change:?}");
+            };
+            let one = Transaction::single(deco_core::Change::replace(*range, text.clone()));
+            server.apply(&one);
+        }
+        server.text()
+    }
+
+    #[test]
+    fn the_recorded_changes_rebuild_the_text_a_server_must_have() {
+        // Pseudo-random edits, fixed by the seed so a failure repeats: several
+        // carets at once, two at one place, deletions across lines, ranges
+        // past the end, and text outside the BMP, whose UTF-16 positions
+        // differ from its char positions.
+        let pieces = ["a", "", "\n", "é", "😀", "xy\nz", "\n\n"];
+        let mut seed: u64 = 0x5eed;
+        let mut next = |bound: u64| {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (seed >> 33) % bound.max(1)
+        };
+        let start = "fn main() {\n    😀 é\n}\n";
+        let mut document = Document::from_file(PathBuf::from("/w/a.rs"), start, settings());
+        let mut sent = start.to_owned();
+        for round in 0..400 {
+            let lines = document.buffer.line_count() as u64;
+            let mut changes = Vec::new();
+            for _ in 0..=next(3) {
+                let line = next(lines + 1) as u32;
+                let character = next(6) as u32;
+                let at = deco_core::Position::new(line, character);
+                let end =
+                    deco_core::Position::new(line + next(2) as u32, character + next(3) as u32);
+                let text = pieces[next(pieces.len() as u64) as usize].to_owned();
+                changes.push(deco_core::Change::replace(
+                    deco_core::Range::new(at, end.max(at)),
+                    text,
+                ));
+            }
+            // Overlapping ranges are refused by `Transaction::new`, as they are
+            // for every caller; only the ones it accepts are edits.
+            let Ok(transaction) = Transaction::new(changes) else {
+                continue;
+            };
+            document.apply(&transaction);
+            if round % 7 == 0 {
+                let recorded = document.take_sync_changes().expect("all recorded");
+                sent = as_a_server_applies(&sent, &recorded);
+                assert_eq!(sent, document.buffer.text(), "after round {round}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_unrecorded_edit_asks_for_the_whole_text_once() {
+        let mut document = Document::from_file(PathBuf::from("/w/a.rs"), "a\n", settings());
+        document.apply(&Transaction::single(deco_core::Change::insert(
+            deco_core::Position::new(0, 1),
+            "b".to_owned(),
+        )));
+        // An undo changes the buffer without going through `apply`.
+        document.invalidate();
+        assert_eq!(document.take_sync_changes(), None);
+        assert_eq!(
+            document.take_sync_changes(),
+            Some(Vec::new()),
+            "recording again from the text just sent"
+        );
     }
 
     #[test]
