@@ -1047,6 +1047,47 @@ impl Driver {
                     None => {}
                 }
             }
+            // A remote server sends and receives text, which it reads and
+            // writes as UTF-8, so an encoding cannot be chosen there.
+            Outcome::ReopenWithEncoding(_) | Outcome::SaveWithEncoding(_) if remote.is_some() => {
+                session.status = Some(
+                    "a remote session reads and writes files as UTF-8; the encoding cannot be changed"
+                        .to_owned(),
+                );
+            }
+            Outcome::ReopenWithEncoding(encoding) => {
+                // The session sends this only for a clean document with a path.
+                if let Some(target) = session.document.path.clone() {
+                    match crate::text_file::read_as(&target, encoding) {
+                        Ok((text, read_in)) => {
+                            disk.remember(&target);
+                            session.set_encoding_of(&target, read_in);
+                            session.revert_to(&text);
+                            session.status = Some(format!(
+                                "Reopened {} as {}",
+                                target.display(),
+                                read_in.label()
+                            ));
+                            lsp.changed(session);
+                        }
+                        Err(error) => {
+                            session.status =
+                                Some(format!("could not reopen {}: {error}", target.display()));
+                        }
+                    }
+                }
+            }
+            Outcome::SaveWithEncoding(encoding) => {
+                // The new encoding is the document's only once the file is in
+                // it; a refused or failed write keeps the old one.
+                let before = session.document.encoding;
+                session.document.encoding = encoding;
+                if save(session, None, disk, true)? {
+                    lsp.saved(session);
+                } else {
+                    session.document.encoding = before;
+                }
+            }
             // The user chose a remembered permission to forget. The decision is
             // withdrawn, and the extension asks again the next time it needs
             // that permission.

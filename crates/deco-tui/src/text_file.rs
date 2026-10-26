@@ -35,6 +35,18 @@ pub fn read(path: &Path, encoding: Encoding) -> std::io::Result<(String, Encodin
     })
 }
 
+/// Reads `path` in `encoding`, which the user chose, whatever byte order
+/// mark it starts with (`Reopen with Encoding`).
+pub fn read_as(path: &Path, encoding: Encoding) -> std::io::Result<(String, Encoding)> {
+    let bytes = std::fs::read(path)?;
+    deco_encoding::decode_as(&bytes, encoding).map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{error}; the file was left as it was"),
+        )
+    })
+}
+
 /// Writes `text` to `path` in `encoding`.
 ///
 /// Nothing is written when the encoding cannot hold the text, so a failed
@@ -89,6 +101,23 @@ mod tests {
         let error = write(&path, "日本\n", Encoding::Windows1252).unwrap_err();
         assert!(error.to_string().contains("U+65E5"), "{error}");
         assert_eq!(std::fs::read(&path).unwrap(), b"before\n");
+    }
+
+    #[test]
+    fn a_chosen_encoding_overrides_the_byte_order_mark() {
+        let path = scratch("read-as");
+        std::fs::write(&path, [0xEF, 0xBB, 0xBF, b'a']).unwrap();
+        assert_eq!(
+            read(&path, Encoding::Windows1252).unwrap().1,
+            Encoding::Utf8Bom
+        );
+        assert_eq!(
+            read_as(&path, Encoding::Windows1252).unwrap(),
+            ("ï»¿a".to_owned(), Encoding::Windows1252)
+        );
+        std::fs::write(&path, [b'a', 0x82]).unwrap();
+        let error = read_as(&path, Encoding::ShiftJis).unwrap_err();
+        assert!(error.to_string().contains("byte 1"), "{error}");
     }
 
     #[test]

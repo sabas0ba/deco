@@ -516,3 +516,69 @@ fn a_file_that_is_not_valid_in_its_encoding_says_where_and_how_to_read_it() {
     assert!(error.contains("not valid UTF-8 at byte 3"), "{error}");
     assert!(error.contains("files.encoding"), "{error}");
 }
+
+#[test]
+fn a_file_is_reopened_in_the_encoding_chosen_for_it() {
+    // UTF-8 for é, which a Western file would show as two characters.
+    let scenario = Scenario::new("encoding-reopen").bytes("cafe.txt", "café\n".as_bytes());
+    let mut editor = scenario.launch(&["cafe.txt"]);
+    assert_eq!(editor.text(), "café\n");
+
+    editor
+        .palette("Change File Encoding")
+        .type_text("reopen")
+        .press("enter")
+        .type_text("windows1252")
+        .press("enter");
+    assert_eq!(editor.text(), "cafÃ©\n");
+    assert!(!editor.is_dirty(), "reopening is not an edit");
+    assert_eq!(
+        editor.session().document.encoding.label(),
+        "Western (Windows 1252)"
+    );
+
+    // Back to UTF-8, which the file is really in.
+    editor
+        .palette("Change File Encoding")
+        .type_text("reopen")
+        .press("enter")
+        .type_text("utf8")
+        .press("enter");
+    assert_eq!(editor.text(), "café\n");
+    assert_eq!(editor.on_disk_bytes("cafe.txt"), "café\n".as_bytes());
+}
+
+#[test]
+fn a_file_is_saved_in_the_encoding_chosen_for_it() {
+    let scenario = Scenario::new("encoding-save-as")
+        .workspace_settings(r#"{ "files.encoding": "shiftjis" }"#)
+        .bytes("old.txt", &[0x93, 0xFA, 0x96, 0x7B, b'\n']);
+    let mut editor = scenario.launch(&["old.txt"]);
+
+    editor
+        .palette("Change File Encoding")
+        .type_text("save")
+        .press("enter")
+        .type_text("utf8")
+        .press("enter");
+    assert_eq!(editor.on_disk_bytes("old.txt"), "日本\n".as_bytes());
+    editor.screen().assert_lacks("Shift JIS");
+
+    // An encoding that cannot hold the text: nothing is written, and the
+    // document keeps the encoding the file is in.
+    editor
+        .palette("Change File Encoding")
+        .type_text("save")
+        .press("enter")
+        .type_text("1252")
+        .press("enter");
+    assert!(
+        editor
+            .status()
+            .is_some_and(|status| status.contains("cannot hold")),
+        "{:?}",
+        editor.status()
+    );
+    assert_eq!(editor.on_disk_bytes("old.txt"), "日本\n".as_bytes());
+    assert_eq!(editor.session().document.encoding.label(), "UTF-8");
+}

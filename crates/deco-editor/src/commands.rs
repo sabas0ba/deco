@@ -187,6 +187,22 @@ pub enum Outcome {
     /// An untitled document never produces this. There is nothing to read, so
     /// the session reverts it to empty itself.
     Revert,
+    /// The document's file should be read again in this encoding, which the
+    /// user chose, whatever byte order mark it starts with.
+    ///
+    /// The frontend reads it with [`deco_encoding::decode_as`], records the
+    /// encoding with [`Session::set_encoding_of`](crate::Session::set_encoding_of)
+    /// and passes the text to [`Session::revert_to`](crate::Session::revert_to).
+    /// The session produces this only for a clean document with a path, so
+    /// no edit is lost.
+    ReopenWithEncoding(deco_encoding::Encoding),
+    /// The document should be written in this encoding, which then becomes
+    /// its encoding.
+    ///
+    /// The frontend saves as for [`Outcome::Save`], and keeps the document's
+    /// previous encoding if the write fails, so the status bar never names an
+    /// encoding the file is not in.
+    SaveWithEncoding(deco_encoding::Encoding),
     /// Every unsaved document should be written to disk.
     ///
     /// Carries no paths or bytes, for the same reason as [`Outcome::Save`]: the
@@ -446,6 +462,10 @@ pub const PALETTE: &[(&str, &str)] = &[
     (
         "workbench.action.editor.changeLanguageMode",
         "Change Language Mode",
+    ),
+    (
+        "workbench.action.editor.changeEncoding",
+        "Change File Encoding",
     ),
     ("workbench.action.quit", "Quit"),
     ("workbench.action.nextEditor", "Next Editor"),

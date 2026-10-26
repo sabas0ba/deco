@@ -223,6 +223,11 @@ const MAX_RECENT: usize = 64;
 /// `[deco.language.auto]` look like a working settings key.
 const AUTO_LANGUAGE: &str = "deco.language.auto";
 
+/// The identifiers of the two choices `Change File Encoding` offers first.
+/// Internal to the picker, so deco's own namespace.
+const REOPEN_WITH_ENCODING: &str = "deco.encoding.reopen";
+const SAVE_WITH_ENCODING: &str = "deco.encoding.save";
+
 /// A path with its `.` and `..` segments resolved, without touching the disk.
 ///
 /// Treats `/w/src/main.rs` and `/w/./src/../src/main.rs` as the same path, which
@@ -1920,6 +1925,7 @@ impl Session {
                 Outcome::Handled
             }
             "workbench.action.editor.changeLanguageMode" => self.offer_languages(),
+            "workbench.action.editor.changeEncoding" => self.offer_encoding_actions(),
             // Checked before `commands::execute` returns `Outcome::Save`. A
             // document with no path cannot be written, so `ctrl+s` opens Save As,
             // as in VS Code. Otherwise an untitled tab could not be saved, and so
@@ -2175,6 +2181,73 @@ impl Session {
         self.prompt = Some(Prompt::list(PromptKind::Languages, entries));
         self.refresh_context();
         Outcome::Handled
+    }
+
+    /// `workbench.action.editor.changeEncoding`: asks whether to read the
+    /// file again or write it, as VS Code does, before asking for the
+    /// encoding.
+    fn offer_encoding_actions(&mut self) -> Outcome {
+        let current = self.document.encoding.label();
+        let entries = vec![
+            crate::commands::PaletteEntry::new(REOPEN_WITH_ENCODING, "Reopen with Encoding")
+                .with_detail(current),
+            crate::commands::PaletteEntry::new(SAVE_WITH_ENCODING, "Save with Encoding")
+                .with_detail(current),
+        ];
+        self.prompt = Some(Prompt::list(PromptKind::EncodingAction, entries));
+        self.refresh_context();
+        Outcome::Handled
+    }
+
+    /// Lists every encoding for `kind`, with the document's current one
+    /// selected so `enter` alone changes nothing.
+    fn offer_encodings(&mut self, kind: PromptKind) -> Outcome {
+        let current = self.document.encoding;
+        let entries = deco_encoding::Encoding::ALL
+            .iter()
+            .map(|encoding| {
+                let entry =
+                    crate::commands::PaletteEntry::new(encoding.setting(), encoding.label());
+                if *encoding == current {
+                    entry.with_detail("current")
+                } else {
+                    entry.with_detail(encoding.setting())
+                }
+            })
+            .collect();
+        let mut prompt = Prompt::list(kind, entries);
+        prompt.select_id(current.setting());
+        self.prompt = Some(prompt);
+        self.refresh_context();
+        Outcome::Handled
+    }
+
+    /// Reads the file again in `encoding`, which needs a clean document with
+    /// a path: reopening replaces the text, and unsaved edits would be lost.
+    fn reopen_with_encoding(&mut self, encoding: deco_encoding::Encoding) -> Outcome {
+        if self.document.path.is_none() {
+            return Outcome::Message(
+                "this document has no file to reopen; Save with Encoding sets its encoding"
+                    .to_owned(),
+            );
+        }
+        if self.document.dirty {
+            return Outcome::Message(format!(
+                "{} has unsaved changes; save or revert it before reopening it in another encoding",
+                self.document.title()
+            ));
+        }
+        Outcome::ReopenWithEncoding(encoding)
+    }
+
+    /// Writes the document in `encoding`. An untitled document has nowhere
+    /// to be written yet, so it takes the encoding and asks for a path.
+    fn save_with_encoding(&mut self, encoding: deco_encoding::Encoding) -> Outcome {
+        if self.document.path.is_none() {
+            self.document.encoding = encoding;
+            return self.offer_save_as();
+        }
+        Outcome::SaveWithEncoding(encoding)
     }
 
     /// Opens the save-as prompt, seeded with this document's own path.
@@ -2613,6 +2686,23 @@ impl Session {
                 }
                 None => Outcome::Message(format!("no option matches `{}`", prompt.text())),
             },
+            PromptKind::EncodingAction => match prompt.selected().map(|entry| entry.id.as_str()) {
+                Some(REOPEN_WITH_ENCODING) => self.offer_encodings(PromptKind::ReopenWithEncoding),
+                Some(SAVE_WITH_ENCODING) => self.offer_encodings(PromptKind::SaveWithEncoding),
+                _ => Outcome::Message(format!("no action matches `{}`", prompt.text())),
+            },
+            PromptKind::ReopenWithEncoding | PromptKind::SaveWithEncoding => {
+                match prompt
+                    .selected()
+                    .and_then(|entry| deco_encoding::Encoding::from_setting(&entry.id))
+                {
+                    Some(encoding) if prompt.kind() == PromptKind::ReopenWithEncoding => {
+                        self.reopen_with_encoding(encoding)
+                    }
+                    Some(encoding) => self.save_with_encoding(encoding),
+                    None => Outcome::Message(format!("no encoding matches `{}`", prompt.text())),
+                }
+            }
             PromptKind::Languages => match prompt.selected() {
                 Some(entry) if entry.id == AUTO_LANGUAGE => self.set_language(None),
                 Some(entry) => {
@@ -9601,6 +9691,104 @@ mod tests {
         );
         assert_eq!(s.document.language(), Some("rust"));
         assert!(s.prompt.is_none(), "the picker closes");
+    }
+
+    /// Runs `Change File Encoding`, picks `action`, then types `encoding`.
+    fn choose_encoding(s: &mut Session, action: &str, encoding: &str) -> Outcome {
+        s.run("workbench.action.editor.changeEncoding", None, 0);
+        for key in action.chars() {
+            press(s, &key.to_string());
+        }
+        press(s, "enter");
+        for key in encoding.chars() {
+            press(s, &key.to_string());
+        }
+        press(s, "enter")
+    }
+
+    #[test]
+    fn the_encoding_list_opens_on_the_document_s_encoding() {
+        let mut s = searchable("x\n");
+        s.document.encoding = deco_encoding::Encoding::ShiftJis;
+        s.run("workbench.action.editor.changeEncoding", None, 0);
+        let prompt = s.prompt.as_ref().expect("the action list opens");
+        assert_eq!(prompt.kind(), PromptKind::EncodingAction);
+        assert_eq!(
+            prompt.selected().map(|entry| entry.title.as_str()),
+            Some("Reopen with Encoding"),
+            "VS Code lists reopening first"
+        );
+        press(&mut s, "enter");
+        let prompt = s.prompt.as_ref().expect("the encoding list opens");
+        assert_eq!(prompt.kind(), PromptKind::ReopenWithEncoding);
+        assert_eq!(prompt.matches(), deco_encoding::Encoding::ALL.len());
+        assert_eq!(
+            prompt.selected().map(|entry| entry.id.as_str()),
+            Some("shiftjis"),
+            "enter alone keeps the current encoding"
+        );
+    }
+
+    #[test]
+    fn reopening_a_clean_file_asks_the_frontend_to_read_it() {
+        let mut s = searchable("x\n");
+        assert_eq!(
+            choose_encoding(&mut s, "reopen", "euc"),
+            Outcome::ReopenWithEncoding(deco_encoding::Encoding::EucJp)
+        );
+        assert!(s.prompt.is_none());
+    }
+
+    #[test]
+    fn reopening_keeps_unsaved_edits_by_refusing() {
+        let mut s = searchable("x\n");
+        press(&mut s, "y");
+        let outcome = choose_encoding(&mut s, "reopen", "euc");
+        assert!(
+            matches!(&outcome, Outcome::Message(text) if text.contains("unsaved changes")),
+            "{outcome:?}"
+        );
+        assert_eq!(s.document.buffer.text(), "yx\n");
+    }
+
+    #[test]
+    fn saving_with_an_encoding_leaves_the_switch_to_the_frontend() {
+        let mut s = searchable("x\n");
+        assert_eq!(
+            choose_encoding(&mut s, "save", "1252"),
+            Outcome::SaveWithEncoding(deco_encoding::Encoding::Windows1252)
+        );
+        assert_eq!(
+            s.document.encoding,
+            deco_encoding::Encoding::Utf8,
+            "only a successful write changes it"
+        );
+    }
+
+    #[test]
+    fn an_untitled_document_takes_the_encoding_and_asks_for_a_path() {
+        let mut s = Session::new(
+            deco_config::Settings::with_defaults(),
+            None,
+            Platform::Linux,
+        );
+        s.resize(80, 10);
+        assert_eq!(choose_encoding(&mut s, "save", "shift"), Outcome::Handled);
+        assert_eq!(s.document.encoding, deco_encoding::Encoding::ShiftJis);
+        assert_eq!(
+            s.prompt.as_ref().map(Prompt::kind),
+            Some(PromptKind::SaveAs)
+        );
+        let mut s = Session::new(
+            deco_config::Settings::with_defaults(),
+            None,
+            Platform::Linux,
+        );
+        let outcome = choose_encoding(&mut s, "reopen", "shift");
+        assert!(
+            matches!(&outcome, Outcome::Message(text) if text.contains("no file")),
+            "{outcome:?}"
+        );
     }
 
     #[test]

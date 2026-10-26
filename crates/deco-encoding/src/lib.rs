@@ -157,6 +157,35 @@ pub fn decode(bytes: &[u8], default: Encoding) -> Result<(String, Encoding), Dec
         // no other check can tell; without one it is read in `default`.
         _ => (default, 0),
     };
+    decode_body(bytes, encoding, start)
+}
+
+/// Reads `bytes` in `encoding`, which the user chose, whatever byte order
+/// mark the file starts with.
+///
+/// This is `Reopen with Encoding`: the chosen encoding is used even where
+/// [`decode`] would follow a byte order mark. Only a mark that belongs to
+/// the chosen encoding is skipped rather than read as text; UTF-8 chosen for
+/// a file with a UTF-8 mark is reported as [`Encoding::Utf8Bom`], so a save
+/// keeps the mark. Any other mark is read as text in the chosen encoding.
+pub fn decode_as(bytes: &[u8], encoding: Encoding) -> Result<(String, Encoding), DecodeError> {
+    let (encoding, start) = match (encoding, bytes) {
+        (Encoding::Utf8 | Encoding::Utf8Bom, [0xEF, 0xBB, 0xBF, ..]) => (Encoding::Utf8Bom, 3),
+        (Encoding::Utf16Le, [0xFF, 0xFE, ..]) | (Encoding::Utf16Be, [0xFE, 0xFF, ..]) => {
+            (encoding, 2)
+        }
+        _ => (encoding, 0),
+    };
+    decode_body(bytes, encoding, start)
+}
+
+/// Reads `bytes[start..]` in `encoding`, reporting offsets from the start of
+/// `bytes`.
+fn decode_body(
+    bytes: &[u8],
+    encoding: Encoding,
+    start: usize,
+) -> Result<(String, Encoding), DecodeError> {
     let body = &bytes[start..];
     let shift = |error: DecodeError| DecodeError {
         offset: error.offset + start,
@@ -260,6 +289,38 @@ mod tests {
             assert_eq!(Encoding::from_setting(encoding.setting()), Some(encoding));
         }
         assert_eq!(Encoding::from_setting("gbk"), None);
+    }
+
+    #[test]
+    fn a_chosen_encoding_is_used_whatever_the_mark_says() {
+        // A UTF-8 mark read as Windows-1252 is three characters of text.
+        assert_eq!(
+            decode_as(&[0xEF, 0xBB, 0xBF, b'a'], Encoding::Windows1252),
+            Ok(("ï»¿a".to_owned(), Encoding::Windows1252))
+        );
+        // A mark that belongs to the chosen encoding is skipped, and a UTF-8
+        // one is kept for the next save.
+        assert_eq!(
+            decode_as(&[0xEF, 0xBB, 0xBF, b'a'], Encoding::Utf8),
+            Ok(("a".to_owned(), Encoding::Utf8Bom))
+        );
+        assert_eq!(
+            decode_as(&[0xFF, 0xFE, b'a', 0], Encoding::Utf16Le),
+            Ok(("a".to_owned(), Encoding::Utf16Le))
+        );
+        // UTF-16 chosen without a mark reads the whole file as UTF-16.
+        assert_eq!(
+            decode_as(&[0, b'a'], Encoding::Utf16Be),
+            Ok(("a".to_owned(), Encoding::Utf16Be))
+        );
+        // A UTF-16 mark read as UTF-8 is not valid UTF-8, at byte 0.
+        assert_eq!(
+            decode_as(&[0xFF, 0xFE, b'a', 0], Encoding::Utf8),
+            Err(DecodeError {
+                encoding: Encoding::Utf8,
+                offset: 0
+            })
+        );
     }
 
     #[test]
