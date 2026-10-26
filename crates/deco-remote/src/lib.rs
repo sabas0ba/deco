@@ -47,6 +47,7 @@
 pub mod authority;
 pub mod client;
 pub mod fetch;
+pub mod file_ops;
 pub mod forward;
 pub mod frame;
 pub mod install;

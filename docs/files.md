@@ -109,7 +109,7 @@ A rename that only changes capitalisation works on a case-insensitive filesystem
 
 Accepting the rename prompt without editing it does nothing. The comparison is made before the text is trimmed, so on a filesystem that allows a name such as `" report "`, pressing enter does not rename the file.
 
-Over a [remote connection](remote.md), these operations are refused with a message naming the operation. The protocol supports reading, writing and listing, but not create, rename or delete yet. Performing the operation locally would change a file on the local machine while reporting success for the remote one.
+Over a [remote connection](remote.md), the same operations run on the remote machine. The server carries them out with the same code as the local editor (`deco_remote::file_ops`), so a create never replaces an entry, a rename never lands on another file, and an undo is refused when the entry has changed since. Every path is confined to the served directory: the parent is resolved there, following links, and the final component is acted on as named, so deleting a link removes the link and never its target. A failure is reported with the path relative to the workspace. Because the remote's disk cannot be checked from here, a failed recursive delete re-reads the affected directories through the connection and drops the tree's undo history, but leaves tabs attached. A remote deco older than this protocol method is refused with a message to update it, rather than sent the extension API's `fs.rename` and `fs.delete`, which overwrite.
 
 ## Two kinds of empty
 

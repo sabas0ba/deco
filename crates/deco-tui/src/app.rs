@@ -1279,20 +1279,14 @@ impl Driver {
                     .explorer()
                     .map(|explorer| explorer.root().to_path_buf());
                 match perform(&operation, remote.as_mut(), root.as_deref()) {
-                    Ok(()) => {
-                        // Record the current state of a rename's destination or
-                        // a newly created path. Both are undone by acting on that
-                        // path, and the stamp lets undo detect whether something
-                        // else has replaced it. This runs before
-                        // `file_operation_done`, which makes the undo entry
-                        // available.
-                        let made = match &operation {
-                            deco_editor::FileOperation::Rename { to, .. } => Some(to),
-                            deco_editor::FileOperation::CreateFile(path)
-                            | deco_editor::FileOperation::CreateFolder(path) => Some(path),
-                            _ => None,
-                        };
-                        if let Some(stamp) = made.and_then(|path| stamp_of(path)) {
+                    Ok(made) => {
+                        // Record the state of a rename's destination or a newly
+                        // created path, as the machine that holds it saw it.
+                        // Both are undone by acting on that path, and the stamp
+                        // lets undo detect whether something else has replaced
+                        // it. This runs before `file_operation_done`, which
+                        // makes the undo entry available.
+                        if let Some(stamp) = made {
                             session.stamp_last_undo(stamp);
                         }
                         session.file_operation_done(&operation);
@@ -1307,14 +1301,14 @@ impl Driver {
                     }
                     Err(error) => {
                         session.file_operation_failed(&operation, &error.to_string());
-                        // Only for a delete attempted on this machine. A remote
-                        // session rejects every mutation before touching either
-                        // filesystem, and its paths are remote paths. A local
-                        // `exists` check would report every one of them as
-                        // missing and release every tab in the workspace for a
-                        // delete that never happened.
-                        if remote.is_none() {
-                            reconcile_failure(session, lsp, &operation);
+                        // The local reconciliation checks this machine's disk.
+                        // A remote session's paths are the server's, which a
+                        // local `exists` would report as missing, releasing
+                        // every tab in the workspace for a delete that may
+                        // never have happened.
+                        match remote {
+                            None => reconcile_failure(session, lsp, &operation),
+                            Some(_) => reconcile_remote_failure(session, lsp, &operation),
                         }
                     }
                 }
@@ -1696,25 +1690,25 @@ const TERMINAL_POLL_INTERVAL: Duration = Duration::from_millis(10);
 /// The core has already validated the operation: the name is valid, the path is
 /// inside the workspace, and nothing in the listing conflicts. The remaining
 /// failures cannot be predicted by checks, such as permissions, a full disk, or
-/// another program changing the file first.
+/// another program changing the file first. [`deco_remote::file_ops`] repeats
+/// the checks at the moment of the change, on this machine or, in a remote
+/// session, on the server's.
 ///
-/// A new file uses `create_new` rather than `File::create`, so a file that
-/// appeared after the check is not silently truncated. This race is why the
-/// frontend checks again rather than trusting the tree's listing.
+/// Returns the stamp of what the operation made, for its undo to check.
 fn perform(
     operation: &deco_editor::FileOperation,
     remote: Option<&mut deco_remote::Client>,
     root: Option<&Path>,
-) -> io::Result<()> {
-    use deco_editor::FileOperation;
+) -> io::Result<Option<deco_editor::files::Stamp>> {
+    let change = change_of(operation);
 
-    if remote.is_some() {
-        // The protocol supports read, write and list, but not create, rename or
-        // delete. Reject the operation explicitly. Performing it locally would
-        // change a file on this machine and report success for the remote one.
-        return Err(io::Error::other(
-            "changing files over a remote connection is not implemented yet",
-        ));
+    // On the remote, the server makes the same checks on its own disk and
+    // confines every path to the directory it serves, links included.
+    if let Some(client) = remote {
+        return client
+            .change(&change)
+            .map(|stamp| stamp.map(editor_stamp))
+            .map_err(|error| io::Error::other(error.to_string()));
     }
 
     // The session checked that the path is inside the workspace, but without a
@@ -1725,139 +1719,54 @@ fn perform(
     if let Some(root) = root {
         inside_after_links(root, operation.parent().unwrap_or(Path::new("")))?;
     }
+    deco_remote::file_ops::apply(&change).map(|stamp| stamp.map(editor_stamp))
+}
 
+/// The tree's operation as [`deco_remote::file_ops`] carries it out, on
+/// either machine.
+fn change_of(operation: &deco_editor::FileOperation) -> deco_remote::file_ops::Change {
+    use deco_editor::FileOperation;
+    use deco_remote::file_ops::Change;
+    let stamp = |stamp: &Option<deco_editor::files::Stamp>| {
+        stamp.as_ref().map(|stamp| deco_remote::file_ops::Stamp {
+            len: stamp.len,
+            modified: stamp.modified,
+        })
+    };
     match operation {
-        FileOperation::CreateFile(path) => std::fs::File::options()
-            .write(true)
-            .create_new(true)
-            .open(path)
-            .map(drop),
-        FileOperation::CreateFolder(path) => std::fs::create_dir(path),
+        FileOperation::CreateFile(path) => Change::CreateFile { path: path.clone() },
+        FileOperation::CreateFolder(path) => Change::CreateFolder { path: path.clone() },
         FileOperation::Rename {
             from,
             to,
             expect,
             directory,
-        } => {
-            // Check against the kind the tree was showing, not the kind on disk
-            // now. Otherwise a directory replaced by a file since it was read
-            // would be moved as a directory, and every tab below the old path
-            // would be retargeted onto a regular file. Delete has the same
-            // protection.
-            match std::fs::symlink_metadata(from) {
-                Ok(meta) if meta.is_dir() == *directory => {}
-                Ok(_) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!(
-                            "{} is not the {} the tree was showing any more",
-                            from.display(),
-                            if *directory { "folder" } else { "file" }
-                        ),
-                    ))
-                }
-                Err(error) => return Err(error),
-            }
-            // An undo carries the file's stamp from when it was moved. If the
-            // stamp no longer matches, something replaced the file. Moving it
-            // back would move a different file and point the buffer at it, so
-            // the next save would overwrite its contents.
-            if let Some(expected) = expect {
-                match stamp_of(from) {
-                    Some(now) if &now == expected => {}
-                    _ => {
-                        return Err(io::Error::new(
-                            io::ErrorKind::AlreadyExists,
-                            format!(
-                                "{} is not the file that was renamed any more",
-                                from.display()
-                            ),
-                        ))
-                    }
-                }
-            }
-            // `rename` would overwrite an existing `to` on Unix. The tree already
-            // rejected that, but the destination can appear between its listing
-            // and this call, so check again to avoid silently replacing a file.
-            //
-            // A case-only rename is exempt. On the case-insensitive filesystems
-            // that macOS and Windows usually use, `Foo.rs` and `foo.rs` are the
-            // same file, so this check would find the source itself and reject
-            // every change of capitalisation. Canonicalising both paths
-            // distinguishes the same file from a different file in the way.
-            //
-            // `symlink_metadata` is used rather than `exists`, which follows
-            // links. A dangling symlink at the destination returns `false` from
-            // `exists` and would be silently replaced. The tree does not show
-            // such links either, because `list_dir` reports only real files and
-            // directories, so this case occurs even without a race.
-            if std::fs::symlink_metadata(to).is_ok() && !same_file(from, to) {
-                return Err(io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    format!("{} already exists", to.display()),
-                ));
-            }
-            std::fs::rename(from, to)
-        }
-        // Dispatched on what the tree was showing when the user confirmed, not
-        // on what is on disk now. The tree has no watcher. If a file has since
-        // been replaced by a directory, checking the disk would find a directory
-        // and delete it recursively after the user confirmed deleting a file.
-        // `remove_file` on a directory fails, which is the intended result.
-        FileOperation::Delete {
-            path,
-            directory: true,
-        } => std::fs::remove_dir_all(path),
-        FileOperation::Delete {
-            path,
-            directory: false,
-        } => std::fs::remove_file(path),
-        // Undoing a create. `remove_dir` is used rather than `remove_dir_all`
-        // because it fails on a non-empty directory. The operating system
-        // enforces this, so there is no race with a separate check.
+        } => Change::Rename {
+            from: from.clone(),
+            to: to.clone(),
+            expect: stamp(expect),
+            directory: *directory,
+        },
+        FileOperation::Delete { path, directory } => Change::Delete {
+            path: path.clone(),
+            directory: *directory,
+        },
         FileOperation::DeleteIfEmpty {
             path,
             directory,
             expect,
-        } => {
-            // Being empty does not identify the entry. Another program can
-            // remove what was created and leave a different empty file or
-            // directory in its place, and undoing the create would delete it.
-            if let Some(expected) = expect {
-                match stamp_of(path) {
-                    Some(now) if &now == expected => {}
-                    _ => {
-                        return Err(io::Error::new(
-                            io::ErrorKind::AlreadyExists,
-                            format!("{} is not what was created any more", path.display()),
-                        ))
-                    }
-                }
-            }
-            if *directory {
-                std::fs::remove_dir(path).map_err(|error| {
-                    io::Error::new(
-                        error.kind(),
-                        format!("{} is no longer empty", path.display()),
-                    )
-                })
-            } else {
-                // A file must be checked explicitly because there is no
-                // "unlink if empty". Data written between this check and the
-                // unlink is lost. This window is accepted, because refusing
-                // instead would mean a create could never be undone on a
-                // filesystem shared with other programs.
-                match std::fs::metadata(path) {
-                    Ok(meta) if meta.len() > 0 => Err(io::Error::other(format!(
-                        "{} has been written to since it was created — delete it \
-                         yourself if that is what you meant",
-                        path.display()
-                    ))),
-                    Ok(_) => std::fs::remove_file(path),
-                    Err(error) => Err(error),
-                }
-            }
-        }
+        } => Change::DeleteIfEmpty {
+            path: path.clone(),
+            directory: *directory,
+            expect: stamp(expect),
+        },
+    }
+}
+
+fn editor_stamp(stamp: deco_remote::file_ops::Stamp) -> deco_editor::files::Stamp {
+    deco_editor::files::Stamp {
+        len: stamp.len,
+        modified: stamp.modified,
     }
 }
 
@@ -1903,6 +1812,35 @@ fn reconcile_failure(session: &mut Session, lsp: &mut Lsp, operation: &deco_edit
     }
 
     reconcile_failed_delete(session, lsp, operation);
+}
+
+/// Resynchronises the tree after a mutation on the remote reported failure.
+///
+/// The tree's listings of the affected directories are read again through
+/// the connection. Which entries a failed recursive delete removed is not
+/// known here, so the tree's undo history, which may refer to them, is
+/// dropped; tabs stay attached, and a save writes the file again.
+fn reconcile_remote_failure(
+    session: &mut Session,
+    lsp: &mut Lsp,
+    operation: &deco_editor::FileOperation,
+) {
+    use deco_editor::FileOperation;
+    if let Some(parent) = operation.parent() {
+        session.invalidate_directory(parent);
+    }
+    match operation {
+        FileOperation::Rename { from, .. } => session.invalidate_subtree(from),
+        FileOperation::Delete { path, directory } => {
+            session.invalidate_subtree(path);
+            if *directory {
+                session.clear_file_undo();
+            }
+        }
+        FileOperation::DeleteIfEmpty { path, .. } => session.invalidate_subtree(path),
+        FileOperation::CreateFile(_) | FileOperation::CreateFolder(_) => {}
+    }
+    lsp.close_deleted(session);
 }
 
 /// Resynchronises the tree and the tabs after a delete reported failure.
@@ -1995,30 +1933,6 @@ fn inside_after_links(root: &Path, dir: &Path) -> io::Result<()> {
             real_dir.display()
         ),
     ))
-}
-
-/// The size and modification time of the file at `path`, or `None` if it cannot
-/// be read.
-fn stamp_of(path: &Path) -> Option<deco_editor::files::Stamp> {
-    let meta = std::fs::symlink_metadata(path).ok()?;
-    Some(deco_editor::files::Stamp {
-        len: meta.len(),
-        modified: meta.modified().ok(),
-    })
-}
-
-/// Whether two paths name the same file on disk.
-///
-/// Compares canonical paths rather than strings, so a case-only rename on a
-/// case-insensitive filesystem is recognised as the same file. A path that
-/// cannot be canonicalised is treated as a different file. The caller only asks
-/// when `to` exists, so a failure here means something changed and rejecting
-/// the rename is the safe result.
-fn same_file(a: &Path, b: &Path) -> bool {
-    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => false,
-    }
 }
 
 /// Answers every directory listing the file tree is waiting on.
@@ -2284,6 +2198,12 @@ fn save(
 mod tests {
     use super::*;
     use deco_theme::Rgba;
+
+    /// The size and modification time of the file at `path`, as an undo
+    /// records it.
+    fn stamp_of(path: &Path) -> Option<deco_editor::files::Stamp> {
+        deco_remote::file_ops::Stamp::of(path).map(editor_stamp)
+    }
 
     /// A scratch directory of this test's own.
     fn scratch(name: &str) -> PathBuf {

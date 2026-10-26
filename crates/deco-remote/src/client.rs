@@ -408,6 +408,29 @@ impl Client {
         Ok(())
     }
 
+    /// Makes one of the file tree's changes on the remote, with the checks
+    /// [`crate::file_ops`] makes, and returns the stamp of what it made.
+    ///
+    /// An older server without `fs.change` is refused here rather than sent
+    /// the change as `fs.rename` or `fs.delete`, which overwrite and follow
+    /// different rules.
+    pub fn change(
+        &mut self,
+        change: &crate::file_ops::Change,
+    ) -> Result<Option<crate::file_ops::Stamp>, ClientError> {
+        if !self.serves("fs.change") {
+            return Err(ClientError::Refused(
+                "the remote deco is too old to create, rename or delete files; update it"
+                    .to_owned(),
+            ));
+        }
+        let reply = self.request("fs.change", json!({ "change": change }))?;
+        serde_json::from_value(reply["stamp"].clone()).map_err(|_| ClientError::Malformed {
+            method: "fs.change".to_owned(),
+            field: "stamp",
+        })
+    }
+
     /// Searches the remote's workspace for `needle`.
     ///
     /// Matching runs on the remote side, where the files are. The server limits
