@@ -144,7 +144,12 @@ Like other settings it can be set per workspace or per language, for example `{ 
 
 The encodings are deco's own code, in `deco-encoding`, following the [WHATWG Encoding Standard](https://encoding.spec.whatwg.org/) and its index tables, copied unchanged with their licence into `crates/deco-encoding/data/whatwg/`. No encoding crate is used. A remote session reads and writes files as UTF-8 for now, because its server transfers text.
 
-Other encodings, `files.autoGuessEncoding`, and VS Code's *Reopen with Encoding* and *Save with Encoding* commands are not built.
+**Change File Encoding** (`workbench.action.editor.changeEncoding`, from the command palette) offers VS Code's two actions, and then the encodings above with the current one selected:
+
+- **Reopen with Encoding** reads the file again in the chosen encoding, ignoring a byte order mark of another encoding: a UTF-8 mark read as Windows 1252 appears as `ï»¿`. It is refused while the document has unsaved changes, because the text is replaced. Reopening is not an edit, and the choice is kept until the file is closed.
+- **Save with Encoding** writes the document in the chosen encoding, which then becomes its encoding. A save the encoding cannot hold writes nothing and keeps the previous encoding. For an untitled document it sets the encoding and asks for a path.
+
+Neither is available in a remote session, nor in the GPU frontend, which has no pickers. Other encodings and `files.autoGuessEncoding` are not built.
 
 ### Saving on a delay
 

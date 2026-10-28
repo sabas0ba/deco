@@ -256,7 +256,9 @@ older deco must be replaced, for example with `--remote-install`. Version 2
 added regular-expression search to `fs.search`. The server implements
 the `fs.*` and `scm.*` families, and `settings.read`. That is what opening,
 listing, searching and saving a file needs, plus source control and the
-machine's own settings.
+machine's own settings. `fs.change` is the file tree's create, rename and
+delete; it checks what is on disk before each change, as the local tree does,
+and never overwrites.
 
 It loads no theme or settings and starts no language server or extension. The
 explicit exception is `scm.*`: those methods run the remote's `git`, and

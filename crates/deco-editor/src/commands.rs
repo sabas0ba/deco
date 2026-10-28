@@ -44,23 +44,26 @@ impl Clipboard for MemoryClipboard {
 pub enum Outcome {
     /// The command ran; redraw.
     Handled,
-    /// The terminal in the panel should start a shell of `cols` by `rows`.
+    /// A terminal in the panel should start a shell of `cols` by `rows`.
     ///
     /// The frontend starts it and reports back with
     /// [`Session::terminal_started`](crate::Session::terminal_started) or
-    /// [`Session::terminal_failed`](crate::Session::terminal_failed).
+    /// [`Session::terminal_failed`](crate::Session::terminal_failed), naming
+    /// it by `id` in those and every later call about it.
     StartTerminal {
+        /// The terminal's number, unique in the session.
+        id: u32,
         /// Columns.
         cols: u16,
         /// Rows.
         rows: u16,
     },
-    /// The key went to the terminal. The bytes are waiting in
+    /// The key went to the active terminal. The bytes are waiting in
     /// [`Session::take_terminal_input`](crate::Session::take_terminal_input).
     TerminalInput,
-    /// The terminal's program should be stopped; the session has already
-    /// dropped its screen.
-    KillTerminal,
+    /// The program of the terminal numbered this should be stopped; the
+    /// session has already dropped its screen.
+    KillTerminal(u32),
     /// No command with that identifier exists here.
     ///
     /// Not necessarily an error: a frontend implements commands the core cannot,
@@ -187,6 +190,22 @@ pub enum Outcome {
     /// An untitled document never produces this. There is nothing to read, so
     /// the session reverts it to empty itself.
     Revert,
+    /// The document's file should be read again in this encoding, which the
+    /// user chose, whatever byte order mark it starts with.
+    ///
+    /// The frontend reads it with [`deco_encoding::decode_as`], records the
+    /// encoding with [`Session::set_encoding_of`](crate::Session::set_encoding_of)
+    /// and passes the text to [`Session::revert_to`](crate::Session::revert_to).
+    /// The session produces this only for a clean document with a path, so
+    /// no edit is lost.
+    ReopenWithEncoding(deco_encoding::Encoding),
+    /// The document should be written in this encoding, which then becomes
+    /// its encoding.
+    ///
+    /// The frontend saves as for [`Outcome::Save`], and keeps the document's
+    /// previous encoding if the write fails, so the status bar never names an
+    /// encoding the file is not in.
+    SaveWithEncoding(deco_encoding::Encoding),
     /// Every unsaved document should be written to disk.
     ///
     /// Carries no paths or bytes, for the same reason as [`Outcome::Save`]: the
@@ -394,6 +413,18 @@ pub const PALETTE: &[(&str, &str)] = &[
         "Terminal: Kill the Active Terminal Instance",
     ),
     (
+        "workbench.action.terminal.new",
+        "Terminal: Create New Terminal",
+    ),
+    (
+        "workbench.action.terminal.focusNext",
+        "Terminal: Focus Next Terminal",
+    ),
+    (
+        "workbench.action.terminal.focusPrevious",
+        "Terminal: Focus Previous Terminal",
+    ),
+    (
         "workbench.action.terminal.paste",
         "Terminal: Paste into Active Terminal",
     ),
@@ -446,6 +477,10 @@ pub const PALETTE: &[(&str, &str)] = &[
     (
         "workbench.action.editor.changeLanguageMode",
         "Change Language Mode",
+    ),
+    (
+        "workbench.action.editor.changeEncoding",
+        "Change File Encoding",
     ),
     ("workbench.action.quit", "Quit"),
     ("workbench.action.nextEditor", "Next Editor"),

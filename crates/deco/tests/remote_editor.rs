@@ -477,3 +477,115 @@ fn the_terminal_runs_a_shell_on_the_far_end_in_its_workspace() {
             .is_some_and(|status| status.contains("code 3"))
     });
 }
+
+#[test]
+fn the_tree_creates_renames_and_deletes_on_the_far_end() {
+    let scenario = scenario("remote-tree");
+    let mut editor = scenario.launch_remote(&["notes.txt"], server());
+
+    // New File, from the tree: made on the far end, in the folder selected
+    // (`src`, the first row), and nothing here.
+    editor.press("ctrl+b").press("ctrl+shift+e").press("ctrl+n");
+    editor.type_text("made.txt").press("enter");
+    assert!(editor.exists("src/made.txt"), "{:?}", editor.status());
+    assert!(!scenario.workspace().join("src/made.txt").exists());
+
+    // Undone from the tree: removed again, as it is still empty. Its tab is
+    // closed first, as an undo is refused while a tab holds the path.
+    editor.press("ctrl+shift+e").press("ctrl+z");
+    assert!(!editor.exists("src/made.txt"), "{:?}", editor.status());
+
+    // Renamed: the row selected is the one the tree shows first.
+    editor.press("ctrl+shift+e").press("home");
+    let first = editor
+        .session()
+        .explorer()
+        .and_then(|explorer| explorer.selection())
+        .expect("a selected row");
+    let name = first.name.clone();
+    editor
+        .press("f2")
+        .press("ctrl+a")
+        .type_text("renamed")
+        .press("enter");
+    assert!(editor.exists("renamed"), "{:?}", editor.status());
+    assert!(!editor.exists(&name));
+
+    // Deleted, after the typed confirmation.
+    editor
+        .press("ctrl+shift+e")
+        .press("delete")
+        .type_text("y")
+        .press("enter");
+    assert!(!editor.exists("renamed"), "{:?}", editor.status());
+}
+
+#[test]
+fn a_rename_onto_a_file_on_the_far_end_is_refused_there() {
+    // The tree's listing does not know about a file another program made, so
+    // only the server's own check stops the rename from replacing it.
+    let scenario = scenario("remote-tree-clash");
+    let mut editor = scenario.launch_remote(&["notes.txt"], server());
+    editor.press("ctrl+b").press("ctrl+shift+e").press("ctrl+n");
+    editor.type_text("new.txt").press("enter");
+    // In `src`, the folder selected when the file was made.
+    editor.change_on_disk("src/taken.txt", "keep me\n");
+
+    editor.press("ctrl+shift+e");
+    let selected = editor
+        .session()
+        .explorer()
+        .and_then(|explorer| explorer.selection())
+        .map(|row| row.name);
+    assert_eq!(selected.as_deref(), Some("new.txt"));
+    editor
+        .press("f2")
+        .press("ctrl+a")
+        .type_text("taken.txt")
+        .press("enter");
+    assert_eq!(editor.on_disk("src/taken.txt"), "keep me\n");
+    assert!(editor.exists("src/new.txt"));
+    assert!(
+        editor
+            .status()
+            .is_some_and(|status| status.contains("already exists")),
+        "{:?}",
+        editor.status()
+    );
+}
+
+#[test]
+fn a_new_empty_folder_on_the_far_end_stays_in_the_tree() {
+    // A listing of files cannot show an empty folder, so the tree reads the
+    // remote one directory at a time, with each entry's kind.
+    let scenario = scenario("remote-tree-folder");
+    let mut editor = scenario.launch_remote(&["notes.txt"], server());
+    editor
+        .press("ctrl+b")
+        .press("ctrl+shift+e")
+        .press("ctrl+shift+n");
+    editor.type_text("empty").press("enter");
+    assert!(editor.workspace().join("src/empty").is_dir());
+    let names: Vec<String> = editor
+        .session()
+        .explorer()
+        .map(|explorer| explorer.rows().into_iter().map(|row| row.name).collect())
+        .unwrap_or_default();
+    assert!(names.iter().any(|name| name == "empty"), "{names:?}");
+}
+
+#[test]
+fn the_encoding_cannot_be_changed_in_a_remote_session() {
+    let scenario = scenario("remote-encoding");
+    let mut editor = scenario.launch_remote(&["notes.txt"], server());
+    editor.press("ctrl+n");
+    editor.palette("Change File Encoding");
+    assert!(
+        editor
+            .status()
+            .is_some_and(|status| status.contains("UTF-8")),
+        "{:?}",
+        editor.status()
+    );
+    assert!(editor.session().prompt.is_none());
+}

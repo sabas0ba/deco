@@ -687,3 +687,49 @@ fn a_refusal_is_recorded_once_however_often_attach_runs() {
         .count();
     assert_eq!(mentions, 1, "{:?}", editor.problems());
 }
+
+/// The server's copy of the document, from the diagnostic the role
+/// `incremental` reports it in: how many ranges the last change carried, and
+/// the text.
+fn server_copy(editor: &Editor) -> Option<(usize, String)> {
+    let message = editor
+        .session()
+        .diagnostics_at(deco_core::position::Position::new(0, 0))
+        .iter()
+        .find(|d| d.source.as_deref() == Some("copy"))?
+        .message
+        .clone();
+    let (ranges, text) = message.split_once('|')?;
+    let ranges = ranges.strip_prefix("ranges=")?.parse().ok()?;
+    Some((ranges, text.replace("\\n", "\n")))
+}
+
+#[test]
+fn a_server_that_asks_for_ranges_gets_them_and_keeps_the_same_text() {
+    let scenario = project("lsp-incremental", "incremental");
+    let mut editor = started(&scenario);
+
+    // Typing, a deletion, several carets at once and text outside the BMP,
+    // whose UTF-16 positions differ from its character positions.
+    editor.press("ctrl+end").type_text("// 😀 é\n");
+    editor.press("ctrl+home").press("shift+end").press("delete");
+    editor
+        .press("ctrl+home")
+        .press("ctrl+alt+down")
+        .type_text("x");
+    editor.settle_until("the server's copy to match", |editor| {
+        server_copy(editor).is_some_and(|(_, text)| text == editor.text())
+    });
+    let (ranges, _) = server_copy(&editor).unwrap();
+    assert!(ranges > 0, "ranges were sent, not the whole text");
+
+    // An undo is not recorded as ranges, so the whole text goes.
+    editor.press("ctrl+z");
+    editor.settle_until("the copy after an undo", |editor| {
+        server_copy(editor).is_some_and(|(ranges, text)| ranges == 0 && text == editor.text())
+    });
+    editor.type_text("y");
+    editor.settle_until("ranges again", |editor| {
+        server_copy(editor).is_some_and(|(ranges, text)| ranges > 0 && text == editor.text())
+    });
+}

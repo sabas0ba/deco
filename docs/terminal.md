@@ -10,9 +10,17 @@
 | `shift+pageup` / `shift+pagedown` | `workbench.action.terminal.scrollUpPage` / `…scrollDownPage` |
 | `ctrl+home` / `ctrl+end` | `workbench.action.terminal.scrollToTop` / `…scrollToBottom` |
 | `ctrl+shift+v` (`cmd+v` on macOS) | `workbench.action.terminal.paste` |
+| `` ctrl+shift+` `` | `workbench.action.terminal.new` |
+| `ctrl+pagedown` / `ctrl+pageup` (`cmd+shift+]` / `cmd+shift+[` on macOS) | `workbench.action.terminal.focusNext` / `…focusPrevious` |
 | | `workbench.action.terminal.kill` |
 
 The scrolling keys apply only while the program is on its normal screen; a full-screen program such as `vim` or `less` receives them. When the shell exits, the status line shows its exit code and the screen stays until a key is pressed in it. The next `` ctrl+` `` starts a new shell.
+
+## Several terminals
+
+`` ctrl+shift+` `` starts another shell in a terminal of its own and shows it. Each terminal keeps its own screen, history and shell; keys go only to the one shown, and output reaches its own screen whichever is shown. The panel's title names the one shown, as `TERMINAL 2/3`, because there are no tabs. `ctrl+pagedown` and `ctrl+pageup` show the next and previous terminal, wrapping. `workbench.action.terminal.kill` stops the shell of the one shown and shows the next; killing the last hides the panel. An exited terminal closes on the next key pressed in it, and the panel stays on another one if any is left. All terminals have the panel's size, and are resized with it.
+
+Many terminal emulators send nothing distinct for `` ctrl+shift+` ``, so the key may arrive as another or not at all. **Terminal: Create New Terminal** in the command palette starts one in every terminal emulator, and the key can be rebound in `keybindings.json`.
 
 ## Which keys the shell gets
 
@@ -73,7 +81,7 @@ A program in the terminal cannot reach the editor. Window titles are kept but no
 
 ## Not built yet
 
-- **One terminal.** There are no tabs or splits for several shells, and no `workbench.action.terminal.new`.
+- **No tabs or splits.** Several terminals are switched between, one at a time; they cannot be shown side by side, renamed or reordered.
 - **No mouse.** Text cannot be selected in the terminal, so there is no copy from it, and mouse reporting to programs is accepted but not sent.
 - **Not in the GPU frontend**, which reports that the terminal is only in the terminal frontend so far.
 - **No `terminal.integrated.cwd`, `env.*` or `commandsToSkipShell` settings.** The working directory is the workspace and the list of editor keys is fixed.

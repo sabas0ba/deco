@@ -100,19 +100,19 @@ enum TerminalAt {
     Remote(Option<deco_remote::transport::Command>),
 }
 
-/// Starts the shell for the panel's terminal, in the workspace's directory.
+/// Starts the shell for the panel's terminal `id`, in the workspace's
+/// directory.
 fn start_terminal(
     session: &mut Session,
-    terminal: &mut Option<Shell>,
+    terminals: &mut Vec<Shell>,
     at: &TerminalAt,
     root: Option<&Path>,
-    cols: u16,
-    rows: u16,
+    (id, cols, rows): (u32, u16, u16),
 ) {
     match at {
         TerminalAt::Here => {}
         TerminalAt::Remote(None) => {
-            session.terminal_failed("the remote deco cannot run a terminal; update it");
+            session.terminal_failed(id, "the remote deco cannot run a terminal; update it");
             return;
         }
         // The remote's own shell, in the workspace the remote serves; see
@@ -120,14 +120,15 @@ fn start_terminal(
         TerminalAt::Remote(Some(command)) => {
             match deco_remote::pty::RemotePty::spawn(command, cols, rows) {
                 Ok(pty) => {
-                    *terminal = Some(Shell {
+                    terminals.push(Shell {
+                        id,
                         pty: Backend::Remote(pty),
                         quiet_since: None,
                     });
-                    session.terminal_started(cols, rows);
+                    session.terminal_started(id, cols, rows);
                 }
                 Err(error) => {
-                    session.terminal_failed(&format!("{}: {error}", command.program));
+                    session.terminal_failed(id, &format!("{}: {error}", command.program));
                 }
             }
             return;
@@ -143,33 +144,43 @@ fn start_terminal(
     command.env.extend(profile_env);
     match deco_term::pty::Pty::spawn(&command, deco_term::pty::Size { cols, rows }) {
         Ok(pty) => {
-            *terminal = Some(Shell {
+            terminals.push(Shell {
+                id,
                 pty: Backend::Here(pty),
                 quiet_since: None,
             });
-            session.terminal_started(cols, rows);
+            session.terminal_started(id, cols, rows);
         }
         Err(error) => {
             let program = command.program.to_string_lossy().into_owned();
-            session.terminal_failed(&format!("{program}: {error}"));
+            session.terminal_failed(id, &format!("{program}: {error}"));
         }
     }
 }
 
-/// Moves bytes between the shell and the session: its output into the
-/// screen, and keys and status replies to it. Returns whether the screen
+/// Moves bytes between every shell and the session: their output into their
+/// screens, and keys and status replies to them. Returns whether a screen
 /// changed.
-fn pump_terminal(terminal: &mut Option<Shell>, session: &mut Session) -> bool {
-    let Some(shell) = terminal.as_mut() else {
-        return false;
-    };
+fn pump_terminal(terminals: &mut Vec<Shell>, session: &mut Session) -> bool {
+    let mut changed = false;
+    terminals.retain_mut(|shell| {
+        let (screen_changed, running) = pump_shell(shell, session);
+        changed |= screen_changed;
+        running
+    });
+    changed
+}
+
+/// [`pump_terminal`] for one shell. Returns whether its screen changed and
+/// whether it is still running.
+fn pump_shell(shell: &mut Shell, session: &mut Session) -> (bool, bool) {
     let mut changed = false;
     let output = shell.pty.read();
     if !output.bytes.is_empty() {
-        session.terminal_output(&output.bytes);
+        session.terminal_output(shell.id, &output.bytes);
         changed = true;
     }
-    let input = session.take_terminal_input();
+    let input = session.take_terminal_input(shell.id);
     if !input.is_empty() {
         if let Err(error) = shell.pty.write(&input) {
             session.status = Some(format!("could not write to the terminal: {error}"));
@@ -198,19 +209,20 @@ fn pump_terminal(terminal: &mut Option<Shell>, session: &mut Session) -> bool {
             std::thread::sleep(Duration::from_millis(5));
             code = shell.pty.exit_code();
         }
-        session.terminal_exited(code);
-        *terminal = None;
-        changed = true;
+        session.terminal_exited(shell.id, code);
+        return (true, false);
     }
-    changed
+    (changed, true)
 }
 
 /// How long a shell that has exited may stay quiet before its terminal is
 /// treated as finished, when its output does not end on its own.
 const EXIT_GRACE: Duration = Duration::from_millis(500);
 
-/// The shell's pseudo-terminal and when its output last went quiet.
+/// A shell's pseudo-terminal and when its output last went quiet.
 struct Shell {
+    /// The session's number for the terminal it runs in.
+    id: u32,
     pty: Backend,
     quiet_since: Option<Instant>,
 }
@@ -257,10 +269,10 @@ impl Backend {
     }
 }
 
-/// Passes a new panel size on to the shell.
-fn fit_terminal(terminal: &mut Option<Shell>, session: &mut Session) {
-    if let Some((cols, rows)) = session.fit_terminal() {
-        if let Some(shell) = terminal.as_mut() {
+/// Passes a new panel size on to every shell.
+fn fit_terminal(terminals: &mut [Shell], session: &mut Session) {
+    for (id, cols, rows) in session.fit_terminal() {
+        if let Some(shell) = terminals.iter_mut().find(|shell| shell.id == id) {
             let _ = shell.pty.resize(deco_term::pty::Size { cols, rows });
         }
     }
@@ -554,8 +566,8 @@ pub struct Driver {
     disk: crate::disk::DiskWatch,
     /// Copies waiting to be sent to the terminal's clipboard.
     clipboard: crate::clipboard::Pending,
-    /// The shell running in the panel's terminal.
-    terminal: Option<Shell>,
+    /// The shells running in the panel's terminals.
+    terminals: Vec<Shell>,
     /// Which machine a terminal's shell runs on.
     terminal_at: TerminalAt,
     /// When the file tree's shown directories were last read again.
@@ -616,6 +628,9 @@ impl Driver {
         // them.
         lsp.attach(session);
         session.frontend_commands = frontend_commands();
+        // A remote server sends and receives text, which it reads and writes
+        // as UTF-8, so no other encoding can be chosen.
+        session.set_utf8_only(is_remote);
 
         // The file tree root. The language server and quick open use the same
         // root, so `ctrl+p` and the tree show the same workspace. In a remote
@@ -676,7 +691,7 @@ impl Driver {
             tree_root,
             disk,
             clipboard,
-            terminal: None,
+            terminals: Vec::new(),
             terminal_at: if is_remote {
                 TerminalAt::Remote(remote_terminal)
             } else {
@@ -698,7 +713,7 @@ impl Driver {
         // it is open, which the last keypress may have changed.
         resize(session, self.width, self.height);
         // The panel may have changed size with it.
-        fit_terminal(&mut self.terminal, session);
+        fit_terminal(&mut self.terminals, session);
         // The marks are derived from the buffer, so they are updated here rather
         // than in the renderer. `render` holds the session by shared reference,
         // and the alternative would be a diff per frame. When nothing has been
@@ -763,7 +778,7 @@ impl Driver {
             }
             *dirty = true;
         }
-        *dirty |= pump_terminal(&mut self.terminal, session);
+        *dirty |= pump_terminal(&mut self.terminals, session);
     }
 
     /// How long the event loop waits for a key before polling again.
@@ -771,7 +786,7 @@ impl Driver {
     /// Shorter while a shell is running, so its output appears as it is
     /// written rather than up to one interval later.
     pub fn poll_interval(&self) -> Duration {
-        if self.terminal.is_some() {
+        if !self.terminals.is_empty() {
             TERMINAL_POLL_INTERVAL
         } else {
             LSP_POLL_INTERVAL
@@ -882,7 +897,7 @@ impl Driver {
 
     /// Stops the language server and the source-control worker after the loop ends.
     pub fn shutdown(&mut self) {
-        self.terminal = None;
+        self.terminals.clear();
         self.lsp.detach();
         self.scm.shutdown();
     }
@@ -903,7 +918,7 @@ impl Driver {
             tree_root,
             scm,
             disk,
-            terminal,
+            terminals,
             terminal_at,
             ..
         } = self;
@@ -929,15 +944,21 @@ impl Driver {
         // A key typed into the terminal is not an edit of the document, so
         // none of the handling below applies to it.
         if outcome == Outcome::TerminalInput {
-            pump_terminal(terminal, session);
+            pump_terminal(terminals, session);
             return Ok(Flow::Continue);
         }
         match outcome {
-            Outcome::StartTerminal { cols, rows } => {
+            Outcome::StartTerminal { id, cols, rows } => {
                 let root = tree_root.clone().or_else(|| cwd.clone());
-                start_terminal(session, terminal, terminal_at, root.as_deref(), cols, rows);
+                start_terminal(
+                    session,
+                    terminals,
+                    terminal_at,
+                    root.as_deref(),
+                    (id, cols, rows),
+                );
             }
-            Outcome::KillTerminal => *terminal = None,
+            Outcome::KillTerminal(id) => terminals.retain(|shell| shell.id != id),
             Outcome::Quit => return Ok(Flow::Quit),
             Outcome::Save => {
                 if save(session, remote.as_mut(), disk, true)? {
@@ -1045,6 +1066,47 @@ impl Driver {
                             Some(format!("could not read {}: {error}", path.display()));
                     }
                     None => {}
+                }
+            }
+            // A remote server sends and receives text, which it reads and
+            // writes as UTF-8, so an encoding cannot be chosen there.
+            Outcome::ReopenWithEncoding(_) | Outcome::SaveWithEncoding(_) if remote.is_some() => {
+                session.status = Some(
+                    "a remote session reads and writes files as UTF-8; the encoding cannot be changed"
+                        .to_owned(),
+                );
+            }
+            Outcome::ReopenWithEncoding(encoding) => {
+                // The session sends this only for a clean document with a path.
+                if let Some(target) = session.document.path.clone() {
+                    match crate::text_file::read_as(&target, encoding) {
+                        Ok((text, read_in)) => {
+                            disk.remember(&target);
+                            session.set_encoding_of(&target, read_in);
+                            session.revert_to(&text);
+                            session.status = Some(format!(
+                                "Reopened {} as {}",
+                                target.display(),
+                                read_in.label()
+                            ));
+                            lsp.changed(session);
+                        }
+                        Err(error) => {
+                            session.status =
+                                Some(format!("could not reopen {}: {error}", target.display()));
+                        }
+                    }
+                }
+            }
+            Outcome::SaveWithEncoding(encoding) => {
+                // The new encoding is the document's only once the file is in
+                // it; a refused or failed write keeps the old one.
+                let before = session.document.encoding;
+                session.document.encoding = encoding;
+                if save(session, None, disk, true)? {
+                    lsp.saved(session);
+                } else {
+                    session.document.encoding = before;
                 }
             }
             // The user chose a remembered permission to forget. The decision is
@@ -1238,20 +1300,14 @@ impl Driver {
                     .explorer()
                     .map(|explorer| explorer.root().to_path_buf());
                 match perform(&operation, remote.as_mut(), root.as_deref()) {
-                    Ok(()) => {
-                        // Record the current state of a rename's destination or
-                        // a newly created path. Both are undone by acting on that
-                        // path, and the stamp lets undo detect whether something
-                        // else has replaced it. This runs before
-                        // `file_operation_done`, which makes the undo entry
-                        // available.
-                        let made = match &operation {
-                            deco_editor::FileOperation::Rename { to, .. } => Some(to),
-                            deco_editor::FileOperation::CreateFile(path)
-                            | deco_editor::FileOperation::CreateFolder(path) => Some(path),
-                            _ => None,
-                        };
-                        if let Some(stamp) = made.and_then(|path| stamp_of(path)) {
+                    Ok(made) => {
+                        // Record the state of a rename's destination or a newly
+                        // created path, as the machine that holds it saw it.
+                        // Both are undone by acting on that path, and the stamp
+                        // lets undo detect whether something else has replaced
+                        // it. This runs before `file_operation_done`, which
+                        // makes the undo entry available.
+                        if let Some(stamp) = made {
                             session.stamp_last_undo(stamp);
                         }
                         session.file_operation_done(&operation);
@@ -1266,14 +1322,14 @@ impl Driver {
                     }
                     Err(error) => {
                         session.file_operation_failed(&operation, &error.to_string());
-                        // Only for a delete attempted on this machine. A remote
-                        // session rejects every mutation before touching either
-                        // filesystem, and its paths are remote paths. A local
-                        // `exists` check would report every one of them as
-                        // missing and release every tab in the workspace for a
-                        // delete that never happened.
-                        if remote.is_none() {
-                            reconcile_failure(session, lsp, &operation);
+                        // The local reconciliation checks this machine's disk.
+                        // A remote session's paths are the server's, which a
+                        // local `exists` would report as missing, releasing
+                        // every tab in the workspace for a delete that may
+                        // never have happened.
+                        match remote {
+                            None => reconcile_failure(session, lsp, &operation),
+                            Some(_) => reconcile_remote_failure(session, lsp, &operation),
                         }
                     }
                 }
@@ -1655,25 +1711,25 @@ const TERMINAL_POLL_INTERVAL: Duration = Duration::from_millis(10);
 /// The core has already validated the operation: the name is valid, the path is
 /// inside the workspace, and nothing in the listing conflicts. The remaining
 /// failures cannot be predicted by checks, such as permissions, a full disk, or
-/// another program changing the file first.
+/// another program changing the file first. [`deco_remote::file_ops`] repeats
+/// the checks at the moment of the change, on this machine or, in a remote
+/// session, on the server's.
 ///
-/// A new file uses `create_new` rather than `File::create`, so a file that
-/// appeared after the check is not silently truncated. This race is why the
-/// frontend checks again rather than trusting the tree's listing.
+/// Returns the stamp of what the operation made, for its undo to check.
 fn perform(
     operation: &deco_editor::FileOperation,
     remote: Option<&mut deco_remote::Client>,
     root: Option<&Path>,
-) -> io::Result<()> {
-    use deco_editor::FileOperation;
+) -> io::Result<Option<deco_editor::files::Stamp>> {
+    let change = change_of(operation);
 
-    if remote.is_some() {
-        // The protocol supports read, write and list, but not create, rename or
-        // delete. Reject the operation explicitly. Performing it locally would
-        // change a file on this machine and report success for the remote one.
-        return Err(io::Error::other(
-            "changing files over a remote connection is not implemented yet",
-        ));
+    // On the remote, the server makes the same checks on its own disk and
+    // confines every path to the directory it serves, links included.
+    if let Some(client) = remote {
+        return client
+            .change(&change)
+            .map(|stamp| stamp.map(editor_stamp))
+            .map_err(|error| io::Error::other(error.to_string()));
     }
 
     // The session checked that the path is inside the workspace, but without a
@@ -1684,139 +1740,54 @@ fn perform(
     if let Some(root) = root {
         inside_after_links(root, operation.parent().unwrap_or(Path::new("")))?;
     }
+    deco_remote::file_ops::apply(&change).map(|stamp| stamp.map(editor_stamp))
+}
 
+/// The tree's operation as [`deco_remote::file_ops`] carries it out, on
+/// either machine.
+fn change_of(operation: &deco_editor::FileOperation) -> deco_remote::file_ops::Change {
+    use deco_editor::FileOperation;
+    use deco_remote::file_ops::Change;
+    let stamp = |stamp: &Option<deco_editor::files::Stamp>| {
+        stamp.as_ref().map(|stamp| deco_remote::file_ops::Stamp {
+            len: stamp.len,
+            modified: stamp.modified,
+        })
+    };
     match operation {
-        FileOperation::CreateFile(path) => std::fs::File::options()
-            .write(true)
-            .create_new(true)
-            .open(path)
-            .map(drop),
-        FileOperation::CreateFolder(path) => std::fs::create_dir(path),
+        FileOperation::CreateFile(path) => Change::CreateFile { path: path.clone() },
+        FileOperation::CreateFolder(path) => Change::CreateFolder { path: path.clone() },
         FileOperation::Rename {
             from,
             to,
             expect,
             directory,
-        } => {
-            // Check against the kind the tree was showing, not the kind on disk
-            // now. Otherwise a directory replaced by a file since it was read
-            // would be moved as a directory, and every tab below the old path
-            // would be retargeted onto a regular file. Delete has the same
-            // protection.
-            match std::fs::symlink_metadata(from) {
-                Ok(meta) if meta.is_dir() == *directory => {}
-                Ok(_) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!(
-                            "{} is not the {} the tree was showing any more",
-                            from.display(),
-                            if *directory { "folder" } else { "file" }
-                        ),
-                    ))
-                }
-                Err(error) => return Err(error),
-            }
-            // An undo carries the file's stamp from when it was moved. If the
-            // stamp no longer matches, something replaced the file. Moving it
-            // back would move a different file and point the buffer at it, so
-            // the next save would overwrite its contents.
-            if let Some(expected) = expect {
-                match stamp_of(from) {
-                    Some(now) if &now == expected => {}
-                    _ => {
-                        return Err(io::Error::new(
-                            io::ErrorKind::AlreadyExists,
-                            format!(
-                                "{} is not the file that was renamed any more",
-                                from.display()
-                            ),
-                        ))
-                    }
-                }
-            }
-            // `rename` would overwrite an existing `to` on Unix. The tree already
-            // rejected that, but the destination can appear between its listing
-            // and this call, so check again to avoid silently replacing a file.
-            //
-            // A case-only rename is exempt. On the case-insensitive filesystems
-            // that macOS and Windows usually use, `Foo.rs` and `foo.rs` are the
-            // same file, so this check would find the source itself and reject
-            // every change of capitalisation. Canonicalising both paths
-            // distinguishes the same file from a different file in the way.
-            //
-            // `symlink_metadata` is used rather than `exists`, which follows
-            // links. A dangling symlink at the destination returns `false` from
-            // `exists` and would be silently replaced. The tree does not show
-            // such links either, because `list_dir` reports only real files and
-            // directories, so this case occurs even without a race.
-            if std::fs::symlink_metadata(to).is_ok() && !same_file(from, to) {
-                return Err(io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    format!("{} already exists", to.display()),
-                ));
-            }
-            std::fs::rename(from, to)
-        }
-        // Dispatched on what the tree was showing when the user confirmed, not
-        // on what is on disk now. The tree has no watcher. If a file has since
-        // been replaced by a directory, checking the disk would find a directory
-        // and delete it recursively after the user confirmed deleting a file.
-        // `remove_file` on a directory fails, which is the intended result.
-        FileOperation::Delete {
-            path,
-            directory: true,
-        } => std::fs::remove_dir_all(path),
-        FileOperation::Delete {
-            path,
-            directory: false,
-        } => std::fs::remove_file(path),
-        // Undoing a create. `remove_dir` is used rather than `remove_dir_all`
-        // because it fails on a non-empty directory. The operating system
-        // enforces this, so there is no race with a separate check.
+        } => Change::Rename {
+            from: from.clone(),
+            to: to.clone(),
+            expect: stamp(expect),
+            directory: *directory,
+        },
+        FileOperation::Delete { path, directory } => Change::Delete {
+            path: path.clone(),
+            directory: *directory,
+        },
         FileOperation::DeleteIfEmpty {
             path,
             directory,
             expect,
-        } => {
-            // Being empty does not identify the entry. Another program can
-            // remove what was created and leave a different empty file or
-            // directory in its place, and undoing the create would delete it.
-            if let Some(expected) = expect {
-                match stamp_of(path) {
-                    Some(now) if &now == expected => {}
-                    _ => {
-                        return Err(io::Error::new(
-                            io::ErrorKind::AlreadyExists,
-                            format!("{} is not what was created any more", path.display()),
-                        ))
-                    }
-                }
-            }
-            if *directory {
-                std::fs::remove_dir(path).map_err(|error| {
-                    io::Error::new(
-                        error.kind(),
-                        format!("{} is no longer empty", path.display()),
-                    )
-                })
-            } else {
-                // A file must be checked explicitly because there is no
-                // "unlink if empty". Data written between this check and the
-                // unlink is lost. This window is accepted, because refusing
-                // instead would mean a create could never be undone on a
-                // filesystem shared with other programs.
-                match std::fs::metadata(path) {
-                    Ok(meta) if meta.len() > 0 => Err(io::Error::other(format!(
-                        "{} has been written to since it was created — delete it \
-                         yourself if that is what you meant",
-                        path.display()
-                    ))),
-                    Ok(_) => std::fs::remove_file(path),
-                    Err(error) => Err(error),
-                }
-            }
-        }
+        } => Change::DeleteIfEmpty {
+            path: path.clone(),
+            directory: *directory,
+            expect: stamp(expect),
+        },
+    }
+}
+
+fn editor_stamp(stamp: deco_remote::file_ops::Stamp) -> deco_editor::files::Stamp {
+    deco_editor::files::Stamp {
+        len: stamp.len,
+        modified: stamp.modified,
     }
 }
 
@@ -1862,6 +1833,35 @@ fn reconcile_failure(session: &mut Session, lsp: &mut Lsp, operation: &deco_edit
     }
 
     reconcile_failed_delete(session, lsp, operation);
+}
+
+/// Resynchronises the tree after a mutation on the remote reported failure.
+///
+/// The tree's listings of the affected directories are read again through
+/// the connection. Which entries a failed recursive delete removed is not
+/// known here, so the tree's undo history, which may refer to them, is
+/// dropped; tabs stay attached, and a save writes the file again.
+fn reconcile_remote_failure(
+    session: &mut Session,
+    lsp: &mut Lsp,
+    operation: &deco_editor::FileOperation,
+) {
+    use deco_editor::FileOperation;
+    if let Some(parent) = operation.parent() {
+        session.invalidate_directory(parent);
+    }
+    match operation {
+        FileOperation::Rename { from, .. } => session.invalidate_subtree(from),
+        FileOperation::Delete { path, directory } => {
+            session.invalidate_subtree(path);
+            if *directory {
+                session.clear_file_undo();
+            }
+        }
+        FileOperation::DeleteIfEmpty { path, .. } => session.invalidate_subtree(path),
+        FileOperation::CreateFile(_) | FileOperation::CreateFolder(_) => {}
+    }
+    lsp.close_deleted(session);
 }
 
 /// Resynchronises the tree and the tabs after a delete reported failure.
@@ -1956,30 +1956,6 @@ fn inside_after_links(root: &Path, dir: &Path) -> io::Result<()> {
     ))
 }
 
-/// The size and modification time of the file at `path`, or `None` if it cannot
-/// be read.
-fn stamp_of(path: &Path) -> Option<deco_editor::files::Stamp> {
-    let meta = std::fs::symlink_metadata(path).ok()?;
-    Some(deco_editor::files::Stamp {
-        len: meta.len(),
-        modified: meta.modified().ok(),
-    })
-}
-
-/// Whether two paths name the same file on disk.
-///
-/// Compares canonical paths rather than strings, so a case-only rename on a
-/// case-insensitive filesystem is recognised as the same file. A path that
-/// cannot be canonicalised is treated as a different file. The caller only asks
-/// when `to` exists, so a failure here means something changed and rejecting
-/// the rename is the safe result.
-fn same_file(a: &Path, b: &Path) -> bool {
-    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => false,
-    }
-}
-
 /// Answers every directory listing the file tree is waiting on.
 ///
 /// A loop rather than one listing, because the tree requests one at a time and
@@ -1998,11 +1974,20 @@ fn fill_tree(
             return Ok(());
         };
         let entries = match remote.as_mut() {
-            // The protocol only lists the whole workspace, so a directory's
-            // contents are derived from that listing. This is less efficient
-            // than a per-directory call, but no worse than `ctrl+p`, which
-            // requests the same list on every press. A `list_dir` method would
-            // improve this and requires a protocol change.
+            // One directory at a time, with each entry's kind, so an empty
+            // folder, which a file listing cannot show, is in the tree.
+            Some(client) if client.serves("fs.dir") => {
+                match client.read_directory(&dir.display().to_string()) {
+                    Ok(listed) => crate::files::remote_dir(root, &dir, &listed, &session.settings),
+                    Err(error) => {
+                        session.status = Some(format!("could not list the remote: {error}"));
+                        Vec::new()
+                    }
+                }
+            }
+            // An older server lists only the whole workspace, so a
+            // directory's contents are derived from that listing, without
+            // the empty folders it cannot show.
             Some(client) => match client.list() {
                 Ok(files) => remote_children(&files, root, &dir),
                 Err(error) => {
@@ -2243,6 +2228,12 @@ fn save(
 mod tests {
     use super::*;
     use deco_theme::Rgba;
+
+    /// The size and modification time of the file at `path`, as an undo
+    /// records it.
+    fn stamp_of(path: &Path) -> Option<deco_editor::files::Stamp> {
+        deco_remote::file_ops::Stamp::of(path).map(editor_stamp)
+    }
 
     /// A scratch directory of this test's own.
     fn scratch(name: &str) -> PathBuf {

@@ -447,6 +447,7 @@ impl Server {
                     "fs.delete",
                     "fs.rename",
                     "fs.copy",
+                    "fs.change",
                     "settings.read",
                     "scm.status",
                     "scm.committed",
@@ -672,6 +673,51 @@ impl Server {
                     reason: error.to_string(),
                 })?;
                 Ok(json!({ "moved": true }))
+            }
+            // The file tree's create, rename and delete, with the same checks
+            // as on the editor's own disk: see `crate::file_ops`. Unlike
+            // `fs.rename` and `fs.delete`, which serve an extension's
+            // `workspace.fs`, nothing is overwritten and an undo is refused
+            // when the entry has changed since.
+            "fs.change" => {
+                let change: crate::file_ops::Change =
+                    serde_json::from_value(params["change"].clone()).map_err(|error| {
+                        ServerError::BadParams {
+                            method: method.to_owned(),
+                            what: format!("a `change` ({error})"),
+                        }
+                    })?;
+                let asked = change
+                    .paths()
+                    .first()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_default();
+                // Each path as named: the parent is resolved and confined, and
+                // a final link is acted on as a link, never followed.
+                let mut refused = None;
+                let resolved = change.map_paths(|path| {
+                    let text = path.to_string_lossy();
+                    match self.named(&text) {
+                        Ok(named) => named,
+                        Err(error) => {
+                            refused.get_or_insert(error);
+                            PathBuf::new()
+                        }
+                    }
+                });
+                if let Some(error) = refused {
+                    return Err(error);
+                }
+                let stamp = crate::file_ops::apply(&resolved).map_err(|error| {
+                    // The client knows the paths relative to the workspace,
+                    // so the root is left out of the message.
+                    let root = format!("{}{}", self.root.display(), std::path::MAIN_SEPARATOR);
+                    ServerError::Unwritable {
+                        path: asked.clone(),
+                        reason: error.to_string().replace(&root, ""),
+                    }
+                })?;
+                Ok(json!({ "stamp": stamp }))
             }
             "fs.search" => {
                 let needle = params["needle"]
@@ -1143,6 +1189,87 @@ mod tests {
             }) => Err(error),
             other => panic!("expected a reply, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn the_tree_s_changes_are_made_inside_the_workspace_and_overwrite_nothing() {
+        let root = workspace("change");
+        let mut server = Server::new(&root).expect("a server");
+        let change = |change: serde_json::Value| json!({ "change": change });
+
+        let made = ask(
+            &mut server,
+            "fs.change",
+            change(json!({ "op": "createFile", "path": "src/new.rs" })),
+        )
+        .expect("created");
+        assert_eq!(made["stamp"]["len"], 0);
+        assert!(root.join("src/new.rs").exists());
+
+        // Onto an existing file: refused, and the message names the path
+        // relative to the workspace.
+        let error = ask(
+            &mut server,
+            "fs.change",
+            change(json!({
+                "op": "rename", "from": "src/new.rs", "to": "README.md",
+                "expect": null, "directory": false
+            })),
+        )
+        .expect_err("not over README.md");
+        assert!(error.contains("README.md already exists"), "{error}");
+        assert!(!error.contains(&root.display().to_string()), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(root.join("README.md")).unwrap(),
+            "# hello\n"
+        );
+
+        // The undo of the create, with the stamp the create returned.
+        ask(
+            &mut server,
+            "fs.change",
+            change(json!({
+                "op": "deleteIfEmpty", "path": "src/new.rs",
+                "directory": false, "expect": made["stamp"]
+            })),
+        )
+        .expect("undone");
+        assert!(!root.join("src/new.rs").exists());
+
+        // Outside the workspace, by `..`: refused before anything is touched.
+        let error = ask(
+            &mut server,
+            "fs.change",
+            change(json!({ "op": "createFolder", "path": "../escaped" })),
+        )
+        .expect_err("outside");
+        assert!(error.contains("outside the workspace"), "{error}");
+        assert!(!root.parent().unwrap().join("escaped").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_change_through_a_link_out_of_the_workspace_is_refused() {
+        let root = workspace("change-link");
+        let outside = workspace("change-link-outside");
+        std::os::unix::fs::symlink(&outside, root.join("out")).unwrap();
+        let mut server = Server::new(&root).expect("a server");
+        let error = ask(
+            &mut server,
+            "fs.change",
+            json!({ "change": { "op": "createFile", "path": "out/planted.rs" } }),
+        )
+        .expect_err("through the link");
+        assert!(error.contains("outside the workspace"), "{error}");
+        assert!(!outside.join("planted.rs").exists());
+        // Deleting the link itself removes the link, never its target.
+        ask(
+            &mut server,
+            "fs.change",
+            json!({ "change": { "op": "delete", "path": "out", "directory": false } }),
+        )
+        .expect("the link is removed");
+        assert!(outside.join("README.md").exists());
     }
 
     /// A server whose machine settings are a file this test controls.

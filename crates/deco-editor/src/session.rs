@@ -223,6 +223,11 @@ const MAX_RECENT: usize = 64;
 /// `[deco.language.auto]` look like a working settings key.
 const AUTO_LANGUAGE: &str = "deco.language.auto";
 
+/// The identifiers of the two choices `Change File Encoding` offers first.
+/// Internal to the picker, so deco's own namespace.
+const REOPEN_WITH_ENCODING: &str = "deco.encoding.reopen";
+const SAVE_WITH_ENCODING: &str = "deco.encoding.save";
+
 /// A path with its `.` and `..` segments resolved, without touching the disk.
 ///
 /// Treats `/w/src/main.rs` and `/w/./src/../src/main.rs` as the same path, which
@@ -520,8 +525,15 @@ pub struct Session {
     side_bar: bool,
     /// Whether the panel is showing.
     panel: bool,
-    /// The terminal in the panel, once one has been started.
-    terminal: Option<crate::terminal::TerminalPanel>,
+    /// The terminals in the panel, in the order they were created.
+    terminals: Vec<crate::terminal::TerminalPanel>,
+    /// Which of `terminals` the panel shows and keys go to.
+    active_terminal: usize,
+    /// The number the next terminal is given.
+    next_terminal_id: u32,
+    /// Whether files can only be read and written as UTF-8, as in a remote
+    /// session, whose server transfers text.
+    utf8_only: bool,
     /// Which view the panel shows.
     panel_view: PanelView,
     /// The file the tree asked to open as a preview, until the frontend opens
@@ -793,7 +805,10 @@ impl Session {
             problems,
             side_bar: false,
             panel: false,
-            terminal: None,
+            terminals: Vec::new(),
+            active_terminal: 0,
+            next_terminal_id: 1,
+            utf8_only: false,
             panel_view: PanelView::default(),
             preview_pending: None,
             markers: crate::markers::Markers::default(),
@@ -1541,7 +1556,7 @@ impl Session {
         // scrolling and pasting use.
         let terminal_focus = self.focus == Focus::Panel
             && self.panel_view == PanelView::Terminal
-            && self.terminal.is_some();
+            && !self.terminals.is_empty();
         // VS Code's key for the problems view having the keyboard.
         self.context.set(
             "problemFocus",
@@ -1550,8 +1565,7 @@ impl Session {
         self.context.set("terminalFocus", terminal_focus);
         self.context.set(
             "terminalAltBufferActive",
-            self.terminal
-                .as_ref()
+            self.terminal()
                 .is_some_and(|terminal| terminal.screen().is_alternate()),
         );
         // The tree's keys. `filesExplorerFocus` is VS Code's key for the explorer
@@ -1745,6 +1759,9 @@ impl Session {
             "workbench.action.toggleSidebarVisibility" => self.toggle_side_bar(),
             "workbench.action.togglePanel" => self.toggle_panel(),
             "workbench.action.terminal.toggleTerminal" => self.toggle_terminal(),
+            "workbench.action.terminal.new" => self.new_terminal(),
+            "workbench.action.terminal.focusNext" => self.cycle_terminal(Direction::Next),
+            "workbench.action.terminal.focusPrevious" => self.cycle_terminal(Direction::Prev),
             "workbench.action.terminal.kill" => self.kill_terminal(),
             "workbench.action.terminal.paste" => self.paste_into_terminal(),
             "workbench.action.terminal.scrollUpPage" => self.scroll_terminal_page(true),
@@ -1920,6 +1937,7 @@ impl Session {
                 Outcome::Handled
             }
             "workbench.action.editor.changeLanguageMode" => self.offer_languages(),
+            "workbench.action.editor.changeEncoding" => self.offer_encoding_actions(),
             // Checked before `commands::execute` returns `Outcome::Save`. A
             // document with no path cannot be written, so `ctrl+s` opens Save As,
             // as in VS Code. Otherwise an untitled tab could not be saved, and so
@@ -2175,6 +2193,86 @@ impl Session {
         self.prompt = Some(Prompt::list(PromptKind::Languages, entries));
         self.refresh_context();
         Outcome::Handled
+    }
+
+    /// `workbench.action.editor.changeEncoding`: asks whether to read the
+    /// file again or write it, as VS Code does, before asking for the
+    /// encoding.
+    fn offer_encoding_actions(&mut self) -> Outcome {
+        if self.utf8_only {
+            return Outcome::Message(
+                "this session reads and writes files as UTF-8; the encoding cannot be changed"
+                    .to_owned(),
+            );
+        }
+        let current = self.document.encoding.label();
+        let entries = vec![
+            crate::commands::PaletteEntry::new(REOPEN_WITH_ENCODING, "Reopen with Encoding")
+                .with_detail(current),
+            crate::commands::PaletteEntry::new(SAVE_WITH_ENCODING, "Save with Encoding")
+                .with_detail(current),
+        ];
+        self.prompt = Some(Prompt::list(PromptKind::EncodingAction, entries));
+        self.refresh_context();
+        Outcome::Handled
+    }
+
+    /// Makes files readable and writable only as UTF-8, so `Change File
+    /// Encoding` is refused before anything is chosen: set by a frontend
+    /// whose files travel as text, as a remote session's do.
+    pub fn set_utf8_only(&mut self, utf8_only: bool) {
+        self.utf8_only = utf8_only;
+    }
+
+    /// Lists every encoding for `kind`, with the document's current one
+    /// selected so `enter` alone changes nothing.
+    fn offer_encodings(&mut self, kind: PromptKind) -> Outcome {
+        let current = self.document.encoding;
+        let entries = deco_encoding::Encoding::ALL
+            .iter()
+            .map(|encoding| {
+                let entry =
+                    crate::commands::PaletteEntry::new(encoding.setting(), encoding.label());
+                if *encoding == current {
+                    entry.with_detail("current")
+                } else {
+                    entry.with_detail(encoding.setting())
+                }
+            })
+            .collect();
+        let mut prompt = Prompt::list(kind, entries);
+        prompt.select_id(current.setting());
+        self.prompt = Some(prompt);
+        self.refresh_context();
+        Outcome::Handled
+    }
+
+    /// Reads the file again in `encoding`, which needs a clean document with
+    /// a path: reopening replaces the text, and unsaved edits would be lost.
+    fn reopen_with_encoding(&mut self, encoding: deco_encoding::Encoding) -> Outcome {
+        if self.document.path.is_none() {
+            return Outcome::Message(
+                "this document has no file to reopen; Save with Encoding sets its encoding"
+                    .to_owned(),
+            );
+        }
+        if self.document.dirty {
+            return Outcome::Message(format!(
+                "{} has unsaved changes; save or revert it before reopening it in another encoding",
+                self.document.title()
+            ));
+        }
+        Outcome::ReopenWithEncoding(encoding)
+    }
+
+    /// Writes the document in `encoding`. An untitled document has nowhere
+    /// to be written yet, so it takes the encoding and asks for a path.
+    fn save_with_encoding(&mut self, encoding: deco_encoding::Encoding) -> Outcome {
+        if self.document.path.is_none() {
+            self.document.encoding = encoding;
+            return self.offer_save_as();
+        }
+        Outcome::SaveWithEncoding(encoding)
     }
 
     /// Opens the save-as prompt, seeded with this document's own path.
@@ -2613,6 +2711,23 @@ impl Session {
                 }
                 None => Outcome::Message(format!("no option matches `{}`", prompt.text())),
             },
+            PromptKind::EncodingAction => match prompt.selected().map(|entry| entry.id.as_str()) {
+                Some(REOPEN_WITH_ENCODING) => self.offer_encodings(PromptKind::ReopenWithEncoding),
+                Some(SAVE_WITH_ENCODING) => self.offer_encodings(PromptKind::SaveWithEncoding),
+                _ => Outcome::Message(format!("no action matches `{}`", prompt.text())),
+            },
+            PromptKind::ReopenWithEncoding | PromptKind::SaveWithEncoding => {
+                match prompt
+                    .selected()
+                    .and_then(|entry| deco_encoding::Encoding::from_setting(&entry.id))
+                {
+                    Some(encoding) if prompt.kind() == PromptKind::ReopenWithEncoding => {
+                        self.reopen_with_encoding(encoding)
+                    }
+                    Some(encoding) => self.save_with_encoding(encoding),
+                    None => Outcome::Message(format!("no encoding matches `{}`", prompt.text())),
+                }
+            }
             PromptKind::Languages => match prompt.selected() {
                 Some(entry) if entry.id == AUTO_LANGUAGE => self.set_language(None),
                 Some(entry) => {
@@ -4039,9 +4154,25 @@ impl Session {
 
     // ---- the terminal ----------------------------------------------------
 
-    /// The terminal in the panel, if one has been started.
+    /// The terminal the panel shows, if one has been started.
     pub fn terminal(&self) -> Option<&crate::terminal::TerminalPanel> {
-        self.terminal.as_ref()
+        self.terminals.get(self.active_terminal)
+    }
+
+    /// Every terminal, in the order they were created.
+    pub fn terminals(&self) -> &[crate::terminal::TerminalPanel] {
+        &self.terminals
+    }
+
+    /// Where the shown terminal is in [`Session::terminals`].
+    pub fn active_terminal(&self) -> usize {
+        self.active_terminal
+    }
+
+    fn terminal_mut(&mut self, id: u32) -> Option<&mut crate::terminal::TerminalPanel> {
+        self.terminals
+            .iter_mut()
+            .find(|terminal| terminal.id() == id)
     }
 
     /// The size the terminal's screen should have: the panel below its title
@@ -4054,20 +4185,29 @@ impl Session {
     /// `` ctrl+` ``: shows the terminal and gives it the keyboard, or hides it
     /// when it already has the keyboard, as in VS Code.
     ///
-    /// The first use, and the first after the shell exited, asks the frontend
-    /// to start a shell.
+    /// The first use asks the frontend to start a shell. A shown terminal
+    /// whose shell has exited is closed first, so the next use after an exit
+    /// starts a new shell when no other terminal is left.
     fn toggle_terminal(&mut self) -> Outcome {
-        let running = self
-            .terminal
-            .as_ref()
-            .is_some_and(|terminal| terminal.exited().is_none());
-        if running {
+        if self
+            .terminal()
+            .is_some_and(|terminal| terminal.exited().is_some())
+        {
+            self.close_active_terminal();
+        }
+        if self.terminal().is_some() {
             if self.focus == Focus::Panel && self.panel_view == PanelView::Terminal {
                 return self.show_panel(false);
             }
             self.panel_view = PanelView::Terminal;
             return self.focus_region(Focus::Panel);
         }
+        self.new_terminal()
+    }
+
+    /// `` ctrl+shift+` ``: starts another shell in a terminal of its own, and
+    /// shows it.
+    fn new_terminal(&mut self) -> Outcome {
         self.panel_view = PanelView::Terminal;
         self.panel = true;
         let (width, height) = self.screen;
@@ -4077,80 +4217,149 @@ impl Session {
         };
         self.focus = Focus::Panel;
         self.refresh_context();
+        let id = self.next_terminal_id;
+        self.next_terminal_id += 1;
         Outcome::StartTerminal {
+            id,
             cols: cols.min(usize::from(u16::MAX)) as u16,
             rows: rows.min(usize::from(u16::MAX)) as u16,
         }
     }
 
-    /// The frontend started the shell; the screen is created at the size it
-    /// was started with.
-    pub fn terminal_started(&mut self, cols: u16, rows: u16) {
+    /// `ctrl+pagedown` and `ctrl+pageup` in the terminal: shows the next or
+    /// previous terminal, wrapping, as VS Code's terminal tabs do.
+    fn cycle_terminal(&mut self, direction: Direction) -> Outcome {
+        let count = self.terminals.len();
+        if count == 0 {
+            return Outcome::Message("there is no terminal to switch to".to_owned());
+        }
+        self.active_terminal = match direction {
+            Direction::Next => (self.active_terminal + 1) % count,
+            Direction::Prev => (self.active_terminal + count - 1) % count,
+        };
+        self.panel_view = PanelView::Terminal;
+        self.panel = true;
+        let outcome = self.focus_region(Focus::Panel);
+        if count == 1 {
+            return Outcome::Message("this is the only terminal".to_owned());
+        }
+        outcome
+    }
+
+    /// The frontend started terminal `id`'s shell. Its screen is created at
+    /// the size the shell was started with, after the shown terminal, and
+    /// becomes the shown one.
+    pub fn terminal_started(&mut self, id: u32, cols: u16, rows: u16) {
         let scrollback = self
             .settings
             .get_u64("terminal.integrated.scrollback", None)
             .map_or(crate::terminal::DEFAULT_SCROLLBACK, |lines| lines as usize);
-        self.terminal = Some(crate::terminal::TerminalPanel::new(
-            usize::from(cols),
-            usize::from(rows),
-            scrollback,
-        ));
+        let at = if self.terminals.is_empty() {
+            0
+        } else {
+            self.active_terminal + 1
+        };
+        self.terminals.insert(
+            at,
+            crate::terminal::TerminalPanel::new(
+                id,
+                usize::from(cols),
+                usize::from(rows),
+                scrollback,
+            ),
+        );
+        self.active_terminal = at;
         self.refresh_context();
     }
 
-    /// The frontend could not start the shell.
-    pub fn terminal_failed(&mut self, reason: &str) {
+    /// The frontend could not start the shell of terminal `id`.
+    pub fn terminal_failed(&mut self, id: u32, reason: &str) {
+        let _ = id;
         self.status = Some(format!("could not start the terminal: {reason}"));
-        if self.terminal.is_none() && self.focus == Focus::Panel {
+        if self.terminals.is_empty() && self.focus == Focus::Panel {
             self.focus = Focus::Editor;
         }
         self.refresh_context();
     }
 
-    /// What the shell wrote.
-    pub fn terminal_output(&mut self, bytes: &[u8]) {
-        if let Some(terminal) = &mut self.terminal {
+    /// What terminal `id`'s shell wrote.
+    pub fn terminal_output(&mut self, id: u32, bytes: &[u8]) {
+        if let Some(terminal) = self.terminal_mut(id) {
             terminal.feed(bytes);
             self.refresh_context();
         }
     }
 
-    /// The shell exited. The screen stays until a key is pressed in it.
-    pub fn terminal_exited(&mut self, code: Option<i32>) {
-        if let Some(terminal) = &mut self.terminal {
-            terminal.exit(code);
-            self.status = Some(match code {
-                Some(code) => format!(
-                    "The terminal process exited with code {code}. Press any key in it to close it"
-                ),
-                None => "The terminal process exited. Press any key in it to close it".to_owned(),
-            });
-        }
+    /// Terminal `id`'s shell exited. The screen stays until a key is pressed
+    /// in it.
+    pub fn terminal_exited(&mut self, id: u32, code: Option<i32>) {
+        let count = self.terminals.len();
+        let Some(at) = self
+            .terminals
+            .iter()
+            .position(|terminal| terminal.id() == id)
+        else {
+            return;
+        };
+        self.terminals[at].exit(code);
+        // Which one, when there is more than one to tell apart.
+        let which = if count > 1 {
+            format!("Terminal {} of {count}: the", at + 1)
+        } else {
+            "The".to_owned()
+        };
+        self.status = Some(match code {
+            Some(code) => format!(
+                "{which} terminal process exited with code {code}. Press any key in it to close it"
+            ),
+            None => format!("{which} terminal process exited. Press any key in it to close it"),
+        });
     }
 
-    /// Takes the keys and replies waiting to be written to the shell.
-    pub fn take_terminal_input(&mut self) -> Vec<u8> {
-        self.terminal
-            .as_mut()
+    /// Takes the keys and replies waiting to be written to terminal `id`'s
+    /// shell.
+    pub fn take_terminal_input(&mut self, id: u32) -> Vec<u8> {
+        self.terminal_mut(id)
             .map(crate::terminal::TerminalPanel::take_input)
             .unwrap_or_default()
     }
 
-    /// Resizes the terminal's screen to the panel. Returns the new size when
-    /// it changed, which the frontend passes on to the shell.
-    pub fn fit_terminal(&mut self) -> Option<(u16, u16)> {
-        let (cols, rows) = self.terminal_area()?;
-        let terminal = self.terminal.as_mut()?;
+    /// Resizes every terminal's screen to the panel, which they share.
+    /// Returns each one whose size changed, with its new size, for the
+    /// frontend to pass on to its shell.
+    pub fn fit_terminal(&mut self) -> Vec<(u32, u16, u16)> {
+        let Some((cols, rows)) = self.terminal_area() else {
+            return Vec::new();
+        };
         let (cols, rows) = (
             cols.min(usize::from(u16::MAX)),
             rows.min(usize::from(u16::MAX)),
         );
-        terminal
-            .resize(cols, rows)
-            .then_some((cols as u16, rows as u16))
+        self.terminals
+            .iter_mut()
+            .filter_map(|terminal| {
+                terminal
+                    .resize(cols, rows)
+                    .then_some((terminal.id(), cols as u16, rows as u16))
+            })
+            .collect()
     }
 
-    /// Sends a key to the terminal when it has the keyboard.
+    /// Drops the shown terminal's screen and shows a neighbour, if any is
+    /// left. Returns the dropped terminal's number.
+    fn close_active_terminal(&mut self) -> Option<u32> {
+        if self.active_terminal >= self.terminals.len() {
+            return None;
+        }
+        let closed = self.terminals.remove(self.active_terminal);
+        self.active_terminal = self
+            .active_terminal
+            .min(self.terminals.len().saturating_sub(1));
+        self.refresh_context();
+        Some(closed.id())
+    }
+
+    /// Sends a key to the shown terminal when it has the keyboard.
     ///
     /// Returns `None` when the key is the editor's: the terminal does not
     /// have the keyboard, a prompt is open over it, or the key is bound to
@@ -4162,11 +4371,15 @@ impl Session {
         {
             return None;
         }
-        let terminal = self.terminal.as_ref()?;
+        let terminal = self.terminal()?;
         if terminal.exited().is_some() {
-            // Any key closes an exited terminal, as in VS Code.
-            self.terminal = None;
-            return Some(self.show_panel(false));
+            // Any key closes an exited terminal, as in VS Code. The panel
+            // stays on the next one, if there is one.
+            self.close_active_terminal();
+            if self.terminals.is_empty() {
+                return Some(self.show_panel(false));
+            }
+            return Some(Outcome::Handled);
         }
         let resolution = self
             .keymap
@@ -4181,7 +4394,8 @@ impl Session {
             Resolution::Pending { .. } => self.view.chord.reset(),
             _ => {}
         }
-        let terminal = self.terminal.as_mut()?;
+        let at = self.active_terminal;
+        let terminal = self.terminals.get_mut(at)?;
         let modes = terminal.screen().modes();
         if let Some(bytes) = deco_term::input::encode(chord, modes) {
             terminal.send(&bytes);
@@ -4222,19 +4436,28 @@ impl Session {
         Outcome::Handled
     }
 
+    /// Stops the shown terminal's shell and shows the next one, or hides the
+    /// panel when it was the last.
     fn kill_terminal(&mut self) -> Outcome {
-        if self.terminal.take().is_none() {
+        let Some(id) = self.close_active_terminal() else {
             return Outcome::Message("there is no terminal to kill".to_owned());
+        };
+        if self.terminals.is_empty() {
+            self.show_panel(false);
         }
-        self.show_panel(false);
-        Outcome::KillTerminal
+        Outcome::KillTerminal(id)
     }
 
-    /// Pastes the clipboard into the terminal, bracketed when the program
-    /// asked for that.
+    /// Pastes the clipboard into the shown terminal, bracketed when the
+    /// program asked for that.
     fn paste_into_terminal(&mut self) -> Outcome {
         let text = self.clipboard.read();
-        let Some(terminal) = self.terminal.as_mut().filter(|t| t.exited().is_none()) else {
+        let at = self.active_terminal;
+        let Some(terminal) = self
+            .terminals
+            .get_mut(at)
+            .filter(|terminal| terminal.exited().is_none())
+        else {
             return Outcome::Message("there is no terminal to paste into".to_owned());
         };
         let bytes = deco_term::input::paste(&text, terminal.screen().modes());
@@ -4243,7 +4466,8 @@ impl Session {
     }
 
     fn scroll_terminal_page(&mut self, up: bool) -> Outcome {
-        if let Some(terminal) = &mut self.terminal {
+        let at = self.active_terminal;
+        if let Some(terminal) = self.terminals.get_mut(at) {
             let page = terminal.screen().rows().max(2) as isize - 1;
             terminal.scroll(if up { page } else { -page });
         }
@@ -4251,7 +4475,8 @@ impl Session {
     }
 
     fn scroll_terminal_to(&mut self, top: bool) -> Outcome {
-        if let Some(terminal) = &mut self.terminal {
+        let at = self.active_terminal;
+        if let Some(terminal) = self.terminals.get_mut(at) {
             terminal.scroll_to(top);
         }
         Outcome::Handled
@@ -9603,6 +9828,123 @@ mod tests {
         assert!(s.prompt.is_none(), "the picker closes");
     }
 
+    /// Runs `Change File Encoding`, picks `action`, then types `encoding`.
+    fn choose_encoding(s: &mut Session, action: &str, encoding: &str) -> Outcome {
+        s.run("workbench.action.editor.changeEncoding", None, 0);
+        for key in action.chars() {
+            press(s, &key.to_string());
+        }
+        press(s, "enter");
+        for key in encoding.chars() {
+            press(s, &key.to_string());
+        }
+        press(s, "enter")
+    }
+
+    #[test]
+    fn the_encoding_list_opens_on_the_document_s_encoding() {
+        let mut s = searchable("x\n");
+        s.document.encoding = deco_encoding::Encoding::ShiftJis;
+        s.run("workbench.action.editor.changeEncoding", None, 0);
+        let prompt = s.prompt.as_ref().expect("the action list opens");
+        assert_eq!(prompt.kind(), PromptKind::EncodingAction);
+        assert_eq!(
+            prompt.selected().map(|entry| entry.title.as_str()),
+            Some("Reopen with Encoding"),
+            "VS Code lists reopening first"
+        );
+        press(&mut s, "enter");
+        let prompt = s.prompt.as_ref().expect("the encoding list opens");
+        assert_eq!(prompt.kind(), PromptKind::ReopenWithEncoding);
+        assert_eq!(prompt.matches(), deco_encoding::Encoding::ALL.len());
+        assert_eq!(
+            prompt.selected().map(|entry| entry.id.as_str()),
+            Some("shiftjis"),
+            "enter alone keeps the current encoding"
+        );
+    }
+
+    #[test]
+    fn reopening_a_clean_file_asks_the_frontend_to_read_it() {
+        let mut s = searchable("x\n");
+        assert_eq!(
+            choose_encoding(&mut s, "reopen", "euc"),
+            Outcome::ReopenWithEncoding(deco_encoding::Encoding::EucJp)
+        );
+        assert!(s.prompt.is_none());
+    }
+
+    #[test]
+    fn reopening_keeps_unsaved_edits_by_refusing() {
+        let mut s = searchable("x\n");
+        press(&mut s, "y");
+        let outcome = choose_encoding(&mut s, "reopen", "euc");
+        assert!(
+            matches!(&outcome, Outcome::Message(text) if text.contains("unsaved changes")),
+            "{outcome:?}"
+        );
+        assert_eq!(s.document.buffer.text(), "yx\n");
+    }
+
+    #[test]
+    fn saving_with_an_encoding_leaves_the_switch_to_the_frontend() {
+        let mut s = searchable("x\n");
+        assert_eq!(
+            choose_encoding(&mut s, "save", "1252"),
+            Outcome::SaveWithEncoding(deco_encoding::Encoding::Windows1252)
+        );
+        assert_eq!(
+            s.document.encoding,
+            deco_encoding::Encoding::Utf8,
+            "only a successful write changes it"
+        );
+    }
+
+    #[test]
+    fn an_untitled_document_takes_the_encoding_and_asks_for_a_path() {
+        let mut s = Session::new(
+            deco_config::Settings::with_defaults(),
+            None,
+            Platform::Linux,
+        );
+        s.resize(80, 10);
+        assert_eq!(choose_encoding(&mut s, "save", "shift"), Outcome::Handled);
+        assert_eq!(s.document.encoding, deco_encoding::Encoding::ShiftJis);
+        assert_eq!(
+            s.prompt.as_ref().map(Prompt::kind),
+            Some(PromptKind::SaveAs)
+        );
+        let mut s = Session::new(
+            deco_config::Settings::with_defaults(),
+            None,
+            Platform::Linux,
+        );
+        let outcome = choose_encoding(&mut s, "reopen", "shift");
+        assert!(
+            matches!(&outcome, Outcome::Message(text) if text.contains("no file")),
+            "{outcome:?}"
+        );
+    }
+
+    #[test]
+    fn a_utf8_only_session_refuses_before_anything_is_chosen() {
+        // Including an untitled document, whose Save with Encoding would
+        // otherwise set the encoding and go straight to Save As.
+        let mut s = Session::new(
+            deco_config::Settings::with_defaults(),
+            None,
+            Platform::Linux,
+        );
+        s.set_utf8_only(true);
+        let outcome = s.run("workbench.action.editor.changeEncoding", None, 0);
+        assert!(
+            matches!(&outcome, Outcome::Message(text) if text.contains("UTF-8")),
+            "{outcome:?}"
+        );
+        assert!(s.prompt.is_none());
+        assert_eq!(s.document.encoding, deco_encoding::Encoding::Utf8);
+    }
+
     #[test]
     fn changing_the_language_leaves_the_text_alone() {
         // Changing the language must not alter text or create an undo entry.
@@ -12095,7 +12437,7 @@ mod tests {
         assert_eq!(s.panel_view(), PanelView::Problems);
         // A key in the problems view does not reach the shell.
         press(&mut s, "x");
-        assert!(s.take_terminal_input().is_empty());
+        assert!(s.take_terminal_input(1).is_empty());
         press(&mut s, "ctrl+`");
         assert_eq!(s.panel_view(), PanelView::Terminal);
         assert_eq!(s.focus(), Focus::Panel);
@@ -12129,14 +12471,14 @@ mod tests {
     fn with_terminal() -> Session {
         let mut s = Session::new(Settings::with_defaults(), None, Platform::Linux);
         s.resize(80, 30);
-        let Outcome::StartTerminal { cols, rows } = press(&mut s, "ctrl+`") else {
+        let Outcome::StartTerminal { id: 1, cols, rows } = press(&mut s, "ctrl+`") else {
             panic!("the first ctrl+` asks for a shell");
         };
         assert_eq!(
             s.terminal_area(),
             Some((usize::from(cols), usize::from(rows)))
         );
-        s.terminal_started(cols, rows);
+        s.terminal_started(1, cols, rows);
         s
     }
 
@@ -12152,14 +12494,14 @@ mod tests {
         press(&mut s, "ctrl+k");
         press(&mut s, "ctrl+c");
         press(&mut s, "up");
-        assert_eq!(s.take_terminal_input(), b"ls\r\x0b\x03\x1b[A");
+        assert_eq!(s.take_terminal_input(1), b"ls\r\x0b\x03\x1b[A");
         assert_eq!(s.document.buffer.text(), "", "nothing reached the document");
 
         // The palette is the editor's, and a key in it is not the shell's.
         press(&mut s, "ctrl+shift+p");
         assert!(s.prompt.is_some());
         press(&mut s, "x");
-        assert!(s.take_terminal_input().is_empty());
+        assert!(s.take_terminal_input(1).is_empty());
         press(&mut s, "escape");
 
         // `` ctrl+` `` hides the terminal it is in.
@@ -12177,17 +12519,17 @@ mod tests {
     #[test]
     fn output_is_drawn_into_the_screen_and_status_requests_are_answered() {
         let mut s = with_terminal();
-        s.terminal_output(b"hello\r\nworld\x1b[6n");
+        s.terminal_output(1, b"hello\r\nworld\x1b[6n");
         let terminal = s.terminal().expect("started");
         assert_eq!(terminal.screen().text(), "hello\nworld");
-        assert_eq!(s.take_terminal_input(), b"\x1b[2;6R");
+        assert_eq!(s.take_terminal_input(1), b"\x1b[2;6R");
     }
 
     #[test]
     fn the_history_scrolls_with_shift_pageup_and_typing_returns_to_the_bottom() {
         let mut s = with_terminal();
         let lines: String = (0..100).map(|n| format!("{n}\r\n")).collect();
-        s.terminal_output(lines.as_bytes());
+        s.terminal_output(1, lines.as_bytes());
         press(&mut s, "shift+pageup");
         let back = s.terminal().unwrap().back();
         assert!(back > 0);
@@ -12198,9 +12540,11 @@ mod tests {
     #[test]
     fn the_screen_follows_the_panel_size() {
         let mut s = with_terminal();
-        assert_eq!(s.fit_terminal(), None, "already the panel's size");
+        assert_eq!(s.fit_terminal(), [], "already the panel's size");
         s.resize(100, 40);
-        let (cols, rows) = s.fit_terminal().expect("a new size");
+        let [(1, cols, rows)] = s.fit_terminal()[..] else {
+            panic!("a new size for the one terminal");
+        };
         assert_eq!(
             Some((usize::from(cols), usize::from(rows))),
             s.terminal_area()
@@ -12211,7 +12555,7 @@ mod tests {
     #[test]
     fn an_exited_terminal_closes_on_the_next_key_and_the_next_toggle_starts_again() {
         let mut s = with_terminal();
-        s.terminal_exited(Some(0));
+        s.terminal_exited(1, Some(0));
         assert!(s
             .status
             .as_deref()
@@ -12225,13 +12569,108 @@ mod tests {
         ));
     }
 
+    /// Starts a second terminal in `s`, which `with_terminal` made, and
+    /// returns its number.
+    fn second_terminal(s: &mut Session) -> u32 {
+        let Outcome::StartTerminal { id, cols, rows } = press(s, "ctrl+shift+`") else {
+            panic!("ctrl+shift+` asks for another shell");
+        };
+        assert_ne!(id, 1, "a number of its own");
+        s.terminal_started(id, cols, rows);
+        id
+    }
+
+    #[test]
+    fn a_new_terminal_is_shown_and_keys_go_to_it_alone() {
+        let mut s = with_terminal();
+        let second = second_terminal(&mut s);
+        assert_eq!(s.terminals().len(), 2);
+        assert_eq!(
+            s.terminal().map(crate::terminal::TerminalPanel::id),
+            Some(second)
+        );
+        press(&mut s, "x");
+        assert_eq!(s.take_terminal_input(second), b"x");
+        assert!(s.take_terminal_input(1).is_empty());
+
+        // Output reaches the terminal it came from, whichever is shown.
+        s.terminal_output(1, b"first");
+        assert_eq!(s.terminal().unwrap().screen().text(), "");
+        press(&mut s, "ctrl+pagedown");
+        assert_eq!(
+            s.terminal().map(crate::terminal::TerminalPanel::id),
+            Some(1),
+            "wraps"
+        );
+        assert_eq!(s.terminal().unwrap().screen().text(), "first");
+        press(&mut s, "ctrl+pageup");
+        assert_eq!(
+            s.terminal().map(crate::terminal::TerminalPanel::id),
+            Some(second)
+        );
+    }
+
+    #[test]
+    fn killing_one_terminal_shows_the_other_and_the_last_hides_the_panel() {
+        let mut s = with_terminal();
+        let second = second_terminal(&mut s);
+        assert_eq!(
+            s.run("workbench.action.terminal.kill", None, 0),
+            Outcome::KillTerminal(second)
+        );
+        assert_eq!(
+            s.terminal().map(crate::terminal::TerminalPanel::id),
+            Some(1)
+        );
+        assert!(s.regions().panel.is_some(), "the panel stays for the first");
+        assert_eq!(
+            s.run("workbench.action.terminal.kill", None, 0),
+            Outcome::KillTerminal(1)
+        );
+        assert!(s.terminal().is_none());
+        assert!(s.regions().panel.is_none());
+    }
+
+    #[test]
+    fn an_exited_terminal_among_others_closes_and_the_next_is_shown() {
+        let mut s = with_terminal();
+        let second = second_terminal(&mut s);
+        s.terminal_exited(second, Some(3));
+        assert!(
+            s.status
+                .as_deref()
+                .is_some_and(|status| status.starts_with("Terminal 2 of 2")),
+            "{:?}",
+            s.status
+        );
+        press(&mut s, "x");
+        assert_eq!(
+            s.terminal().map(crate::terminal::TerminalPanel::id),
+            Some(1)
+        );
+        assert_eq!(s.focus(), Focus::Panel, "the panel stays on the first");
+        assert!(
+            s.take_terminal_input(1).is_empty(),
+            "the key only closed it"
+        );
+    }
+
+    #[test]
+    fn every_terminal_follows_the_panel_size() {
+        let mut s = with_terminal();
+        let second = second_terminal(&mut s);
+        s.resize(100, 40);
+        let resized: Vec<u32> = s.fit_terminal().iter().map(|(id, ..)| *id).collect();
+        assert_eq!(resized, [1, second]);
+    }
+
     #[test]
     fn pasting_into_the_terminal_is_bracketed_when_asked() {
         let mut s = with_terminal();
         s.clipboard.write("echo hi\n");
-        s.terminal_output(b"\x1b[?2004h");
+        s.terminal_output(1, b"\x1b[?2004h");
         assert_eq!(press(&mut s, "ctrl+shift+v"), Outcome::TerminalInput);
-        assert_eq!(s.take_terminal_input(), b"\x1b[200~echo hi\n\x1b[201~");
+        assert_eq!(s.take_terminal_input(1), b"\x1b[200~echo hi\n\x1b[201~");
     }
 
     #[test]

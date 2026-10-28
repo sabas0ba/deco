@@ -40,7 +40,7 @@ For the same reason, the tree reads one level at a time when revealing a file. `
 
 The tree does not read the filesystem. `deco-editor`'s `Explorer` stores the directory contents it has received and requests missing ones; the frontend provides them using `std::fs`. The core contains no `read_dir`, so the editing code, including this tree, can be tested without a filesystem.
 
-The same design lets the tree work on a **remote** workspace: the request is answered over the connection instead, and the model is unchanged. The first version derives a remote directory's contents from the whole-workspace listing that the protocol already provides, which is the same listing `ctrl+p` requests on every press. A per-directory request would be cheaper, but requires a protocol change.
+The same design lets the tree work on a **remote** workspace: the request is answered over the connection instead, and the model is unchanged. A remote directory is read with `fs.dir`, one directory at a time, which reports each entry's kind, so an empty folder is shown. With an older remote deco that lacks it, a directory's contents are derived from the whole-workspace file listing, which cannot show empty folders.
 
 ## Changing the files themselves
 
@@ -109,7 +109,7 @@ A rename that only changes capitalisation works on a case-insensitive filesystem
 
 Accepting the rename prompt without editing it does nothing. The comparison is made before the text is trimmed, so on a filesystem that allows a name such as `" report "`, pressing enter does not rename the file.
 
-Over a [remote connection](remote.md), these operations are refused with a message naming the operation. The protocol supports reading, writing and listing, but not create, rename or delete yet. Performing the operation locally would change a file on the local machine while reporting success for the remote one.
+Over a [remote connection](remote.md), the same operations run on the remote machine. The server carries them out with the same code as the local editor (`deco_remote::file_ops`), so a create never replaces an entry, a rename never lands on another file, and an undo is refused when the entry has changed since. Every path is confined to the served directory: the parent is resolved there, following links, and the final component is acted on as named, so deleting a link removes the link and never its target. A failure is reported with the path relative to the workspace. Because the remote's disk cannot be checked from here, a failed recursive delete re-reads the affected directories through the connection and drops the tree's undo history, but leaves tabs attached. A remote deco older than this protocol method is refused with a message to update it, rather than sent the extension API's `fs.rename` and `fs.delete`, which overwrite.
 
 ## Two kinds of empty
 
@@ -122,7 +122,7 @@ this workspace is empty
 
 ## Not built yet
 
-**Changes on disk are found by reading again, not by a watcher.** While the tree is on screen, the directories it shows are read again every two seconds, at most 64 per pass with each pass continuing where the last stopped, so a file another program creates, renames or deletes appears within two seconds. The selection stays on the same file when rows are added above it, and a folder that disappears is forgotten with its expansion state. A hidden tree is not read; it is brought up to date by the first pass after it is shown. This is local only: a remote workspace is listed whole, which is too costly to repeat on a timer, so a remote tree changes only when a directory is read again. A filesystem watcher would report sooner, but has platform-specific failure modes and would add a dependency.
+**Changes on disk are found by reading again, not by a watcher.** While the tree is on screen, the directories it shows are read again every two seconds, at most 64 per pass with each pass continuing where the last stopped, so a file another program creates, renames or deletes appears within two seconds. The selection stays on the same file when rows are added above it, and a folder that disappears is forgotten with its expansion state. A hidden tree is not read; it is brought up to date by the first pass after it is shown. This is local only: a remote tree changes only when a directory is read again, such as after a change made from the tree. A filesystem watcher would report sooner, but has platform-specific failure modes and would add a dependency.
 
 **No mouse, and no drag.** The tree is keyboard-only in both frontends, because mouse support has not been implemented in the GPU frontend. Moving a file to another folder is therefore not possible: rename accepts a name, not a path.
 

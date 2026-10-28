@@ -353,11 +353,15 @@ impl Take {
     /// The frontend's part of the terminal: starting the scripted shell, and
     /// answering what was typed into it, echoing as a terminal does.
     fn drive_terminal(&mut self, outcome: &deco_editor::Outcome) {
-        if let deco_editor::Outcome::StartTerminal { cols, rows } = *outcome {
-            self.session.terminal_started(cols, rows);
-            self.session.terminal_output(SHELL_PROMPT.as_bytes());
+        if let deco_editor::Outcome::StartTerminal { id, cols, rows } = *outcome {
+            self.session.terminal_started(id, cols, rows);
+            self.session.terminal_output(id, SHELL_PROMPT.as_bytes());
         }
-        let input = self.session.take_terminal_input();
+        // The demonstration has one terminal, the one shown.
+        let Some(id) = self.session.terminal().map(|terminal| terminal.id()) else {
+            return;
+        };
+        let input = self.session.take_terminal_input(id);
         let mut output = String::new();
         for byte in input {
             match byte {
@@ -381,7 +385,7 @@ impl Take {
             }
         }
         if !output.is_empty() {
-            self.session.terminal_output(output.as_bytes());
+            self.session.terminal_output(id, output.as_bytes());
         }
     }
 

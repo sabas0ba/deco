@@ -281,6 +281,40 @@ pub fn list_dir(root: &Path, dir: &Path, settings: &Settings) -> Vec<deco_editor
     out
 }
 
+/// What `dir` contains on the remote, from its `fs.dir` listing, with the
+/// same rules as [`list_dir`]: only real files and directories, and nothing
+/// skipped or excluded.
+///
+/// `kinds` is VS Code's `FileType` bitmask: 1 a file, 2 a directory, 64 a
+/// link. A link is left out, as `list_dir` leaves out what is not a regular
+/// file or directory.
+pub fn remote_dir(
+    root: &Path,
+    dir: &Path,
+    listed: &[(String, u32)],
+    settings: &Settings,
+) -> Vec<deco_editor::explorer::Entry> {
+    let excludes = exclude_patterns(settings);
+    let mut out = Vec::new();
+    for (name, kind) in listed {
+        if kind & 64 != 0 || name.contains(['/', '\\']) {
+            continue;
+        }
+        let Some(relative) = relative_to(root, &dir.join(name)) else {
+            continue;
+        };
+        if kind & 2 != 0 {
+            if ALWAYS_SKIP.contains(&name.as_str()) || is_excluded(&excludes, &relative) {
+                continue;
+            }
+            out.push(deco_editor::explorer::Entry::dir(name));
+        } else if kind & 1 != 0 && !is_excluded(&excludes, &relative) {
+            out.push(deco_editor::explorer::Entry::file(name));
+        }
+    }
+    out
+}
+
 /// The enabled patterns from `files.exclude`.
 ///
 /// The setting is a map of pattern to boolean. VS Code uses `false` to disable an

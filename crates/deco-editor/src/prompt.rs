@@ -37,6 +37,13 @@ pub enum PromptKind {
     Languages,
     /// `ctrl+k ctrl+t`: which colour theme to use.
     Themes,
+    /// `workbench.action.editor.changeEncoding`: whether to read the file
+    /// again or write it, in an encoding chosen next.
+    EncodingAction,
+    /// Which encoding to read this document's file in again.
+    ReopenWithEncoding,
+    /// Which encoding to write this document in.
+    SaveWithEncoding,
     /// `ctrl+shift+s`: where to write this document.
     SaveAs,
     /// `ctrl+o`: which file to open.
@@ -113,6 +120,9 @@ impl PromptKind {
             Self::Symbols => "Go to symbol:",
             Self::Languages => "Select language mode:",
             Self::Themes => "Color theme:",
+            Self::EncodingAction => "Select action:",
+            Self::ReopenWithEncoding => "Reopen with encoding:",
+            Self::SaveWithEncoding => "Save with encoding:",
             Self::SaveAs => "Save as:",
             Self::OpenPath => "Open file:",
             Self::SearchQuery => "Search:",
@@ -160,6 +170,10 @@ impl PromptKind {
             (Self::Languages, _) => "languages",
             (Self::Themes, 1) => "theme",
             (Self::Themes, _) => "themes",
+            // Always two choices, so the count is not shown.
+            (Self::EncodingAction, _) => "",
+            (Self::ReopenWithEncoding | Self::SaveWithEncoding, 1) => "encoding",
+            (Self::ReopenWithEncoding | Self::SaveWithEncoding, _) => "encodings",
             (Self::Branches, 1) => "branch",
             (Self::Branches, _) => "branches",
             // Always two choices, so the count is not shown.
@@ -195,6 +209,9 @@ impl PromptKind {
             Self::Symbols => "the symbol list",
             Self::Languages => "the language picker",
             Self::Themes => "the theme picker",
+            Self::EncodingAction | Self::ReopenWithEncoding | Self::SaveWithEncoding => {
+                "the encoding picker"
+            }
             Self::SaveAs => "save as",
             Self::OpenPath => "open file",
             Self::SearchQuery => "search in files",
@@ -237,10 +254,16 @@ impl PromptKind {
         //
         // Snippet choices: the snippet's author chose the order, and the first
         // option is the one already inserted.
+        //
+        // Encodings: the order is VS Code's, with UTF-8 first, and the two
+        // actions are reopen and then save, as VS Code lists them.
         matches!(
             self,
             Self::Symbols
                 | Self::Themes
+                | Self::EncodingAction
+                | Self::ReopenWithEncoding
+                | Self::SaveWithEncoding
                 | Self::Files
                 | Self::CodeActions
                 | Self::Branches
@@ -402,6 +425,20 @@ impl Prompt {
         // Scroll only as much as needed to keep the selection visible, so holding
         // `down` scrolls one row at a time rather than by pages.
         self.selected.saturating_sub(MAX_ROWS - 1)
+    }
+
+    /// Selects the matching choice whose `id` is `id`, if there is one.
+    ///
+    /// For a list that opens on the current value, such as the document's
+    /// encoding, so `enter` alone keeps it.
+    pub fn select_id(&mut self, id: &str) {
+        if let Some(at) = self
+            .matching
+            .iter()
+            .position(|index| self.choices[*index].id == id)
+        {
+            self.selected = at;
+        }
     }
 
     /// Moves the selection down, wrapping.

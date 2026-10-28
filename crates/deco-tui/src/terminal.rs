@@ -355,8 +355,8 @@ mod tests {
     #[test]
     fn a_screen_becomes_rows_of_the_panel_s_width() {
         let mut session = deco_editor::Session::with_defaults();
-        session.terminal_started(6, 2);
-        session.terminal_output("a\x1b[31m日b".as_bytes());
+        session.terminal_started(1, 6, 2);
+        session.terminal_output(1, "a\x1b[31m日b".as_bytes());
         let panel = session.terminal().expect("started");
         let rows = rows(panel, &colors(), 8, 2);
         let cursor = cursor(panel, 8, 2);

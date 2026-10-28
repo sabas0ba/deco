@@ -37,6 +37,9 @@ fn serve(role: &str) -> i32 {
     // A `workspace/executeCommand` waiting for the editor to answer the edit
     // it caused, as a real server's command waits.
     let mut running_command: Option<serde_json::Value> = None;
+    // The server's own copy of the open document, kept by the role
+    // `incremental` from the changes it is sent.
+    let mut copy = String::new();
 
     loop {
         let Some((method, id, params)) = read_frame(&mut input) else {
@@ -63,8 +66,12 @@ fn serve(role: &str) -> i32 {
                         "id": id,
                         "result": {"capabilities": {
                             "positionEncoding": "utf-16",
+                            // `incremental` asks for ranges (2) rather than the
+                            // whole text (1) on every change.
                             "textDocumentSync": {
-                                "openClose": true, "change": 1, "save": true,
+                                "openClose": true,
+                                "change": if role == "incremental" { 2 } else { 1 },
+                                "save": true,
                             },
                             "hoverProvider": offers_hover,
                             "definitionProvider": true,
@@ -83,6 +90,10 @@ fn serve(role: &str) -> i32 {
             }
             "textDocument/didOpen" => {
                 open_uri = uri_of(&params);
+                copy = params["textDocument"]["text"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned();
                 if role == "diagnostics" {
                     publish(&mut output, &open_uri, 1);
                 }
@@ -127,6 +138,26 @@ fn serve(role: &str) -> i32 {
                 // scenario can distinguish a stale response from a new one.
                 if role == "diagnostics" {
                     publish(&mut output, &open_uri, 2);
+                }
+                // The copy the changes built, reported as a diagnostic so a
+                // scenario can compare it with the editor's text. Each change
+                // is counted too, to show whether ranges or the whole text
+                // were sent.
+                if role == "incremental" {
+                    let mut ranges = 0;
+                    for change in params["contentChanges"].as_array().into_iter().flatten() {
+                        let text = change["text"].as_str().unwrap_or_default();
+                        match change.get("range") {
+                            Some(range) => {
+                                ranges += 1;
+                                let start = offset(&copy, &range["start"]);
+                                let end = offset(&copy, &range["end"]).max(start);
+                                copy.replace_range(start..end, text);
+                            }
+                            None => copy = text.to_owned(),
+                        }
+                    }
+                    report_copy(&mut output, &open_uri, &copy, ranges);
                 }
             }
             "textDocument/hover" => send(
@@ -384,6 +415,54 @@ fn publish(output: &mut impl Write, uri: &str, round: u32) {
                     "code": "E0001",
                     "source": "fake",
                     "message": format!("something is wrong (round {round})"),
+                }],
+            },
+        }),
+    );
+}
+
+/// The byte offset of an LSP position in `text`, counting UTF-16 code units
+/// along the line, as the protocol does. A position past the end of a line
+/// or of the text is the end of it.
+fn offset(text: &str, position: &serde_json::Value) -> usize {
+    let line = position["line"].as_u64().unwrap_or(0) as usize;
+    let character = position["character"].as_u64().unwrap_or(0) as usize;
+    let mut start = 0;
+    for _ in 0..line {
+        match text[start..].find('\n') {
+            Some(at) => start += at + 1,
+            None => return text.len(),
+        }
+    }
+    let end = text[start..].find('\n').map_or(text.len(), |at| start + at);
+    let mut units = 0;
+    for (at, c) in text[start..end].char_indices() {
+        if units >= character {
+            return start + at;
+        }
+        units += c.len_utf16();
+    }
+    end
+}
+
+/// The server's copy of the document, as the message of one diagnostic:
+/// `ranges=N|text`, with line breaks written as `\n`.
+fn report_copy(output: &mut impl Write, uri: &str, copy: &str, ranges: usize) {
+    send(
+        output,
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/publishDiagnostics",
+            "params": {
+                "uri": uri,
+                "diagnostics": [{
+                    "range": {
+                        "start": {"line": 0, "character": 0},
+                        "end": {"line": 0, "character": 1},
+                    },
+                    "severity": 3,
+                    "source": "copy",
+                    "message": format!("ranges={ranges}|{}", copy.replace('\n', "\\n")),
                 }],
             },
         }),

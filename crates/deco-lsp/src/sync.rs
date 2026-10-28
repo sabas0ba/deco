@@ -187,7 +187,16 @@ impl DocumentSync {
                 .to_json()]
             }
             // Order is preserved because each range refers to the document as
-            // left by the previous change.
+            // left by the previous change. With no changes recorded, the whole
+            // text is sent instead: a change without a range replaces the
+            // document in incremental mode too, and an empty list would leave
+            // the server's copy as it was while the version moved on.
+            TextDocumentSyncKind::Incremental if changes.is_empty() => {
+                vec![ContentChange::Full {
+                    text: full_text.to_owned(),
+                }
+                .to_json()]
+            }
             TextDocumentSyncKind::Incremental => {
                 changes.iter().map(ContentChange::to_json).collect()
             }
@@ -357,6 +366,20 @@ mod tests {
         assert_eq!(content[1]["text"], json!("b"));
         assert_eq!(content[0]["range"]["end"]["character"], json!(1));
         assert_eq!(content[1]["range"]["start"]["character"], json!(5));
+    }
+
+    #[test]
+    fn an_incremental_change_with_no_ranges_sends_the_whole_text() {
+        let mut sync = opened();
+        let params = sync
+            .change(&uri(), TextDocumentSyncKind::Incremental, &[], "all of it")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            params["contentChanges"],
+            json!([{ "text": "all of it" }]),
+            "never an empty list, which would change nothing"
+        );
     }
 
     #[test]

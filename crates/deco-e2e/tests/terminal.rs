@@ -96,3 +96,45 @@ fn ctrl_backtick_moves_between_the_text_and_a_running_shell() {
         terminal_text(editor).contains("again\nready$")
     });
 }
+
+#[test]
+fn a_second_terminal_runs_its_own_shell_and_each_keeps_its_screen() {
+    let scenario = with_sh("terminal-two");
+    let mut editor = scenario.launch(&["a.txt"]);
+
+    editor.press("ctrl+`");
+    editor.settle_until("the first prompt", |editor| {
+        terminal_text(editor).contains("ready$")
+    });
+    editor.type_text("echo one\n");
+    editor.settle_until("the first output", |editor| {
+        terminal_text(editor).contains("one\nready$")
+    });
+
+    editor.press("ctrl+shift+`");
+    editor.settle_until("the second prompt", |editor| {
+        editor.session().terminals().len() == 2 && terminal_text(editor).contains("ready$")
+    });
+    assert!(
+        !terminal_text(&editor).contains("one"),
+        "a screen of its own"
+    );
+    editor.screen().assert_shows("TERMINAL 2/2");
+    editor.type_text("echo two\n");
+    editor.settle_until("the second output", |editor| {
+        terminal_text(editor).contains("two\nready$")
+    });
+
+    // Back to the first, whose shell and screen are as they were.
+    editor.press("ctrl+pagedown");
+    editor.screen().assert_shows("TERMINAL 1/2");
+    assert!(terminal_text(&editor).contains("one\nready$"));
+    assert!(!terminal_text(&editor).contains("two"));
+
+    // Killing it leaves the second.
+    editor.palette("Terminal: Kill the Active Terminal Instance");
+    assert_eq!(editor.session().terminals().len(), 1);
+    assert!(terminal_text(&editor).contains("two"));
+    editor.screen().assert_shows("TERMINAL");
+    editor.screen().assert_lacks("TERMINAL 1/");
+}
