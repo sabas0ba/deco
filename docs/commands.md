@@ -162,4 +162,4 @@ The keyboard-shortcuts editor and the settings UI are not built. Quick open has 
 
 Search in files has no persistent results view. [Regular expressions](find-and-replace.md#regular-expressions) are toggled with `alt+r` while the query prompt is open. The matches are shown in a picker, so opening a second match requires pressing `ctrl+shift+f` again. Replacing across the workspace is built (`ctrl+shift+h`, documented in [Find and replace](find-and-replace.md#replacing-across-the-workspace)), but it asks for the replacement in a second prompt instead of showing the matches and replacement together as a search view would.
 
-The GPU frontend cannot draw prompts, so it rejects `ctrl+g`, `ctrl+shift+p` and `ctrl+p` with a message instead of opening an invisible prompt that captures the keyboard. `ctrl+shift+o` is not available there because it is gated on a language-server capability, and the GPU frontend has no language-server client.
+The GPU frontend draws the same prompts, and runs the same frontend commands, as the terminal frontend, because both are driven by the same `deco_tui::Driver`.

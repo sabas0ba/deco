@@ -83,5 +83,4 @@ A program in the terminal cannot reach the editor. Window titles are kept but no
 
 - **No tabs or splits.** Several terminals are switched between, one at a time; they cannot be shown side by side, renamed or reordered.
 - **No mouse.** Text cannot be selected in the terminal, so there is no copy from it, and mouse reporting to programs is accepted but not sent.
-- **Not in the GPU frontend**, which reports that the terminal is only in the terminal frontend so far.
 - **No `terminal.integrated.cwd`, `env.*` or `commandsToSkipShell` settings.** The working directory is the workspace and the list of editor keys is fixed.

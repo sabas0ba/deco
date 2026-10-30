@@ -16,7 +16,11 @@ deco-editor.workspace = true
 deco-scm.workspace = true
 deco-keymap.workspace = true
 deco-theme.workspace = true
+# The terminal frontend's driver and renderer, which this frontend shares: see
+# src/lib.rs.
+deco-tui.workspace = true
 anyhow.workspace = true
+unicode-width.workspace = true
 # glyphon pins the wgpu it was built against; the two share types, so this
 # version must track glyphon's rather than being chosen independently.
 glyphon = "0.12"

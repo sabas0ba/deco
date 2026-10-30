@@ -1,18 +1,22 @@
 //! The window, the GPU device, and the event loop.
 //!
-//! This is the only module that needs a display. Everything it draws comes from
-//! [`mod@crate::layout`], which is testable without one. Changes to how the
-//! editor looks are normally made in that module, not here.
+//! This is the only module that needs a display. What it draws is the frame
+//! the terminal frontend's renderer lays out, placed in pixels by
+//! [`mod@crate::grid`], which is testable without one. Changes to how the
+//! editor looks are normally made in the renderer, not here.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{anyhow, Context as _, Result};
-use deco_editor::{Outcome, Session};
+use deco_editor::Session;
 use deco_theme::Rgba;
+use deco_tui::{Driver, Flow, Options, RemoteSession};
 use glyphon::{
     Attrs, Buffer as TextBuffer, Cache, Color, Family, FontSystem, Metrics as TextMetrics,
-    Resolution, Shaping, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
+    Resolution, Shaping, Style, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer,
+    Viewport,
 };
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -20,40 +24,11 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::ModifiersState;
 use winit::window::{Window, WindowId};
 
+use crate::grid::{Grid, Metrics};
 use crate::keys::chord_from_event;
-use crate::layout::{self, Metrics};
 
 fn to_glyphon(color: Rgba) -> Color {
     Color::rgba(color.r, color.g, color.b, color.a)
-}
-
-/// `text` split into pieces with their colour, `None` for the default.
-///
-/// Where ranges overlap, the later one wins, so the character under a block
-/// caret keeps the caret's text colour inside a selection.
-fn recolored_spans(
-    text: &str,
-    recolored: &[(std::ops::Range<usize>, Rgba)],
-) -> Vec<(String, Option<Rgba>)> {
-    let chars: Vec<char> = text.chars().collect();
-    let mut colors: Vec<Option<Rgba>> = vec![None; chars.len()];
-    for (range, color) in recolored {
-        for slot in colors
-            .iter_mut()
-            .take(range.end.min(chars.len()))
-            .skip(range.start)
-        {
-            *slot = Some(*color);
-        }
-    }
-    let mut spans: Vec<(String, Option<Rgba>)> = Vec::new();
-    for (c, color) in chars.into_iter().zip(colors) {
-        match spans.last_mut() {
-            Some((piece, last)) if *last == color => piece.push(c),
-            _ => spans.push((c.to_string(), color)),
-        }
-    }
-    spans
 }
 
 /// The advance width of one character in `family` at the size in `metrics`.
@@ -183,70 +158,30 @@ impl Gpu {
         self.surface.configure(&self.device, &self.config);
     }
 
-    /// Draws one frame.
-    fn draw(&mut self, session: &Session) -> Result<()> {
-        let metrics = self.metrics(session);
+    /// Draws one frame: `grid`, which [`crate::grid::grid`] placed.
+    fn draw(&mut self, grid: &Grid, family: &str, metrics: Metrics) -> Result<()> {
         let width = self.config.width as f32;
         let height = self.config.height as f32;
-        let laid_out = layout::layout(session, width, height, metrics);
 
-        // One glyphon buffer per visible line. Line count is bounded by the
-        // window height, so this stays small however large the file is.
-        let mut buffers: Vec<(TextBuffer, f32, f32, Color)> = Vec::new();
+        // One glyphon buffer per run. Runs are bounded by the window's cells,
+        // so this stays small however large the file is.
         let text_metrics = TextMetrics::new(metrics.font_size, metrics.line_height);
-        let family = session.document.settings.font_family.clone();
-        let attrs = Attrs::new().family(Family::Name(&family));
-
-        for line in &laid_out.lines {
-            if !line.gutter.is_empty() {
-                let mut buffer = TextBuffer::new(&mut self.font_system, text_metrics);
-                buffer.borrow_with(&mut self.font_system).set_text(
-                    &line.gutter,
-                    &attrs,
-                    Shaping::Advanced,
-                    None,
-                );
-                let color = if line.is_cursor_line {
-                    laid_out.colors.gutter_active
-                } else {
-                    laid_out.colors.gutter
-                };
-                buffers.push((buffer, metrics.padding, line.y, to_glyphon(color)));
-            }
+        let attrs = Attrs::new().family(Family::Name(family));
+        let mut buffers: Vec<(TextBuffer, f32, f32, Color)> = Vec::with_capacity(grid.runs.len());
+        for run in &grid.runs {
             let mut buffer = TextBuffer::new(&mut self.font_system, text_metrics);
-            let spans = recolored_spans(&line.text, &line.recolored);
-            buffer.borrow_with(&mut self.font_system).set_rich_text(
-                spans.iter().map(|(text, color)| {
-                    let attrs = attrs.clone();
-                    let attrs = match color {
-                        Some(color) => attrs.color(to_glyphon(*color)),
-                        None => attrs,
-                    };
-                    (text.as_str(), attrs)
-                }),
-                &attrs,
-                Shaping::Advanced,
-                None,
-            );
-            buffers.push((
-                buffer,
-                laid_out.text_left,
-                line.y,
-                to_glyphon(laid_out.colors.foreground),
-            ));
-        }
-
-        // The chrome uses the gutter colour so it is distinguishable from
-        // document text.
-        for line in &laid_out.chrome {
-            let mut buffer = TextBuffer::new(&mut self.font_system, text_metrics);
+            let attrs = if run.italic {
+                attrs.clone().style(Style::Italic)
+            } else {
+                attrs.clone()
+            };
             buffer.borrow_with(&mut self.font_system).set_text(
-                &line.text,
+                &run.text,
                 &attrs,
                 Shaping::Advanced,
                 None,
             );
-            buffers.push((buffer, line.x, line.y, to_glyphon(laid_out.colors.gutter)));
+            buffers.push((buffer, run.x, run.y, to_glyphon(run.fg)));
         }
 
         let bounds = TextBounds {
@@ -286,12 +221,8 @@ impl Gpu {
                 &mut self.swash,
             )
             .context("could not prepare text for drawing")?;
-        let rectangles = crate::quads::vertices(
-            &crate::quads::rectangles(&laid_out),
-            width,
-            height,
-            self.config.format.is_srgb(),
-        );
+        let rectangles =
+            crate::quads::vertices(&grid.quads, width, height, self.config.format.is_srgb());
         self.quads.prepare(&self.device, &self.queue, &rectangles);
 
         use wgpu::CurrentSurfaceTexture;
@@ -319,7 +250,7 @@ impl Gpu {
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         {
-            let background = laid_out.colors.background;
+            let background = grid.background;
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("deco text"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -367,10 +298,32 @@ fn srgb_to_linear(value: u8) -> f64 {
 
 struct App<'a> {
     session: &'a mut Session,
+    /// What the driver starts with; taken when the window opens.
+    options: Option<Options>,
+    /// The frontend-independent event core the terminal frontend also uses:
+    /// what a key does, files, language servers, Git, terminals.
+    driver: Option<Driver>,
     gpu: Option<Gpu>,
     modifiers: ModifiersState,
     started: Instant,
     error: Option<anyhow::Error>,
+}
+
+impl App<'_> {
+    fn now_ms(&self) -> u64 {
+        self.started.elapsed().as_millis() as u64
+    }
+
+    /// The grid size for the window as it is now, telling the driver when
+    /// it changed.
+    fn fit(&mut self) {
+        let (Some(gpu), Some(driver)) = (self.gpu.as_mut(), self.driver.as_mut()) else {
+            return;
+        };
+        let metrics = gpu.metrics(self.session);
+        let (cols, rows) = metrics.cells(gpu.config.width as f32, gpu.config.height as f32);
+        driver.resize(self.session, cols, rows);
+    }
 }
 
 impl ApplicationHandler for App<'_> {
@@ -387,7 +340,17 @@ impl ApplicationHandler for App<'_> {
             .map_err(anyhow::Error::from)
             .and_then(|window| Gpu::new(Arc::new(window)))
         {
-            Ok(gpu) => self.gpu = Some(gpu),
+            Ok(mut gpu) => {
+                let metrics = gpu.metrics(self.session);
+                let size = metrics.cells(gpu.config.width as f32, gpu.config.height as f32);
+                let options = Options {
+                    size,
+                    ..self.options.take().unwrap_or_default()
+                };
+                self.driver = Some(Driver::start(self.session, options));
+                gpu.window.request_redraw();
+                self.gpu = Some(gpu);
+            }
             Err(error) => {
                 // Return the error instead of panicking, so the user sees
                 // "no GPU adapter was found" instead of a backtrace.
@@ -398,176 +361,140 @@ impl ApplicationHandler for App<'_> {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        let Some(gpu) = self.gpu.as_mut() else { return };
-
+        if self.gpu.is_none() || self.driver.is_none() {
+            return;
+        }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
             WindowEvent::Resized(size) => {
-                gpu.resize(size.width, size.height);
-                let metrics = gpu.metrics(self.session);
-                self.session.resize(
-                    (size.width as f32 / metrics.cell_width) as usize,
-                    (size.height as f32 / metrics.line_height) as usize,
-                );
-                gpu.window.request_redraw();
+                if let Some(gpu) = self.gpu.as_mut() {
+                    gpu.resize(size.width, size.height);
+                }
+                self.fit();
+                self.request_redraw();
+            }
+            // A different monitor or a changed system scale: the font's size in
+            // pixels changes, so the grid does.
+            WindowEvent::ScaleFactorChanged { .. } => {
+                self.fit();
+                self.request_redraw();
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 let Some(chord) = chord_from_event(&event, self.modifiers) else {
                     return;
                 };
-                let now_ms = self.started.elapsed().as_millis() as u64;
-                match self.session.handle_chord(chord, now_ms) {
-                    Outcome::Quit => event_loop.exit(),
-                    Outcome::Save => {
-                        if let Err(error) = save(self.session) {
-                            self.session.status = Some(error.to_string());
-                        }
+                let now_ms = self.now_ms();
+                let Some(driver) = self.driver.as_mut() else {
+                    return;
+                };
+                match driver.key(self.session, chord, now_ms) {
+                    Ok(Flow::Quit) => event_loop.exit(),
+                    Ok(Flow::Continue) => {}
+                    Err(error) => {
+                        // A failed local save: reported, as the terminal
+                        // frontend reports it when it exits.
+                        self.error = Some(error);
+                        event_loop.exit();
                     }
-                    Outcome::Revert => {
-                        let target = self.session.document.path.clone();
-                        let encoding = self.session.document.encoding;
-                        match target.as_deref().map(|path| read_file(path, encoding)) {
-                            Some(Ok((text, read_in))) => {
-                                // Saved back the way it was read now.
-                                self.session.document.encoding = read_in;
-                                if let Outcome::Message(report) = self.session.revert_to(&text) {
-                                    self.session.status = Some(report);
-                                }
-                            }
-                            Some(Err(error)) => {
-                                let path = target.unwrap_or_default();
-                                self.session.status =
-                                    Some(format!("could not read {}: {error}", path.display()));
-                            }
-                            None => {}
-                        }
-                    }
-                    Outcome::SaveAll => {
-                        // The core runs the loop and builds the report. This
-                        // frontend only performs the write, so both frontends
-                        // report the same batch identically.
-                        if let Outcome::Message(report) = self.session.save_all(write_file) {
-                            self.session.status = Some(report);
-                        }
-                    }
-                    // Frontend commands such as quick open are passed to the
-                    // frontend by design. This frontend cannot draw their UI, so
-                    // it shows a status message instead of ignoring the key.
-                    Outcome::Frontend(command) => {
-                        self.session.status =
-                            Some(format!("{command} is only in the terminal frontend so far"));
-                    }
-                    // The integrated terminal is drawn only by the terminal
-                    // frontend so far.
-                    Outcome::StartTerminal { id, .. } => self.session.terminal_failed(
-                        id,
-                        "the terminal is only in the terminal frontend so far",
-                    ),
-                    _ => {}
                 }
-                refuse_overlays(self.session);
-                gpu.window.request_redraw();
+                // The font may have changed with a setting the key changed.
+                self.fit();
+                self.request_redraw();
             }
-            WindowEvent::RedrawRequested => {
-                if let Err(error) = gpu.draw(self.session) {
-                    self.error = Some(error);
-                    event_loop.exit();
-                }
-            }
+            WindowEvent::RedrawRequested => self.redraw(event_loop),
             _ => {}
         }
     }
-}
 
-/// Closes any bar or prompt a command opened.
-///
-/// This frontend cannot draw them yet. It has no status bar or other chrome. An
-/// invisible widget that holds keyboard focus would make the editor appear
-/// unresponsive. `ctrl+f`, `ctrl+g` and `ctrl+shift+p` therefore close the
-/// widget and set a status message.
-fn refuse_overlays(session: &mut Session) {
-    if session.find.visible() {
-        session.find.close();
-        session.status = Some("the find bar is only in the terminal frontend so far".to_owned());
-    }
-    if let Some(prompt) = session.prompt.take() {
-        // Name the prompt by its kind so the message identifies the correct
-        // prompt, for example a save-as prompt rather than the command palette.
-        session.status = Some(format!(
-            "{} is only in the terminal frontend so far",
-            prompt.kind().describe()
-        ));
-    }
-}
-
-/// Writes the open document to disk.
-fn write_file(
-    path: &std::path::Path,
-    contents: &str,
-    encoding: deco_encoding::Encoding,
-) -> std::result::Result<(), String> {
-    let bytes = deco_encoding::encode(contents, encoding)
-        .map_err(|error| format!("{}: not saved: {error}", path.display()))?;
-    std::fs::write(path, bytes).map_err(|error| format!("{}: {error}", path.display()))
-}
-
-/// Reads `path` in `encoding`, unless a byte order mark says otherwise, and
-/// returns the encoding used with the text.
-fn read_file(
-    path: &std::path::Path,
-    encoding: deco_encoding::Encoding,
-) -> std::result::Result<(String, deco_encoding::Encoding), String> {
-    let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
-    deco_encoding::decode(&bytes, encoding).map_err(|error| error.to_string())
-}
-
-/// Writes the open document to disk, only ever to its own path.
-///
-/// See the terminal frontend's `save` for why there is no fallback to the file
-/// deco was started with.
-fn save(session: &mut Session) -> Result<()> {
-    match session.document.path.clone() {
-        Some(path) => {
-            write_file(&path, &session.save_contents(), session.document.encoding)
-                .map_err(anyhow::Error::msg)?;
-            session.mark_saved();
-            session.status = Some(format!("Saved {}", path.display()));
+    /// Between events: what the language servers, Git and the terminals sent,
+    /// and the auto-save check, then a wake-up after the driver's interval.
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let now_ms = self.now_ms();
+        let Some(driver) = self.driver.as_mut() else {
+            return;
+        };
+        if let Err(error) = driver.idle(self.session, now_ms) {
+            self.error = Some(error);
+            event_loop.exit();
+            return;
         }
-        None => session.status = Some("This document has no filename yet".to_owned()),
+        // The terminal frontend writes copies to the terminal's clipboard with
+        // OSC 52. A window has no terminal to write to, so copies stay inside
+        // deco; the sequence is taken so it does not build up.
+        let _ = driver.terminal_output(self.session);
+        let interval = driver.poll_interval();
+        if driver.needs_redraw() {
+            self.request_redraw();
+        }
+        event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + interval));
     }
-    Ok(())
 }
 
-/// Opens a window and runs the editor in it.
-///
-/// Takes no starting path. It previously took one as a save fallback for a
-/// document without a path, which silently overwrote the starting file once
-/// tabs existed. This frontend has no other use for it: it has no quick open and no
-/// workspace.
-pub fn run(session: &mut Session) -> Result<()> {
-    // This frontend lays out one document line per row, so the session must not
-    // wrap. Otherwise it would scroll and move the caret by rows that are not
-    // drawn. This is set once here instead of rejecting `alt+z`, because
-    // `editor.wordWrap` is a setting and must have no effect where it is not
-    // supported.
-    session.frontend_wraps = false;
+impl App<'_> {
+    fn request_redraw(&self) {
+        if let Some(gpu) = &self.gpu {
+            gpu.window.request_redraw();
+        }
+    }
 
+    fn redraw(&mut self, event_loop: &ActiveEventLoop) {
+        let (Some(gpu), Some(driver)) = (self.gpu.as_mut(), self.driver.as_mut()) else {
+            return;
+        };
+        let frame = driver.frame(self.session);
+        let metrics = gpu.metrics(self.session);
+        let background = self
+            .session
+            .theme
+            .color("editor.background")
+            .unwrap_or(Rgba::BLACK);
+        let caret = crate::grid::caret_for(self.session);
+        let grid = crate::grid::grid(&frame, metrics, background, Some(caret));
+        let family = self.session.document.settings.font_family.clone();
+        gpu.window
+            .set_title(&format!("{} — deco", self.session.document.title()));
+        if let Err(error) = gpu.draw(&grid, &family, metrics) {
+            self.error = Some(error);
+            event_loop.exit();
+        }
+    }
+}
+
+/// Runs the GPU frontend: a window that shows the editor the terminal
+/// frontend shows, driven by the same [`Driver`].
+///
+/// `started_with` and `remote` are what [`deco_tui::run_with`] takes: the
+/// file deco was started with, and the connection when every file is on
+/// another machine.
+pub fn run(
+    session: &mut Session,
+    started_with: Option<PathBuf>,
+    remote: Option<RemoteSession>,
+) -> Result<()> {
     let event_loop = EventLoop::new().context("could not start the window event loop")?;
-    // Wait for input rather than spinning: an editor at rest should use no CPU.
     event_loop.set_control_flow(ControlFlow::Wait);
 
     let mut app = App {
         session,
+        options: Some(Options {
+            started_with,
+            remote,
+            ..Options::default()
+        }),
+        driver: None,
         gpu: None,
         modifiers: ModifiersState::empty(),
         started: Instant::now(),
         error: None,
     };
-    event_loop
+    let ran = event_loop
         .run_app(&mut app)
-        .context("the window event loop failed")?;
-
+        .context("the window event loop failed");
+    if let Some(driver) = app.driver.as_mut() {
+        driver.shutdown();
+    }
+    ran?;
     match app.error {
         Some(error) => Err(error),
         None => Ok(()),
@@ -577,28 +504,6 @@ pub fn run(session: &mut Session) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn recoloured_ranges_split_a_line_and_the_later_range_wins() {
-        let white = Rgba::new(255, 255, 255, 255);
-        let black = Rgba::new(0, 0, 0, 255);
-        let spans = recolored_spans("hello", &[(1..4, black), (2..3, white)]);
-        assert_eq!(
-            spans,
-            [
-                ("h".to_owned(), None),
-                ("e".to_owned(), Some(black)),
-                ("l".to_owned(), Some(white)),
-                ("l".to_owned(), Some(black)),
-                ("o".to_owned(), None),
-            ]
-        );
-        // A range past the end, as for a caret at the end of a line, is cut.
-        assert_eq!(
-            recolored_spans("ab", &[(2..3, black)]),
-            [("ab".to_owned(), None)]
-        );
-    }
 
     #[test]
     fn colours_are_converted_for_glyphon() {
@@ -612,39 +517,5 @@ mod tests {
         assert!((srgb_to_linear(255) - 1.0).abs() < 1e-9);
         // And is monotonic in between.
         assert!(srgb_to_linear(128) > srgb_to_linear(64));
-    }
-
-    #[test]
-    fn saving_an_untitled_document_says_so_instead_of_failing_silently() {
-        let mut session = Session::with_defaults();
-        save(&mut session).unwrap();
-        assert!(session.status.as_deref().unwrap().contains("no filename"));
-    }
-
-    #[test]
-    fn the_find_bar_is_refused_rather_than_left_invisible() {
-        let mut session = Session::with_defaults();
-        session.run("actions.find", None, 0);
-        assert!(session.find.visible());
-        refuse_overlays(&mut session);
-        assert!(!session.find.visible());
-        assert!(session.status.as_deref().unwrap().contains("terminal"));
-    }
-
-    #[test]
-    fn the_command_palette_is_refused_too() {
-        let mut session = Session::with_defaults();
-        session.run("workbench.action.showCommands", None, 0);
-        assert!(session.prompt.is_some());
-        refuse_overlays(&mut session);
-        assert!(session.prompt.is_none());
-        assert!(session.status.as_deref().unwrap().contains("palette"));
-    }
-
-    #[test]
-    fn refusing_is_a_no_op_when_nothing_was_opened() {
-        let mut session = Session::with_defaults();
-        refuse_overlays(&mut session);
-        assert!(session.status.is_none(), "nothing to report");
     }
 }

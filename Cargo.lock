@@ -662,8 +662,10 @@ dependencies = [
  "deco-keymap",
  "deco-scm",
  "deco-theme",
+ "deco-tui",
  "glyphon",
  "pollster",
+ "unicode-width",
  "wgpu",
  "winit",
 ]
