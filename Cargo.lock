@@ -612,6 +612,7 @@ dependencies = [
  "deco-theme",
  "deco-tui",
  "serde_json",
+ "unicode-width",
 ]
 
 [[package]]
@@ -662,8 +663,10 @@ dependencies = [
  "deco-keymap",
  "deco-scm",
  "deco-theme",
+ "deco-tui",
  "glyphon",
  "pollster",
+ "unicode-width",
  "wgpu",
  "winit",
 ]

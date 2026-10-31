@@ -146,4 +146,4 @@ Each column is drawn with its own gutter, and the widths differ by at most one c
 
 ## Not built yet
 
-There is no mouse support; tabs and groups are switched from the keyboard. A bar wider than the terminal is truncated rather than scrolled, and every tab is still reachable with `ctrl+tab`. The GPU frontend switches tabs but does not draw the bar, because it has no chrome yet, and it draws one group rather than two.
+A click on a tab shows it, and a click in a group gives it the keyboard; see [The mouse](mouse.md). Tabs cannot be dragged. A bar wider than the terminal is truncated rather than scrolled, and every tab is still reachable with `ctrl+tab`. The GPU frontend draws the same bar and groups.

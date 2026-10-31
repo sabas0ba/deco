@@ -92,6 +92,36 @@ pub enum PanelView {
     Problems,
 }
 
+/// A press of the primary mouse button, as the mouse methods of [`Session`]
+/// take it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Click {
+    /// How many presses in quick succession made it: 1 places the caret, 2
+    /// selects a word, 3 a line. The frontend counts them, as only it knows
+    /// the time between presses.
+    pub count: u8,
+    /// Shift was held: the selection is extended to the press.
+    pub extend: bool,
+}
+
+impl Click {
+    /// One press, with no modifier.
+    pub const SINGLE: Self = Self {
+        count: 1,
+        extend: false,
+    };
+}
+
+/// A selection being made by dragging in the text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TextDrag {
+    /// What the press selected: a caret, a word or a line. The drag keeps it
+    /// selected and adds whole units of the same size on the side it moves to.
+    anchor: deco_core::Range,
+    /// The press count, which decides the unit.
+    count: u8,
+}
+
 /// Which way [`Session::goto_marker`] walks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Direction {
@@ -406,6 +436,9 @@ pub struct Session {
     /// The frontend answers a `Revert` with only the file's text, so the session
     /// records which of the two revert commands made the request.
     pending_close: bool,
+    /// The selection a drag in the text is extending, between the press and
+    /// the release.
+    text_drag: Option<TextDrag>,
     /// How a project-wide search matches.
     ///
     /// Separate from the find bar's options, as in VS Code. Sharing them would
@@ -782,6 +815,7 @@ impl Session {
             document,
             view: View::default(),
             pending_close: false,
+            text_drag: None,
             search_options: deco_core::search::SearchOptions::default(),
             quit_refused: false,
             split_view: None,
@@ -1563,6 +1597,15 @@ impl Session {
             self.focus == Focus::Panel && self.panel_view == PanelView::Problems,
         );
         self.context.set("terminalFocus", terminal_focus);
+        // VS Code's key for a terminal with text selected, on which its copy
+        // binding depends, so `ctrl+shift+c` reaches the shell otherwise.
+        self.context.set(
+            "terminalTextSelected",
+            terminal_focus
+                && self
+                    .terminal()
+                    .is_some_and(|terminal| terminal.selection().is_some()),
+        );
         self.context.set(
             "terminalAltBufferActive",
             self.terminal()
@@ -1764,6 +1807,7 @@ impl Session {
             "workbench.action.terminal.focusPrevious" => self.cycle_terminal(Direction::Prev),
             "workbench.action.terminal.kill" => self.kill_terminal(),
             "workbench.action.terminal.paste" => self.paste_into_terminal(),
+            "workbench.action.terminal.copySelection" => self.copy_terminal_selection(),
             "workbench.action.terminal.scrollUpPage" => self.scroll_terminal_page(true),
             "workbench.action.terminal.scrollDownPage" => self.scroll_terminal_page(false),
             "workbench.action.terminal.scrollToTop" => self.scroll_terminal_to(true),
@@ -4401,6 +4445,320 @@ impl Session {
             terminal.send(&bytes);
         }
         Some(Outcome::TerminalInput)
+    }
+
+    // ---- the mouse -------------------------------------------------------
+    //
+    // A frontend finds what is under the pointer from the frame it drew, and
+    // calls one of these with positions in that region's own terms. The core
+    // then acts as the keyboard would.
+
+    /// A press on the text of group `group`, at screen row `row` of the group
+    /// and column `col` counted from the group's left edge, gutter included.
+    ///
+    /// Gives the group the keyboard, closes an open prompt, and places the
+    /// caret, or selects the word or line under the press for a double or
+    /// triple click. With shift, the selection is extended to the press.
+    pub fn click_text(&mut self, group: usize, row: usize, col: usize, click: Click) -> Outcome {
+        self.prompt = None;
+        if group >= self.group_count() {
+            return Outcome::Handled;
+        }
+        self.focus = Focus::Editor;
+        if self.comparison.is_some() {
+            // A diff is read-only and its views are aligned; the press only
+            // chooses which side has the keyboard.
+            return self.focus_group(group);
+        }
+        self.focus_group(group);
+        let at = self.position_under(row, col);
+        let unit = self.unit_at(at, click.count);
+        let selection = if click.extend {
+            let anchor = self.view.selections.primary().anchor;
+            deco_core::Selection::new(anchor, at)
+        } else {
+            deco_core::Selection::new(unit.start, unit.end)
+        };
+        self.view.selections = deco_core::SelectionSet::single(selection);
+        self.text_drag = Some(TextDrag {
+            anchor: if click.extend {
+                deco_core::Range::empty(selection.anchor)
+            } else {
+                unit
+            },
+            count: click.count.clamp(1, 3),
+        });
+        self.refresh_context();
+        Outcome::Handled
+    }
+
+    /// The pointer moved with the button held, after [`Session::click_text`],
+    /// to `row` and `col` of the same group. A row above or below the group
+    /// scrolls it one row that way, so a drag past an edge keeps selecting.
+    pub fn drag_text(&mut self, row: isize, col: usize) -> Outcome {
+        let Some(drag) = self.text_drag else {
+            return Outcome::Handled;
+        };
+        let height = self.view.height.max(1);
+        let row = if row < 0 {
+            self.view
+                .scroll_by(&self.document.buffer, &self.document.settings, -1);
+            0
+        } else if row as usize >= height {
+            self.view
+                .scroll_by(&self.document.buffer, &self.document.settings, 1);
+            height - 1
+        } else {
+            row as usize
+        };
+        let at = self.position_under(row, col);
+        let unit = self.unit_at(at, drag.count);
+        // Whole units on the side the pointer is on, with the pressed unit
+        // always included.
+        let selection = if unit.start < drag.anchor.start {
+            deco_core::Selection::new(drag.anchor.end, unit.start)
+        } else {
+            deco_core::Selection::new(drag.anchor.start, unit.end.max(drag.anchor.end))
+        };
+        self.view.selections = deco_core::SelectionSet::single(selection);
+        self.refresh_context();
+        Outcome::Handled
+    }
+
+    /// The button came up: a drag in the text ends.
+    pub fn release_mouse(&mut self) {
+        self.text_drag = None;
+    }
+
+    /// The wheel over group `group`: scrolls it by `rows` screen rows, down
+    /// for a positive count, without moving its caret.
+    pub fn scroll_text(&mut self, group: usize, rows: isize) -> Outcome {
+        if let Some(comparison) = self.comparison.as_mut() {
+            // The two sides are aligned row for row, so they scroll together.
+            for side in [&mut comparison.left, &mut comparison.right] {
+                side.view
+                    .scroll_by(&side.document.buffer, &side.document.settings, rows);
+            }
+            return Outcome::Handled;
+        }
+        let focused = usize::from(self.split_focused);
+        let view = if group == focused {
+            Some(&mut self.view)
+        } else {
+            self.split_view.as_mut()
+        };
+        if let Some(view) = view {
+            view.scroll_by(&self.document.buffer, &self.document.settings, rows);
+        }
+        Outcome::Handled
+    }
+
+    /// A press on tab `index` of the tab bar: shows that document, with the
+    /// keyboard in the text.
+    pub fn click_tab(&mut self, index: usize) -> Outcome {
+        if self.comparison.is_some() || index >= self.tab_count() {
+            return Outcome::Handled;
+        }
+        self.prompt = None;
+        self.switch_to(index);
+        self.focus = Focus::Editor;
+        self.refresh_context();
+        Outcome::Handled
+    }
+
+    /// A press on row `line` of the side bar's list, counted from its first
+    /// row under the heading, with the list scrolled as it is drawn.
+    ///
+    /// In the tree, a press selects the row and opens a file as a preview or
+    /// toggles a folder, keeping the keyboard in the tree; a double click
+    /// opens the file and moves the keyboard to it. In the source-control
+    /// view, a press selects and a double click opens the diff.
+    pub fn click_side_bar(&mut self, line: usize, click: Click) -> Outcome {
+        self.prompt = None;
+        let focused = self.focus_region(Focus::SideBar);
+        if focused != Outcome::Handled {
+            return focused;
+        }
+        if self.side_bar_view == SideBarView::SourceControl {
+            let Some(index) = self
+                .source_control
+                .row_at_line(self.source_control.scroll() + line)
+            else {
+                return Outcome::Handled;
+            };
+            self.source_control.select(index);
+            if click.count >= 2 {
+                return self.source_control_key("list.select");
+            }
+            self.refresh_context();
+            return Outcome::Handled;
+        }
+        let Some(explorer) = self.explorer.as_mut() else {
+            return Outcome::Handled;
+        };
+        let index = explorer.scroll() + line;
+        if index >= explorer.len() {
+            return Outcome::Handled;
+        }
+        explorer.select(index);
+        let is_dir = explorer.selection().is_some_and(|row| row.is_dir);
+        if is_dir {
+            if click.count == 1 {
+                explorer.toggle();
+            }
+            self.refresh_context();
+            return Outcome::Handled;
+        }
+        self.open_from_tree(click.count >= 2)
+    }
+
+    /// The wheel over the side bar's tree: scrolls it without moving the
+    /// selection.
+    pub fn scroll_side_bar(&mut self, rows: isize) -> Outcome {
+        let height = self.side_bar_rows();
+        if let Some(explorer) = self.explorer.as_mut() {
+            explorer.scroll_by(rows, height);
+        }
+        Outcome::Handled
+    }
+
+    /// A press on problem `index` of the problems view, counting every
+    /// problem: selects it and opens the file at it, as `enter` does.
+    pub fn click_problem(&mut self, index: usize) -> Outcome {
+        self.prompt = None;
+        self.markers.select(index);
+        self.panel_view = PanelView::Problems;
+        self.problems_key("list.select")
+    }
+
+    /// A press in the panel outside a list: gives the panel the keyboard.
+    pub fn click_panel(&mut self) -> Outcome {
+        self.prompt = None;
+        self.focus_region(Focus::Panel)
+    }
+
+    /// A press on row `row` of an open prompt's list, counted from the first
+    /// row drawn: chooses that entry, as `enter` on it does.
+    pub fn click_prompt(&mut self, row: usize, now_ms: u64) -> Outcome {
+        let Some(prompt) = self.prompt.as_mut() else {
+            return Outcome::Handled;
+        };
+        if !prompt.select_row(row) {
+            return Outcome::Handled;
+        }
+        self.accept_prompt(now_ms)
+    }
+
+    /// A press in the shown terminal at `row` and `col` of its screen, when
+    /// its program did not ask for the mouse: gives it the keyboard and starts
+    /// a selection there.
+    pub fn press_terminal(&mut self, row: usize, col: usize) -> Outcome {
+        self.prompt = None;
+        self.panel_view = PanelView::Terminal;
+        let outcome = self.focus_region(Focus::Panel);
+        let at = self.active_terminal;
+        if let Some(terminal) = self.terminals.get_mut(at) {
+            terminal.select_from(row, col);
+        }
+        self.refresh_context();
+        outcome
+    }
+
+    /// The pointer moved with the button held in the shown terminal.
+    pub fn drag_terminal(&mut self, row: usize, col: usize) -> Outcome {
+        let at = self.active_terminal;
+        if let Some(terminal) = self.terminals.get_mut(at) {
+            terminal.select_to(row, col);
+        }
+        self.refresh_context();
+        Outcome::Handled
+    }
+
+    /// Bytes for the shown terminal's program that a key did not produce,
+    /// such as a mouse report the frontend encoded. Gives the terminal the
+    /// keyboard.
+    pub fn send_to_terminal(&mut self, bytes: &[u8]) -> Outcome {
+        self.panel_view = PanelView::Terminal;
+        if self.focus != Focus::Panel {
+            self.focus_region(Focus::Panel);
+        }
+        let at = self.active_terminal;
+        match self.terminals.get_mut(at) {
+            Some(terminal) if terminal.exited().is_none() => {
+                terminal.send(bytes);
+                Outcome::TerminalInput
+            }
+            _ => Outcome::Handled,
+        }
+    }
+
+    /// The wheel over the shown terminal, when its program did not ask for
+    /// the mouse: scrolls its history.
+    pub fn scroll_terminal(&mut self, rows: isize) -> Outcome {
+        let at = self.active_terminal;
+        if let Some(terminal) = self.terminals.get_mut(at) {
+            terminal.scroll(-rows);
+        }
+        Outcome::Handled
+    }
+
+    /// `ctrl+shift+c` in the terminal: copies the selected text.
+    fn copy_terminal_selection(&mut self) -> Outcome {
+        let Some(text) = self
+            .terminal()
+            .and_then(crate::terminal::TerminalPanel::selected_text)
+        else {
+            return Outcome::Message("nothing is selected in the terminal".to_owned());
+        };
+        self.clipboard.write(&text);
+        let at = self.active_terminal;
+        if let Some(terminal) = self.terminals.get_mut(at) {
+            terminal.clear_selection();
+        }
+        self.refresh_context();
+        Outcome::Handled
+    }
+
+    /// The position of the focused group's text at screen row `row` and
+    /// column `col` from the group's left edge.
+    fn position_under(&self, row: usize, col: usize) -> deco_core::Position {
+        let gutter = crate::layout::gutter_width(&self.document);
+        self.view.position_at(
+            &self.document.buffer,
+            &self.document.settings,
+            row,
+            col.saturating_sub(gutter),
+        )
+    }
+
+    /// What `count` presses at `at` select: the caret, the word, or the line
+    /// with its line break.
+    fn unit_at(&self, at: deco_core::Position, count: u8) -> deco_core::Range {
+        let buffer = &self.document.buffer;
+        match count {
+            0 | 1 => deco_core::Range::empty(at),
+            2 => {
+                let word = deco_core::movement::word_range_at(
+                    buffer,
+                    at,
+                    &self.document.settings.word_separators,
+                );
+                if word.is_empty() {
+                    deco_core::Range::empty(at)
+                } else {
+                    word
+                }
+            }
+            _ => {
+                let start = deco_core::Position::new(at.line, 0);
+                let end = if (at.line as usize) + 1 < buffer.line_count() {
+                    deco_core::Position::new(at.line + 1, 0)
+                } else {
+                    buffer.end_position()
+                };
+                deco_core::Range::new(start, end)
+            }
+        }
     }
 
     /// `ctrl+shift+m`: shows the problems view and gives it the keyboard, or
@@ -10260,6 +10618,146 @@ mod tests {
 
         press(&mut s, "ctrl+j");
         assert_eq!(s.view.height, s.regions().editor.height);
+    }
+
+    // ---- The mouse --------------------------------------------------------
+
+    fn caret(s: &Session) -> (u32, u32) {
+        let at = s.view.cursor();
+        (at.line, at.character)
+    }
+
+    fn selected_text(s: &Session) -> String {
+        let primary = s.view.selections.primary();
+        s.document
+            .buffer
+            .text_in_range(deco_core::Range::new(primary.start(), primary.end()))
+    }
+
+    const DOUBLE: Click = Click {
+        count: 2,
+        extend: false,
+    };
+
+    #[test]
+    fn a_click_puts_the_caret_under_the_pointer_past_the_gutter() {
+        let mut s = searchable("one two\nthree four\n");
+        let gutter = crate::layout::gutter_width(&s.document);
+        s.click_text(0, 1, gutter + 6, Click::SINGLE);
+        assert_eq!(caret(&s), (1, 6));
+        // Past the end of a line: its end. Below the last line: the end.
+        s.click_text(0, 0, gutter + 40, Click::SINGLE);
+        assert_eq!(caret(&s), (0, 7));
+        s.click_text(0, 8, gutter, Click::SINGLE);
+        assert_eq!(caret(&s), (2, 0));
+        // On the gutter: the line's start.
+        s.click_text(0, 1, 0, Click::SINGLE);
+        assert_eq!(caret(&s), (1, 0));
+    }
+
+    #[test]
+    fn a_double_click_selects_a_word_and_a_triple_click_the_line() {
+        let mut s = searchable("one two\nthree four\n");
+        let gutter = crate::layout::gutter_width(&s.document);
+        s.click_text(0, 1, gutter + 7, DOUBLE);
+        assert_eq!(selected_text(&s), "four");
+        s.click_text(
+            0,
+            0,
+            gutter + 1,
+            Click {
+                count: 3,
+                extend: false,
+            },
+        );
+        assert_eq!(selected_text(&s), "one two\n");
+    }
+
+    #[test]
+    fn shift_extends_and_a_drag_by_words_keeps_the_pressed_word() {
+        let mut s = searchable("one two three\n");
+        let gutter = crate::layout::gutter_width(&s.document);
+        s.click_text(0, 0, gutter + 1, Click::SINGLE);
+        s.click_text(
+            0,
+            0,
+            gutter + 5,
+            Click {
+                count: 1,
+                extend: true,
+            },
+        );
+        assert_eq!(selected_text(&s), "ne t");
+        s.release_mouse();
+
+        s.click_text(0, 0, gutter + 5, DOUBLE);
+        s.drag_text(0, gutter + 9);
+        assert_eq!(selected_text(&s), "two three");
+        // Back past the pressed word: it stays selected, with whole words
+        // before it.
+        s.drag_text(0, gutter + 1);
+        assert_eq!(selected_text(&s), "one two");
+        s.release_mouse();
+        s.drag_text(0, gutter);
+        assert_eq!(selected_text(&s), "one two", "no drag after the release");
+    }
+
+    #[test]
+    fn the_wheel_scrolls_without_moving_the_caret() {
+        let text: String = (0..50).map(|n| format!("{n}\n")).collect();
+        let mut s = searchable(&text);
+        s.scroll_text(0, 5);
+        assert_eq!(s.view.scroll_top, 5);
+        assert_eq!(caret(&s), (0, 0));
+        s.scroll_text(0, -10);
+        assert_eq!(s.view.scroll_top, 0, "stops at the top");
+    }
+
+    #[test]
+    fn a_tab_click_shows_its_document_and_the_tree_opens_by_click() {
+        let mut s = with_tree();
+        s.open(PathBuf::from("/w/a.txt"), "a\n");
+        s.open(PathBuf::from("/w/b.txt"), "b\n");
+        let first = s.panes()[0].tabs[0].title.clone();
+        s.click_tab(0);
+        assert_eq!(s.document.title(), first);
+        // Row 1 of the tree is `Cargo.toml`.
+        let opened = s.click_side_bar(1, Click::SINGLE);
+        assert_eq!(
+            opened,
+            Outcome::OpenFile {
+                path: PathBuf::from("/w/Cargo.toml"),
+                at: None
+            }
+        );
+        assert_eq!(s.focus(), Focus::SideBar, "a single click keeps the tree");
+        s.click_side_bar(1, DOUBLE);
+        assert_eq!(s.focus(), Focus::Editor, "a double click moves to the text");
+        // Row 0 is `src`: a folder toggles.
+        s.click_side_bar(0, Click::SINGLE);
+        assert_eq!(s.directory_wanted().as_deref(), Some(Path::new("/w/src")));
+    }
+
+    #[test]
+    fn a_click_on_a_prompt_row_chooses_it() {
+        let mut s = searchable("x\n");
+        s.run("workbench.action.editor.changeLanguageMode", None, 0);
+        let (row, title) = s
+            .prompt
+            .as_ref()
+            .unwrap()
+            .visible()
+            .iter()
+            .enumerate()
+            .skip(1)
+            .find(|(_, entry)| entry.title != "Auto Detect")
+            .map(|(row, entry)| (row, entry.title.clone()))
+            .unwrap();
+        assert_eq!(
+            s.click_prompt(row, 0),
+            Outcome::Message(format!("Language: {title}"))
+        );
+        assert!(s.prompt.is_none());
     }
 
     // ---- The file tree ----------------------------------------------------

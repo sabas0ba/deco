@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use deco_editor::Session;
 use deco_keymap::keys::{Chord, Key, NamedKey};
 use deco_tui::app::{Driver, Flow, Options};
@@ -261,6 +261,104 @@ impl Editor {
             Flow::Quit => self.quit = true,
             Flow::Continue => {}
         }
+        self
+    }
+
+    // ---- the mouse ------------------------------------------------------
+
+    /// Presses and releases the primary button on the cell at `col`, `row`
+    /// of the screen, as a terminal reports it. Two calls on one cell in
+    /// quick succession are a double click.
+    pub fn click(&mut self, col: u16, row: u16) -> &mut Self {
+        self.mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            col,
+            row,
+            KeyModifiers::NONE,
+        );
+        self.mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            col,
+            row,
+            KeyModifiers::NONE,
+        )
+    }
+
+    /// [`Editor::click`] with shift held.
+    pub fn shift_click(&mut self, col: u16, row: u16) -> &mut Self {
+        self.mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            col,
+            row,
+            KeyModifiers::SHIFT,
+        );
+        self.mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            col,
+            row,
+            KeyModifiers::SHIFT,
+        )
+    }
+
+    /// Presses the primary button at one cell, drags to another, and
+    /// releases it there.
+    pub fn drag(&mut self, from: (u16, u16), to: (u16, u16)) -> &mut Self {
+        let none = KeyModifiers::NONE;
+        self.mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            from.0,
+            from.1,
+            none,
+        );
+        self.mouse(MouseEventKind::Drag(MouseButton::Left), to.0, to.1, none);
+        self.mouse(MouseEventKind::Up(MouseButton::Left), to.0, to.1, none)
+    }
+
+    /// Turns the wheel `steps` steps over a cell: towards the user (down the
+    /// document) for a positive count.
+    pub fn wheel(&mut self, col: u16, row: u16, steps: i32) -> &mut Self {
+        let kind = if steps > 0 {
+            MouseEventKind::ScrollDown
+        } else {
+            MouseEventKind::ScrollUp
+        };
+        for _ in 0..steps.unsigned_abs() {
+            self.mouse(kind, col, row, KeyModifiers::NONE);
+        }
+        self
+    }
+
+    fn mouse(
+        &mut self,
+        kind: MouseEventKind,
+        column: u16,
+        row: u16,
+        modifiers: KeyModifiers,
+    ) -> &mut Self {
+        // Less than the double-click interval, so two clicks on one cell are
+        // one double click, as when a person clicks twice.
+        self.now_ms += 50;
+        let event = deco_tui::keys::mouse_from_event(MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers,
+        });
+        match self
+            .driver
+            .mouse(&mut self.session, event, self.now_ms)
+            .expect("a mouse event should not fail")
+        {
+            Flow::Quit => self.quit = true,
+            Flow::Continue => {}
+        }
+        self
+    }
+
+    /// Lets time pass so the next click starts a new click rather than
+    /// continuing a double click.
+    pub fn pause(&mut self) -> &mut Self {
+        self.now_ms += 1_000;
         self
     }
 

@@ -79,7 +79,7 @@ If the sandbox is `"container"` and no runtime can be found, deco **refuses to s
 
 Two keys have a **default** in deco but are not used yet: `editor.tabCompletion` and `editor.largeFileOptimizations`. Changing these values currently has no effect.
 
-`editor.fontFamily`, `editor.fontSize` and `editor.lineHeight` apply only to the GPU frontend, because a terminal has no font size. The GPU frontend does not wrap or draw whitespace, so `editor.wordWrap`, `editor.wrappingIndent`, `editor.renderWhitespace`, `editor.rulers` and `editor.lineNumbers: "interval"` apply only to the terminal frontend. The [top-level README](https://github.com/sabas0ba/deco#readme) lists features that are not built.
+`editor.fontFamily`, `editor.fontSize` and `editor.lineHeight` apply only to the GPU frontend, because a terminal has no font size. The font should be monospace: the GPU frontend places text on a grid of the font's advance width, as a terminal does. Every other display setting applies to both frontends, which draw the same frame. The [top-level README](https://github.com/sabas0ba/deco#readme) lists features that are not built.
 
 Unknown keys are kept rather than rejected, because settings files written for VS Code contain many keys that deco does not use.
 
@@ -149,7 +149,7 @@ The encodings are deco's own code, in `deco-encoding`, following the [WHATWG Enc
 - **Reopen with Encoding** reads the file again in the chosen encoding, ignoring a byte order mark of another encoding: a UTF-8 mark read as Windows 1252 appears as `ï»¿`. It is refused while the document has unsaved changes, because the text is replaced. Reopening is not an edit, and the choice is kept until the file is closed.
 - **Save with Encoding** writes the document in the chosen encoding, which then becomes its encoding. A save the encoding cannot hold writes nothing and keeps the previous encoding. For an untitled document it sets the encoding and asks for a path.
 
-Neither is available in a remote session, nor in the GPU frontend, which has no pickers. Other encodings and `files.autoGuessEncoding` are not built.
+Neither is available in a remote session. Other encodings and `files.autoGuessEncoding` are not built.
 
 ### Saving on a delay
 

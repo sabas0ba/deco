@@ -398,6 +398,22 @@ impl Explorer {
         self.selected = self.selected.saturating_sub(1);
     }
 
+    /// Puts the selection on row `index`, counting every row from the top,
+    /// as a click on it does. An index past the last row selects nothing new.
+    pub fn select(&mut self, index: usize) {
+        if index < self.len() {
+            self.selected = index;
+        }
+    }
+
+    /// Scrolls by `rows`, down for a positive count, without moving the
+    /// selection, as the wheel does. Stops with the last row at the bottom of
+    /// `height` rows.
+    pub fn scroll_by(&mut self, rows: isize, height: usize) {
+        let most = self.len().saturating_sub(height);
+        self.scroll = self.scroll.saturating_add_signed(rows).min(most);
+    }
+
     /// Puts the selection on the first row.
     pub fn select_first(&mut self) {
         self.selected = 0;

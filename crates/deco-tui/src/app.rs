@@ -16,20 +16,31 @@ use deco_theme::Rgba;
 
 use crate::keys::chord_from_event;
 use crate::lsp::Lsp;
+use crate::mouse::{Action, Button, Hit, Mouse};
 use crate::render::{self, Frame};
+use deco_editor::Click;
 
 /// Restores the terminal when it goes out of scope.
 ///
 /// A panic inside the event loop must not leave the terminal in raw mode on the
 /// alternate screen with no echo, so teardown runs on drop rather than at the
 /// end of `run`.
-struct TerminalGuard;
+struct TerminalGuard {
+    /// Whether the mouse was taken, so it is given back.
+    mouse: bool,
+}
 
 impl TerminalGuard {
-    fn enter() -> Result<Self> {
+    /// Takes the terminal: raw mode, the alternate screen, and with `mouse`
+    /// the mouse, whose events then reach deco rather than the terminal's own
+    /// selection.
+    fn enter(mouse: bool) -> Result<Self> {
         terminal::enable_raw_mode().context("could not put the terminal into raw mode")?;
         execute!(io::stdout(), terminal::EnterAlternateScreen, cursor::Hide)?;
-        Ok(Self)
+        if mouse {
+            execute!(io::stdout(), event::EnableMouseCapture)?;
+        }
+        Ok(Self { mouse })
     }
 }
 
@@ -40,6 +51,9 @@ impl Drop for TerminalGuard {
         //
         // The cursor shape is restored along with the screen. `editor.cursorStyle`
         // applies only while deco is running and must not persist in the shell.
+        if self.mouse {
+            let _ = execute!(io::stdout(), event::DisableMouseCapture);
+        }
         let _ = execute!(
             io::stdout(),
             cursor::SetCursorStyle::DefaultUserShape,
@@ -269,6 +283,17 @@ impl Backend {
     }
 }
 
+/// Whether the program in the shown terminal asked for mouse events and
+/// receives this one. Shift keeps the mouse for the editor, so text can still
+/// be selected over a program that took it, as in xterm.
+fn program_wants_mouse(session: &Session, event: Mouse) -> bool {
+    !event.shift
+        && session.terminal().is_some_and(|terminal| {
+            terminal.exited().is_none()
+                && terminal.screen().modes().mouse != deco_term::screen::MouseTracking::Off
+        })
+}
+
 /// Passes a new panel size on to every shell.
 fn fit_terminal(terminals: &mut [Shell], session: &mut Session) {
     for (id, cols, rows) in session.fit_terminal() {
@@ -411,7 +436,13 @@ pub fn run_with(
     path: Option<PathBuf>,
     remote: Option<RemoteSession>,
 ) -> Result<()> {
-    let _guard = TerminalGuard::enter()?;
+    // `deco.mouse: false` leaves the mouse to the terminal, for selecting
+    // text with it as in any other program.
+    let mouse = session
+        .settings
+        .get_bool("deco.mouse", None)
+        .unwrap_or(true);
+    let _guard = TerminalGuard::enter(mouse)?;
     let started = Instant::now();
     let mut out = io::stdout();
 
@@ -460,6 +491,13 @@ pub fn run_with(
                 }
             }
             Event::Resize(width, height) => driver.resize(session, width, height),
+            Event::Mouse(event) => {
+                let event = crate::keys::mouse_from_event(event);
+                let flow = driver.mouse(session, event, elapsed_ms(started))?;
+                if flow == Flow::Quit {
+                    break;
+                }
+            }
             _ => {}
         }
     }
@@ -576,7 +614,33 @@ pub struct Driver {
     /// so a tree with more than [`TREE_REFRESH_LIMIT`] of them is covered over
     /// successive passes rather than always from the top.
     tree_refresh_from: usize,
+    /// What the primary button is holding between a press and its release.
+    held: Held,
+    /// The last press of the primary button: its cell, when, and how many
+    /// quick presses it ended, for double and triple clicks.
+    last_press: Option<((u16, u16), u64, u8)>,
 }
+
+/// What a press of the primary button started, which a drag continues.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Held {
+    /// Nothing a drag moves.
+    Nothing,
+    /// A selection in the text, of the group whose top-left cell is this.
+    Text { top: u16, left: u16 },
+    /// A selection in the shown terminal, whose screen starts at this cell.
+    Terminal { top: u16, left: u16 },
+    /// Mouse events the program in the shown terminal asked for, whose screen
+    /// starts at this cell.
+    Program { top: u16, left: u16 },
+}
+
+/// How close in time two presses on one cell must be to count as one double
+/// or triple click.
+const MULTI_CLICK_MS: u64 = 400;
+
+/// Rows the wheel scrolls per step, as VS Code scrolls the text.
+const WHEEL_ROWS: isize = 3;
 
 impl Driver {
     /// Starts a language server, scans the extension directories and sizes the
@@ -699,6 +763,8 @@ impl Driver {
             },
             tree_refreshed_ms: None,
             tree_refresh_from: 0,
+            held: Held::Nothing,
+            last_press: None,
         }
     }
 
@@ -905,6 +971,231 @@ impl Driver {
     /// Processes one keystroke. The core handles the chord, then this method
     /// handles any outcome that needs resources the core does not have.
     pub fn key(&mut self, session: &mut Session, chord: Chord, now_ms: u64) -> Result<Flow> {
+        // Recorded before the chord runs. A printable key both inserts itself
+        // and narrows an open list, and the key cannot be recovered afterwards.
+        let typed = printable(&chord);
+        let was_backspace = chord.key
+            == deco_keymap::keys::Key::Named(deco_keymap::keys::NamedKey::Backspace)
+            && !chord.modifiers.ctrl
+            && !chord.modifiers.alt
+            && !chord.modifiers.meta;
+        self.act(session, now_ms, typed, was_backspace, |session| {
+            session.handle_chord(chord, now_ms)
+        })
+    }
+
+    /// Handles a mouse event at a cell of the frame: what is under it decides
+    /// what the press, drag, release or wheel does. See [`crate::mouse`].
+    pub fn mouse(&mut self, session: &mut Session, event: Mouse, now_ms: u64) -> Result<Flow> {
+        let (width, height) = (usize::from(self.width), usize::from(self.height));
+        let under = crate::mouse::hit(
+            session,
+            width,
+            height,
+            usize::from(event.col),
+            usize::from(event.row),
+        );
+        self.dirty = true;
+        match event.action {
+            Action::Press(Button::Left) => {
+                let count = self.count_press(event, now_ms);
+                let click = Click {
+                    count,
+                    extend: event.shift,
+                };
+                self.held = Held::Nothing;
+                match under {
+                    Hit::Text { group, row, col } => {
+                        self.held = Held::Text {
+                            top: event.row - row as u16,
+                            left: event.col - col as u16,
+                        };
+                        self.act(session, now_ms, None, false, |s| {
+                            s.click_text(group, row, col, click)
+                        })
+                    }
+                    Hit::Tab { index } => {
+                        self.act(session, now_ms, None, false, |s| s.click_tab(index))
+                    }
+                    Hit::SideBar { line } => self.act(session, now_ms, None, false, |s| {
+                        s.click_side_bar(line, click)
+                    }),
+                    Hit::SideBarHeading => self.act(session, now_ms, None, false, |s| {
+                        s.run("workbench.action.focusSideBar", None, now_ms)
+                    }),
+                    Hit::Problem { index } => {
+                        self.act(session, now_ms, None, false, |s| s.click_problem(index))
+                    }
+                    Hit::Terminal { row, col } => {
+                        let (top, left) = (event.row - row as u16, event.col - col as u16);
+                        if program_wants_mouse(session, event) {
+                            self.held = Held::Program { top, left };
+                            return self.report_to_program(session, event, row, col, now_ms);
+                        }
+                        self.held = Held::Terminal { top, left };
+                        self.act(session, now_ms, None, false, |s| s.press_terminal(row, col))
+                    }
+                    Hit::Panel => self.act(session, now_ms, None, false, Session::click_panel),
+                    Hit::Prompt { row } => self.act(session, now_ms, None, false, |s| {
+                        s.click_prompt(row, now_ms)
+                    }),
+                    Hit::Other => Ok(Flow::Continue),
+                }
+            }
+            Action::Drag(Button::Left) => match self.held {
+                Held::Text { top, left } => {
+                    let row = event.row as isize - top as isize;
+                    let col = usize::from(event.col.saturating_sub(left));
+                    self.act(session, now_ms, None, false, |s| s.drag_text(row, col))
+                }
+                Held::Terminal { top, left } => {
+                    let (row, col) = (
+                        event.row.saturating_sub(top),
+                        event.col.saturating_sub(left),
+                    );
+                    self.act(session, now_ms, None, false, |s| {
+                        s.drag_terminal(usize::from(row), usize::from(col))
+                    })
+                }
+                Held::Program { top, left } => {
+                    let (row, col) = (
+                        event.row.saturating_sub(top),
+                        event.col.saturating_sub(left),
+                    );
+                    self.report_to_program(
+                        session,
+                        event,
+                        usize::from(row),
+                        usize::from(col),
+                        now_ms,
+                    )
+                }
+                Held::Nothing => Ok(Flow::Continue),
+            },
+            Action::Release(_) => {
+                session.release_mouse();
+                let held = std::mem::replace(&mut self.held, Held::Nothing);
+                if let Held::Program { top, left } = held {
+                    let (row, col) = (
+                        event.row.saturating_sub(top),
+                        event.col.saturating_sub(left),
+                    );
+                    return self.report_to_program(
+                        session,
+                        event,
+                        usize::from(row),
+                        usize::from(col),
+                        now_ms,
+                    );
+                }
+                Ok(Flow::Continue)
+            }
+            Action::ScrollUp | Action::ScrollDown => {
+                let rows = if event.action == Action::ScrollUp {
+                    -WHEEL_ROWS
+                } else {
+                    WHEEL_ROWS
+                };
+                match under {
+                    Hit::Text { group, .. } => {
+                        session.scroll_text(group, rows);
+                    }
+                    Hit::SideBar { .. } | Hit::SideBarHeading
+                        if crate::mouse::tree_showing(session) =>
+                    {
+                        session.scroll_side_bar(rows);
+                    }
+                    Hit::Terminal { row, col } if program_wants_mouse(session, event) => {
+                        return self.report_to_program(session, event, row, col, now_ms);
+                    }
+                    Hit::Terminal { .. } => {
+                        session.scroll_terminal(rows);
+                    }
+                    _ => {}
+                }
+                Ok(Flow::Continue)
+            }
+            // Other buttons and bare moves matter only to a program that
+            // asked for them.
+            Action::Press(_) | Action::Drag(_) | Action::Move => match under {
+                Hit::Terminal { row, col } if program_wants_mouse(session, event) => {
+                    self.report_to_program(session, event, row, col, now_ms)
+                }
+                _ => {
+                    self.dirty = false;
+                    Ok(Flow::Continue)
+                }
+            },
+        }
+    }
+
+    /// How many quick presses on one cell this press ends: 1, 2 or 3.
+    fn count_press(&mut self, event: Mouse, now_ms: u64) -> u8 {
+        let cell = (event.col, event.row);
+        let count = match self.last_press {
+            Some((at, when, count))
+                if at == cell && now_ms.saturating_sub(when) <= MULTI_CLICK_MS =>
+            {
+                count % 3 + 1
+            }
+            _ => 1,
+        };
+        self.last_press = Some((cell, now_ms, count));
+        count
+    }
+
+    /// Sends `event` to the program in the shown terminal, at `row` and `col`
+    /// of its screen, in the encoding it asked for.
+    fn report_to_program(
+        &mut self,
+        session: &mut Session,
+        event: Mouse,
+        row: usize,
+        col: usize,
+        now_ms: u64,
+    ) -> Result<Flow> {
+        use deco_term::input::{MouseAction, MouseButton};
+        let button = |button: Button| match button {
+            Button::Left => MouseButton::Left,
+            Button::Middle => MouseButton::Middle,
+            Button::Right => MouseButton::Right,
+        };
+        let action = match event.action {
+            Action::Press(b) => MouseAction::Press(button(b)),
+            Action::Release(b) => MouseAction::Release(button(b)),
+            Action::Drag(b) => MouseAction::Drag(button(b)),
+            Action::Move => MouseAction::Move,
+            Action::ScrollUp => MouseAction::WheelUp,
+            Action::ScrollDown => MouseAction::WheelDown,
+        };
+        let Some(modes) = session.terminal().map(|terminal| terminal.screen().modes()) else {
+            return Ok(Flow::Continue);
+        };
+        let report = deco_term::input::MouseReport {
+            action,
+            col,
+            row,
+            shift: event.shift,
+            alt: event.alt,
+            ctrl: event.ctrl,
+        };
+        match deco_term::input::encode_mouse(&report, modes) {
+            Some(bytes) => self.act(session, now_ms, None, false, |s| s.send_to_terminal(&bytes)),
+            None => Ok(Flow::Continue),
+        }
+    }
+
+    /// Runs `run` on the session, then does what its outcome needs that the
+    /// core cannot: files, language servers, Git, terminals. Shared by keys
+    /// and the mouse, so a click that opens a file does what `enter` does.
+    fn act(
+        &mut self,
+        session: &mut Session,
+        now_ms: u64,
+        typed: Option<char>,
+        was_backspace: bool,
+        run: impl FnOnce(&mut Session) -> Outcome,
+    ) -> Result<Flow> {
         let Self {
             lsp,
             hosts,
@@ -923,9 +1214,6 @@ impl Driver {
             ..
         } = self;
         *dirty = true;
-        // Recorded before the chord runs. A printable key both inserts itself
-        // and narrows an open list, and the key cannot be recovered afterwards.
-        let typed = printable(&chord);
         // Recorded to detect a tab switch. The chord may show a different
         // document, and the language server must be told which file is active.
         let path_before = session.document.path.clone();
@@ -934,13 +1222,8 @@ impl Driver {
         // changing the document, and a different language uses a different
         // server.
         let language_before = session.document.language().map(str::to_owned);
-        let was_backspace = chord.key
-            == deco_keymap::keys::Key::Named(deco_keymap::keys::NamedKey::Backspace)
-            && !chord.modifiers.ctrl
-            && !chord.modifiers.alt
-            && !chord.modifiers.meta;
 
-        let outcome = session.handle_chord(chord, now_ms);
+        let outcome = run(session);
         // A key typed into the terminal is not an edit of the document, so
         // none of the handling below applies to it.
         if outcome == Outcome::TerminalInput {

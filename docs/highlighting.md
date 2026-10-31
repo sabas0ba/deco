@@ -76,7 +76,3 @@ If the lexer's limitations become more important than that cost, the solution is
 The lexer state at the start of each line is cached. The spans are recomputed for the visible lines, which is cheap and cannot become stale. An edit invalidates the cache from the edited line onwards; earlier lines are unaffected, because a change on line 900 cannot change the state at the end of line 3.
 
 Jumping to the end of a large file lexes the whole file once. This is unavoidable with multi-line constructs, because the state at line 9000 depends on all preceding lines.
-
-## Not in the GPU frontend yet
-
-`deco-gui` draws each line as one run in a single colour. Per-span colouring requires splitting each line into runs in the layout pass, which is not implemented. The terminal frontend supports it.

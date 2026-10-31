@@ -262,7 +262,7 @@ pub fn tab_bar_height(session: &Session) -> usize {
 /// terminal scrolls the screen and shifts the whole editor upwards. The list is
 /// the only part that can shrink, because it is already a scrolling window onto
 /// a longer list that follows the selection.
-fn prompt_rows(session: &Session, height: usize) -> usize {
+pub(crate) fn prompt_rows(session: &Session, height: usize) -> usize {
     let Some(prompt) = &session.prompt else {
         return 0;
     };
@@ -2320,7 +2320,7 @@ fn overlay_suggest(
 /// stand-in's one column: a bidirectional control or a zero-width space is
 /// zero columns in the width table but is painted as `␦`, and a combining
 /// mark adds nothing to its base. See [`deco_core::cluster::width`].
-fn columns(text: &str) -> usize {
+pub(crate) fn columns(text: &str) -> usize {
     deco_core::cluster::text_width(text)
 }
 
