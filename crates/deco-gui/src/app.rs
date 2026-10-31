@@ -12,6 +12,7 @@ use std::time::Instant;
 use anyhow::{anyhow, Context as _, Result};
 use deco_editor::Session;
 use deco_theme::Rgba;
+use deco_tui::mouse::{Action, Button, Mouse};
 use deco_tui::{Driver, Flow, Options, RemoteSession};
 use glyphon::{
     Attrs, Buffer as TextBuffer, Cache, Color, Family, FontSystem, Metrics as TextMetrics,
@@ -19,7 +20,7 @@ use glyphon::{
     Viewport,
 };
 use winit::application::ApplicationHandler;
-use winit::event::WindowEvent;
+use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::ModifiersState;
 use winit::window::{Window, WindowId};
@@ -307,6 +308,16 @@ struct App<'a> {
     modifiers: ModifiersState,
     started: Instant,
     error: Option<anyhow::Error>,
+    /// The pointer's position in the window, in physical pixels.
+    pointer: Option<(f32, f32)>,
+    /// The button held, so a move is a drag.
+    held: Option<Button>,
+    /// The cell the last mouse event was reported at, so a move within one
+    /// cell is not reported again.
+    last_cell: Option<(u16, u16)>,
+    /// Wheel movement in rows not yet reported, from a touchpad that scrolls
+    /// by pixels.
+    wheel_rows: f32,
 }
 
 impl App<'_> {
@@ -403,6 +414,58 @@ impl ApplicationHandler for App<'_> {
                 self.request_redraw();
             }
             WindowEvent::RedrawRequested => self.redraw(event_loop),
+            WindowEvent::CursorMoved { position, .. } => {
+                self.pointer = Some((position.x as f32, position.y as f32));
+                let action = match self.held {
+                    Some(button) => Action::Drag(button),
+                    None => Action::Move,
+                };
+                self.pointer_event(event_loop, action, true);
+            }
+            WindowEvent::CursorLeft { .. } => self.pointer = None,
+            WindowEvent::MouseInput { state, button, .. } => {
+                let button = match button {
+                    winit::event::MouseButton::Left => Button::Left,
+                    winit::event::MouseButton::Middle => Button::Middle,
+                    winit::event::MouseButton::Right => Button::Right,
+                    _ => return,
+                };
+                let action = match state {
+                    ElementState::Pressed => {
+                        self.held = Some(button);
+                        Action::Press(button)
+                    }
+                    ElementState::Released => {
+                        self.held = None;
+                        Action::Release(button)
+                    }
+                };
+                self.pointer_event(event_loop, action, false);
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let rows = match delta {
+                    // A notch of a wheel is one step, as a terminal reports it.
+                    MouseScrollDelta::LineDelta(_, y) => -y,
+                    MouseScrollDelta::PixelDelta(position) => {
+                        let line = self
+                            .gpu
+                            .as_mut()
+                            .map_or(16.0, |gpu| gpu.metrics(self.session).line_height);
+                        -(position.y as f32) / line
+                    }
+                };
+                self.wheel_rows += rows;
+                while self.wheel_rows.abs() >= 1.0 {
+                    let action = if self.wheel_rows > 0.0 {
+                        self.wheel_rows -= 1.0;
+                        Action::ScrollDown
+                    } else {
+                        self.wheel_rows += 1.0;
+                        Action::ScrollUp
+                    };
+                    self.pointer_event(event_loop, action, false);
+                }
+            }
             _ => {}
         }
     }
@@ -432,6 +495,45 @@ impl ApplicationHandler for App<'_> {
 }
 
 impl App<'_> {
+    /// Reports a mouse event at the pointer's cell to the driver. A move
+    /// within the cell of the last report is not reported again.
+    fn pointer_event(&mut self, event_loop: &ActiveEventLoop, action: Action, is_move: bool) {
+        let now_ms = self.now_ms();
+        let (Some(gpu), Some(driver), Some((x, y))) =
+            (self.gpu.as_mut(), self.driver.as_mut(), self.pointer)
+        else {
+            return;
+        };
+        let metrics = gpu.metrics(self.session);
+        let size = metrics.cells(gpu.config.width as f32, gpu.config.height as f32);
+        let Some((col, row)) = metrics.cell_at(x, y, size) else {
+            return;
+        };
+        if is_move && self.last_cell == Some((col, row)) {
+            return;
+        }
+        self.last_cell = Some((col, row));
+        let event = Mouse {
+            action,
+            col,
+            row,
+            shift: self.modifiers.shift_key(),
+            alt: self.modifiers.alt_key(),
+            ctrl: self.modifiers.control_key(),
+        };
+        match driver.mouse(self.session, event, now_ms) {
+            Ok(Flow::Quit) => event_loop.exit(),
+            Ok(Flow::Continue) => {}
+            Err(error) => {
+                self.error = Some(error);
+                event_loop.exit();
+            }
+        }
+        if driver.needs_redraw() {
+            gpu.window.request_redraw();
+        }
+    }
+
     fn request_redraw(&self) {
         if let Some(gpu) = &self.gpu {
             gpu.window.request_redraw();
@@ -487,6 +589,10 @@ pub fn run(
         modifiers: ModifiersState::empty(),
         started: Instant::now(),
         error: None,
+        pointer: None,
+        held: None,
+        last_cell: None,
+        wheel_rows: 0.0,
     };
     let ran = event_loop
         .run_app(&mut app)

@@ -247,6 +247,7 @@ pub const DEFAULT_KEYBINDINGS_JSONC: &str = r#"[
     { "key": "ctrl+end",       "mac": "cmd+end",      "command": "workbench.action.terminal.scrollToBottom", "when": "terminalFocus && !terminalAltBufferActive" },
     { "key": "ctrl+shift+v",   "mac": "cmd+v",        "command": "workbench.action.terminal.paste",          "when": "terminalFocus" },
     { "key": "ctrl+shift+`",                          "command": "workbench.action.terminal.new" },
+    { "key": "ctrl+shift+c",   "mac": "cmd+c",        "command": "workbench.action.terminal.copySelection",  "when": "terminalTextSelected" },
     { "key": "ctrl+pagedown",  "mac": "cmd+shift+]",  "command": "workbench.action.terminal.focusNext",      "when": "terminalFocus" },
     { "key": "ctrl+pageup",    "mac": "cmd+shift+[",  "command": "workbench.action.terminal.focusPrevious",  "when": "terminalFocus" },
     { "key": "ctrl+k z",     "mac": "cmd+k z",     "command": "workbench.action.toggleZenMode" },

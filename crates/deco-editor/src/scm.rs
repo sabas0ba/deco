@@ -222,6 +222,19 @@ impl SourceControl {
         line
     }
 
+    /// Selects row `index`, as a click on it does.
+    pub fn select(&mut self, index: usize) {
+        if index < self.rows.len() {
+            self.selected = index;
+        }
+    }
+
+    /// The row drawn on line `line`, counting headings, or `None` for a
+    /// heading or a line past the end: the inverse of the drawing order.
+    pub fn row_at_line(&self, line: usize) -> Option<usize> {
+        (0..self.rows.len()).find(|&index| self.line_of(index) == line)
+    }
+
     /// Moves down, stopping at the end rather than wrapping.
     ///
     /// The tree does the same. When stepping through files to stage them,

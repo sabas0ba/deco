@@ -61,6 +61,8 @@ pub struct Colors {
     ansi: [Rgba; 16],
     /// `terminal.integrated.drawBoldTextInBrightColors`.
     bold_is_bright: bool,
+    /// Under text selected with the mouse.
+    selection_bg: Rgba,
 }
 
 impl Colors {
@@ -94,6 +96,11 @@ impl Colors {
             bold_is_bright: settings
                 .get_bool("terminal.integrated.drawBoldTextInBrightColors", None)
                 .unwrap_or(true),
+            selection_bg: theme
+                .color("terminal.selectionBackground")
+                .or_else(|| theme.color("editor.selectionBackground"))
+                .unwrap_or(Rgba::new(0x26, 0x4f, 0x78, 0xff))
+                .over(bg),
         }
     }
 
@@ -151,7 +158,7 @@ pub fn rows(terminal: &TerminalPanel, colors: &Colors, width: usize, height: usi
     let mut rows = Vec::with_capacity(height);
     for row in 0..height {
         rows.push(match screen.line(row, back) {
-            Some(line) => line_row(line, colors, width),
+            Some(line) => line_row(line, colors, width, |col| terminal.is_selected(row, col)),
             None => Row {
                 spans: vec![Span {
                     text: " ".repeat(width),
@@ -180,10 +187,10 @@ pub fn cursor(terminal: &TerminalPanel, width: usize, height: usize) -> Option<(
 }
 
 /// One line as spans of equal colour, padded or cut to `width` columns.
-fn line_row(line: &Line, colors: &Colors, width: usize) -> Row {
+fn line_row(line: &Line, colors: &Colors, width: usize, selected: impl Fn(usize) -> bool) -> Row {
     let mut spans: Vec<Span> = Vec::new();
     let mut used = 0;
-    for cell in &line.cells {
+    for (col, cell) in line.cells.iter().enumerate() {
         if cell.is_continuation() {
             continue;
         }
@@ -192,6 +199,11 @@ fn line_row(line: &Line, colors: &Colors, width: usize) -> Row {
             break;
         }
         let (fg, bg) = colors.cell(cell);
+        let bg = if selected(col) {
+            colors.selection_bg
+        } else {
+            bg
+        };
         let mut text = String::new();
         text.push(cell.c);
         if let Some(combining) = &cell.combining {

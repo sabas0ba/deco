@@ -20,6 +20,7 @@ pub mod extensions;
 pub mod files;
 pub mod keys;
 pub mod lsp;
+pub mod mouse;
 pub mod render;
 pub mod scm;
 pub mod suggest;

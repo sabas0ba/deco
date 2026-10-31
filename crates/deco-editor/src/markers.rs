@@ -78,6 +78,13 @@ impl Markers {
         self.rows().nth(self.selected)
     }
 
+    /// Selects row `index`, as a click on it does.
+    pub fn select(&mut self, index: usize) {
+        if index < self.len() {
+            self.selected = index;
+        }
+    }
+
     pub fn select_next(&mut self) {
         self.selected = (self.selected + 1).min(self.len().saturating_sub(1));
     }

@@ -429,6 +429,10 @@ pub const PALETTE: &[(&str, &str)] = &[
         "Terminal: Paste into Active Terminal",
     ),
     (
+        "workbench.action.terminal.copySelection",
+        "Terminal: Copy Selection",
+    ),
+    (
         "workbench.action.focusActiveEditorGroup",
         "View: Focus Active Editor Group",
     ),

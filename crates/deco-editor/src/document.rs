@@ -707,6 +707,69 @@ impl View {
         rows
     }
 
+    /// The position shown at screen row `row` of this view, counted from its
+    /// top, and display column `col` of the text, counted from where the text
+    /// starts (after the gutter): where a click there puts the caret.
+    ///
+    /// A column past a row's last character is that row's end, and a row
+    /// below the last line is the document's end, as a click there does in VS
+    /// Code. A column inside a wide character or a tab is that character.
+    pub fn position_at(
+        &self,
+        buffer: &Buffer,
+        settings: &EditorSettings,
+        row: usize,
+        col: usize,
+    ) -> Position {
+        let visible = self.visible_rows(buffer, settings);
+        let Some(visual) = visible.get(row) else {
+            return buffer.end_position();
+        };
+        let text = line_text(buffer, visual.line);
+        let character = deco_core::wrap::column_in_row_from(
+            &text,
+            visual.start,
+            visual.end,
+            col.saturating_sub(visual.indent),
+            settings.tab_size,
+            visual.indent,
+        );
+        Position::new(visual.line as u32, character)
+    }
+
+    /// Scrolls by `rows` screen rows, down for a positive count, without
+    /// moving the caret: what the mouse wheel does. Stops at the first row and
+    /// at the last line's last row.
+    pub fn scroll_by(&mut self, buffer: &Buffer, settings: &EditorSettings, rows: isize) {
+        let last = buffer.line_count().saturating_sub(1);
+        if rows > 0 {
+            for _ in 0..rows {
+                let count = self.line_rows(buffer, settings, self.scroll_top);
+                if self.scroll_row + 1 < count {
+                    self.scroll_row += 1;
+                } else if self.scroll_top < last {
+                    self.scroll_top += 1;
+                    self.scroll_row = 0;
+                } else {
+                    break;
+                }
+            }
+        } else {
+            for _ in 0..rows.unsigned_abs() {
+                if self.scroll_row > 0 {
+                    self.scroll_row -= 1;
+                } else if self.scroll_top > 0 {
+                    self.scroll_top -= 1;
+                    self.scroll_row = self
+                        .line_rows(buffer, settings, self.scroll_top)
+                        .saturating_sub(1);
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+
     /// Scrolls the minimum amount needed to bring the primary cursor into view,
     /// honouring `editor.cursorSurroundingLines`.
     pub fn reveal_cursor(&mut self, buffer: &Buffer, settings: &EditorSettings) {

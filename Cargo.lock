@@ -612,6 +612,7 @@ dependencies = [
  "deco-theme",
  "deco-tui",
  "serde_json",
+ "unicode-width",
 ]
 
 [[package]]

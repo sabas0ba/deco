@@ -164,6 +164,26 @@ pub struct Modes {
     pub origin: bool,
     /// IRM: printing shifts the rest of the line right.
     pub insert: bool,
+    /// Which mouse events the program asked to be sent (modes 1000, 1002 and
+    /// 1003).
+    pub mouse: MouseTracking,
+    /// Mode 1006: mouse events are sent in the SGR form, which has no limit
+    /// on the column and tells a release from a press.
+    pub mouse_sgr: bool,
+}
+
+/// Which mouse events a program in the terminal receives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MouseTracking {
+    /// None: the mouse belongs to the editor.
+    #[default]
+    Off,
+    /// Mode 1000: presses, releases and the wheel.
+    Press,
+    /// Mode 1002: those, and moves while a button is held.
+    Drag,
+    /// Mode 1003: those, and every move.
+    Any,
 }
 
 impl Default for Modes {
@@ -176,6 +196,8 @@ impl Default for Modes {
             autowrap: true,
             origin: false,
             insert: false,
+            mouse: MouseTracking::Off,
+            mouse_sgr: false,
         }
     }
 }
@@ -835,8 +857,18 @@ impl Screen {
                 }
             }
             2004 => self.modes.bracketed_paste = on,
-            // Mouse reporting, focus events, synchronized output and the
-            // rest are accepted and have no effect.
+            // Turning one tracking mode off turns tracking off, as in xterm.
+            1000 | 1002 | 1003 => {
+                self.modes.mouse = match (mode, on) {
+                    (_, false) => MouseTracking::Off,
+                    (1000, true) => MouseTracking::Press,
+                    (1002, true) => MouseTracking::Drag,
+                    _ => MouseTracking::Any,
+                };
+            }
+            1006 => self.modes.mouse_sgr = on,
+            // Focus events, synchronized output, the other mouse encodings
+            // and the rest are accepted and have no effect.
             _ => {}
         }
     }
