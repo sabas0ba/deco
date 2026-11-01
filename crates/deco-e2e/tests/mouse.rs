@@ -54,16 +54,25 @@ fn the_wheel_scrolls_the_text_and_leaves_the_caret() {
     let scenario = Scenario::new("mouse-wheel").file("a.txt", &text);
     let mut editor = scenario.launch(&["a.txt"]);
     editor.wheel(5, 2, 4);
-    editor
-        .screen()
-        .assert_lacks("line 0\n")
-        .assert_shows("line 12");
-    assert!(!editor
-        .screen()
-        .lines()
-        .iter()
-        .any(|l| l.contains("line 11 ")));
+    // Twelve rows down, and still there on the next frame: drawing a frame
+    // must not scroll back to the caret.
+    for _ in 0..2 {
+        let screen = editor.screen();
+        assert!(
+            screen.line(0).trim_end().ends_with("line 12"),
+            "{}",
+            screen.line(0)
+        );
+    }
     assert_eq!(caret(&editor), (0, 0));
+    // A key that moves the caret brings it back into view.
+    editor.press("down");
+    let screen = editor.screen();
+    assert!(
+        (0..3).any(|row| screen.line(row).trim_end().ends_with("line 1")),
+        "{}",
+        screen.text()
+    );
 }
 
 #[test]
@@ -140,8 +149,8 @@ mod terminal {
         let mut editor = scenario.launch(&["a.txt"]);
         editor.press("ctrl+`");
         editor.settle_until("the prompt", |e| terminal_text(e).contains("ready$"));
-        // Mouse tracking in the SGR form, then `od` shows what arrives.
-        editor.type_text("printf '\\033[?1000h\\033[?1006h'; od -c\n");
+        // Mouse tracking in the SGR form, then `cat -v` shows what arrives.
+        editor.type_text("printf '\\033[?1000h\\033[?1006h'; cat -v\n");
         editor.settle_until("tracking on", |e| {
             e.session()
                 .terminal()
@@ -151,11 +160,13 @@ mod terminal {
         // Row 1 of the screen, column 3: below the panel's heading.
         let top = deco_tui::render::tab_bar_height(editor.session()) as u16;
         editor.click(rect.x as u16 + 3, top + rect.y as u16 + 2);
-        // The bytes are a line without its end: the first `ctrl+d` hands it to
-        // `od`, the second ends its input.
-        editor.press("ctrl+d").press("ctrl+d");
+        // A middle click: its release reaches the program too.
+        editor.middle_click(rect.x as u16 + 3, top + rect.y as u16 + 2);
+        // The bytes are a line without its end: `ctrl+d` hands it to `cat`.
+        editor.press("ctrl+d");
         editor.settle_until("the bytes", |e| {
-            terminal_text(e).contains("<   0   ;   4   ;   2   M")
+            let text = terminal_text(e);
+            text.contains("[<0;4;2M") && text.contains("[<1;4;2m")
         });
     }
 }

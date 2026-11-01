@@ -121,7 +121,7 @@ pub fn hit(session: &Session, width: usize, height: usize, col: usize, row: usiz
     let top = crate::render::tab_bar_height(session);
     let text_height = height - chrome;
     if row < top {
-        return tab_at(session, col);
+        return tab_at(session, col, width);
     }
     let row = row - top;
     if row < text_height {
@@ -145,13 +145,18 @@ pub fn hit(session: &Session, width: usize, height: usize, col: usize, row: usiz
     Hit::Other
 }
 
-/// The tab under `col` in the tab bar, laid out as the renderer lays it out.
-fn tab_at(session: &Session, col: usize) -> Hit {
+/// The tab under `col` in a tab bar `width` columns wide, laid out as the
+/// renderer lays it out: a label that does not fit whole is not drawn, so
+/// nothing past the last drawn label is a tab.
+fn tab_at(session: &Session, col: usize, width: usize) -> Hit {
     let mut used = 0usize;
     for pane in session.panes() {
         for (index, label) in pane.tabs.iter().enumerate() {
             let dirty = if label.dirty { "*" } else { "" };
             let cells = crate::render::columns(&format!(" {}{dirty} ", label.title));
+            if used + cells > width {
+                return Hit::Other;
+            }
             if col < used + cells {
                 return Hit::Tab { index };
             }
@@ -274,6 +279,17 @@ mod tests {
             },
             "the text starts below the bar"
         );
+    }
+
+    #[test]
+    fn past_the_last_tab_that_fits_is_not_a_tab() {
+        let mut s = session();
+        s.open(std::path::PathBuf::from("/w/a-much-longer-name.txt"), "b\n");
+        s.resize(12, 8);
+        // ` a.txt ` fits in twelve columns; the second label does not, so the
+        // renderer leaves those columns blank.
+        assert_eq!(hit(&s, 12, 10, 1, 0), Hit::Tab { index: 0 });
+        assert_eq!(hit(&s, 12, 10, 9, 0), Hit::Other);
     }
 
     #[test]

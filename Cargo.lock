@@ -666,7 +666,6 @@ dependencies = [
  "deco-tui",
  "glyphon",
  "pollster",
- "unicode-width",
  "wgpu",
  "winit",
 ]

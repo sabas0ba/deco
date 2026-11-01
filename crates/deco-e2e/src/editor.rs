@@ -284,6 +284,22 @@ impl Editor {
         )
     }
 
+    /// Presses and releases the middle button on a cell.
+    pub fn middle_click(&mut self, col: u16, row: u16) -> &mut Self {
+        self.mouse(
+            MouseEventKind::Down(MouseButton::Middle),
+            col,
+            row,
+            KeyModifiers::NONE,
+        );
+        self.mouse(
+            MouseEventKind::Up(MouseButton::Middle),
+            col,
+            row,
+            KeyModifiers::NONE,
+        )
+    }
+
     /// [`Editor::click`] with shift held.
     pub fn shift_click(&mut self, col: u16, row: u16) -> &mut Self {
         self.mouse(

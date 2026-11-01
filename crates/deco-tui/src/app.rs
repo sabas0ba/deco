@@ -1119,6 +1119,13 @@ impl Driver {
             // asked for them.
             Action::Press(_) | Action::Drag(_) | Action::Move => match under {
                 Hit::Terminal { row, col } if program_wants_mouse(session, event) => {
+                    // Held, so the release reaches the program too.
+                    if matches!(event.action, Action::Press(_)) {
+                        self.held = Held::Program {
+                            top: event.row - row as u16,
+                            left: event.col - col as u16,
+                        };
+                    }
                     self.report_to_program(session, event, row, col, now_ms)
                 }
                 _ => {

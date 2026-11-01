@@ -20,7 +20,6 @@ deco-theme.workspace = true
 # src/lib.rs.
 deco-tui.workspace = true
 anyhow.workspace = true
-unicode-width.workspace = true
 # glyphon pins the wgpu it was built against; the two share types, so this
 # version must track glyphon's rather than being chosen independently.
 glyphon = "0.12"

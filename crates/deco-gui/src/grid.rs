@@ -20,7 +20,6 @@ use deco_config::CursorStyle;
 use deco_editor::Session;
 use deco_theme::Rgba;
 use deco_tui::Frame;
-use unicode_width::UnicodeWidthChar;
 
 /// Font and spacing measurements for one frame.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -168,40 +167,30 @@ pub fn grid(frame: &Frame, metrics: Metrics, background: Rgba, caret: Option<Car
                     }
                 }
             };
-            for c in span.text.chars() {
-                let width = c.width().unwrap_or(1);
-                match width {
-                    // A combining mark joins the character before it.
-                    0 => match run.as_mut() {
-                        Some(run) => run.text.push(c),
-                        None => runs
-                            .last_mut()
-                            .filter(|last| last.y == y)
-                            .map_or((), |last| last.text.push(c)),
-                    },
-                    1 => {
-                        let run = run.get_or_insert_with(|| Run {
-                            x: col as f32 * metrics.cell_width,
-                            y,
-                            text: String::new(),
-                            fg: span.fg,
-                            italic: span.italic,
-                        });
-                        run.text.push(c);
-                        col += 1;
-                    }
-                    _ => {
-                        flush(&mut run, &mut runs);
-                        runs.push(Run {
-                            x: col as f32 * metrics.cell_width,
-                            y,
-                            text: c.to_string(),
-                            fg: span.fg,
-                            italic: span.italic,
-                        });
-                        col += width;
-                    }
+            // By cluster, as the renderer measures: a letter with its accents
+            // or an emoji sequence is one unit of one or two columns.
+            for (cluster, _) in deco_core::cluster::clusters(&span.text) {
+                let width = deco_core::cluster::width(cluster);
+                if width == 1 {
+                    let run = run.get_or_insert_with(|| Run {
+                        x: col as f32 * metrics.cell_width,
+                        y,
+                        text: String::new(),
+                        fg: span.fg,
+                        italic: span.italic,
+                    });
+                    run.text.push_str(cluster);
+                } else {
+                    flush(&mut run, &mut runs);
+                    runs.push(Run {
+                        x: col as f32 * metrics.cell_width,
+                        y,
+                        text: cluster.to_owned(),
+                        fg: span.fg,
+                        italic: span.italic,
+                    });
                 }
+                col += width;
             }
             flush(&mut run, &mut runs);
             if span.bg != background && col > start {
@@ -403,6 +392,23 @@ mod tests {
             .map(|run| (run.x, run.text.as_str()))
             .collect();
         assert_eq!(placed, [(0.0, "a"), (10.0, "日"), (30.0, "b")]);
+    }
+
+    #[test]
+    fn an_emoji_sequence_is_one_cluster_of_two_columns() {
+        // A family: three emoji joined by zero-width joiners, two columns.
+        let grid = grid(
+            &frame(vec![vec![span(
+                "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}x",
+                BG,
+            )]]),
+            metrics(),
+            BG,
+            None,
+        );
+        let placed: Vec<f32> = grid.runs.iter().map(|run| run.x).collect();
+        assert_eq!(placed, [0.0, 20.0]);
+        assert_eq!(grid.runs[0].text.chars().count(), 5, "the whole sequence");
     }
 
     #[test]

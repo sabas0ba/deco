@@ -4159,8 +4159,14 @@ impl Session {
     /// which determines where wrapped lines break. Computing this here rather than
     /// in the frontend keeps the wrap width and the drawn width consistent.
     pub fn resize(&mut self, width: usize, height: usize) {
+        let changed = self.screen != (width, height);
         self.lay_out(width, height);
-        // After a size change the caret may be outside the window.
+        // After a size change the caret may be outside the window. Only
+        // then: a frontend calls this before every frame, and revealing the
+        // caret each time would undo scrolling with the wheel.
+        if !changed {
+            return;
+        }
         self.view
             .reveal_cursor(&self.document.buffer, &self.document.settings);
         if let Some(mut other) = self.split_view.take() {
