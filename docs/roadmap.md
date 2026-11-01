@@ -13,7 +13,7 @@ Features that VS Code has and deco does not, with their prerequisites:
 | Missing | Depends on |
 | --- | --- |
 | Git — push/pull ([the rest is built](git.md)) | a decision on how credentials are asked for |
-| Integrated terminal — several terminals, mouse selection ([the rest is built](terminal.md)) | mouse events in the terminal frontend |
+| Integrated terminal — tabs and splits for several terminals ([the rest is built](terminal.md)) | nothing |
 | Task runner (`tasks.json`, `ctrl+shift+b`) | the terminal, for somewhere to run, which is built |
 | Test runner | the task runner, and later the extension host |
 | Self-update | nothing — `cargo xtask dist` already builds what it would install |
@@ -48,9 +48,7 @@ Two rules from the existing implementation apply to every section below:
 
 **What remains.**
 
-1. Several terminals, with tabs in the panel and `workbench.action.terminal.new`.
-2. Mouse selection and copy, which need mouse events in the terminal frontend.
-3. The GPU frontend, which can draw the same screen with its quads and text.
+1. Tabs and splits in the panel for several terminals, which are built but shown one at a time.
 
 Remote shells are built: in a remote session the shell runs on the remote machine; see [The integrated terminal](terminal.md#in-a-remote-session).
 

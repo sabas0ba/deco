@@ -12,6 +12,7 @@
 | `ctrl+shift+v` (`cmd+v` on macOS) | `workbench.action.terminal.paste` |
 | `` ctrl+shift+` `` | `workbench.action.terminal.new` |
 | `ctrl+pagedown` / `ctrl+pageup` (`cmd+shift+]` / `cmd+shift+[` on macOS) | `workbench.action.terminal.focusNext` / `…focusPrevious` |
+| `ctrl+shift+c` (`cmd+c` on macOS), while text is selected | `workbench.action.terminal.copySelection` |
 | | `workbench.action.terminal.kill` |
 
 The scrolling keys apply only while the program is on its normal screen; a full-screen program such as `vim` or `less` receives them. When the shell exits, the status line shows its exit code and the screen stays until a key is pressed in it. The next `` ctrl+` `` starts a new shell.
@@ -82,6 +83,4 @@ A program in the terminal cannot reach the editor. Window titles are kept but no
 ## Not built yet
 
 - **No tabs or splits.** Several terminals are switched between, one at a time; they cannot be shown side by side, renamed or reordered.
-- **No mouse.** Text cannot be selected in the terminal, so there is no copy from it, and mouse reporting to programs is accepted but not sent.
-- **Not in the GPU frontend**, which reports that the terminal is only in the terminal frontend so far.
 - **No `terminal.integrated.cwd`, `env.*` or `commandsToSkipShell` settings.** The working directory is the workspace and the list of editor keys is fixed.

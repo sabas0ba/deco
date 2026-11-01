@@ -29,6 +29,7 @@ pub const SKIP_SHELL: &[&str] = &[
     "workbench.action.terminal.focusPrevious",
     "workbench.action.terminal.kill",
     "workbench.action.terminal.paste",
+    "workbench.action.terminal.copySelection",
     "workbench.action.terminal.scrollUpPage",
     "workbench.action.terminal.scrollDownPage",
     "workbench.action.terminal.scrollToTop",
@@ -61,6 +62,9 @@ pub struct TerminalPanel {
     exited: Option<Option<i32>>,
     /// Keys and status replies not yet written to the program.
     input: Vec<u8>,
+    /// The text selected with the mouse, as the cell it started on and the
+    /// cell it reaches, each a row of the view and a column.
+    selection: Option<((usize, usize), (usize, usize))>,
 }
 
 impl TerminalPanel {
@@ -72,6 +76,7 @@ impl TerminalPanel {
             back: 0,
             exited: None,
             input: Vec::new(),
+            selection: None,
         }
     }
 
@@ -95,8 +100,85 @@ impl TerminalPanel {
         self.exited
     }
 
+    /// The selected cells, first to last in reading order, as (row, column)
+    /// of the view, both included.
+    pub fn selection(&self) -> Option<((usize, usize), (usize, usize))> {
+        let (anchor, head) = self.selection?;
+        Some(if anchor <= head {
+            (anchor, head)
+        } else {
+            (head, anchor)
+        })
+    }
+
+    /// Whether the cell at `row`, `col` of the view is selected.
+    pub fn is_selected(&self, row: usize, col: usize) -> bool {
+        self.selection()
+            .is_some_and(|(start, end)| (row, col) >= start && (row, col) <= end)
+    }
+
+    /// The selected text, lines joined with `\n` except where a line wrapped
+    /// onto the next, with each line's trailing blanks dropped.
+    pub fn selected_text(&self) -> Option<String> {
+        let ((top, left), (bottom, right)) = self.selection()?;
+        let screen = self.terminal.screen();
+        let mut text = String::new();
+        for row in top..=bottom {
+            let Some(line) = screen.line(row, self.back) else {
+                break;
+            };
+            let from = if row == top { left } else { 0 };
+            let to = if row == bottom {
+                right + 1
+            } else {
+                line.cells.len()
+            };
+            let mut piece = String::new();
+            for cell in line.cells.iter().take(to).skip(from) {
+                if cell.width == 0 {
+                    continue;
+                }
+                piece.push(cell.c);
+                if let Some(combining) = &cell.combining {
+                    piece.push_str(combining);
+                }
+            }
+            let ends_wrapped = line.wrapped && row != bottom;
+            if ends_wrapped {
+                text.push_str(&piece);
+            } else {
+                text.push_str(piece.trim_end());
+                if row != bottom {
+                    text.push('\n');
+                }
+            }
+        }
+        Some(text)
+    }
+
+    /// Starts a selection at a cell, as a press does.
+    pub(crate) fn select_from(&mut self, row: usize, col: usize) {
+        self.selection = Some(((row, col), (row, col)));
+    }
+
+    /// Moves the selection's far end to a cell, as a drag does.
+    pub(crate) fn select_to(&mut self, row: usize, col: usize) {
+        if let Some((anchor, _)) = self.selection {
+            self.selection = Some((anchor, (row, col)));
+        }
+    }
+
+    pub(crate) fn clear_selection(&mut self) {
+        self.selection = None;
+    }
+
     /// The program's output.
     pub(crate) fn feed(&mut self, bytes: &[u8]) {
+        // The cells under a selection change, so it no longer names the text
+        // it was made on.
+        if !bytes.is_empty() {
+            self.selection = None;
+        }
         let before = self.terminal.screen().scrolled();
         self.terminal.feed(bytes);
         let screen = self.terminal.screen_mut();
@@ -115,6 +197,7 @@ impl TerminalPanel {
     pub(crate) fn send(&mut self, bytes: &[u8]) {
         self.input.extend_from_slice(bytes);
         self.back = 0;
+        self.selection = None;
     }
 
     pub(crate) fn take_input(&mut self) -> Vec<u8> {
@@ -134,11 +217,13 @@ impl TerminalPanel {
         }
         self.terminal.screen_mut().resize(cols, rows);
         self.back = self.back.min(self.terminal.screen().scrollback_len());
+        self.selection = None;
         true
     }
 
     /// Scrolls the view by `lines`, positive into the history.
     pub(crate) fn scroll(&mut self, lines: isize) {
+        self.selection = None;
         let limit = self.terminal.screen().scrollback_len();
         self.back = self.back.saturating_add_signed(lines).min(limit);
     }
@@ -163,6 +248,24 @@ mod tests {
             .line(0, panel.back())
             .map(deco_term::screen::Line::text)
             .unwrap_or_default()
+    }
+
+    #[test]
+    fn the_selected_text_follows_the_cells_and_joins_wrapped_lines() {
+        let mut panel = TerminalPanel::new(1, 5, 4, 0);
+        // `abcdefg` wraps after five columns; `日` is two cells wide.
+        panel.feed("abcdefg\r\n日x".as_bytes());
+        panel.select_from(0, 2);
+        panel.select_to(1, 1);
+        assert_eq!(panel.selected_text().as_deref(), Some("cdefg"));
+        // Backwards, and across a wide character's two cells.
+        panel.select_from(2, 3);
+        panel.select_to(2, 0);
+        assert_eq!(panel.selected_text().as_deref(), Some("日x"));
+        assert!(panel.is_selected(2, 1));
+        // Output changes the cells, so the selection goes.
+        panel.feed(b"z");
+        assert_eq!(panel.selected_text(), None);
     }
 
     #[test]

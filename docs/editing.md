@@ -125,7 +125,7 @@ This is separate from surrogate pairs. A character outside the Basic Multilingua
 
 ### What this does not cover
 
-Characters that look like others (`editor.unicodeHighlight.ambiguousCharacters` and `.nonBasicASCII` in VS Code) are not marked. The GPU frontend still lays out one column per character rather than per cluster. It applies the same substitutions to the text it hands to its shaper, which would otherwise apply the bidirectional characters itself; it draws the stand-ins in the text colour rather than the highlight colour.
+Characters that look like others (`editor.unicodeHighlight.ambiguousCharacters` and `.nonBasicASCII` in VS Code) are not marked. The GPU frontend draws the same stand-ins, from the same frame.
 
 ## Copy and paste with the system clipboard
 
@@ -136,7 +136,7 @@ In the terminal, `ctrl+c` and `ctrl+x` also put the text on the system clipboard
 - A copy larger than 1 MiB stays inside deco.
 - `"deco.clipboard.osc52": false` keeps copies inside deco, for a terminal that prints the sequence instead of acting on it.
 
-The GPU frontend does not use the system clipboard yet.
+The GPU frontend does not use the system clipboard yet: copies stay inside deco, since a window has no terminal to send OSC 52 to.
 
 ## Auto-closing brackets
 
@@ -250,7 +250,6 @@ The indent affects the wrap itself: a row indented by four columns has four fewe
 ### What is not there
 
 - **A wrap marker.** VS Code draws none either, but some editors mark the break. In deco, the blank gutter on a continuation row is the only indication.
-- **The GPU frontend does not wrap.** It has no chrome yet and lays out one line per row. See the [README](https://github.com/sabas0ba/deco#readme).
 
 Pressing `alt+z` does not write the setting anywhere, because deco [does not write configuration files](configuration.md#colour-themes). The toggle applies per document, and therefore per tab, so turning it on for one Markdown file does not affect code in another tab. Pressing it twice restores the configured `editor.wordWrap` value, including a `[language]` override, rather than assuming `"on"`.
 

@@ -55,7 +55,7 @@ There is no setting for the width. VS Code has no such setting either; it stores
 
 ## Both frontends
 
-Both frontends use the same layout; only the units differ. The terminal renderer draws the regions in cells, and the GPU frontend multiplies the same rectangles by its font metrics. The GPU frontend draws the dividing rules with box-drawing characters, as the terminal does, and fills the current line, the selections and the caret with rectangles under the text.
+Both frontends draw the same frame. The terminal frontend's renderer lays out the regions as rows of coloured cells, and the GPU frontend places those cells on a grid of its font's measurements: each background that differs from the editor's is a rectangle, each run of text is shaped at its column, and a character two columns wide is placed on its own so the text after it stays in its column. The caret, which the terminal draws itself, is drawn by the GPU frontend in `editor.cursorStyle`, and as a block in the terminal panel.
 
 ## Not built yet
 

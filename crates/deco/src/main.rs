@@ -110,17 +110,25 @@ fn main() -> Result<()> {
 
     match cli.frontend {
         Frontend::Tui => deco_tui::run_with(&mut session, cli.files.first().cloned(), remote),
-        Frontend::Gui => run_gui(&mut session),
+        Frontend::Gui => run_gui(&mut session, cli.files.first().cloned(), remote),
     }
 }
 
 #[cfg(feature = "gui")]
-fn run_gui(session: &mut Session) -> Result<()> {
-    deco_gui::run(session)
+fn run_gui(
+    session: &mut Session,
+    started_with: Option<std::path::PathBuf>,
+    remote: Option<deco_tui::RemoteSession>,
+) -> Result<()> {
+    deco_gui::run(session, started_with, remote)
 }
 
 #[cfg(not(feature = "gui"))]
-fn run_gui(_session: &mut Session) -> Result<()> {
+fn run_gui(
+    _session: &mut Session,
+    _started_with: Option<std::path::PathBuf>,
+    _remote: Option<deco_tui::RemoteSession>,
+) -> Result<()> {
     anyhow::bail!(
         "this build has no GPU frontend. Rebuild with `cargo build --features gui`, \
          or run `deco --frontend tui`."

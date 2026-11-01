@@ -39,3 +39,6 @@ anyhow.workspace = true
 # `settings.json`. Backslashes in a Windows path must be escaped so the path
 # reads back correctly.
 serde_json.workspace = true
+# A mouse scenario clicks where it sees text, which needs that text's column
+# in cells.
+unicode-width.workspace = true

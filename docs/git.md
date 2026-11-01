@@ -37,7 +37,7 @@ A deletion has no remaining line to mark, so its mark is drawn on the **top edge
 
 The committed text and the comparison are therefore handled separately. Fetching the committed text requires a process, and the text changes only on commit. deco watches the commit id reported by `git status` and discards the cached text when it changes, so a `git commit` in another terminal clears the gutter. The comparison is pure, so it is recomputed as you type. This means one `git` process per commit and none per keystroke.
 
-The GPU frontend draws the same marks from the same diff, as filled rectangles in the gutter's last column: a bar the height of the line for an added or modified line, and a thin bar along the top of the line that follows a deletion.
+The GPU frontend draws the same marks, from the same frame.
 
 ## The source-control view
 

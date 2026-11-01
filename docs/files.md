@@ -124,7 +124,7 @@ this workspace is empty
 
 **Changes on disk are found by reading again, not by a watcher.** While the tree is on screen, the directories it shows are read again every two seconds, at most 64 per pass with each pass continuing where the last stopped, so a file another program creates, renames or deletes appears within two seconds. The selection stays on the same file when rows are added above it, and a folder that disappears is forgotten with its expansion state. A hidden tree is not read; it is brought up to date by the first pass after it is shown. This is local only: a remote tree changes only when a directory is read again, such as after a change made from the tree. A filesystem watcher would report sooner, but has platform-specific failure modes and would add a dependency.
 
-**No mouse, and no drag.** The tree is keyboard-only in both frontends, because mouse support has not been implemented in the GPU frontend. Moving a file to another folder is therefore not possible: rename accepts a name, not a path.
+**No drag.** A click selects and opens a row (see [The mouse](mouse.md)), but a row cannot be dragged, so moving a file to another folder is not possible: rename accepts a name, not a path.
 
 **Creating, renaming and deleting are not `WorkspaceEdit`s.** They use the same division of responsibility, where the core decides and the frontend accesses the disk, but not the same type. A `WorkspaceEdit` describes edits *within* files, and a file that does not exist yet has no text to edit. Like a `WorkspaceEdit`, a rename updates the file and its tab together.
 

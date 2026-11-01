@@ -33,7 +33,7 @@ pub use find::Find;
 pub use prompt::{Prompt, PromptKind};
 pub use scm::{Group as ScmGroup, Row as ScmRow, SourceControl};
 pub use session::{
-    ComparisonLine, ComparisonLineKind, ComparisonPane, Focus, Pane, PanelView, Session,
+    Click, ComparisonLine, ComparisonLineKind, ComparisonPane, Focus, Pane, PanelView, Session,
     SideBarView,
 };
 pub use workspace::{Applied, Plan, WorkspaceError};

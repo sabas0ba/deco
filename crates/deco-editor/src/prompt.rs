@@ -427,6 +427,18 @@ impl Prompt {
         self.selected.saturating_sub(MAX_ROWS - 1)
     }
 
+    /// Selects the choice drawn on visible row `row`, as a click does.
+    /// Returns whether there is one there.
+    pub fn select_row(&mut self, row: usize) -> bool {
+        let index = self.scroll_top() + row;
+        if index < self.matching.len() && row < MAX_ROWS {
+            self.selected = index;
+            true
+        } else {
+            false
+        }
+    }
+
     /// Selects the matching choice whose `id` is `id`, if there is one.
     ///
     /// For a list that opens on the current value, such as the document's

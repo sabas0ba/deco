@@ -73,6 +73,16 @@ impl Screen {
         self.lines.iter().position(|line| line.contains(needle))
     }
 
+    /// The column and row where `needle` first appears, in cells, for a
+    /// scenario that clicks on something it sees.
+    pub fn cell_of(&self, needle: &str) -> Option<(u16, u16)> {
+        self.lines().iter().enumerate().find_map(|(row, line)| {
+            let at = line.find(needle)?;
+            let col = unicode_width::UnicodeWidthStr::width(&line[..at]);
+            Some((col as u16, row as u16))
+        })
+    }
+
     /// Where the caret is, as a column and a row.
     pub fn cursor(&self) -> Option<(u16, u16)> {
         self.frame.cursor

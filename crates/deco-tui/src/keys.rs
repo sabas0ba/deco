@@ -68,6 +68,34 @@ pub fn chord_from_event(event: KeyEvent) -> Option<Chord> {
     Some(Chord::new(modifiers, key))
 }
 
+/// A crossterm mouse event as [`crate::Driver::mouse`] takes it.
+pub fn mouse_from_event(event: crossterm::event::MouseEvent) -> crate::mouse::Mouse {
+    use crate::mouse::{Action, Button};
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
+    let button = |button: MouseButton| match button {
+        MouseButton::Left => Button::Left,
+        MouseButton::Middle => Button::Middle,
+        MouseButton::Right => Button::Right,
+    };
+    let action = match event.kind {
+        MouseEventKind::Down(b) => Action::Press(button(b)),
+        MouseEventKind::Up(b) => Action::Release(button(b)),
+        MouseEventKind::Drag(b) => Action::Drag(button(b)),
+        MouseEventKind::ScrollUp => Action::ScrollUp,
+        MouseEventKind::ScrollDown => Action::ScrollDown,
+        // Sideways wheels and plain moves: a move is all either can be.
+        _ => Action::Move,
+    };
+    crate::mouse::Mouse {
+        action,
+        col: event.column,
+        row: event.row,
+        shift: event.modifiers.contains(KeyModifiers::SHIFT),
+        alt: event.modifiers.contains(KeyModifiers::ALT),
+        ctrl: event.modifiers.contains(KeyModifiers::CONTROL),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
